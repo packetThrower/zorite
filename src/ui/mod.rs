@@ -7,3 +7,4 @@ pub mod links;
 pub mod page_view;
 pub mod search;
 pub mod sidebar;
+pub mod slash_menu;

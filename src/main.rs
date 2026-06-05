@@ -7,10 +7,12 @@
 // On Windows release builds, don't pop a console window behind the GUI.
 #![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
 
+mod actions;
 mod app;
 mod db;
 mod models;
 mod paths;
+mod slash;
 mod theme;
 mod ui;
 
@@ -32,6 +34,8 @@ fn main() {
         // appearance so embedded gpui-component widgets don't paint light.
         Theme::change(ThemeMode::Dark, None, cx);
         theme::apply_accent_to_component_theme(cx);
+        // Slash-menu keys (up/down/enter/escape, gated on the menu being open).
+        actions::bind_keys(cx);
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
         if let Err(err) = cx.open_window(

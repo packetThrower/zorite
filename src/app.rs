@@ -18,12 +18,14 @@ use gpui::{
     Render, ScrollHandle, Styled, Subscription, Window, div, point, px,
 };
 use gpui_component::{
-    TitleBar,
+    RopeExt, TitleBar,
     input::{InputEvent, InputState},
 };
 
+use crate::actions::{SlashCancel, SlashConfirm, SlashDown, SlashUp};
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
+use crate::slash::{self, Slash, SlashTarget};
 use crate::theme;
 use crate::ui;
 
@@ -76,6 +78,8 @@ pub struct AppView {
     pub new_page_input: Entity<InputState>,
     pub search_input: Entity<InputState>,
     pub search_results: Vec<SearchHit>,
+    /// Open slash-command menu, if any.
+    slash: Option<Slash>,
 
     _subs: Vec<Subscription>,
     pub focus_handle: FocusHandle,
@@ -131,6 +135,7 @@ impl AppView {
             new_page_input,
             search_input,
             search_results: Vec::new(),
+            slash: None,
             _subs: vec![np_sub, search_sub],
             focus_handle: cx.focus_handle(),
         };
@@ -166,6 +171,7 @@ impl AppView {
                 InputEvent::Change => {
                     let value = st.read(cx).value().to_string();
                     this.save_journal(&key, &value);
+                    this.update_slash(SlashTarget::Day(key.clone()), cx);
                 }
                 InputEvent::Focus => {
                     this.editing_day = Some(key.clone());
@@ -175,6 +181,7 @@ impl AppView {
                     if this.editing_day.as_deref() == Some(key.as_str()) {
                         this.editing_day = None;
                     }
+                    this.slash = None;
                     let value = st.read(cx).value().to_string();
                     this.flush_journal(&key, &value);
                     cx.notify();
@@ -268,6 +275,7 @@ impl AppView {
                     if let Err(e) = this.db.set_page_content(pid, &value) {
                         log::error!("save page {pid}: {e}");
                     }
+                    this.update_slash(SlashTarget::Page(pid), cx);
                 }
                 InputEvent::Focus => {
                     this.page_editing = true;
@@ -275,6 +283,7 @@ impl AppView {
                 }
                 InputEvent::Blur => {
                     this.page_editing = false;
+                    this.slash = None;
                     let value = st.read(cx).value().to_string();
                     this.persist(pid, &value);
                     this.refresh_sidebar();
@@ -324,6 +333,75 @@ impl AppView {
         cx.notify();
     }
 
+    // --- Slash-command menu ---
+
+    /// Recompute the slash menu from the target editor's caret (called on
+    /// every edit). Opens it at the caret when a `/token` is present.
+    fn update_slash(&mut self, target: SlashTarget, cx: &mut Context<Self>) {
+        let editor = self.editor_for(&target);
+        let Some(editor) = editor else {
+            self.slash = None;
+            cx.notify();
+            return;
+        };
+        let (value, cursor) = {
+            let s = editor.read(cx);
+            (s.value().to_string(), s.cursor())
+        };
+        let prev_selected = self.slash.as_ref().map_or(0, |s| s.selected);
+        self.slash = match slash::detect(&value, cursor) {
+            Some((start, query)) => editor.read(cx).range_to_bounds(&(start..start)).map(|caret| {
+                let mut s = Slash { target, query, start, caret, selected: prev_selected };
+                if s.selected >= s.matches().len() {
+                    s.selected = 0;
+                }
+                s
+            }),
+            None => None,
+        };
+        cx.notify();
+    }
+
+    /// Insert the selected command's snippet, replacing the `/query`.
+    fn confirm_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(s) = self.slash.take() else { return };
+        let matches = s.matches();
+        let Some(cmd) = matches.get(s.selected).copied() else {
+            cx.notify();
+            return;
+        };
+        let Some(editor) = self.editor_for(&s.target) else {
+            cx.notify();
+            return;
+        };
+        let value = editor.read(cx).value().to_string();
+        let cursor = editor.read(cx).cursor().min(value.len());
+        let start = s.start.min(cursor);
+        let new = format!("{}{}{}", &value[..start], cmd.snippet, &value[cursor..]);
+        let caret_off = start + cmd.caret;
+        editor.update(cx, |st, cx| {
+            st.set_value(new.clone(), window, cx);
+            let pos = st.text().offset_to_position(caret_off);
+            st.set_cursor_position(pos, window, cx);
+        });
+        match &s.target {
+            SlashTarget::Day(d) => self.save_journal(d, &new),
+            SlashTarget::Page(pid) => {
+                if let Err(e) = self.db.set_page_content(*pid, &new) {
+                    log::error!("save page {pid}: {e}");
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    fn editor_for(&self, target: &SlashTarget) -> Option<Entity<InputState>> {
+        match target {
+            SlashTarget::Day(d) => self.day_editors.get(d).map(|de| de.state.clone()),
+            SlashTarget::Page(_) => self.page_editor.as_ref().map(|pe| pe.state.clone()),
+        }
+    }
+
     /// Enter edit mode for a feed day: flip it to the raw editor *now*
     /// (so the `Input` mounts this frame), then focus it. Setting the
     /// state explicitly — rather than waiting on the editor's Focus event
@@ -367,6 +445,16 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let overlay = self.slash.as_ref().map(|s| {
+            gpui::deferred(
+                gpui::anchored()
+                    .position(s.caret.bottom_left())
+                    .snap_to_window()
+                    .child(ui::slash_menu::render(s)),
+            )
+            .into_any_element()
+        });
+
         div()
             .track_focus(&self.focus_handle)
             .flex()
@@ -374,6 +462,40 @@ impl Render for AppView {
             .size_full()
             .bg(theme::bg_window())
             .text_color(theme::text_primary())
+            // Slash-menu keys (gated: act only while the menu is open, else
+            // let the editor handle the key normally).
+            .on_action(cx.listener(|this: &mut AppView, _: &SlashUp, _, cx| {
+                if let Some(s) = this.slash.as_mut() {
+                    let n = s.matches().len().max(1);
+                    s.selected = (s.selected + n - 1) % n;
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this: &mut AppView, _: &SlashDown, _, cx| {
+                if let Some(s) = this.slash.as_mut() {
+                    let n = s.matches().len().max(1);
+                    s.selected = (s.selected + 1) % n;
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this: &mut AppView, _: &SlashConfirm, window, cx| {
+                if this.slash.is_some() {
+                    this.confirm_slash(window, cx);
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|this: &mut AppView, _: &SlashCancel, _, cx| {
+                if this.slash.take().is_some() {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
             .child(
                 TitleBar::new().child(
                     div()
@@ -396,6 +518,7 @@ impl Render for AppView {
                         View::Page(_) => ui::page_view::render(self, cx).into_any_element(),
                     }),
             )
+            .children(overlay)
     }
 }
 
