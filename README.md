@@ -17,13 +17,39 @@ and a SQLite backend.
   feel — every line is just editable text.
 - **`[[wiki-links]]` and `#tags`** — clickable in the rendered view, navigate to
   (and auto-create) pages, and power **backlinks** ("Linked References").
-- **`/` slash-command menu** — type `/` to insert headings, lists, to-dos,
-  quotes, code blocks, **tables**, dividers, and inline formatting.
+- **`/` command palette** — a compact two-level menu: pick **Markdown** (headings,
+  lists, to-dos, quotes, code blocks, **tables**, dividers, inline formatting) or
+  **Templates**. Typing filters across everything, so `/table` or `/h1` jumps
+  straight to it.
+- **Templates** — reusable snippets defined on a `Templates` page, inserted from
+  `/` with `{{date}}` / `{{time}}` / `{{title}}` / `{{cursor}}` placeholders.
 - **Full-text search** across all notes.
 - **Markdown rendering** — headings, bold/italic/code, lists, quotes, GFM tables,
   strikethrough, and images-as-links — via a custom renderer crate,
   [`gpui-markdown`](crates/gpui-markdown/README.md).
 - **Local SQLite** storage; everything stays on your machine.
+
+## Templates
+
+Create a page named `Templates` and define snippets with `!name` headers — every
+line under a `!name` (until the next `!name`) is that template's body:
+
+```text
+!meeting
+## Meeting {{date}}
+- Attendees:
+- Notes: {{cursor}}
+
+!standup
+- Yesterday:
+- Today:
+- Blockers:
+```
+
+Then type `/meeting` in any day or page to insert it. Placeholders expand on insert:
+`{{date}}`, `{{time}}`, `{{title}}` (the current page/day), and `{{cursor}}` (where
+the caret lands). Built-in markdown commands live in
+[`gpui-markdown`](crates/gpui-markdown/README.md) as `SNIPPETS`.
 
 ## Build & run
 

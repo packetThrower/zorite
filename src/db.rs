@@ -157,6 +157,18 @@ impl Db {
             .optional()
     }
 
+    /// Look up a page by title (case-insensitive) without creating it.
+    pub fn get_page_by_title(&self, title: &str) -> rusqlite::Result<Option<Page>> {
+        self.conn
+            .query_row(
+                "SELECT id, title, is_journal, journal_date, content FROM pages \
+                 WHERE title = ?1 COLLATE NOCASE",
+                params![title.trim()],
+                row_to_page,
+            )
+            .optional()
+    }
+
     pub fn list_journals(&self, limit: i64) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, is_journal, journal_date, content FROM pages \

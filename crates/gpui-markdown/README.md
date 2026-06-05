@@ -15,6 +15,8 @@ Standard `[text](url)` links open externally.
 - GFM **tables** and ~~strikethrough~~
 - `[[wiki-links]]` and `#tags` → clickable, dispatched to your callback
 - Images rendered as clickable links (real inline image rendering is a TODO)
+- `SNIPPETS` — a table of markdown authoring snippets (label + text + caret offset)
+  a host can surface in a `/` command palette
 
 ## Usage
 

@@ -55,6 +55,38 @@ impl Default for MarkdownStyle {
     }
 }
 
+/// An authoring snippet for a markdown construct: a label, the text to
+/// insert, and the caret offset (bytes) within that text. Exposed so a
+/// host's command palette can offer markdown commands without re-deriving
+/// the syntax. Pure data — no rendering involved.
+pub struct Snippet {
+    pub label: &'static str,
+    pub snippet: &'static str,
+    pub caret: usize,
+}
+
+/// Built-in markdown authoring snippets (for a `/` command palette).
+pub const SNIPPETS: &[Snippet] = &[
+    // Blocks
+    Snippet { label: "Heading 1", snippet: "# ", caret: 2 },
+    Snippet { label: "Heading 2", snippet: "## ", caret: 3 },
+    Snippet { label: "Heading 3", snippet: "### ", caret: 4 },
+    Snippet { label: "Bullet list", snippet: "- ", caret: 2 },
+    Snippet { label: "Numbered list", snippet: "1. ", caret: 3 },
+    Snippet { label: "To-do", snippet: "- [ ] ", caret: 6 },
+    Snippet { label: "Quote", snippet: "> ", caret: 2 },
+    Snippet { label: "Code block", snippet: "```\n\n```", caret: 4 },
+    Snippet { label: "Table", snippet: "|  |  |\n| --- | --- |\n|  |  |\n", caret: 2 },
+    Snippet { label: "Divider", snippet: "---\n", caret: 4 },
+    // Inline (caret lands between the markers)
+    Snippet { label: "Bold", snippet: "****", caret: 2 },
+    Snippet { label: "Italic", snippet: "**", caret: 1 },
+    Snippet { label: "Strikethrough", snippet: "~~~~", caret: 2 },
+    Snippet { label: "Inline code", snippet: "``", caret: 1 },
+    Snippet { label: "Link", snippet: "[]()", caret: 1 },
+    Snippet { label: "Image", snippet: "![]()", caret: 4 },
+];
+
 /// Called when a `[[wiki-link]]` is clicked, with the trimmed title.
 pub type WikiLinkHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 

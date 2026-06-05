@@ -25,7 +25,7 @@ use gpui_component::{
 use crate::actions::{SlashCancel, SlashConfirm, SlashDown, SlashUp};
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
-use crate::slash::{self, Slash, SlashTarget};
+use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template};
 use crate::theme;
 use crate::ui;
 
@@ -80,6 +80,8 @@ pub struct AppView {
     pub search_results: Vec<SearchHit>,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
+    /// Templates parsed from the reserved `Templates` page.
+    templates: Vec<Template>,
 
     _subs: Vec<Subscription>,
     pub focus_handle: FocusHandle,
@@ -136,6 +138,7 @@ impl AppView {
             search_input,
             search_results: Vec::new(),
             slash: None,
+            templates: Vec::new(),
             _subs: vec![np_sub, search_sub],
             focus_handle: cx.focus_handle(),
         };
@@ -316,6 +319,13 @@ impl AppView {
     fn refresh_sidebar(&mut self) {
         self.journals = self.db.list_journals(60).unwrap_or_default();
         self.pages = self.db.list_pages().unwrap_or_default();
+        self.templates = self
+            .db
+            .get_page_by_title(slash::TEMPLATES_PAGE)
+            .ok()
+            .flatten()
+            .map(|p| slash::parse_templates(&p.content))
+            .unwrap_or_default();
     }
 
     /// Run the sidebar search box live. Empty query returns to the feed.
@@ -348,28 +358,75 @@ impl AppView {
             let s = editor.read(cx);
             (s.value().to_string(), s.cursor())
         };
-        let prev_selected = self.slash.as_ref().map_or(0, |s| s.selected);
-        self.slash = match slash::detect(&value, cursor) {
-            Some((start, query)) => editor.read(cx).range_to_bounds(&(start..start)).map(|caret| {
-                let mut s = Slash { target, query, start, caret, selected: prev_selected };
-                if s.selected >= s.matches().len() {
-                    s.selected = 0;
-                }
-                s
-            }),
-            None => None,
-        };
-        cx.notify();
-    }
-
-    /// Insert the selected command's snippet, replacing the `/query`.
-    fn confirm_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(s) = self.slash.take() else { return };
-        let matches = s.matches();
-        let Some(cmd) = matches.get(s.selected).copied() else {
+        let Some((start, query)) = slash::detect(&value, cursor) else {
+            self.slash = None;
             cx.notify();
             return;
         };
+        let Some(caret) = editor.read(cx).range_to_bounds(&(start..start)) else {
+            self.slash = None;
+            cx.notify();
+            return;
+        };
+        let level = self.slash.as_ref().map_or(SlashLevel::Root, |s| s.level);
+        let title = self.slash_title(&target);
+        let items = slash::build_items(level, &query, &self.templates, &title);
+        let selected = self.slash.as_ref().map_or(0, |s| s.selected);
+        let selected = if items.is_empty() { 0 } else { selected.min(items.len() - 1) };
+        self.slash = Some(Slash { target, query, start, caret, selected, level, items });
+        cx.notify();
+    }
+
+    fn slash_title(&self, target: &SlashTarget) -> String {
+        match target {
+            SlashTarget::Day(d) => d.clone(),
+            SlashTarget::Page(_) => {
+                self.page_editor.as_ref().map(|pe| pe.title.clone()).unwrap_or_default()
+            }
+        }
+    }
+
+    /// Confirm the selected entry: open a category submenu, or insert.
+    fn confirm_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        enum Act {
+            Enter(SlashLevel),
+            Insert(String, usize),
+        }
+        let act = {
+            let Some(s) = self.slash.as_ref() else { return };
+            let Some(item) = s.items.get(s.selected) else {
+                cx.notify();
+                return;
+            };
+            match &item.kind {
+                ItemKind::Category(level) => Act::Enter(*level),
+                ItemKind::Insert { snippet, caret } => Act::Insert(snippet.clone(), *caret),
+            }
+        };
+        match act {
+            Act::Enter(level) => self.enter_slash_category(level, cx),
+            Act::Insert(snippet, caret) => self.insert_slash(snippet, caret, window, cx),
+        }
+    }
+
+    /// Switch the open menu to a level (root or a submenu) and rebuild it.
+    fn enter_slash_category(&mut self, level: SlashLevel, cx: &mut Context<Self>) {
+        let Some((query, target, start, caret)) = self
+            .slash
+            .as_ref()
+            .map(|s| (s.query.clone(), s.target.clone(), s.start, s.caret))
+        else {
+            return;
+        };
+        let title = self.slash_title(&target);
+        let items = slash::build_items(level, &query, &self.templates, &title);
+        self.slash = Some(Slash { target, query, start, caret, selected: 0, level, items });
+        cx.notify();
+    }
+
+    /// Insert a snippet at the `/query`, then close the menu.
+    fn insert_slash(&mut self, snippet: String, caret: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(s) = self.slash.take() else { return };
         let Some(editor) = self.editor_for(&s.target) else {
             cx.notify();
             return;
@@ -377,8 +434,8 @@ impl AppView {
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
         let start = s.start.min(cursor);
-        let new = format!("{}{}{}", &value[..start], cmd.snippet, &value[cursor..]);
-        let caret_off = start + cmd.caret;
+        let new = format!("{}{}{}", &value[..start], snippet, &value[cursor..]);
+        let caret_off = start + caret;
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
             let pos = st.text().offset_to_position(caret_off);
@@ -466,7 +523,7 @@ impl Render for AppView {
             // let the editor handle the key normally).
             .on_action(cx.listener(|this: &mut AppView, _: &SlashUp, _, cx| {
                 if let Some(s) = this.slash.as_mut() {
-                    let n = s.matches().len().max(1);
+                    let n = s.items.len().max(1);
                     s.selected = (s.selected + n - 1) % n;
                     cx.notify();
                 } else {
@@ -475,7 +532,7 @@ impl Render for AppView {
             }))
             .on_action(cx.listener(|this: &mut AppView, _: &SlashDown, _, cx| {
                 if let Some(s) = this.slash.as_mut() {
-                    let n = s.matches().len().max(1);
+                    let n = s.items.len().max(1);
                     s.selected = (s.selected + 1) % n;
                     cx.notify();
                 } else {
@@ -490,10 +547,15 @@ impl Render for AppView {
                 }
             }))
             .on_action(cx.listener(|this: &mut AppView, _: &SlashCancel, _, cx| {
-                if this.slash.take().is_some() {
-                    cx.notify();
-                } else {
-                    cx.propagate();
+                // From a submenu, Esc backs out to the root categories;
+                // from the root it closes the menu.
+                match this.slash.as_ref().map(|s| s.level) {
+                    Some(SlashLevel::Root) => {
+                        this.slash = None;
+                        cx.notify();
+                    }
+                    Some(_) => this.enter_slash_category(SlashLevel::Root, cx),
+                    None => cx.propagate(),
                 }
             }))
             .child(
