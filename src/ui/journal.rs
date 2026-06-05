@@ -4,19 +4,19 @@
 
 use gpui::{
     ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
+    Pixels, SharedString, StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
 };
 use gpui_component::input::{Input, InputState};
 
 use crate::app::{self, AppView};
 use crate::theme;
 
-pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl IntoElement {
     let mut sections = Vec::new();
     for i in 0..app.loaded_days {
         let date = app::date_for_offset(i);
         if let Some(day) = app.day_editors.get(&date) {
-            sections.push(day_section(app, i, &date, &day.state, cx).into_any_element());
+            sections.push(day_section(app, i, &date, &day.state, day_min, cx).into_any_element());
         }
     }
 
@@ -41,7 +41,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .p(px(28.0))
                         .flex()
                         .flex_col()
-                        .gap(px(28.0))
+                        .gap(px(40.0))
                         .children(sections)
                         .child(load_older(cx)),
                 ),
@@ -53,14 +53,15 @@ fn day_section(
     i: usize,
     date: &str,
     state: &Entity<InputState>,
+    day_min: Pixels,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
-    let is_today = i == 0;
-    // The date as a prominent title so days are easy to tell apart.
+    // The date in the accent color (every day, not just today) so each day's
+    // start clearly stands apart from the dark body text and headings.
     let header = div()
         .text_size(px(22.0))
         .font_weight(FontWeight::BOLD)
-        .text_color(if is_today { theme::accent() } else { theme::text_primary() })
+        .text_color(theme::accent())
         .child(app::date_label(i));
 
     let body = if app.is_editing_day(date) {
@@ -76,10 +77,13 @@ fn day_section(
     div()
         .flex()
         .flex_col()
+        // Each day fills most of the window so days read as distinct pages.
+        .min_h(day_min)
         .gap(px(8.0))
-        // A hairline above each day (except today) to separate entries.
+        // A hairline above each day (except today), centered in the gap, to
+        // clearly break the feed into separate days.
         .when(i > 0, |d| {
-            d.pt(px(28.0)).border_t_1().border_color(theme::border_subtle())
+            d.pt(px(40.0)).border_t_1().border_color(theme::divider())
         })
         .child(header)
         .child(body)

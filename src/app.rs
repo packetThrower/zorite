@@ -1009,6 +1009,10 @@ impl Render for AppView {
             .into_any_element()
         });
 
+        // Each journal day fills most of the window height so days read as
+        // distinct "pages" instead of a continuous wall of text.
+        let day_min = px(f32::from(window.viewport_size().height) * 0.75);
+
         div()
             .track_focus(&self.focus_handle)
             .flex()
@@ -1149,7 +1153,7 @@ impl Render for AppView {
                             } else {
                                 match self.tabs[self.active].kind {
                                     TabKind::Journal => {
-                                        ui::journal::render(self, cx).into_any_element()
+                                        ui::journal::render(self, day_min, cx).into_any_element()
                                     }
                                     TabKind::Page(_) => {
                                         ui::page_view::render(self, cx).into_any_element()

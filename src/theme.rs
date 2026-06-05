@@ -34,6 +34,9 @@ pub struct Palette {
     pub glass_strong: Hsla,
     pub hover: Hsla,
     pub border_subtle: Hsla,
+    /// A clearly visible rule (stronger than `border_subtle`), e.g. between
+    /// journal days.
+    pub divider: Hsla,
     pub accent: Hsla,
     pub accent_hover: Hsla,
     pub accent_active: Hsla,
@@ -85,6 +88,7 @@ pub fn make_palette(
         glass_strong: from_rgb(overlay, 0.09),
         hover: from_rgb(overlay, 0.06),
         border_subtle: from_rgb(overlay, if is_dark { 0.08 } else { 0.10 }),
+        divider: from_rgb(overlay, if is_dark { 0.18 } else { 0.22 }),
         accent,
         accent_hover,
         accent_active,
@@ -136,6 +140,9 @@ pub fn hover() -> Hsla {
 }
 pub fn border_subtle() -> Hsla {
     get().border_subtle
+}
+pub fn divider() -> Hsla {
+    get().divider
 }
 pub fn accent() -> Hsla {
     get().accent
