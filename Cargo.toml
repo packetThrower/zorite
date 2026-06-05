@@ -11,7 +11,14 @@ publish = false
 name = "rumin"
 path = "src/main.rs"
 
+[workspace]
+members = ["crates/gpui-markdown"]
+resolver = "2"
+
 [dependencies]
+# Our own markdown renderer (clickable wiki-links), a workspace crate.
+gpui-markdown = { path = "crates/gpui-markdown" }
+
 # SQLite backend. `bundled` compiles SQLite from source and links it
 # statically into the binary — no system libsqlite3 dependency on any
 # target, and no version skew between dev machines.

@@ -1,0 +1,12 @@
+[package]
+name = "gpui-markdown"
+version = "0.1.0"
+edition = "2024"
+description = "Markdown rendering for GPUI with clickable wiki-links."
+license = "GPL-3.0-or-later"
+
+[dependencies]
+# Same git spec (no rev) as the workspace root so Cargo unifies to one
+# gpui; the lock pins the actual revision.
+gpui = { git = "https://github.com/zed-industries/zed" }
+markdown = "1"

@@ -2387,6 +2387,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-markdown"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "markdown",
+]
+
+[[package]]
 name = "gpui_linux"
 version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed#13e7c1176804c790ec2971d2e592e5363c982d04"
@@ -5110,6 +5118,7 @@ dependencies = [
  "gpui",
  "gpui-component",
  "gpui-component-assets",
+ "gpui-markdown",
  "gpui_platform",
  "log",
  "rusqlite",

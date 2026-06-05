@@ -7,7 +7,6 @@ use gpui::{
     SharedString, StatefulInteractiveElement, Styled, div, px,
 };
 use gpui_component::input::{Input, InputState};
-use gpui_component::text::TextView;
 
 use crate::app::{self, AppView};
 use crate::theme;
@@ -93,9 +92,12 @@ fn rendered_day(
             .child("Empty — click to write")
             .into_any_element()
     } else {
-        TextView::markdown(("day-md", i), content)
-            .text_size(px(16.0))
-            .text_color(theme::text_primary())
+        let weak = cx.entity().downgrade();
+        gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
+            .style(theme::markdown_style())
+            .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
+                let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
+            }))
             .into_any_element()
     };
     div()

@@ -5,7 +5,7 @@
 //! backgrounds so panels read as gentle elevation rather than hard
 //! boxes.
 
-use gpui::{App, Hsla, Rgba};
+use gpui::{App, Hsla, Rgba, px};
 use gpui_component::Theme;
 
 /// Opaque-or-translucent color from a packed `0xRRGGBB` literal.
@@ -89,6 +89,21 @@ pub fn text_secondary() -> Hsla {
 }
 pub fn text_tertiary() -> Hsla {
     from_rgb(0xFFFFFF, 0.38)
+}
+
+/// Styling for the markdown reading view (the `gpui-markdown` crate),
+/// mapped from our theme tokens.
+pub fn markdown_style() -> gpui_markdown::MarkdownStyle {
+    gpui_markdown::MarkdownStyle {
+        text_color: text_primary(),
+        text_size: px(16.0),
+        heading_color: text_primary(),
+        link_color: accent(),
+        code_color: from_rgb(0xD7BA7D, 1.0),
+        code_bg: glass(),
+        muted_color: text_tertiary(),
+        rule_color: border_subtle(),
+    }
 }
 
 /// Push our accent into gpui-component's embedded `Theme` so its
