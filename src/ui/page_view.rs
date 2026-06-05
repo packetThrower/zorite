@@ -2,10 +2,11 @@
 //! "Linked References" panel.
 
 use gpui::{
-    ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
 };
-use gpui_component::input::Input;
+use gpui_component::input::{Input, InputState};
+use gpui_component::text::TextView;
 
 use crate::app::AppView;
 use crate::models::Backlink;
@@ -42,18 +43,48 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 .text_color(theme::text_primary())
                                 .child(pe.title.clone()),
                         )
-                        .child(
+                        .child(if app.is_page_editing() {
                             Input::new(&pe.state)
                                 .appearance(false)
                                 .text_size(px(16.0))
-                                .text_color(theme::text_primary()),
-                        )
+                                .text_color(theme::text_primary())
+                                .into_any_element()
+                        } else {
+                            page_rendered(&pe.state, cx).into_any_element()
+                        })
                         .when(!pe.backlinks.is_empty(), |this| {
                             this.child(backlinks_section(&pe.backlinks, cx))
                         }),
                 ),
         )
         .into_any_element()
+}
+
+/// The page body in reading mode: rendered markdown (or a placeholder
+/// when empty), clickable to enter edit mode.
+fn page_rendered(state: &Entity<InputState>, cx: &mut Context<AppView>) -> impl IntoElement {
+    let content = state.read(cx).value();
+    let inner = if content.trim().is_empty() {
+        div()
+            .text_size(px(16.0))
+            .text_color(theme::text_tertiary())
+            .child("Empty — click to write")
+            .into_any_element()
+    } else {
+        TextView::markdown("page-md", content)
+            .text_size(px(16.0))
+            .text_color(theme::text_primary())
+            .into_any_element()
+    };
+    div()
+        .id("page-body")
+        .w_full()
+        .min_h(px(24.0))
+        .cursor_text()
+        .child(inner)
+        .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
+            this.edit_page(window, cx);
+        }))
 }
 
 fn backlinks_section(backlinks: &[Backlink], cx: &mut Context<AppView>) -> impl IntoElement {

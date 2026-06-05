@@ -55,6 +55,11 @@ pub struct PageEditor {
 pub struct AppView {
     db: Db,
     view: View,
+    /// In the feed, the date currently being edited (raw editor); all
+    /// other days render as markdown. `None` = every day rendered.
+    editing_day: Option<String>,
+    /// Whether the single-page editor is in edit (raw) vs reading mode.
+    page_editing: bool,
 
     // Journal feed.
     pub loaded_days: usize,
@@ -101,6 +106,8 @@ impl AppView {
         let mut this = Self {
             db,
             view: View::Journal,
+            editing_day: None,
+            page_editing: false,
             loaded_days: 0,
             day_editors: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
@@ -117,7 +124,7 @@ impl AppView {
             this.ensure_day_editor(date_for_offset(i), window, cx);
         }
         this.refresh_sidebar();
-        this.focus_day(&date_for_offset(0), window, cx);
+        this.edit_day(&date_for_offset(0), window, cx);
         this
     }
 
@@ -139,11 +146,22 @@ impl AppView {
         let sub = cx.subscribe_in(
             &state,
             window,
-            move |this: &mut AppView, st, ev: &InputEvent, _window, cx| {
-                if let InputEvent::Change = ev {
+            move |this: &mut AppView, st, ev: &InputEvent, _window, cx| match ev {
+                InputEvent::Change => {
                     let value = st.read(cx).value().to_string();
                     this.save_journal(&key, &value);
                 }
+                InputEvent::Focus => {
+                    this.editing_day = Some(key.clone());
+                    cx.notify();
+                }
+                InputEvent::Blur => {
+                    if this.editing_day.as_deref() == Some(key.as_str()) {
+                        this.editing_day = None;
+                    }
+                    cx.notify();
+                }
+                _ => {}
             },
         );
         self.day_editors.insert(date, DayEditor { state, _sub: sub });
@@ -188,7 +206,7 @@ impl AppView {
         }
         self.feed_scroll.set_offset(point(px(0.0), px(0.0)));
         self.refresh_sidebar();
-        self.focus_day(&date_for_offset(0), window, cx);
+        self.edit_day(&date_for_offset(0), window, cx);
         cx.notify();
     }
 
@@ -213,20 +231,27 @@ impl AppView {
         let sub = cx.subscribe_in(
             &state,
             window,
-            move |this: &mut AppView, st, ev: &InputEvent, _window, cx| {
-                if let InputEvent::Change = ev {
+            move |this: &mut AppView, st, ev: &InputEvent, _window, cx| match ev {
+                InputEvent::Change => {
                     let value = st.read(cx).value().to_string();
                     this.persist(pid, &value);
                 }
+                InputEvent::Focus => {
+                    this.page_editing = true;
+                    cx.notify();
+                }
+                InputEvent::Blur => {
+                    this.page_editing = false;
+                    cx.notify();
+                }
+                _ => {}
             },
         );
         let backlinks = self.db.backlinks(pid).unwrap_or_default();
         self.page_editor = Some(PageEditor { title: page.title, state, _sub: sub, backlinks });
         self.view = View::Page(pid);
+        self.page_editing = false; // open in reading mode; click to edit
         self.refresh_sidebar();
-        if let Some(pe) = self.page_editor.as_ref() {
-            pe.state.clone().update(cx, |s, cx| s.focus(window, cx));
-        }
         cx.notify();
     }
 
@@ -248,10 +273,26 @@ impl AppView {
         self.pages = self.db.list_pages().unwrap_or_default();
     }
 
-    fn focus_day(&mut self, date: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// Enter edit mode for a feed day: flip it to the raw editor *now*
+    /// (so the `Input` mounts this frame), then focus it. Setting the
+    /// state explicitly — rather than waiting on the editor's Focus event
+    /// — is required because focusing a not-yet-rendered editor doesn't
+    /// reliably emit Focus.
+    pub fn edit_day(&mut self, date: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_day = Some(date.to_string());
         if let Some(de) = self.day_editors.get(date) {
             de.state.clone().update(cx, |s, cx| s.focus(window, cx));
         }
+        cx.notify();
+    }
+
+    /// Enter edit mode for the open page (same not-yet-rendered caveat).
+    pub fn edit_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.page_editing = true;
+        if let Some(pe) = self.page_editor.as_ref() {
+            pe.state.clone().update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
     }
 
     // --- Read accessors for the UI ---
@@ -262,6 +303,14 @@ impl AppView {
 
     pub fn is_page_active(&self, id: i64) -> bool {
         self.view == View::Page(id)
+    }
+
+    pub fn is_editing_day(&self, date: &str) -> bool {
+        self.editing_day.as_deref() == Some(date)
+    }
+
+    pub fn is_page_editing(&self) -> bool {
+        self.page_editing
     }
 }
 
