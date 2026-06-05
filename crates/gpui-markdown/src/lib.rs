@@ -19,8 +19,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveText,
-    IntoElement, ParentElement, Pixels, RenderOnce, SharedString, Styled, StyledText, Window, div,
-    px, rgb, rgba,
+    IntoElement, ParentElement, Pixels, RenderOnce, SharedString, StrikethroughStyle, Styled,
+    StyledText, Window, div, px, rgb, rgba,
 };
 use markdown::mdast;
 
@@ -107,7 +107,7 @@ impl RenderOnce for MarkdownView {
             .text_color(ctx.style.text_color)
             .text_size(ctx.style.text_size);
 
-        match markdown::to_mdast(&source, &markdown::ParseOptions::default()) {
+        match markdown::to_mdast(&source, &markdown::ParseOptions::gfm()) {
             Ok(mdast::Node::Root(root)) => {
                 for node in &root.children {
                     if let Some(el) = render_block(node, &mut ctx) {
@@ -189,6 +189,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
         mdast::Node::ThematicBreak(_) => Some(
             div().w_full().h(px(1.0)).my(px(6.0)).bg(ctx.style.rule_color).into_any_element(),
         ),
+        mdast::Node::Table(t) => Some(render_table(t, ctx)),
         // Stray inline content at block level, or unsupported blocks:
         // render whatever text we can.
         mdast::Node::Text(t) => Some(StyledText::new(t.value.clone()).into_any_element()),
@@ -309,6 +310,26 @@ fn build_inline(nodes: &[mdast::Node], cur: HighlightStyle, style: &MarkdownStyl
                 }
             }
             mdast::Node::Break(_) => push_run("\n", cur, out),
+            mdast::Node::Delete(d) => {
+                let mut c = cur;
+                c.strikethrough = Some(StrikethroughStyle { thickness: px(1.0), color: None });
+                build_inline(&d.children, c, style, out);
+            }
+            mdast::Node::Image(img) => {
+                // Render as a clickable label opening the URL (real image
+                // rendering is a follow-up).
+                let label = if img.alt.is_empty() {
+                    "🖼 image".to_string()
+                } else {
+                    format!("🖼 {}", img.alt)
+                };
+                let mut c = cur;
+                c.color = Some(style.link_color);
+                let start = out.text.len();
+                push_run(&label, c, out);
+                let end = out.text.len();
+                out.links.push((start..end, LinkTarget::Url(img.url.clone().into())));
+            }
             // Recurse into any other container node; ignore leaves we
             // don't special-case.
             other => {
@@ -394,10 +415,45 @@ fn push_run(s: &str, style: HighlightStyle, out: &mut Inline) {
 /// can still surface their inline text.
 fn node_children(node: &mdast::Node) -> Option<&[mdast::Node]> {
     match node {
-        mdast::Node::Delete(n) => Some(&n.children),
         mdast::Node::Paragraph(n) => Some(&n.children),
         _ => None,
     }
+}
+
+/// Render a GFM table as a bordered grid; the first row is the header.
+fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
+    let border = ctx.style.muted_color;
+    let mut grid = div()
+        .flex()
+        .flex_col()
+        .border_1()
+        .border_color(border)
+        .rounded(px(6.0))
+        .overflow_hidden();
+
+    for (ri, row) in table.children.iter().enumerate() {
+        let mdast::Node::TableRow(r) = row else { continue };
+        let mut row_el = div().flex().flex_row();
+        if ri > 0 {
+            row_el = row_el.border_t_1().border_color(border);
+        }
+        for cell in &r.children {
+            let mdast::Node::TableCell(c) = cell else { continue };
+            let mut cell_el = div()
+                .flex_1()
+                .min_w_0()
+                .px(px(10.0))
+                .py(px(6.0))
+                .border_r_1()
+                .border_color(border);
+            if ri == 0 {
+                cell_el = cell_el.font_weight(FontWeight::BOLD);
+            }
+            row_el = row_el.child(cell_el.child(inline_element(&c.children, ctx)));
+        }
+        grid = grid.child(row_el);
+    }
+    grid.into_any_element()
 }
 
 #[cfg(test)]
