@@ -1,4 +1,4 @@
-//! rumin — a local-first outliner and daily-journal note app, built on
+//! zorite — a local-first outliner and daily-journal note app, built on
 //! GPUI + gpui-component with a SQLite backend. Bootstrap mirrors
 //! `~/git/etch341`'s `gui::run`: register icon assets, init
 //! gpui-component, pin a dark theme, rebind the outliner keys, then open
@@ -42,10 +42,10 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("rumin".into()),
+                    title: Some("zorite".into()),
                     ..TitleBar::title_bar_options()
                 }),
-                app_id: Some("rumin".into()),
+                app_id: Some("zorite".into()),
                 // Force client-side decorations so KWin doesn't stack a
                 // server titlebar over gpui-component's. No-op on
                 // macOS / Windows.
@@ -59,7 +59,7 @@ fn main() {
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {
-            eprintln!("rumin: failed to open window: {err}");
+            eprintln!("zorite: failed to open window: {err}");
         }
         cx.activate(true);
     });

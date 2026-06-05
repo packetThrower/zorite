@@ -5111,21 +5111,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
-name = "rumin"
-version = "0.1.0"
-dependencies = [
- "env_logger",
- "gpui",
- "gpui-component",
- "gpui-component-assets",
- "gpui-markdown",
- "gpui_platform",
- "log",
- "rusqlite",
- "time",
-]
-
-[[package]]
 name = "rusqlite"
 version = "0.32.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8504,6 +8489,21 @@ name = "zmij"
 version = "1.0.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
+
+[[package]]
+name = "zorite"
+version = "0.1.0"
+dependencies = [
+ "env_logger",
+ "gpui",
+ "gpui-component",
+ "gpui-component-assets",
+ "gpui-markdown",
+ "gpui_platform",
+ "log",
+ "rusqlite",
+ "time",
+]
 
 [[package]]
 name = "ztracing"

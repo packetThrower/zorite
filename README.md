@@ -1,4 +1,4 @@
-# rumin
+# zorite
 
 A local-first, Logseq-style **daily journal** for the desktop — but with a
 **Word-like** typing experience rather than an outliner. Built in Rust with
@@ -66,14 +66,14 @@ Your data lives at:
 
 | OS      | Path                                          |
 | ------- | --------------------------------------------- |
-| macOS   | `~/Library/Application Support/rumin/rumin.db` |
-| Linux   | `$XDG_DATA_HOME/rumin/` (or `~/.local/share/rumin/`) |
-| Windows | `%APPDATA%\rumin\`                             |
+| macOS   | `~/Library/Application Support/zorite/zorite.db` |
+| Linux   | `$XDG_DATA_HOME/zorite/` (or `~/.local/share/zorite/`) |
+| Windows | `%APPDATA%\zorite\`                             |
 
 ## Workspace layout
 
 ```
-rumin/
+zorite/
 ├── src/                     the app — journal feed, pages, search, slash menu, SQLite
 └── crates/gpui-markdown/    a reusable Markdown renderer for GPUI (clickable links)
 ```

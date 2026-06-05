@@ -12,7 +12,7 @@
 
 use gpui::{App, KeyBinding, actions};
 
-actions!(rumin, [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab]);
+actions!(zorite, [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab]);
 
 const INPUT_CONTEXT: &str = "Input";
 

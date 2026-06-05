@@ -1,4 +1,4 @@
-//! Color tokens for rumin. Dark theme only, in the spirit of
+//! Color tokens for zorite. Dark theme only, in the spirit of
 //! `~/git/etch341`'s `theme.rs`: a small set of `from_rgb`-built
 //! `Hsla` helpers read directly in the render tree. One accent, derived
 //! hover/active/tint variants, and a layered set of near-neutral

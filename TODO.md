@@ -1,4 +1,4 @@
-# rumin — TODO
+# zorite — TODO
 
 Roadmap / known follow-ups. Roughly priority-ordered within each section.
 

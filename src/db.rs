@@ -1,4 +1,4 @@
-//! SQLite storage for rumin (v2): each page is a single markdown
+//! SQLite storage for zorite (v2): each page is a single markdown
 //! document, plus a `[[wiki-link]]` index over pages for backlinks.
 //!
 //! Schema v2 replaces the v1 block-outliner model. New databases get v2

@@ -719,7 +719,7 @@ impl Render for AppView {
                         .px_2()
                         .text_size(px(13.0))
                         .text_color(theme::text_secondary())
-                        .child("rumin"),
+                        .child("zorite"),
                 ),
             )
             .child(

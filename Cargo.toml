@@ -1,5 +1,5 @@
 [package]
-name = "rumin"
+name = "zorite"
 version = "0.1.0"
 edition = "2024"
 description = "A local-first outliner and daily-journal note app (Logseq-style)."
@@ -8,7 +8,7 @@ authors = ["packetThrower"]
 publish = false
 
 [[bin]]
-name = "rumin"
+name = "zorite"
 path = "src/main.rs"
 
 [workspace]
