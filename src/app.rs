@@ -106,7 +106,6 @@ pub struct AppView {
     pub page_editor: Option<PageEditor>,
 
     // Sidebar.
-    pub journals: Vec<Page>,
     pub pages: Vec<Page>,
     pub new_page_input: Entity<InputState>,
     pub search_input: Entity<InputState>,
@@ -167,7 +166,6 @@ impl AppView {
             day_editors: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
             page_editor: None,
-            journals: Vec::new(),
             pages: Vec::new(),
             new_page_input,
             search_input,
@@ -486,7 +484,6 @@ impl AppView {
     }
 
     fn refresh_sidebar(&mut self) {
-        self.journals = self.db.list_journals(60).unwrap_or_default();
         self.pages = self.db.list_pages().unwrap_or_default();
         self.templates = self
             .db

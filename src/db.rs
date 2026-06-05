@@ -174,14 +174,6 @@ impl Db {
             .optional()
     }
 
-    pub fn list_journals(&self, limit: i64) -> rusqlite::Result<Vec<Page>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, is_journal, journal_date, content FROM pages \
-             WHERE is_journal = 1 ORDER BY journal_date DESC LIMIT ?1",
-        )?;
-        stmt.query_map(params![limit], row_to_page)?.collect()
-    }
-
     pub fn list_pages(&self) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, is_journal, journal_date, content FROM pages \

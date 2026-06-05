@@ -7,7 +7,7 @@
 pub struct Page {
     pub id: i64,
     pub title: String,
-    /// Persisted and used via DB queries (e.g. `list_journals`) rather
+    /// Persisted and used via DB queries (e.g. `list_pages`) rather
     /// than read off the struct directly — kept for completeness.
     #[allow(dead_code)]
     pub is_journal: bool,

@@ -1,5 +1,6 @@
-//! The left rail: search, the journal feed, recent journals, and named
-//! pages. Right-click the pages area (or a page) to create a new page.
+//! The left rail: search, a link to the journal feed, and named pages.
+//! Right-click the pages area to create a new page; older days are found
+//! via search.
 
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
@@ -13,10 +14,6 @@ use crate::models::Page;
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
-    let mut journal_rows = Vec::new();
-    for p in &app.journals {
-        journal_rows.push(nav_row(p, app.is_page_active(p.id), cx).into_any_element());
-    }
     let mut page_rows = Vec::new();
     for p in &app.pages {
         page_rows.push(nav_row(p, app.is_page_active(p.id), cx).into_any_element());
@@ -57,8 +54,6 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .flex()
                         .flex_col()
                         .child(journal_row(app.is_journal_view(), cx))
-                        .child(section_label("Journals"))
-                        .children(journal_rows)
                         .child(section_label("Pages"))
                         .when(app.pages.is_empty(), |this| {
                             this.child(empty_hint("No pages yet — right-click below to add one"))
