@@ -86,6 +86,11 @@ impl Db {
                  PRAGMA user_version = 3;",
             )?;
         }
+        // Key/value app settings (theme mode, etc.). Idempotent, so no
+        // `user_version` bump is needed.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
+        )?;
         Ok(())
     }
 
@@ -203,6 +208,27 @@ impl Db {
             .conn
             .execute("DELETE FROM pages WHERE id = ?1 AND is_journal = 0", params![id])?;
         Ok(n > 0)
+    }
+
+    // --- App settings (key/value) ---
+
+    /// Read a setting, or `None` if absent (errors are swallowed to a None).
+    pub fn get_setting(&self, key: &str) -> Option<String> {
+        self.conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Upsert a setting.
+    pub fn set_setting(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) \
+             ON CONFLICT(key) DO UPDATE SET value = ?2",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     // --- Links / backlinks ---

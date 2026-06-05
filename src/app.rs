@@ -13,8 +13,10 @@
 use std::collections::HashMap;
 
 use gpui::{
-    AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, Styled, Subscription, Window, div, px,
+    App, AppContext, Bounds, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
+    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowDecorations,
+    WindowHandle, WindowOptions, div, px, size,
 };
 use gpui_component::{
     RopeExt, Root, TitleBar, WindowExt,
@@ -26,6 +28,7 @@ use gpui_component::{
 use crate::actions::{DeletePage, OpenInNewTab, SlashCancel, SlashConfirm, SlashDown, SlashUp};
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
+use crate::settings::SettingsView;
 use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template};
 use crate::theme;
 use crate::ui;
@@ -72,6 +75,12 @@ pub struct AppView {
     searching: bool,
     /// Horizontal scroll handle for the tab strip.
     pub tab_scroll: ScrollHandle,
+    /// Active theme mode (Light / Dark / Auto) + last-known OS appearance
+    /// (used to resolve Auto).
+    mode: theme::Mode,
+    system_dark: bool,
+    /// The open Settings window, if any (focused instead of duplicated).
+    settings_window: Option<WindowHandle<gpui_component::Root>>,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -146,6 +155,9 @@ impl AppView {
             active: 0,
             searching: false,
             tab_scroll: ScrollHandle::new(),
+            mode: theme::Mode::Dark,
+            system_dark: true,
+            settings_window: None,
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -169,6 +181,17 @@ impl AppView {
             this.ensure_day_editor(date_for_offset(i), window, cx);
         }
         this.refresh_sidebar();
+        // Apply the saved (or default) theme before the first paint.
+        this.mode = this
+            .db
+            .get_setting("theme_mode")
+            .map(|s| theme::Mode::from_str(&s))
+            .unwrap_or_default();
+        this.system_dark = matches!(
+            window.appearance(),
+            WindowAppearance::Dark | WindowAppearance::VibrantDark
+        );
+        theme::apply(this.mode, this.system_dark, window, cx);
         // Start with today rendered (like every other day); click to edit.
         this
     }
@@ -585,6 +608,88 @@ impl AppView {
         self.page_editing
     }
 
+    pub fn theme_mode(&self) -> theme::Mode {
+        self.mode
+    }
+
+    // --- Theme / appearance ---
+
+    /// Watch OS appearance so `Auto` mode tracks light/dark. Called once
+    /// after the view entity exists (from `main`).
+    pub fn attach_appearance_observer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        let sub = window.observe_window_appearance(move |window, cx| {
+            let dark = matches!(
+                window.appearance(),
+                WindowAppearance::Dark | WindowAppearance::VibrantDark
+            );
+            if let Some(view) = weak.upgrade() {
+                view.update(cx, |this, cx| this.on_system_appearance(dark, window, cx));
+            }
+        });
+        self._subs.push(sub);
+    }
+
+    fn on_system_appearance(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.system_dark = dark;
+        if self.mode == theme::Mode::Auto {
+            theme::apply(self.mode, dark, window, cx);
+        }
+    }
+
+    /// Set the theme mode, apply it live, and persist the choice.
+    pub fn set_theme_mode(&mut self, mode: theme::Mode, window: &mut Window, cx: &mut Context<Self>) {
+        self.mode = mode;
+        theme::apply(mode, self.system_dark, window, cx);
+        let _ = self.db.set_setting("theme_mode", mode.as_str());
+    }
+
+    /// Quick cycle for the title-bar toggle: Light → Dark → Auto → Light.
+    fn cycle_theme_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let next = match self.mode {
+            theme::Mode::Light => theme::Mode::Dark,
+            theme::Mode::Dark => theme::Mode::Auto,
+            theme::Mode::Auto => theme::Mode::Light,
+        };
+        self.set_theme_mode(next, window, cx);
+    }
+
+    /// Open the Settings window, or focus it if already open. An associated
+    /// function (not `&mut self`) run at the App level: `open_window`
+    /// renders `SettingsView` synchronously, and `SettingsView` *reads*
+    /// `AppView`, so `AppView` must NOT be mid-update while we open. Call
+    /// this from a deferred closure (e.g. the gear's click handler).
+    pub fn open_settings(view: Entity<AppView>, cx: &mut App) {
+        // Focus an existing settings window instead of duplicating it.
+        let existing = view.read(cx).settings_window;
+        if let Some(handle) = existing {
+            if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+                return;
+            }
+        }
+        let app = view.downgrade();
+        let bounds = Bounds::centered(None, size(px(440.0), px(360.0)), cx);
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Settings · zorite".into()),
+                    ..TitleBar::title_bar_options()
+                }),
+                window_decorations: Some(WindowDecorations::Client),
+                ..Default::default()
+            },
+            move |window, cx| {
+                window.set_client_inset(px(10.0));
+                let v = cx.new(|cx| SettingsView::new(app.clone(), window, cx));
+                cx.new(|cx| gpui_component::Root::new(v, window, cx))
+            },
+        );
+        if let Ok(handle) = opened {
+            view.update(cx, |this, _| this.settings_window = Some(handle));
+        }
+    }
+
     // --- Delete page (sidebar right-click → confirm) ---
 
     /// Remember which page a right-click context menu targets, so the
@@ -716,10 +821,70 @@ impl Render for AppView {
             .child(
                 TitleBar::new().child(
                     div()
-                        .px_2()
-                        .text_size(px(13.0))
-                        .text_color(theme::text_secondary())
-                        .child("zorite"),
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .w_full()
+                        .child(
+                            div()
+                                .px_2()
+                                .text_size(px(13.0))
+                                .text_color(theme::text_secondary())
+                                .child("zorite"),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(2.0))
+                                .mr_2()
+                                .child(
+                                    div()
+                                        .id("settings-gear")
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(6.0))
+                                        .text_size(px(14.0))
+                                        .text_color(theme::text_secondary())
+                                        .cursor_pointer()
+                                        .hover(|h| {
+                                            h.bg(theme::hover()).text_color(theme::text_primary())
+                                        })
+                                        .child("⚙")
+                                        // Defer: opening a window from inside the
+                                        // mouse-event callback aborts (no-unwind
+                                        // boundary). Run it after the event cycle.
+                                        .on_click(cx.listener(
+                                            |_this: &mut AppView, _, window, cx| {
+                                                let view = cx.entity();
+                                                window.defer(cx, move |_, cx| {
+                                                    AppView::open_settings(view, cx);
+                                                });
+                                            },
+                                        )),
+                                )
+                                .child(
+                                    div()
+                                        .id("theme-toggle")
+                                        .px_2()
+                                        .py_1()
+                                        .rounded(px(6.0))
+                                        .text_size(px(12.0))
+                                        .text_color(theme::text_secondary())
+                                        .cursor_pointer()
+                                        .hover(|h| {
+                                            h.bg(theme::hover()).text_color(theme::text_primary())
+                                        })
+                                        .child(self.mode.label())
+                                        .on_click(cx.listener(
+                                            |this: &mut AppView, _, window, cx| {
+                                                this.cycle_theme_mode(window, cx);
+                                            },
+                                        )),
+                                ),
+                        ),
                 ),
             )
             .child(

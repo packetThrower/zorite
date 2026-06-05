@@ -1,12 +1,14 @@
-//! Color tokens for zorite. Dark theme only, in the spirit of
-//! `~/git/etch341`'s `theme.rs`: a small set of `from_rgb`-built
-//! `Hsla` helpers read directly in the render tree. One accent, derived
-//! hover/active/tint variants, and a layered set of near-neutral
-//! backgrounds so panels read as gentle elevation rather than hard
-//! boxes.
+//! Color tokens for zorite. A runtime-switchable **palette** (light /
+//! dark) held in a thread-local, so the `theme::token()` accessors stay
+//! `cx`-free and every call site is unchanged when the theme switches.
+//! On a switch the active palette is also overlaid onto gpui-component's
+//! `Theme` so its widgets match — mirroring Baudrun's "tokens as a global,
+//! overlay the component Theme" approach.
 
-use gpui::{App, Hsla, Rgba, px};
-use gpui_component::Theme;
+use std::cell::RefCell;
+
+use gpui::{App, Hsla, Rgba, Window, px};
+use gpui_component::{Theme, ThemeMode};
 
 /// Opaque-or-translucent color from a packed `0xRRGGBB` literal.
 fn from_rgb(hex: u32, alpha: f32) -> Hsla {
@@ -19,102 +21,223 @@ fn from_rgb(hex: u32, alpha: f32) -> Hsla {
     .into()
 }
 
-// --- Backgrounds (darkest first) ---
-
-/// The app base — painted behind everything, including the title bar.
-pub fn bg_window() -> Hsla {
-    from_rgb(0x16171A, 1.0)
+/// All of zorite's semantic color tokens for one appearance.
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub bg_window: Hsla,
+    pub bg_sidebar: Hsla,
+    pub bg_content: Hsla,
+    pub glass: Hsla,
+    pub glass_strong: Hsla,
+    pub hover: Hsla,
+    pub border_subtle: Hsla,
+    pub accent: Hsla,
+    pub accent_hover: Hsla,
+    pub accent_active: Hsla,
+    pub accent_tint: Hsla,
+    pub text_primary: Hsla,
+    pub text_secondary: Hsla,
+    pub text_tertiary: Hsla,
+    pub tag: Hsla,
+    pub code: Hsla,
 }
 
-/// The sidebar panel: one step up from the base so it reads as a rail.
-pub fn bg_sidebar() -> Hsla {
-    from_rgb(0x1B1D21, 1.0)
+/// Derive hover/active/tint variants from a base accent.
+fn accent_variants(accent: Hsla) -> (Hsla, Hsla, Hsla) {
+    let mut hover = accent;
+    hover.l = (hover.l + 0.12).min(1.0);
+    let mut active = accent;
+    active.l = (active.l - 0.08).max(0.0);
+    let mut tint = accent;
+    tint.a = 0.16;
+    (hover, active, tint)
 }
 
-/// The note-editing surface — same as the base so the writing area is
-/// the calm center the eye lands on.
-pub fn bg_content() -> Hsla {
-    from_rgb(0x16171A, 1.0)
-}
-
-/// Subtle raised fill for chips, the "+ New page" row, etc.
-pub fn glass() -> Hsla {
-    from_rgb(0xFFFFFF, 0.05)
-}
-pub fn glass_strong() -> Hsla {
-    from_rgb(0xFFFFFF, 0.09)
-}
-
-/// Hover wash for interactive rows.
-pub fn hover() -> Hsla {
-    from_rgb(0xFFFFFF, 0.06)
-}
-
-/// Hairline divider / border.
-pub fn border_subtle() -> Hsla {
-    from_rgb(0xFFFFFF, 0.08)
-}
-
-// --- Accent (a calm blue; change `ACCENT_HEX` to retheme) ---
-
-pub const ACCENT_HEX: u32 = 0x0A84FF;
-
-pub fn accent() -> Hsla {
-    from_rgb(ACCENT_HEX, 1.0)
-}
-pub fn accent_hover() -> Hsla {
-    let mut h = accent();
-    h.l = (h.l + 0.12).min(1.0);
-    h
-}
-pub fn accent_active() -> Hsla {
-    let mut h = accent();
-    h.l = (h.l - 0.08).max(0.0);
-    h
-}
-/// Translucent accent for selected-row backgrounds.
-pub fn accent_tint() -> Hsla {
-    let mut h = accent();
-    h.a = 0.16;
-    h
-}
-
-// --- Text ---
-
-pub fn text_primary() -> Hsla {
-    from_rgb(0xFFFFFF, 0.92)
-}
-pub fn text_secondary() -> Hsla {
-    from_rgb(0xFFFFFF, 0.60)
-}
-pub fn text_tertiary() -> Hsla {
-    from_rgb(0xFFFFFF, 0.38)
-}
-
-/// Styling for the markdown reading view (the `gpui-markdown` crate),
-/// mapped from our theme tokens.
-pub fn markdown_style() -> gpui_markdown::MarkdownStyle {
-    gpui_markdown::MarkdownStyle {
-        text_color: text_primary(),
-        text_size: px(16.0),
-        heading_color: text_primary(),
-        link_color: accent(),
-        tag_color: from_rgb(0x9D7CD8, 1.0),
-        code_color: from_rgb(0xD7BA7D, 1.0),
-        code_bg: glass(),
-        muted_color: text_tertiary(),
-        rule_color: border_subtle(),
+/// The original dark look.
+pub fn dark_palette() -> Palette {
+    let accent = from_rgb(0x0A84FF, 1.0);
+    let (accent_hover, accent_active, accent_tint) = accent_variants(accent);
+    Palette {
+        bg_window: from_rgb(0x16171A, 1.0),
+        bg_sidebar: from_rgb(0x1B1D21, 1.0),
+        bg_content: from_rgb(0x16171A, 1.0),
+        glass: from_rgb(0xFFFFFF, 0.05),
+        glass_strong: from_rgb(0xFFFFFF, 0.09),
+        hover: from_rgb(0xFFFFFF, 0.06),
+        border_subtle: from_rgb(0xFFFFFF, 0.08),
+        accent,
+        accent_hover,
+        accent_active,
+        accent_tint,
+        text_primary: from_rgb(0xFFFFFF, 0.92),
+        text_secondary: from_rgb(0xFFFFFF, 0.60),
+        text_tertiary: from_rgb(0xFFFFFF, 0.38),
+        tag: from_rgb(0x9D7CD8, 1.0),
+        code: from_rgb(0xD7BA7D, 1.0),
     }
 }
 
-/// Push our accent into gpui-component's embedded `Theme` so its
-/// widgets (focus rings, etc.) track our accent instead of the
-/// library's default blue. Call once at startup, after
-/// `Theme::change(Dark)`. Mirrors etch341's `apply_accent_to_component_theme`.
-pub fn apply_accent_to_component_theme(cx: &mut App) {
+/// A clean light counterpart: white writing surface, near-black text,
+/// black-on-light hairlines/fills.
+pub fn light_palette() -> Palette {
+    let accent = from_rgb(0x0A84FF, 1.0);
+    let (accent_hover, accent_active, accent_tint) = accent_variants(accent);
+    Palette {
+        bg_window: from_rgb(0xF2F2F4, 1.0),
+        bg_sidebar: from_rgb(0xEAEAEE, 1.0),
+        bg_content: from_rgb(0xFFFFFF, 1.0),
+        glass: from_rgb(0x000000, 0.04),
+        glass_strong: from_rgb(0x000000, 0.07),
+        hover: from_rgb(0x000000, 0.05),
+        border_subtle: from_rgb(0x000000, 0.10),
+        accent,
+        accent_hover,
+        accent_active,
+        accent_tint,
+        text_primary: from_rgb(0x1D1D1F, 0.92),
+        text_secondary: from_rgb(0x1D1D1F, 0.58),
+        text_tertiary: from_rgb(0x1D1D1F, 0.42),
+        tag: from_rgb(0x7A4FB5, 1.0),
+        code: from_rgb(0xB0852A, 1.0),
+    }
+}
+
+thread_local! {
+    /// The active palette. Dark until `apply` runs at startup.
+    static CURRENT: RefCell<Palette> = RefCell::new(dark_palette());
+}
+
+fn get() -> Palette {
+    CURRENT.with(|p| *p.borrow())
+}
+
+// --- Token accessors (read the active palette; cx-free) ---
+
+pub fn bg_window() -> Hsla {
+    get().bg_window
+}
+pub fn bg_sidebar() -> Hsla {
+    get().bg_sidebar
+}
+pub fn bg_content() -> Hsla {
+    get().bg_content
+}
+pub fn glass() -> Hsla {
+    get().glass
+}
+pub fn glass_strong() -> Hsla {
+    get().glass_strong
+}
+pub fn hover() -> Hsla {
+    get().hover
+}
+pub fn border_subtle() -> Hsla {
+    get().border_subtle
+}
+pub fn accent() -> Hsla {
+    get().accent
+}
+pub fn accent_tint() -> Hsla {
+    get().accent_tint
+}
+pub fn text_primary() -> Hsla {
+    get().text_primary
+}
+pub fn text_secondary() -> Hsla {
+    get().text_secondary
+}
+pub fn text_tertiary() -> Hsla {
+    get().text_tertiary
+}
+
+/// Styling for the markdown reading view (the `gpui-markdown` crate),
+/// mapped from the active palette.
+pub fn markdown_style() -> gpui_markdown::MarkdownStyle {
+    let p = get();
+    gpui_markdown::MarkdownStyle {
+        text_color: p.text_primary,
+        text_size: px(16.0),
+        heading_color: p.text_primary,
+        link_color: p.accent,
+        tag_color: p.tag,
+        code_color: p.code,
+        code_bg: p.glass,
+        muted_color: p.text_tertiary,
+        rule_color: p.border_subtle,
+    }
+}
+
+// --- Theme mode + application ---
+
+/// Light / Dark / Auto (follow the OS appearance).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    Light,
+    #[default]
+    Dark,
+    Auto,
+}
+
+impl Mode {
+    /// Stable string for persistence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Light => "light",
+            Mode::Dark => "dark",
+            Mode::Auto => "auto",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "light" => Mode::Light,
+            "auto" => Mode::Auto,
+            _ => Mode::Dark,
+        }
+    }
+
+    /// A human label for the settings UI / quick toggle.
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Light => "Light",
+            Mode::Dark => "Dark",
+            Mode::Auto => "Auto",
+        }
+    }
+}
+
+/// Resolve `mode` (+ the OS appearance, for `Auto`) to dark/light, swap
+/// the active palette, push it onto gpui-component's `Theme`, and repaint.
+pub fn apply(mode: Mode, system_dark: bool, window: &mut Window, cx: &mut App) {
+    let dark = match mode {
+        Mode::Light => false,
+        Mode::Dark => true,
+        Mode::Auto => system_dark,
+    };
+    let palette = if dark { dark_palette() } else { light_palette() };
+    CURRENT.with(|c| *c.borrow_mut() = palette);
+    Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(window), cx);
+    apply_to_component_theme(&palette, cx);
+    cx.refresh_windows();
+}
+
+/// Overlay the palette onto gpui-component's `Theme` so its widgets
+/// (Select, inputs, tabs, dialogs) track zorite's colors. Run after
+/// `Theme::change`, which resets colors to the mode's defaults.
+fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     let t = Theme::global_mut(cx);
-    t.primary = accent();
-    t.primary_hover = accent_hover();
-    t.primary_active = accent_active();
+    t.background = p.bg_content;
+    t.foreground = p.text_primary;
+    t.primary = p.accent;
+    t.primary_hover = p.accent_hover;
+    t.primary_active = p.accent_active;
     t.primary_foreground = from_rgb(0xFFFFFF, 0.95);
+    t.border = p.border_subtle;
+    t.input = p.border_subtle;
+    t.popover = p.bg_sidebar;
+    t.popover_foreground = p.text_primary;
+    t.accent = p.accent_tint;
+    t.accent_foreground = p.text_primary;
+    t.muted = p.glass;
+    t.muted_foreground = p.text_tertiary;
 }

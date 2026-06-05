@@ -12,6 +12,7 @@ mod app;
 mod db;
 mod models;
 mod paths;
+mod settings;
 mod slash;
 mod theme;
 mod ui;
@@ -20,7 +21,7 @@ use gpui::{
     App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions, px,
     size,
 };
-use gpui_component::{Root, Theme, ThemeMode, TitleBar};
+use gpui_component::{Root, TitleBar};
 
 use app::AppView;
 
@@ -30,10 +31,6 @@ fn main() {
     let application = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     application.run(|cx: &mut App| {
         gpui_component::init(cx);
-        // Dark-only chrome, like etch341 — pin it regardless of OS
-        // appearance so embedded gpui-component widgets don't paint light.
-        Theme::change(ThemeMode::Dark, None, cx);
-        theme::apply_accent_to_component_theme(cx);
         // Slash-menu keys (up/down/enter/escape, gated on the menu being open).
         actions::bind_keys(cx);
 
@@ -56,6 +53,7 @@ fn main() {
                 // Wider resize hit-test margin for Wayland CSD.
                 window.set_client_inset(px(10.0));
                 let view = cx.new(|cx| AppView::new(window, cx));
+                view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {
