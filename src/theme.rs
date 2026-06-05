@@ -27,6 +27,9 @@ pub struct Palette {
     pub bg_window: Hsla,
     pub bg_sidebar: Hsla,
     pub bg_content: Hsla,
+    /// A raised card/panel surface (lighter than the window in dark, white
+    /// in light) — for settings cards etc.
+    pub elevated: Hsla,
     pub glass: Hsla,
     pub glass_strong: Hsla,
     pub hover: Hsla,
@@ -68,12 +71,16 @@ pub fn make_palette(
     is_dark: bool,
 ) -> Palette {
     let overlay = if is_dark { 0xFFFFFF } else { 0x000000 };
+    // Raised surface: the rail color in dark (lighter than window), white
+    // in light (brighter than the gray window).
+    let elevated = if is_dark { bg_sidebar } else { bg_content };
     let accent = from_rgb(accent, 1.0);
     let (accent_hover, accent_active, accent_tint) = accent_variants(accent);
     Palette {
         bg_window: from_rgb(bg_window, 1.0),
         bg_sidebar: from_rgb(bg_sidebar, 1.0),
         bg_content: from_rgb(bg_content, 1.0),
+        elevated: from_rgb(elevated, 1.0),
         glass: from_rgb(overlay, 0.05),
         glass_strong: from_rgb(overlay, 0.09),
         hover: from_rgb(overlay, 0.06),
@@ -114,6 +121,9 @@ pub fn bg_sidebar() -> Hsla {
 }
 pub fn bg_content() -> Hsla {
     get().bg_content
+}
+pub fn elevated() -> Hsla {
+    get().elevated
 }
 pub fn glass() -> Hsla {
     get().glass

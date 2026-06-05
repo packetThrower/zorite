@@ -735,7 +735,7 @@ impl AppView {
             }
         }
         let app = view.downgrade();
-        let bounds = Bounds::centered(None, size(px(440.0), px(480.0)), cx);
+        let bounds = Bounds::centered(None, size(px(720.0), px(560.0)), cx);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
