@@ -63,6 +63,9 @@ pub struct DayEditor {
 
 /// The currently-open named/journal page in `View::Page`.
 pub struct PageEditor {
+    /// The page's id, so the editor can be flushed without consulting the
+    /// active tab (used before the editor is dropped).
+    id: i64,
     pub title: String,
     /// Inline-editable page title (named pages only); renames on Enter/blur.
     pub title_state: Entity<InputState>,
@@ -369,7 +372,24 @@ impl AppView {
 
     /// Switch to tab `ix` and (re)build its content. Tabs share one page
     /// editor, so activating a Page tab rebuilds the editor from the DB.
+    /// Persist the open page editor before it's dropped/replaced. The
+    /// per-keystroke save misses undo/redo (they don't emit `Change`), and the
+    /// editor's `Blur` doesn't fire once it's dropped (switching/closing tabs),
+    /// so flush here to avoid losing those edits.
+    fn flush_page_editor(&mut self, cx: &mut Context<Self>) {
+        let Some((id, value)) =
+            self.page_editor.as_ref().map(|pe| (pe.id, pe.state.read(cx).value().to_string()))
+        else {
+            return;
+        };
+        if let Err(e) = self.db.set_page_content(id, &value) {
+            log::error!("flush page {id}: {e}");
+        }
+    }
+
     pub fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        // Save the page we're leaving before its editor is dropped/replaced.
+        self.flush_page_editor(cx);
         let Some(tab) = self.tabs.get(ix) else { return };
         let kind = tab.kind.clone();
         self.active = ix;
@@ -460,6 +480,7 @@ impl AppView {
         );
 
         self.page_editor = Some(PageEditor {
+            id: pid,
             title: page.title,
             title_state,
             is_journal: page.is_journal,
