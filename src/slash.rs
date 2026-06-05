@@ -12,8 +12,10 @@ pub struct Command {
     pub caret: usize,
 }
 
-/// v1 command table — formatting only.
+/// The slash command table. `caret` is the byte offset within `snippet`
+/// where the cursor lands (e.g. inside a wrap, or the first table cell).
 pub const COMMANDS: &[Command] = &[
+    // Blocks
     Command { label: "Heading 1", snippet: "# ", caret: 2 },
     Command { label: "Heading 2", snippet: "## ", caret: 3 },
     Command { label: "Heading 3", snippet: "### ", caret: 4 },
@@ -22,7 +24,15 @@ pub const COMMANDS: &[Command] = &[
     Command { label: "To-do", snippet: "- [ ] ", caret: 6 },
     Command { label: "Quote", snippet: "> ", caret: 2 },
     Command { label: "Code block", snippet: "```\n\n```", caret: 4 },
+    Command { label: "Table", snippet: "|  |  |\n| --- | --- |\n|  |  |\n", caret: 2 },
     Command { label: "Divider", snippet: "---\n", caret: 4 },
+    // Inline (caret lands between the markers)
+    Command { label: "Bold", snippet: "****", caret: 2 },
+    Command { label: "Italic", snippet: "**", caret: 1 },
+    Command { label: "Strikethrough", snippet: "~~~~", caret: 2 },
+    Command { label: "Inline code", snippet: "``", caret: 1 },
+    Command { label: "Link", snippet: "[]()", caret: 1 },
+    Command { label: "Image", snippet: "![]()", caret: 4 },
 ];
 
 /// Which editor the open menu targets.
