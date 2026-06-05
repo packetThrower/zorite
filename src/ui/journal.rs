@@ -4,7 +4,7 @@
 
 use gpui::{
     ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    SharedString, StatefulInteractiveElement, Styled, div, px,
+    SharedString, StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
 };
 use gpui_component::input::{Input, InputState};
 
@@ -36,10 +36,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 }))
                 .child(
                     div()
-                        .max_w(px(760.0))
-                        .mx_auto()
-                        .px(px(48.0))
-                        .py(px(28.0))
+                        // Uniform padding on all sides; left-aligned (no
+                        // centering) so content isn't pushed into the middle.
+                        .p(px(28.0))
                         .flex()
                         .flex_col()
                         .gap(px(28.0))
@@ -57,10 +56,11 @@ fn day_section(
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let is_today = i == 0;
+    // The date as a prominent title so days are easy to tell apart.
     let header = div()
-        .text_size(px(13.0))
-        .font_weight(FontWeight::SEMIBOLD)
-        .text_color(if is_today { theme::accent() } else { theme::text_secondary() })
+        .text_size(px(22.0))
+        .font_weight(FontWeight::BOLD)
+        .text_color(if is_today { theme::accent() } else { theme::text_primary() })
         .child(app::date_label(i));
 
     let body = if app.is_editing_day(date) {
@@ -73,7 +73,16 @@ fn day_section(
         rendered_day(i, date, state.read(cx).value(), cx).into_any_element()
     };
 
-    div().flex().flex_col().gap(px(8.0)).child(header).child(body)
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        // A hairline above each day (except today) to separate entries.
+        .when(i > 0, |d| {
+            d.pt(px(28.0)).border_t_1().border_color(theme::border_subtle())
+        })
+        .child(header)
+        .child(body)
 }
 
 /// A non-editing day: rendered markdown (or a placeholder when empty),

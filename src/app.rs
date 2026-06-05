@@ -148,7 +148,7 @@ impl AppView {
             this.ensure_day_editor(date_for_offset(i), window, cx);
         }
         this.refresh_sidebar();
-        this.edit_day(&date_for_offset(0), window, cx);
+        // Start with today rendered (like every other day); click to edit.
         this
     }
 
@@ -246,7 +246,6 @@ impl AppView {
         }
         self.feed_scroll.set_offset(point(px(0.0), px(0.0)));
         self.refresh_sidebar();
-        self.edit_day(&date_for_offset(0), window, cx);
         cx.notify();
     }
 

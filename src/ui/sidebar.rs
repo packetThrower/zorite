@@ -94,7 +94,7 @@ fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoEle
     div()
         .id(("nav", id as usize))
         .px_2()
-        .py_1()
+        .py_1p5()
         .rounded(px(6.0))
         .text_size(px(13.0))
         .cursor_pointer()

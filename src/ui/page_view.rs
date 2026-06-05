@@ -28,10 +28,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .overflow_y_scroll()
                 .child(
                     div()
-                        .max_w(px(760.0))
-                        .mx_auto()
-                        .px(px(48.0))
-                        .py(px(28.0))
+                        // Match the journal feed: uniform padding, left-aligned.
+                        .p(px(28.0))
                         .flex()
                         .flex_col()
                         .child(
