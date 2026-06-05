@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui_component::{input::Input, menu::ContextMenuExt};
 
-use crate::actions::{DeletePage, OpenInNewTab};
+use crate::actions::{DeletePage, OpenInNewTab, RenamePage};
 use crate::app::AppView;
 use crate::models::Page;
 use crate::theme;
@@ -124,6 +124,7 @@ fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoEle
         .context_menu(|menu, _window, _cx| {
             menu.menu("Open in new tab", Box::new(OpenInNewTab))
                 .separator()
+                .menu("Rename page", Box::new(RenamePage))
                 .menu("Delete page", Box::new(DeletePage))
         })
         .into_any_element()

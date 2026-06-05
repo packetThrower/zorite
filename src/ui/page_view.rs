@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui_component::input::{Input, InputState};
 
-use crate::app::AppView;
+use crate::app::{AppView, PageEditor};
 use crate::models::Backlink;
 use crate::theme;
 
@@ -32,14 +32,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .p(px(28.0))
                         .flex()
                         .flex_col()
-                        .child(
-                            div()
-                                .mb_4()
-                                .text_size(px(24.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(theme::text_primary())
-                                .child(pe.title.clone()),
-                        )
+                        .child(page_title(pe))
                         .child(if app.is_page_editing() {
                             Input::new(&pe.state)
                                 .appearance(false)
@@ -55,6 +48,37 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 ),
         )
         .into_any_element()
+}
+
+/// The page heading. Journals keep their date as static text; named pages
+/// get a borderless, heading-styled `Input` that renames the page when
+/// edited (commit on Enter/blur is wired in `load_page_editor`).
+fn page_title(pe: &PageEditor) -> impl IntoElement {
+    if pe.is_journal {
+        div()
+            .mb_4()
+            .text_size(px(24.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(theme::text_primary())
+            .child(pe.title.clone())
+            .into_any_element()
+    } else {
+        div()
+            .mb_4()
+            .child(
+                // The input's default line-height/height are sized for body
+                // text; at 24px they clip descenders, so override them.
+                Input::new(&pe.title_state)
+                    .appearance(false)
+                    .text_size(px(24.0))
+                    .line_height(px(30.0))
+                    .py(px(0.0))
+                    .h(px(36.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(theme::text_primary()),
+            )
+            .into_any_element()
+    }
 }
 
 /// The page body in reading mode: rendered markdown (or a placeholder

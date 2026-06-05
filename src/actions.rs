@@ -7,12 +7,16 @@
 //! move, newline, etc.). Later bindings shadow earlier ones for the same
 //! context + keystroke, so ours are tried first.
 //!
-//! `DeletePage` / `OpenInNewTab` have no keybinding — they're dispatched
-//! by the sidebar's right-click context menu and handled on `AppView`.
+//! `DeletePage` / `OpenInNewTab` / `RenamePage` have no keybinding —
+//! they're dispatched by the sidebar's right-click context menu and
+//! handled on `AppView`.
 
 use gpui::{App, KeyBinding, actions};
 
-actions!(zorite, [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab]);
+actions!(
+    zorite,
+    [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab, RenamePage]
+);
 
 const INPUT_CONTEXT: &str = "Input";
 

@@ -210,6 +210,49 @@ impl Db {
         Ok(n > 0)
     }
 
+    /// Rename a named page and rewrite `[[old]]` → `[[new]]` everywhere it's
+    /// referenced (so backlinks stay connected). Journals can't be renamed.
+    /// Returns `false` (no change) for a journal, an empty/unchanged title,
+    /// or a title already taken by another page. The page id is unchanged,
+    /// so `page_links` (keyed by id) stay valid.
+    pub fn rename_page(&self, id: i64, new_title: &str) -> rusqlite::Result<bool> {
+        let new_title = new_title.trim();
+        let Some(page) = self.get_page(id)? else { return Ok(false) };
+        if page.is_journal || new_title.is_empty() || new_title.eq_ignore_ascii_case(page.title.trim())
+        {
+            return Ok(false);
+        }
+        // Reject a collision with a different existing page.
+        if let Some(existing) = self.get_page_by_title(new_title)? {
+            if existing.id != id {
+                return Ok(false);
+            }
+        }
+
+        let old_link = format!("[[{}]]", page.title);
+        let new_link = format!("[[{new_title}]]");
+        let like = format!("%{}%", escape_like(&old_link));
+
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
+            "UPDATE pages SET title = ?2, updated_at = datetime('now') WHERE id = ?1 AND is_journal = 0",
+            params![id, new_title],
+        )?;
+        let affected: Vec<(i64, String)> = {
+            let mut stmt =
+                tx.prepare("SELECT id, content FROM pages WHERE content LIKE ?1 ESCAPE '\\'")?;
+            let rows =
+                stmt.query_map(params![like], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (pid, content) in &affected {
+            let updated = content.replace(&old_link, &new_link);
+            tx.execute("UPDATE pages SET content = ?2 WHERE id = ?1", params![pid, updated])?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
     // --- App settings (key/value) ---
 
     /// Read a setting, or `None` if absent (errors are swallowed to a None).
@@ -455,4 +498,28 @@ fn blocks_to_markdown(blocks: &[(i64, Option<i64>, i64, String)]) -> String {
     let mut lines = Vec::new();
     walk(None, 0, &children, &mut lines);
     lines.join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rename_rewrites_links_and_guards() {
+        let db = Db::open_in_memory().unwrap();
+        let foo = db.get_or_create_page("Foo").unwrap();
+        let other = db.get_or_create_page("Other").unwrap();
+        db.set_page_content(other.id, "see [[Foo]] and more").unwrap();
+
+        // Rename Foo -> Bar: title changes and the link is rewritten.
+        assert!(db.rename_page(foo.id, "Bar").unwrap());
+        assert_eq!(db.get_page(foo.id).unwrap().unwrap().title, "Bar");
+        assert_eq!(db.get_page(other.id).unwrap().unwrap().content, "see [[Bar]] and more");
+
+        // Guards: a name taken by another page, an empty name, and journals.
+        assert!(!db.rename_page(foo.id, "Other").unwrap());
+        assert!(!db.rename_page(foo.id, "   ").unwrap());
+        let journal = db.get_or_create_journal("2099-01-01").unwrap();
+        assert!(!db.rename_page(journal.id, "Nope").unwrap());
+    }
 }

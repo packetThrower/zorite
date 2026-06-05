@@ -11,7 +11,8 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] `/time` and `/date` slash commands — insert the current time/date directly (distinct from the `{{time}}` / `{{date}}` *template* placeholders, which only expand inside a template)
 
 ## Notes & navigation
-- [ ] **Page rename** (and rewrite `[[links]]` pointing at it)
+- [x] **Page rename** (and rewrite `[[links]]` pointing at it) — right-click → Rename page → dialog; `db.rename_page` rewrites links in a transaction
+- [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
 - [ ] **Page hierarchy** via `[[parent::child]]` — nest a page under a parent; the parent page acts as an index (linked list) of its children
 - [ ] **Page aliases** via `::alias` — resolve `[[alias]]` to the page (design note: disambiguate `::` here vs. the `parent::child` hierarchy syntax above)
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)

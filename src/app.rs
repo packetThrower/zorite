@@ -20,12 +20,14 @@ use gpui::{
 };
 use gpui_component::{
     RopeExt, Root, TitleBar, WindowExt,
-    button::ButtonVariant,
-    dialog::DialogButtonProps,
-    input::{InputEvent, InputState},
+    button::{Button, ButtonVariant, ButtonVariants},
+    dialog::{DialogButtonProps, DialogFooter},
+    input::{Input, InputEvent, InputState},
 };
 
-use crate::actions::{DeletePage, OpenInNewTab, SlashCancel, SlashConfirm, SlashDown, SlashUp};
+use crate::actions::{
+    DeletePage, OpenInNewTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
+};
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
 use crate::settings::SettingsView;
@@ -61,8 +63,12 @@ pub struct DayEditor {
 /// The currently-open named/journal page in `View::Page`.
 pub struct PageEditor {
     pub title: String,
+    /// Inline-editable page title (named pages only); renames on Enter/blur.
+    pub title_state: Entity<InputState>,
+    pub is_journal: bool,
     pub state: Entity<InputState>,
     _sub: Subscription,
+    _title_sub: Subscription,
     pub backlinks: Vec<Backlink>,
 }
 
@@ -110,8 +116,11 @@ pub struct AppView {
     /// Templates parsed from the reserved `Templates` page.
     templates: Vec<Template>,
     /// The page (id + title) targeted by an open right-click context menu,
-    /// read by the `DeletePage` action.
+    /// read by the `DeletePage` / `RenamePage` actions.
     context_page: Option<(i64, SharedString)>,
+    /// The rename dialog's text field, and the page being renamed.
+    rename_input: Entity<InputState>,
+    rename_target: Option<i64>,
 
     _subs: Vec<Subscription>,
     pub focus_handle: FocusHandle,
@@ -178,6 +187,8 @@ impl AppView {
             slash: None,
             templates: Vec::new(),
             context_page: None,
+            rename_input: cx.new(|cx| InputState::new(window, cx)),
+            rename_target: None,
             _subs: vec![np_sub, search_sub],
             focus_handle: cx.focus_handle(),
         };
@@ -246,6 +257,28 @@ impl AppView {
             },
         );
         self.day_editors.insert(date, DayEditor { state, _sub: sub });
+    }
+
+    /// Reload cached journal day editors from the DB. Called after an action
+    /// that rewrites content across pages (e.g. a page rename that updated
+    /// `[[links]]`) so the feed shows the new text instead of stale cache.
+    /// Only days whose content actually changed are touched.
+    fn reload_day_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let dates: Vec<String> = self.day_editors.keys().cloned().collect();
+        for date in dates {
+            let content = self
+                .db
+                .get_journal_by_date(&date)
+                .ok()
+                .flatten()
+                .map(|p| p.content)
+                .unwrap_or_default();
+            if let Some(de) = self.day_editors.get(&date) {
+                if de.state.read(cx).value().to_string() != content {
+                    de.state.update(cx, |s, cx| s.set_value(content, window, cx));
+                }
+            }
+        }
     }
 
     /// Save a journal day's content on every keystroke — but NOT its
@@ -419,7 +452,30 @@ impl AppView {
             },
         );
         let backlinks = self.db.backlinks(pid).unwrap_or_default();
-        self.page_editor = Some(PageEditor { title: page.title, state, _sub: sub, backlinks });
+
+        // Inline-editable title: renames the page on Enter or blur.
+        let title_state = cx.new(|cx| InputState::new(window, cx).default_value(page.title.clone()));
+        let title_sub = cx.subscribe_in(
+            &title_state,
+            window,
+            move |this: &mut AppView, st, ev: &InputEvent, window, cx| match ev {
+                InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                    let new = st.read(cx).value().trim().to_string();
+                    this.commit_title_rename(pid, new, window, cx);
+                }
+                _ => {}
+            },
+        );
+
+        self.page_editor = Some(PageEditor {
+            title: page.title,
+            title_state,
+            is_journal: page.is_journal,
+            state,
+            _sub: sub,
+            _title_sub: title_sub,
+            backlinks,
+        });
         self.page_editing = false;
     }
 
@@ -822,6 +878,123 @@ impl AppView {
             Err(e) => log::error!("delete page {id}: {e}"),
         }
     }
+
+    /// `RenamePage` handler: open a dialog with a text field, pre-filled
+    /// with the current title, to rename the right-clicked page.
+    fn on_rename_page(&mut self, _: &RenamePage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, title)) = self.context_page.take() else { return };
+        self.rename_target = Some(id);
+        self.rename_input.update(cx, |s, cx| s.set_value(title.to_string(), window, cx));
+
+        // `AlertDialog` is title/description-only; a text field needs the
+        // generic `Dialog` (it impls `ParentElement`, so the Input goes in as
+        // a child) with a footer we build ourselves. Enter/Escape are wired
+        // via on_ok/on_cancel.
+        let input = self.rename_input.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let input_body = input.clone();
+            let input_btn = input.clone();
+            let input_key = input.clone();
+            let weak_btn = weak.clone();
+            let weak_key = weak.clone();
+            dialog
+                .title("Rename page")
+                .w(px(420.0))
+                .child(Input::new(&input_body))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("rename-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("rename-ok").primary().label("Rename").on_click(
+                            move |_, window, cx| {
+                                let title = input_btn.read(cx).value().to_string();
+                                let _ = weak_btn
+                                    .update(cx, |this, cx| this.commit_rename(title, window, cx));
+                                window.close_dialog(cx);
+                            },
+                        )),
+                )
+                .on_ok(move |_, window, cx| {
+                    let title = input_key.read(cx).value().to_string();
+                    let _ = weak_key.update(cx, |this, cx| this.commit_rename(title, window, cx));
+                    true
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
+        self.rename_input.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    /// Apply a confirmed rename: rewrite `[[links]]`, refresh the sidebar,
+    /// and update any open tab titles for the page.
+    fn commit_rename(&mut self, new_title: String, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.rename_target.take() else { return };
+        match self.db.rename_page(id, &new_title) {
+            Ok(true) => {
+                let title: SharedString = new_title.trim().to_string().into();
+                for tab in &mut self.tabs {
+                    if matches!(tab.kind, TabKind::Page(pid) if pid == id) {
+                        tab.title = title.clone();
+                    }
+                }
+                self.refresh_sidebar();
+                self.reload_day_editors(window, cx);
+                self.activate_tab(self.active, window, cx);
+            }
+            Ok(false) => {}
+            Err(e) => log::error!("rename page {id}: {e}"),
+        }
+    }
+
+    /// Rename the open page from its inline title field. Updates state in
+    /// place (no tab reload) so the title field keeps focus; reverts the
+    /// field if the new name is empty, a duplicate, or a journal.
+    fn commit_title_rename(
+        &mut self,
+        id: i64,
+        new_title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((current, title_state)) = self
+            .page_editor
+            .as_ref()
+            .map(|pe| (pe.title.clone(), pe.title_state.clone()))
+        else {
+            return;
+        };
+        if new_title == current {
+            return;
+        }
+        match self.db.rename_page(id, &new_title) {
+            Ok(true) => {
+                // Backlink snippets now show the rewritten `[[new]]` text.
+                let backlinks = self.db.backlinks(id).unwrap_or_default();
+                if let Some(pe) = self.page_editor.as_mut() {
+                    pe.title = new_title.clone();
+                    pe.backlinks = backlinks;
+                }
+                let title: SharedString = new_title.into();
+                for tab in &mut self.tabs {
+                    if matches!(tab.kind, TabKind::Page(pid) if pid == id) {
+                        tab.title = title.clone();
+                    }
+                }
+                self.refresh_sidebar();
+                self.reload_day_editors(window, cx);
+                cx.notify();
+            }
+            Ok(false) => {
+                // Empty, duplicate, or journal — revert the field.
+                title_state.update(cx, |s, cx| s.set_value(current, window, cx));
+                cx.notify();
+            }
+            Err(e) => log::error!("rename page {id} (inline): {e}"),
+        }
+    }
 }
 
 impl Render for AppView {
@@ -885,6 +1058,7 @@ impl Render for AppView {
             // Sidebar right-click menu actions.
             .on_action(cx.listener(Self::on_delete_page))
             .on_action(cx.listener(Self::on_open_in_new_tab))
+            .on_action(cx.listener(Self::on_rename_page))
             .child(
                 TitleBar::new().child(
                     div()
