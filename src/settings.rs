@@ -38,6 +38,19 @@ impl SettingsView {
             cx.notify();
         }
     }
+
+    fn reveal_themes_folder(&self, cx: &Context<Self>) {
+        if let Some(app) = self.app.upgrade() {
+            app.read(cx).reveal_themes_folder();
+        }
+    }
+
+    fn reload_skins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |a, cx| a.reload_skins(window, cx));
+            cx.notify();
+        }
+    }
 }
 
 impl Render for SettingsView {
@@ -99,6 +112,28 @@ impl Render for SettingsView {
                             .text_size(px(12.0))
                             .text_color(theme::text_tertiary())
                             .child("Auto follows your system's light/dark setting."),
+                    )
+                    .child(section_label("USER THEMES"))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.0))
+                            .child(text_button(
+                                "reveal-themes",
+                                "Reveal themes folder",
+                                cx,
+                                |this, _w, cx| this.reveal_themes_folder(cx),
+                            ))
+                            .child(text_button("reload-themes", "Reload", cx, |this, w, cx| {
+                                this.reload_skins(w, cx)
+                            })),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme::text_tertiary())
+                            .child("Drop .json theme files in that folder, then Reload."),
                     ),
             )
     }
@@ -159,4 +194,26 @@ fn skin_button(id: String, name: String, active: bool, cx: &mut Context<Settings
 
 fn section_label(text: &str) -> impl IntoElement {
     div().text_size(px(11.0)).text_color(theme::text_tertiary()).child(text.to_string())
+}
+
+fn text_button(
+    id: &'static str,
+    label: &str,
+    cx: &mut Context<SettingsView>,
+    on: impl Fn(&mut SettingsView, &mut Window, &mut Context<SettingsView>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px(px(12.0))
+        .py(px(7.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(theme::border_subtle())
+        .bg(theme::glass())
+        .text_color(theme::text_secondary())
+        .text_size(px(13.0))
+        .cursor_pointer()
+        .hover(|h| h.bg(theme::glass_strong()).text_color(theme::text_primary()))
+        .child(label.to_string())
+        .on_click(cx.listener(move |this, _, window, cx| on(this, window, cx)))
 }

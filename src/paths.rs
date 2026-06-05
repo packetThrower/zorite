@@ -42,3 +42,8 @@ pub fn data_dir() -> PathBuf {
 pub fn db_path() -> PathBuf {
     data_dir().join("zorite.db")
 }
+
+/// Directory for user-supplied JSON theme files.
+pub fn themes_dir() -> PathBuf {
+    data_dir().join("themes")
+}

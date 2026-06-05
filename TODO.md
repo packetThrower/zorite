@@ -24,7 +24,6 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 ## App & polish
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
 - [ ] Window-bounds persistence (reopen where you left off)
-- [ ] **Named themes + user themes** — built-in skins beyond the base light/dark, plus user-supplied JSON themes (light/dark/auto switching + a Settings window are done)
 - [ ] App icon + packaging (cargo-packager: `.dmg` / `.msi` / `.deb`)
 - [ ] Add a `LICENSE` file (Cargo.toml already declares `GPL-3.0-or-later`)
 - [ ] CI (build + `cargo test --workspace`)

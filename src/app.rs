@@ -187,7 +187,9 @@ impl AppView {
             this.ensure_day_editor(date_for_offset(i), window, cx);
         }
         this.refresh_sidebar();
-        // Apply the saved (or default) skin + mode before the first paint.
+        // Load user themes on top of the built-ins, then apply the saved
+        // (or default) skin + mode before the first paint.
+        this.skins.extend(skins::load_user_skins());
         this.skin_id = this.db.get_setting("theme_skin").unwrap_or_else(|| "zorite".to_string());
         this.mode = this
             .db
@@ -655,6 +657,28 @@ impl AppView {
         self.skin_id = id;
         self.apply_theme(window, cx);
         let _ = self.db.set_setting("theme_skin", &self.skin_id);
+    }
+
+    /// Re-scan the themes folder (built-ins + user) and re-apply, so edits
+    /// to a JSON theme appear without a restart.
+    pub fn reload_skins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.skins = skins::builtin_skins();
+        self.skins.extend(skins::load_user_skins());
+        self.apply_theme(window, cx);
+        cx.notify();
+    }
+
+    /// Open the user themes folder in the OS file manager.
+    pub fn reveal_themes_folder(&self) {
+        let dir = crate::paths::themes_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        #[cfg(target_os = "macos")]
+        let cmd = "open";
+        #[cfg(target_os = "windows")]
+        let cmd = "explorer";
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        let cmd = "xdg-open";
+        let _ = std::process::Command::new(cmd).arg(&dir).spawn();
     }
 
     /// Watch OS appearance so `Auto` mode tracks light/dark. Called once

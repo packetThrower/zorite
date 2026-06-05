@@ -51,6 +51,40 @@ Then type `/meeting` in any day or page to insert it. Placeholders expand on ins
 the caret lands). Built-in markdown commands live in
 [`gpui-markdown`](crates/gpui-markdown/README.md) as `SNIPPETS`.
 
+## Themes
+
+zorite ships several built-in themes (Zorite, Nord, Solarized, Gruvbox,
+Dracula), each with a light and dark variant. Open **Settings** (the ⚙ in the
+title bar) to pick a theme and choose **Light / Dark / Auto** (Auto follows your
+system appearance). A quick light/dark toggle also lives in the title bar.
+
+### Your own themes
+
+Drop a `.json` file in your themes folder (Settings → **Reveal themes folder**,
+i.e. `~/Library/Application Support/zorite/themes/`) and click **Reload**. Any
+color you omit falls back to the base palette, so a theme can be just a few
+colors:
+
+```json
+{
+  "id": "midnight",
+  "name": "Midnight",
+  "dark": {
+    "bg_window": "#0d1117",
+    "bg_sidebar": "#161b22",
+    "bg_content": "#0d1117",
+    "fg": "#e6edf3",
+    "accent": "#ff7b72",
+    "tag": "#d2a8ff",
+    "code": "#79c0ff"
+  },
+  "light": { "accent": "#0969da" }
+}
+```
+
+Tokens (each `#RRGGBB`): `bg_window`, `bg_sidebar`, `bg_content`, `fg` (text),
+`accent`, `tag`, `code`. Provide a `dark` and/or `light` block.
+
 ## Build & run
 
 Requires a recent Rust toolchain.

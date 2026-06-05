@@ -8502,6 +8502,8 @@ dependencies = [
  "gpui_platform",
  "log",
  "rusqlite",
+ "serde",
+ "serde_json",
  "time",
 ]
 
