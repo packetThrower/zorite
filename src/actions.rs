@@ -1,15 +1,18 @@
-//! Keyboard actions for the slash-command menu.
+//! App actions.
 //!
 //! `up`/`down`/`enter`/`escape` are rebound in gpui-component's `"Input"`
-//! key context (after `gpui_component::init`) to these actions. The
+//! key context (after `gpui_component::init`) to the `Slash*` actions. The
 //! handlers on `AppView` act only while the slash menu is open; otherwise
 //! they `cx.propagate()` so the editor handles the key normally (cursor
 //! move, newline, etc.). Later bindings shadow earlier ones for the same
 //! context + keystroke, so ours are tried first.
+//!
+//! `DeletePage` has no keybinding — it's dispatched by the sidebar's
+//! right-click context menu and handled on `AppView`.
 
 use gpui::{App, KeyBinding, actions};
 
-actions!(rumin, [SlashUp, SlashDown, SlashConfirm, SlashCancel]);
+actions!(rumin, [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage]);
 
 const INPUT_CONTEXT: &str = "Input";
 

@@ -12,7 +12,6 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 
 ## Notes & navigation
 - [ ] **Page rename** (and rewrite `[[links]]` pointing at it)
-- [ ] **Delete pages** — named pages only; never journal days
 - [ ] **Page hierarchy** via `[[parent::child]]` — nest a page under a parent; the parent page acts as an index (linked list) of its children
 - [ ] **Page aliases** via `::alias` — resolve `[[alias]]` to the page (design note: disambiguate `::` here vs. the `parent::child` hierarchy syntax above)
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)

@@ -193,6 +193,18 @@ impl Db {
         Ok(())
     }
 
+    /// Delete a named page. The `is_journal = 0` guard makes deleting a
+    /// journal day impossible even if this is called with a journal id.
+    /// `page_links` rows that reference the page (in either direction) are
+    /// removed by the `ON DELETE CASCADE` foreign keys. Returns whether a
+    /// row was actually deleted.
+    pub fn delete_page(&self, id: i64) -> rusqlite::Result<bool> {
+        let n = self
+            .conn
+            .execute("DELETE FROM pages WHERE id = ?1 AND is_journal = 0", params![id])?;
+        Ok(n > 0)
+    }
+
     // --- Links / backlinks ---
 
     /// Replace a page's outgoing links with the given target titles,

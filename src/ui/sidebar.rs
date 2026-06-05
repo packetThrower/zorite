@@ -2,11 +2,12 @@
 //! "find or create page" box.
 
 use gpui::{
-    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
+    ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
 };
-use gpui_component::input::Input;
+use gpui_component::{input::Input, menu::ContextMenuExt};
 
+use crate::actions::DeletePage;
 use crate::app::AppView;
 use crate::models::Page;
 use crate::theme;
@@ -90,8 +91,9 @@ fn journal_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
 fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
     let id = page.id;
     let label: SharedString = page.title.clone().into();
+    let deletable = !page.is_journal;
 
-    div()
+    let row = div()
         .id(("nav", id as usize))
         .px_2()
         .py_1p5()
@@ -104,10 +106,26 @@ fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoEle
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
-        .child(label)
+        .child(label.clone())
         .on_click(cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
             this.open_page_id(id, window, cx);
-        }))
+        }));
+
+    // Named pages (never journals) get a right-click "Delete page" menu.
+    // Right-click records the target; the menu item dispatches `DeletePage`,
+    // handled on `AppView` (which confirms before deleting).
+    if deletable {
+        row.on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this: &mut AppView, _, _window, _cx| {
+                this.set_context_page(id, label.clone());
+            }),
+        )
+        .context_menu(|menu, _window, _cx| menu.menu("Delete page", Box::new(DeletePage)))
+        .into_any_element()
+    } else {
+        row.into_any_element()
+    }
 }
 
 fn section_label(text: &str) -> impl IntoElement {

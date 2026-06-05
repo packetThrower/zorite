@@ -15,14 +15,16 @@ use std::collections::HashMap;
 
 use gpui::{
     AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, Styled, Subscription, Window, div, point, px,
+    Render, ScrollHandle, SharedString, Styled, Subscription, Window, div, point, px,
 };
 use gpui_component::{
-    RopeExt, TitleBar,
+    RopeExt, Root, TitleBar, WindowExt,
+    button::ButtonVariant,
+    dialog::DialogButtonProps,
     input::{InputEvent, InputState},
 };
 
-use crate::actions::{SlashCancel, SlashConfirm, SlashDown, SlashUp};
+use crate::actions::{DeletePage, SlashCancel, SlashConfirm, SlashDown, SlashUp};
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
 use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template};
@@ -82,6 +84,9 @@ pub struct AppView {
     slash: Option<Slash>,
     /// Templates parsed from the reserved `Templates` page.
     templates: Vec<Template>,
+    /// The page (id + title) targeted by an open right-click context menu,
+    /// read by the `DeletePage` action.
+    context_page: Option<(i64, SharedString)>,
 
     _subs: Vec<Subscription>,
     pub focus_handle: FocusHandle,
@@ -139,6 +144,7 @@ impl AppView {
             search_results: Vec::new(),
             slash: None,
             templates: Vec::new(),
+            context_page: None,
             _subs: vec![np_sub, search_sub],
             focus_handle: cx.focus_handle(),
         };
@@ -497,10 +503,61 @@ impl AppView {
     pub fn is_page_editing(&self) -> bool {
         self.page_editing
     }
+
+    // --- Delete page (sidebar right-click → confirm) ---
+
+    /// Remember which page a right-click context menu targets, so the
+    /// `DeletePage` action knows what to delete. Called from the sidebar.
+    pub fn set_context_page(&mut self, id: i64, title: SharedString) {
+        self.context_page = Some((id, title));
+    }
+
+    /// `DeletePage` handler: confirm, then delete the remembered page.
+    fn on_delete_page(&mut self, _: &DeletePage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((id, title)) = self.context_page.take() else { return };
+        let weak = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let weak = weak.clone();
+            dialog
+                .title("Delete page?")
+                .description(SharedString::from(format!(
+                    "“{title}” will be permanently deleted. This can't be undone."
+                )))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.delete_page(id, window, cx));
+                    true
+                })
+        });
+    }
+
+    /// Delete a named page and refresh the UI. Journals are never deleted
+    /// (the DB guards this too). If the deleted page is the one on screen,
+    /// fall back to the journal feed.
+    fn delete_page(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        match self.db.delete_page(id) {
+            Ok(true) => {
+                if self.view == View::Page(id) {
+                    self.show_journal(window, cx);
+                } else {
+                    self.refresh_sidebar();
+                    cx.notify();
+                }
+            }
+            Ok(false) => {}
+            Err(e) => log::error!("delete page {id}: {e}"),
+        }
+    }
 }
 
 impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let overlay = self.slash.as_ref().map(|s| {
             gpui::deferred(
                 gpui::anchored()
@@ -557,6 +614,8 @@ impl Render for AppView {
                     None => cx.propagate(),
                 }
             }))
+            // Delete a page, dispatched by the sidebar's right-click menu.
+            .on_action(cx.listener(Self::on_delete_page))
             .child(
                 TitleBar::new().child(
                     div()
@@ -580,6 +639,10 @@ impl Render for AppView {
                     }),
             )
             .children(overlay)
+            // gpui-component's `Root` tracks dialog state but does NOT render
+            // the dialog layer — the host view must, or dialogs (like the
+            // delete-page confirm) stay invisible.
+            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
