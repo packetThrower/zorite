@@ -26,7 +26,8 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    DeletePage, NewPage, OpenInNewTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
+    DeletePage, InsertTab, NewPage, OpenInNewTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
+    SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
@@ -588,6 +589,48 @@ impl AppView {
         cx.notify();
     }
 
+    /// `InsertTab` handler: insert two spaces at the cursor of the focused
+    /// day/page editor (auto-grow editors aren't gpui-component-indentable, so
+    /// Tab is handled here). Propagates when no editor is focused so Tab works
+    /// normally elsewhere (search box, dialogs).
+    fn on_insert_tab(&mut self, _: &InsertTab, window: &mut Window, cx: &mut Context<Self>) {
+        let target = if let Some(date) = self.editing_day.clone() {
+            SlashTarget::Day(date)
+        } else if self.page_editing {
+            match self.tabs.get(self.active).map(|t| t.kind) {
+                Some(TabKind::Page(id)) => SlashTarget::Page(id),
+                _ => {
+                    cx.propagate();
+                    return;
+                }
+            }
+        } else {
+            cx.propagate();
+            return;
+        };
+        let Some(editor) = self.editor_for(&target) else {
+            cx.propagate();
+            return;
+        };
+        let value = editor.read(cx).value().to_string();
+        let cursor = editor.read(cx).cursor().min(value.len());
+        let new = format!("{}  {}", &value[..cursor], &value[cursor..]);
+        editor.update(cx, |st, cx| {
+            st.set_value(new.clone(), window, cx);
+            let pos = st.text().offset_to_position(cursor + 2);
+            st.set_cursor_position(pos, window, cx);
+        });
+        match &target {
+            SlashTarget::Day(d) => self.save_journal(d, &new),
+            SlashTarget::Page(pid) => {
+                if let Err(e) = self.db.set_page_content(*pid, &new) {
+                    log::error!("save page {pid}: {e}");
+                }
+            }
+        }
+        cx.notify();
+    }
+
     /// Insert a snippet at the `/query`, then close the menu.
     fn insert_slash(&mut self, snippet: String, caret: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(s) = self.slash.take() else { return };
@@ -1101,6 +1144,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_new_page))
+            .on_action(cx.listener(Self::on_insert_tab))
             .child(
                 TitleBar::new().child(
                     div()
@@ -1215,6 +1259,9 @@ impl Render for AppView {
 /// effectively means "never scroll internally".
 fn make_editor(content: &str, window: &mut Window, cx: &mut Context<AppView>) -> Entity<InputState> {
     cx.new(|cx| {
+        // Auto-grow so the editor expands to fit its content (the feed/page
+        // scrolls, not the editor). Tab indentation is handled by our own
+        // `InsertTab` action — auto-grow mode isn't gpui-component-indentable.
         let mut s = InputState::new(window, cx).auto_grow(1, 100_000);
         s.set_soft_wrap(true, window, cx);
         s.set_value(content, window, cx);
