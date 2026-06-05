@@ -1,54 +1,40 @@
-//! SQLite storage for rumin: pages, the nested-block outliner, and the
-//! `[[wiki-link]]` index that powers backlinks.
+//! SQLite storage for rumin (v2): each page is a single markdown
+//! document, plus a `[[wiki-link]]` index over pages for backlinks.
 //!
-//! These are deliberately thin, primitive operations. The tree logic
-//! (which block is whose previous sibling, where an indent lands) lives
-//! in `app.rs`, which holds the in-memory outline and calls down here to
-//! persist each change. Timestamps come from SQLite itself
-//! (`datetime('now')` column defaults) so this layer needs no clock.
+//! Schema v2 replaces the v1 block-outliner model. New databases get v2
+//! directly; existing v1 databases are migrated in place — each page's
+//! blocks are folded into a markdown bullet list so nothing is lost.
 //!
-//! Everything runs synchronously on the UI thread. The working set is
-//! one page of blocks, so the queries are tiny; moving writes onto
-//! `cx.background_executor()` is a noted follow-up, not a need yet.
+//! Timestamps come from SQLite (`datetime('now')` defaults). Everything
+//! runs synchronously on the UI thread (tiny working set).
+
+use std::collections::HashMap;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::models::{Backlink, Block, Page};
+use crate::models::{Backlink, Page};
 use crate::paths;
 
-/// Schema, applied once when `PRAGMA user_version` is 0. Bump the
-/// version and add a new block for future migrations.
-const SCHEMA_V1: &str = r#"
+/// Fresh-install schema (applied when `user_version` is 0).
+const SCHEMA_V2: &str = r#"
 CREATE TABLE pages (
     id           INTEGER PRIMARY KEY,
     title        TEXT NOT NULL UNIQUE,
     is_journal   INTEGER NOT NULL DEFAULT 0,
     journal_date TEXT UNIQUE,
+    content      TEXT NOT NULL DEFAULT '',
     created_at   TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE blocks (
-    id         INTEGER PRIMARY KEY,
-    page_id    INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-    parent_id  INTEGER REFERENCES blocks(id) ON DELETE CASCADE,
-    position   INTEGER NOT NULL,
-    content    TEXT NOT NULL DEFAULT '',
-    collapsed  INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+CREATE TABLE page_links (
+    source_page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    target_page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+    PRIMARY KEY (source_page_id, target_page_id)
 );
-CREATE INDEX idx_blocks_page   ON blocks(page_id);
-CREATE INDEX idx_blocks_parent ON blocks(parent_id, position);
+CREATE INDEX idx_page_links_target ON page_links(target_page_id);
 
-CREATE TABLE links (
-    source_block_id INTEGER NOT NULL REFERENCES blocks(id) ON DELETE CASCADE,
-    target_page_id  INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
-    PRIMARY KEY (source_block_id, target_page_id)
-);
-CREATE INDEX idx_links_target ON links(target_page_id);
-
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 "#;
 
 pub struct Db {
@@ -56,53 +42,44 @@ pub struct Db {
 }
 
 impl Db {
-    /// Open (creating if needed) the database under the platform data
-    /// dir, enable foreign keys, and run pending migrations.
     pub fn open() -> rusqlite::Result<Self> {
         let path = paths::db_path();
         if let Some(parent) = path.parent() {
-            // Idempotent; if it genuinely fails, `Connection::open`
-            // surfaces a clear error next.
             let _ = std::fs::create_dir_all(parent);
         }
-        let conn = Connection::open(&path)?;
-        // Per-connection — required for the ON DELETE CASCADE rules.
+        let mut conn = Connection::open(&path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        Self::migrate(&conn)?;
+        Self::migrate(&mut conn)?;
         Ok(Db { conn })
     }
 
-    /// In-memory database — a resilient fallback if the on-disk file
-    /// can't be opened, so the app still runs (state just won't persist).
+    /// In-memory fallback so the app still runs if the on-disk file can't
+    /// be opened (state just won't persist).
     pub fn open_in_memory() -> rusqlite::Result<Self> {
-        let conn = Connection::open_in_memory()?;
+        let mut conn = Connection::open_in_memory()?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
-        Self::migrate(&conn)?;
+        Self::migrate(&mut conn)?;
         Ok(Db { conn })
     }
 
-    fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version < 1 {
-            conn.execute_batch(SCHEMA_V1)?;
+        if version == 0 {
+            conn.execute_batch(SCHEMA_V2)?;
+        } else if version < 2 {
+            // Atomic: a half-applied upgrade would otherwise wedge the DB
+            // (e.g. a re-added `content` column on the next run).
+            let tx = conn.transaction()?;
+            migrate_v1_to_v2(&tx)?;
+            tx.commit()?;
         }
         Ok(())
     }
 
     // --- Pages ---
 
-    /// The journal page for an ISO `YYYY-MM-DD` date, creating it (titled
-    /// by the date) on first access.
     pub fn get_or_create_journal(&self, date: &str) -> rusqlite::Result<Page> {
-        if let Some(page) = self
-            .conn
-            .query_row(
-                "SELECT id, title, is_journal, journal_date FROM pages WHERE journal_date = ?1",
-                params![date],
-                row_to_page,
-            )
-            .optional()?
-        {
+        if let Some(page) = self.get_journal_by_date(date)? {
             return Ok(page);
         }
         self.conn.execute(
@@ -114,19 +91,31 @@ impl Db {
             title: date.to_string(),
             is_journal: true,
             journal_date: Some(date.to_string()),
+            content: String::new(),
         })
     }
 
-    /// A named page by title (case-insensitive), creating it if absent.
-    /// This is what a `[[wiki-link]]` resolves to — typing `[[Foo]]`
-    /// brings page "Foo" into existence.
+    /// Look up an existing journal without creating one.
+    pub fn get_journal_by_date(&self, date: &str) -> rusqlite::Result<Option<Page>> {
+        self.conn
+            .query_row(
+                "SELECT id, title, is_journal, journal_date, content \
+                 FROM pages WHERE journal_date = ?1",
+                params![date],
+                row_to_page,
+            )
+            .optional()
+    }
+
+    /// A named page by title (case-insensitive), creating it if absent —
+    /// what a `[[wiki-link]]` resolves to.
     pub fn get_or_create_page(&self, title: &str) -> rusqlite::Result<Page> {
         let title = title.trim();
         if let Some(page) = self
             .conn
             .query_row(
-                "SELECT id, title, is_journal, journal_date FROM pages \
-                 WHERE title = ?1 COLLATE NOCASE",
+                "SELECT id, title, is_journal, journal_date, content \
+                 FROM pages WHERE title = ?1 COLLATE NOCASE",
                 params![title],
                 row_to_page,
             )
@@ -141,166 +130,91 @@ impl Db {
             title: title.to_string(),
             is_journal: false,
             journal_date: None,
+            content: String::new(),
         })
     }
 
     pub fn get_page(&self, id: i64) -> rusqlite::Result<Option<Page>> {
         self.conn
             .query_row(
-                "SELECT id, title, is_journal, journal_date FROM pages WHERE id = ?1",
+                "SELECT id, title, is_journal, journal_date, content FROM pages WHERE id = ?1",
                 params![id],
                 row_to_page,
             )
             .optional()
     }
 
-    /// Journals, most recent first.
     pub fn list_journals(&self, limit: i64) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, is_journal, journal_date FROM pages \
+            "SELECT id, title, is_journal, journal_date, content FROM pages \
              WHERE is_journal = 1 ORDER BY journal_date DESC LIMIT ?1",
         )?;
         stmt.query_map(params![limit], row_to_page)?.collect()
     }
 
-    /// Named (non-journal) pages, alphabetical.
     pub fn list_pages(&self) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, is_journal, journal_date FROM pages \
+            "SELECT id, title, is_journal, journal_date, content FROM pages \
              WHERE is_journal = 0 ORDER BY title COLLATE NOCASE",
         )?;
         stmt.query_map([], row_to_page)?.collect()
     }
 
-    // --- Blocks ---
-
-    /// Every block on a page, ordered by position. The caller assembles
-    /// these into the parent/child tree.
-    pub fn blocks_for_page(&self, page_id: i64) -> rusqlite::Result<Vec<Block>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, page_id, parent_id, position, content, collapsed \
-             FROM blocks WHERE page_id = ?1 ORDER BY position ASC",
-        )?;
-        stmt.query_map(params![page_id], row_to_block)?.collect()
-    }
-
-    pub fn create_block(
-        &self,
-        page_id: i64,
-        parent_id: Option<i64>,
-        position: i64,
-        content: &str,
-    ) -> rusqlite::Result<i64> {
+    pub fn set_page_content(&self, id: i64, content: &str) -> rusqlite::Result<()> {
         self.conn.execute(
-            "INSERT INTO blocks (page_id, parent_id, position, content) \
-             VALUES (?1, ?2, ?3, ?4)",
-            params![page_id, parent_id, position, content],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    pub fn update_block_content(&self, id: i64, content: &str) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE blocks SET content = ?2, updated_at = datetime('now') WHERE id = ?1",
+            "UPDATE pages SET content = ?2, updated_at = datetime('now') WHERE id = ?1",
             params![id, content],
         )?;
         Ok(())
     }
 
-    pub fn set_collapsed(&self, id: i64, collapsed: bool) -> rusqlite::Result<()> {
-        self.conn
-            .execute("UPDATE blocks SET collapsed = ?2 WHERE id = ?1", params![id, collapsed])?;
-        Ok(())
-    }
-
-    /// Reparent / reposition a block (the persistence half of an indent,
-    /// outdent, or reorder).
-    pub fn move_block(
-        &self,
-        id: i64,
-        parent_id: Option<i64>,
-        position: i64,
-    ) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE blocks SET parent_id = ?2, position = ?3, updated_at = datetime('now') \
-             WHERE id = ?1",
-            params![id, parent_id, position],
-        )?;
-        Ok(())
-    }
-
-    pub fn delete_block(&self, id: i64) -> rusqlite::Result<()> {
-        self.conn.execute("DELETE FROM blocks WHERE id = ?1", params![id])?;
-        Ok(())
-    }
-
-    /// Make room among a sibling group: bump every sibling positioned
-    /// after `after_position` up by one. `parent_id IS ?2` matches NULL
-    /// (top-level) and concrete parents alike.
-    pub fn shift_siblings_after(
-        &self,
-        page_id: i64,
-        parent_id: Option<i64>,
-        after_position: i64,
-    ) -> rusqlite::Result<()> {
-        self.conn.execute(
-            "UPDATE blocks SET position = position + 1 \
-             WHERE page_id = ?1 AND parent_id IS ?2 AND position > ?3",
-            params![page_id, parent_id, after_position],
-        )?;
-        Ok(())
-    }
-
-    /// Highest position among a sibling group, or `None` if the group is
-    /// empty (used to append a new last child).
-    pub fn max_child_position(
-        &self,
-        page_id: i64,
-        parent_id: Option<i64>,
-    ) -> rusqlite::Result<Option<i64>> {
-        self.conn.query_row(
-            "SELECT MAX(position) FROM blocks WHERE page_id = ?1 AND parent_id IS ?2",
-            params![page_id, parent_id],
-            |r| r.get::<_, Option<i64>>(0),
-        )
-    }
-
     // --- Links / backlinks ---
 
-    /// Replace a block's outgoing links with the given target page
-    /// titles, auto-creating any target page that doesn't exist yet.
-    pub fn rebuild_links(&self, source_block_id: i64, target_titles: &[String]) -> rusqlite::Result<()> {
+    /// Replace a page's outgoing links with the given target titles,
+    /// auto-creating any target page that doesn't exist yet.
+    pub fn rebuild_page_links(
+        &self,
+        source_page_id: i64,
+        target_titles: &[String],
+    ) -> rusqlite::Result<()> {
         self.conn
-            .execute("DELETE FROM links WHERE source_block_id = ?1", params![source_block_id])?;
+            .execute("DELETE FROM page_links WHERE source_page_id = ?1", params![source_page_id])?;
         for title in target_titles {
-            let page = self.get_or_create_page(title)?;
-            self.conn.execute(
-                "INSERT OR IGNORE INTO links (source_block_id, target_page_id) VALUES (?1, ?2)",
-                params![source_block_id, page.id],
-            )?;
+            let target = self.get_or_create_page(title)?;
+            if target.id != source_page_id {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO page_links (source_page_id, target_page_id) \
+                     VALUES (?1, ?2)",
+                    params![source_page_id, target.id],
+                )?;
+            }
         }
         Ok(())
     }
 
-    /// Blocks on *other* pages that link to `page_id` — the "Linked
-    /// References" list.
+    /// Pages that link to `page_id`, each with the linking line as a
+    /// snippet — the "Linked References" list.
     pub fn backlinks(&self, page_id: i64) -> rusqlite::Result<Vec<Backlink>> {
+        let Some(target) = self.get_page(page_id)? else { return Ok(Vec::new()) };
         let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.title, b.content \
-             FROM links l \
-             JOIN blocks b ON b.id = l.source_block_id \
-             JOIN pages  p ON p.id = b.page_id \
-             WHERE l.target_page_id = ?1 AND b.page_id != ?1 \
+            "SELECT p.id, p.title, p.content FROM page_links l \
+             JOIN pages p ON p.id = l.source_page_id \
+             WHERE l.target_page_id = ?1 AND p.id != ?1 \
              ORDER BY p.is_journal DESC, p.journal_date DESC, p.title COLLATE NOCASE",
         )?;
         let rows = stmt.query_map(params![page_id], |row| {
-            Ok(Backlink {
-                source_page_id: row.get(0)?,
-                source_page_title: row.get(1)?,
-                block_content: row.get(2)?,
-            })
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
         })?;
-        rows.collect()
+        let mut out = Vec::new();
+        for r in rows {
+            let (id, title, content) = r?;
+            out.push(Backlink {
+                source_page_id: id,
+                source_page_title: title,
+                snippet: snippet_for(&content, &target.title),
+            });
+        }
+        Ok(out)
     }
 }
 
@@ -310,16 +224,120 @@ fn row_to_page(row: &rusqlite::Row) -> rusqlite::Result<Page> {
         title: row.get(1)?,
         is_journal: row.get::<_, i64>(2)? != 0,
         journal_date: row.get(3)?,
+        content: row.get(4)?,
     })
 }
 
-fn row_to_block(row: &rusqlite::Row) -> rusqlite::Result<Block> {
-    Ok(Block {
-        id: row.get(0)?,
-        page_id: row.get(1)?,
-        parent_id: row.get(2)?,
-        position: row.get(3)?,
-        content: row.get(4)?,
-        collapsed: row.get::<_, i64>(5)? != 0,
-    })
+/// The line of `content` that contains `[[target]]` (else the first
+/// non-empty line), trimmed and length-capped for the backlinks panel.
+fn snippet_for(content: &str, target_title: &str) -> String {
+    let needle = format!("[[{target_title}]]").to_lowercase();
+    let line = content
+        .lines()
+        .find(|l| l.to_lowercase().contains(&needle))
+        .or_else(|| content.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or("")
+        .trim();
+    const MAX: usize = 140;
+    if line.chars().count() > MAX {
+        line.chars().take(MAX).collect::<String>() + "…"
+    } else {
+        line.to_string()
+    }
+}
+
+// --- v1 → v2 migration -----------------------------------------------------
+
+fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch("ALTER TABLE pages ADD COLUMN content TEXT NOT NULL DEFAULT '';")?;
+    conn.execute_batch(
+        "CREATE TABLE page_links (\
+            source_page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,\
+            target_page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,\
+            PRIMARY KEY (source_page_id, target_page_id));\
+         CREATE INDEX idx_page_links_target ON page_links(target_page_id);",
+    )?;
+
+    let page_ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM pages")?;
+        let rows = stmt.query_map([], |row| row.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    // Fold each page's blocks into a markdown bullet list.
+    for pid in &page_ids {
+        let blocks: Vec<(i64, Option<i64>, i64, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT id, parent_id, position, content FROM blocks WHERE page_id = ?1")?;
+            let rows = stmt.query_map(params![pid], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        let md = blocks_to_markdown(&blocks);
+        conn.execute("UPDATE pages SET content = ?2 WHERE id = ?1", params![pid, md])?;
+    }
+
+    // Re-derive links from the new content.
+    for pid in &page_ids {
+        let content: String =
+            conn.query_row("SELECT content FROM pages WHERE id = ?1", params![pid], |r| r.get(0))?;
+        for title in crate::ui::links::parse_links(&content) {
+            let tid = migration_target_page_id(conn, &title)?;
+            if tid != *pid {
+                conn.execute(
+                    "INSERT OR IGNORE INTO page_links (source_page_id, target_page_id) \
+                     VALUES (?1, ?2)",
+                    params![pid, tid],
+                )?;
+            }
+        }
+    }
+
+    conn.execute_batch("DROP TABLE IF EXISTS links; DROP TABLE IF EXISTS blocks; PRAGMA user_version = 2;")?;
+    Ok(())
+}
+
+fn migration_target_page_id(conn: &Connection, title: &str) -> rusqlite::Result<i64> {
+    let title = title.trim();
+    if let Some(id) = conn
+        .query_row(
+            "SELECT id FROM pages WHERE title = ?1 COLLATE NOCASE",
+            params![title],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        return Ok(id);
+    }
+    conn.execute("INSERT INTO pages (title, is_journal, content) VALUES (?1, 0, '')", params![title])?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Build a markdown bullet list from v1 blocks, indenting by tree depth.
+fn blocks_to_markdown(blocks: &[(i64, Option<i64>, i64, String)]) -> String {
+    let mut children: HashMap<Option<i64>, Vec<&(i64, Option<i64>, i64, String)>> = HashMap::new();
+    for b in blocks {
+        children.entry(b.1).or_default().push(b);
+    }
+    for kids in children.values_mut() {
+        kids.sort_by_key(|b| b.2);
+    }
+
+    fn walk<'a>(
+        parent: Option<i64>,
+        depth: usize,
+        children: &HashMap<Option<i64>, Vec<&'a (i64, Option<i64>, i64, String)>>,
+        lines: &mut Vec<String>,
+    ) {
+        let Some(kids) = children.get(&parent) else { return };
+        for b in kids {
+            lines.push(format!("{}- {}", "  ".repeat(depth), b.3));
+            walk(Some(b.0), depth + 1, children, lines);
+        }
+    }
+
+    let mut lines = Vec::new();
+    walk(None, 0, &children, &mut lines);
+    lines.join("\n")
 }

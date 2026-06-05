@@ -91,17 +91,6 @@ pub fn text_tertiary() -> Hsla {
     from_rgb(0xFFFFFF, 0.38)
 }
 
-// --- Outliner specifics ---
-
-/// The bullet dot at the head of every block.
-pub fn bullet() -> Hsla {
-    from_rgb(0xFFFFFF, 0.30)
-}
-/// A `[[wiki-link]]` rendered in a non-focused block.
-pub fn link() -> Hsla {
-    accent()
-}
-
 /// Push our accent into gpui-component's embedded `Theme` so its
 /// widgets (focus rings, etc.) track our accent instead of the
 /// library's default blue. Call once at startup, after

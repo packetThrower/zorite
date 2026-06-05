@@ -1,6 +1,5 @@
-//! The left rail: jump to today's journal, browse recent journals and
-//! named pages, and a "find or create page" box. Layout idioms follow
-//! `etch341/src/gui/sidebar.rs`.
+//! The left rail: the journal feed, recent journals, named pages, and a
+//! "find or create page" box.
 
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -13,7 +12,14 @@ use crate::models::Page;
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
-    let current = app.current_page_id();
+    let mut journal_rows = Vec::new();
+    for p in &app.journals {
+        journal_rows.push(nav_row(p, app.is_page_active(p.id), cx).into_any_element());
+    }
+    let mut page_rows = Vec::new();
+    for p in &app.pages {
+        page_rows.push(nav_row(p, app.is_page_active(p.id), cx).into_any_element());
+    }
 
     div()
         .w(px(240.0))
@@ -25,7 +31,6 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .border_r_1()
         .border_color(theme::border_subtle())
         .child(
-            // Scrollable nav area.
             div()
                 .id("sidebar-scroll")
                 .flex_1()
@@ -33,27 +38,16 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .overflow_y_scroll()
                 .px_2()
                 .pt_3()
-                .child(today_row(app.is_viewing_today(), cx))
+                .child(journal_row(app.is_journal_view(), cx))
                 .child(section_label("Journals"))
-                .children(
-                    app.journals
-                        .iter()
-                        .map(|p| nav_row(p, current, cx).into_any_element())
-                        .collect::<Vec<_>>(),
-                )
+                .children(journal_rows)
                 .child(section_label("Pages"))
                 .when(app.pages.is_empty(), |this| {
                     this.child(empty_hint("No pages yet — link one with [[ ]]"))
                 })
-                .children(
-                    app.pages
-                        .iter()
-                        .map(|p| nav_row(p, current, cx).into_any_element())
-                        .collect::<Vec<_>>(),
-                ),
+                .children(page_rows),
         )
         .child(
-            // Pinned "find or create page" box at the bottom.
             div()
                 .flex_shrink_0()
                 .p_2()
@@ -63,9 +57,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         )
 }
 
-fn today_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
+fn journal_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
     div()
-        .id("today")
+        .id("journal")
         .flex()
         .items_center()
         .gap_2()
@@ -79,15 +73,14 @@ fn today_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
-        .child("Today")
+        .child("Journal")
         .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.open_today(window, cx);
+            this.show_journal(window, cx);
         }))
 }
 
-fn nav_row(page: &Page, current: i64, cx: &mut Context<AppView>) -> impl IntoElement {
+fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
     let id = page.id;
-    let active = id == current;
     let label: SharedString = page.title.clone().into();
 
     div()
