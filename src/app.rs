@@ -29,6 +29,7 @@ use crate::actions::{DeletePage, OpenInNewTab, SlashCancel, SlashConfirm, SlashD
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
 use crate::settings::SettingsView;
+use crate::skins::{self, Skin};
 use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template};
 use crate::theme;
 use crate::ui;
@@ -81,6 +82,9 @@ pub struct AppView {
     system_dark: bool,
     /// The open Settings window, if any (focused instead of duplicated).
     settings_window: Option<WindowHandle<gpui_component::Root>>,
+    /// Available themes (built-ins + user) and the active one's id.
+    skins: Vec<Skin>,
+    skin_id: String,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -158,6 +162,8 @@ impl AppView {
             mode: theme::Mode::Dark,
             system_dark: true,
             settings_window: None,
+            skins: skins::builtin_skins(),
+            skin_id: String::new(),
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -181,7 +187,8 @@ impl AppView {
             this.ensure_day_editor(date_for_offset(i), window, cx);
         }
         this.refresh_sidebar();
-        // Apply the saved (or default) theme before the first paint.
+        // Apply the saved (or default) skin + mode before the first paint.
+        this.skin_id = this.db.get_setting("theme_skin").unwrap_or_else(|| "zorite".to_string());
         this.mode = this
             .db
             .get_setting("theme_mode")
@@ -191,7 +198,7 @@ impl AppView {
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         );
-        theme::apply(this.mode, this.system_dark, window, cx);
+        this.apply_theme(window, cx);
         // Start with today rendered (like every other day); click to edit.
         this
     }
@@ -612,7 +619,43 @@ impl AppView {
         self.mode
     }
 
+    /// The available themes (for the Settings picker).
+    pub fn skins(&self) -> &[Skin] {
+        &self.skins
+    }
+
+    /// The active theme's id.
+    pub fn active_skin_id(&self) -> &str {
+        &self.skin_id
+    }
+
     // --- Theme / appearance ---
+
+    fn current_skin(&self) -> &Skin {
+        self.skins.iter().find(|s| s.id == self.skin_id).unwrap_or(&self.skins[0])
+    }
+
+    /// Resolve the active skin + mode (+ OS appearance for Auto) to a
+    /// palette and push it live to every window.
+    fn apply_theme(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let is_dark = match self.mode {
+            theme::Mode::Light => false,
+            theme::Mode::Dark => true,
+            theme::Mode::Auto => self.system_dark,
+        };
+        let palette = {
+            let skin = self.current_skin();
+            if is_dark { skin.dark } else { skin.light }
+        };
+        theme::apply(palette, is_dark, window, cx);
+    }
+
+    /// Switch to theme `id`, apply it live, and persist.
+    pub fn set_skin(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.skin_id = id;
+        self.apply_theme(window, cx);
+        let _ = self.db.set_setting("theme_skin", &self.skin_id);
+    }
 
     /// Watch OS appearance so `Auto` mode tracks light/dark. Called once
     /// after the view entity exists (from `main`).
@@ -633,14 +676,14 @@ impl AppView {
     fn on_system_appearance(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.system_dark = dark;
         if self.mode == theme::Mode::Auto {
-            theme::apply(self.mode, dark, window, cx);
+            self.apply_theme(window, cx);
         }
     }
 
     /// Set the theme mode, apply it live, and persist the choice.
     pub fn set_theme_mode(&mut self, mode: theme::Mode, window: &mut Window, cx: &mut Context<Self>) {
         self.mode = mode;
-        theme::apply(mode, self.system_dark, window, cx);
+        self.apply_theme(window, cx);
         let _ = self.db.set_setting("theme_mode", mode.as_str());
     }
 
@@ -668,7 +711,7 @@ impl AppView {
             }
         }
         let app = view.downgrade();
-        let bounds = Bounds::centered(None, size(px(440.0), px(360.0)), cx);
+        let bounds = Bounds::centered(None, size(px(440.0), px(480.0)), cx);
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

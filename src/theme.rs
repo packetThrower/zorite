@@ -53,53 +53,46 @@ fn accent_variants(accent: Hsla) -> (Hsla, Hsla, Hsla) {
     (hover, active, tint)
 }
 
-/// The original dark look.
-pub fn dark_palette() -> Palette {
-    let accent = from_rgb(0x0A84FF, 1.0);
+/// Build a palette from a few base colors. Glass / hover / borders and the
+/// secondary/tertiary text tints derive from the overlay color (white on
+/// dark, black on light), so a skin is just ~7 colors per mode. Args:
+/// `bg_window, bg_sidebar, bg_content, fg, accent, tag, code` (packed RGB).
+pub fn make_palette(
+    bg_window: u32,
+    bg_sidebar: u32,
+    bg_content: u32,
+    fg: u32,
+    accent: u32,
+    tag: u32,
+    code: u32,
+    is_dark: bool,
+) -> Palette {
+    let overlay = if is_dark { 0xFFFFFF } else { 0x000000 };
+    let accent = from_rgb(accent, 1.0);
     let (accent_hover, accent_active, accent_tint) = accent_variants(accent);
     Palette {
-        bg_window: from_rgb(0x16171A, 1.0),
-        bg_sidebar: from_rgb(0x1B1D21, 1.0),
-        bg_content: from_rgb(0x16171A, 1.0),
-        glass: from_rgb(0xFFFFFF, 0.05),
-        glass_strong: from_rgb(0xFFFFFF, 0.09),
-        hover: from_rgb(0xFFFFFF, 0.06),
-        border_subtle: from_rgb(0xFFFFFF, 0.08),
+        bg_window: from_rgb(bg_window, 1.0),
+        bg_sidebar: from_rgb(bg_sidebar, 1.0),
+        bg_content: from_rgb(bg_content, 1.0),
+        glass: from_rgb(overlay, 0.05),
+        glass_strong: from_rgb(overlay, 0.09),
+        hover: from_rgb(overlay, 0.06),
+        border_subtle: from_rgb(overlay, if is_dark { 0.08 } else { 0.10 }),
         accent,
         accent_hover,
         accent_active,
         accent_tint,
-        text_primary: from_rgb(0xFFFFFF, 0.92),
-        text_secondary: from_rgb(0xFFFFFF, 0.60),
-        text_tertiary: from_rgb(0xFFFFFF, 0.38),
-        tag: from_rgb(0x9D7CD8, 1.0),
-        code: from_rgb(0xD7BA7D, 1.0),
+        text_primary: from_rgb(fg, 0.92),
+        text_secondary: from_rgb(fg, 0.60),
+        text_tertiary: from_rgb(fg, 0.40),
+        tag: from_rgb(tag, 1.0),
+        code: from_rgb(code, 1.0),
     }
 }
 
-/// A clean light counterpart: white writing surface, near-black text,
-/// black-on-light hairlines/fills.
-pub fn light_palette() -> Palette {
-    let accent = from_rgb(0x0A84FF, 1.0);
-    let (accent_hover, accent_active, accent_tint) = accent_variants(accent);
-    Palette {
-        bg_window: from_rgb(0xF2F2F4, 1.0),
-        bg_sidebar: from_rgb(0xEAEAEE, 1.0),
-        bg_content: from_rgb(0xFFFFFF, 1.0),
-        glass: from_rgb(0x000000, 0.04),
-        glass_strong: from_rgb(0x000000, 0.07),
-        hover: from_rgb(0x000000, 0.05),
-        border_subtle: from_rgb(0x000000, 0.10),
-        accent,
-        accent_hover,
-        accent_active,
-        accent_tint,
-        text_primary: from_rgb(0x1D1D1F, 0.92),
-        text_secondary: from_rgb(0x1D1D1F, 0.58),
-        text_tertiary: from_rgb(0x1D1D1F, 0.42),
-        tag: from_rgb(0x7A4FB5, 1.0),
-        code: from_rgb(0xB0852A, 1.0),
-    }
+/// The default dark palette (the "Zorite" skin) — also the thread-local seed.
+pub fn dark_palette() -> Palette {
+    make_palette(0x16171A, 0x1B1D21, 0x16171A, 0xFFFFFF, 0x0A84FF, 0x9D7CD8, 0xD7BA7D, true)
 }
 
 thread_local! {
@@ -208,15 +201,9 @@ impl Mode {
 
 /// Resolve `mode` (+ the OS appearance, for `Auto`) to dark/light, swap
 /// the active palette, push it onto gpui-component's `Theme`, and repaint.
-pub fn apply(mode: Mode, system_dark: bool, window: &mut Window, cx: &mut App) {
-    let dark = match mode {
-        Mode::Light => false,
-        Mode::Dark => true,
-        Mode::Auto => system_dark,
-    };
-    let palette = if dark { dark_palette() } else { light_palette() };
+pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App) {
     CURRENT.with(|c| *c.borrow_mut() = palette);
-    Theme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(window), cx);
+    Theme::change(if is_dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(window), cx);
     apply_to_component_theme(&palette, cx);
     cx.refresh_windows();
 }

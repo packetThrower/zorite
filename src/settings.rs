@@ -4,8 +4,8 @@
 //! effect live in every window via the shared theme global + refresh.
 
 use gpui::{
-    Context, InteractiveElement, IntoElement, ParentElement, Render, StatefulInteractiveElement,
-    Styled, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
+    Context, InteractiveElement, IntoElement, ParentElement, Render, SharedString,
+    StatefulInteractiveElement, Styled, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::TitleBar;
 
@@ -31,6 +31,13 @@ impl SettingsView {
             cx.notify();
         }
     }
+
+    fn set_skin(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |a, cx| a.set_skin(id, window, cx));
+            cx.notify();
+        }
+    }
 }
 
 impl Render for SettingsView {
@@ -39,6 +46,23 @@ impl Render for SettingsView {
         let mut modes_row = div().flex().flex_row().gap(px(8.0));
         for m in [Mode::Light, Mode::Dark, Mode::Auto] {
             modes_row = modes_row.child(mode_button(m, m == current, cx));
+        }
+
+        // Theme list + active id, read from AppView (borrow ends with `a`).
+        let (active_skin, skin_list): (String, Vec<(String, String)>) =
+            if let Some(app) = self.app.upgrade() {
+                let a = app.read(cx);
+                (
+                    a.active_skin_id().to_string(),
+                    a.skins().iter().map(|s| (s.id.clone(), s.name.clone())).collect(),
+                )
+            } else {
+                (String::new(), Vec::new())
+            };
+        let mut skins_col = div().flex().flex_col().gap(px(6.0));
+        for (id, name) in skin_list {
+            let active = id == active_skin;
+            skins_col = skins_col.child(skin_button(id, name, active, cx));
         }
 
         div()
@@ -58,22 +82,20 @@ impl Render for SettingsView {
             )
             .child(
                 div()
+                    .id("settings-body")
                     .flex_1()
                     .min_h_0()
+                    .overflow_y_scroll()
                     .p(px(24.0))
                     .flex()
                     .flex_col()
-                    .gap(px(10.0))
-                    .child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(theme::text_tertiary())
-                            .child("APPEARANCE"),
-                    )
+                    .gap(px(16.0))
+                    .child(section_label("THEME"))
+                    .child(skins_col)
+                    .child(section_label("APPEARANCE"))
                     .child(modes_row)
                     .child(
                         div()
-                            .pt(px(2.0))
                             .text_size(px(12.0))
                             .text_color(theme::text_tertiary())
                             .child("Auto follows your system's light/dark setting."),
@@ -106,4 +128,35 @@ fn mode_button(mode: Mode, active: bool, cx: &mut Context<SettingsView>) -> impl
         .on_click(cx.listener(move |this: &mut SettingsView, _, window, cx| {
             this.set_mode(mode, window, cx);
         }))
+}
+
+fn skin_button(id: String, name: String, active: bool, cx: &mut Context<SettingsView>) -> impl IntoElement {
+    let elem_id = SharedString::from(format!("skin-{id}"));
+    div()
+        .id(elem_id)
+        .px(px(12.0))
+        .py(px(7.0))
+        .rounded(px(8.0))
+        .border_1()
+        .text_size(px(13.0))
+        .cursor_pointer()
+        .when(active, |d| {
+            d.bg(theme::accent_tint())
+                .border_color(theme::accent())
+                .text_color(theme::text_primary())
+        })
+        .when(!active, |d| {
+            d.bg(theme::glass())
+                .border_color(theme::border_subtle())
+                .text_color(theme::text_secondary())
+                .hover(|h| h.bg(theme::glass_strong()).text_color(theme::text_primary()))
+        })
+        .child(name)
+        .on_click(cx.listener(move |this: &mut SettingsView, _, window, cx| {
+            this.set_skin(id.clone(), window, cx);
+        }))
+}
+
+fn section_label(text: &str) -> impl IntoElement {
+    div().text_size(px(11.0)).text_color(theme::text_tertiary()).child(text.to_string())
 }

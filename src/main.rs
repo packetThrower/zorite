@@ -13,6 +13,7 @@ mod db;
 mod models;
 mod paths;
 mod settings;
+mod skins;
 mod slash;
 mod theme;
 mod ui;
