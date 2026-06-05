@@ -1,5 +1,5 @@
-//! The left rail: the journal feed, recent journals, named pages, and a
-//! "find or create page" box.
+//! The left rail: search, the journal feed, recent journals, and named
+//! pages. Right-click the pages area (or a page) to create a new page.
 
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui_component::{input::Input, menu::ContextMenuExt};
 
-use crate::actions::{DeletePage, OpenInNewTab, RenamePage};
+use crate::actions::{DeletePage, NewPage, OpenInNewTab, RenamePage};
 use crate::app::AppView;
 use crate::models::Page;
 use crate::theme;
@@ -45,24 +45,37 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .flex()
+                .flex_col()
                 .px_2()
                 .pt_3()
-                .child(journal_row(app.is_journal_view(), cx))
-                .child(section_label("Journals"))
-                .children(journal_rows)
-                .child(section_label("Pages"))
-                .when(app.pages.is_empty(), |this| {
-                    this.child(empty_hint("No pages yet — link one with [[ ]]"))
-                })
-                .children(page_rows),
-        )
-        .child(
-            div()
-                .flex_shrink_0()
-                .p_2()
-                .border_t_1()
-                .border_color(theme::border_subtle())
-                .child(Input::new(&app.new_page_input)),
+                .child(
+                    // The list itself; never shrinks, so it scrolls instead of
+                    // squishing when there are many pages.
+                    div()
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .child(journal_row(app.is_journal_view(), cx))
+                        .child(section_label("Journals"))
+                        .children(journal_rows)
+                        .child(section_label("Pages"))
+                        .when(app.pages.is_empty(), |this| {
+                            this.child(empty_hint("No pages yet — right-click below to add one"))
+                        })
+                        .children(page_rows),
+                )
+                .child(
+                    // The empty area below the list is right-clickable for
+                    // "New page", extending the menu past the last row.
+                    div()
+                        .id("sidebar-empty")
+                        .flex_1()
+                        .min_h(px(48.0))
+                        .context_menu(|menu, _window, _cx| {
+                            menu.menu("New page", Box::new(NewPage))
+                        }),
+                ),
         )
 }
 

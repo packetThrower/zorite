@@ -15,7 +15,7 @@ use gpui::{App, KeyBinding, actions};
 
 actions!(
     zorite,
-    [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab, RenamePage]
+    [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab, RenamePage, NewPage]
 );
 
 const INPUT_CONTEXT: &str = "Input";

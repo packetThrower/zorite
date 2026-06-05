@@ -26,7 +26,7 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    DeletePage, OpenInNewTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
+    DeletePage, NewPage, OpenInNewTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
@@ -135,21 +135,9 @@ impl AppView {
             })
             .expect("initialize database");
 
-        let new_page_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Find or create page…"));
-        let np_sub = cx.subscribe_in(
-            &new_page_input,
-            window,
-            |this: &mut AppView, state, ev: &InputEvent, window, cx| {
-                if let InputEvent::PressEnter { .. } = ev {
-                    let title = state.read(cx).value().trim().to_string();
-                    if !title.is_empty() {
-                        this.open_page_title(&title, window, cx);
-                        state.update(cx, |s, cx| s.set_value("", window, cx));
-                    }
-                }
-            },
-        );
+        // The page-name field shown in the "New page" dialog (opened from the
+        // pages-area right-click menu).
+        let new_page_input = cx.new(|cx| InputState::new(window, cx).placeholder("Page name…"));
 
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search…"));
         let search_sub = cx.subscribe_in(
@@ -189,7 +177,7 @@ impl AppView {
             context_page: None,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
-            _subs: vec![np_sub, search_sub],
+            _subs: vec![search_sub],
             focus_handle: cx.focus_handle(),
         };
 
@@ -341,7 +329,12 @@ impl AppView {
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.db.get_or_create_page(title) {
-            Ok(page) => self.open_page_foreground(page, window, cx),
+            Ok(page) => {
+                self.open_page_foreground(page, window, cx);
+                // The page may be newly created (via the New-page dialog or a
+                // [[link]]), so refresh the sidebar to show it.
+                self.refresh_sidebar();
+            }
             Err(e) => log::error!("open page '{title}': {e}"),
         }
     }
@@ -879,6 +872,53 @@ impl AppView {
         }
     }
 
+    /// `NewPage` handler: prompt for a title in a dialog, then create and
+    /// open the page (dispatched from a pages-area right-click menu).
+    fn on_new_page(&mut self, _: &NewPage, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_page_input.update(cx, |s, cx| s.set_value("", window, cx));
+        let input = self.new_page_input.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let input_body = input.clone();
+            let input_btn = input.clone();
+            let input_key = input.clone();
+            let weak_btn = weak.clone();
+            let weak_key = weak.clone();
+            dialog
+                .title("New page")
+                .w(px(420.0))
+                .child(Input::new(&input_body))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("new-page-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("new-page-create").primary().label("Create").on_click(
+                            move |_, window, cx| {
+                                let title = input_btn.read(cx).value().trim().to_string();
+                                if !title.is_empty() {
+                                    let _ = weak_btn
+                                        .update(cx, |this, cx| this.open_page_title(&title, window, cx));
+                                }
+                                window.close_dialog(cx);
+                            },
+                        )),
+                )
+                .on_ok(move |_, window, cx| {
+                    let title = input_key.read(cx).value().trim().to_string();
+                    if !title.is_empty() {
+                        let _ =
+                            weak_key.update(cx, |this, cx| this.open_page_title(&title, window, cx));
+                    }
+                    true
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
+        self.new_page_input.update(cx, |s, cx| s.focus(window, cx));
+    }
+
     /// `RenamePage` handler: open a dialog with a text field, pre-filled
     /// with the current title, to rename the right-clicked page.
     fn on_rename_page(&mut self, _: &RenamePage, window: &mut Window, cx: &mut Context<Self>) {
@@ -1063,6 +1103,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_delete_page))
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_rename_page))
+            .on_action(cx.listener(Self::on_new_page))
             .child(
                 TitleBar::new().child(
                     div()
