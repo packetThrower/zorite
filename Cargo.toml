@@ -1,0 +1,63 @@
+[package]
+name = "rumin"
+version = "0.1.0"
+edition = "2024"
+description = "A local-first outliner and daily-journal note app (Logseq-style)."
+license = "GPL-3.0-or-later"
+authors = ["packetThrower"]
+publish = false
+
+[[bin]]
+name = "rumin"
+path = "src/main.rs"
+
+[dependencies]
+# SQLite backend. `bundled` compiles SQLite from source and links it
+# statically into the binary — no system libsqlite3 dependency on any
+# target, and no version skew between dev machines.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Local date for the daily-journal title (YYYY-MM-DD). `local-offset`
+# enables `OffsetDateTime::now_local()` so "today" follows the user's
+# timezone rather than UTC. Same dep etch341 uses.
+time = { version = "0.3", features = ["local-offset"] }
+
+log = "0.4"
+env_logger = "0.11"
+
+# --- GUI stack — mirrors ~/git/etch341 exactly ---
+#
+# `gpui` / `gpui_platform` deliberately have NO rev. gpui-component's
+# git tip pins gpui with no rev either, and Cargo only unifies two git
+# deps of the same crate when their specs match — a rev here would
+# duplicate the gpui graph. Reproducibility comes from Cargo.lock,
+# seeded from etch341's known-good graph.
+gpui = { git = "https://github.com/zed-industries/zed" }
+
+# Per-platform backend. The Linux `wayland` / `x11` features are NOT
+# default — without them `gpui::guess_compositor()` hits `unreachable!`
+# inside a Wayland session before the first paint. Harmless on macOS /
+# Windows.
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "wayland",
+    "x11",
+] }
+
+# Widget library. Pinned to a git rev because the crates.io release
+# targets a different gpui than our git pin; the git tip pins gpui with
+# no rev so Cargo unifies it against ours.
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "2d2524d89efc47270e9a0ee18f10fa72cd573eff" }
+
+# Lucide icon SVGs. Without `.with_assets(Assets)` at startup, every
+# gpui-component icon renders as an empty rect. Pin to the same rev so
+# the icon set tracks the `IconName` enum in gpui-component.
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "2d2524d89efc47270e9a0ee18f10fa72cd573eff" }
+
+# Release profile mirrors the references: smallest, fastest binary.
+[profile.release]
+panic = "abort"
+codegen-units = 1
+lto = true
+opt-level = 3
+strip = true
