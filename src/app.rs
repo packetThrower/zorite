@@ -1,11 +1,10 @@
-//! `AppView` — the root view. Two surfaces:
-//!
-//! * `View::Journal` — an infinite, reverse-chronological feed of daily
-//!   entries (today on top), each a single multi-line markdown editor.
-//!   Older days are created lazily as you scroll down; a day's database
-//!   row is created on first edit, so scrolling past empty days is free.
-//! * `View::Page(id)` — a single named page (or a journal opened from the
-//!   sidebar) in one editor, with a "Linked References" panel.
+//! `AppView` — the root view. The content area is a set of **tabs**: a
+//! pinned **Journal** tab (an infinite, reverse-chronological feed of daily
+//! entries, today on top, older days lazy-loaded) plus a tab per opened
+//! **page** (one editor + a "Linked References" panel). Left-click a sidebar
+//! page to open/focus its tab; right-click → "Open in new tab" opens it in
+//! the background. The sidebar search box shows results over the active tab
+//! while it has text.
 //!
 //! Each editor is a gpui-component `InputState` in multi-line mode, which
 //! gives a real Word-like typing experience (native Enter / selection /
@@ -15,7 +14,7 @@ use std::collections::HashMap;
 
 use gpui::{
     AppContext, Context, Entity, FocusHandle, InteractiveElement, IntoElement, ParentElement,
-    Render, ScrollHandle, SharedString, Styled, Subscription, Window, div, point, px,
+    Render, ScrollHandle, SharedString, Styled, Subscription, Window, div, px,
 };
 use gpui_component::{
     RopeExt, Root, TitleBar, WindowExt,
@@ -24,7 +23,7 @@ use gpui_component::{
     input::{InputEvent, InputState},
 };
 
-use crate::actions::{DeletePage, SlashCancel, SlashConfirm, SlashDown, SlashUp};
+use crate::actions::{DeletePage, OpenInNewTab, SlashCancel, SlashConfirm, SlashDown, SlashUp};
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
 use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template};
@@ -36,11 +35,17 @@ const FEED_CHUNK: usize = 7;
 /// Hard cap on how far back the feed loads (~10 years), a runaway guard.
 const FEED_MAX_DAYS: usize = 3650;
 
+/// What a tab shows. The Journal is the pinned tab 0; the rest are pages.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum View {
+pub enum TabKind {
     Journal,
     Page(i64),
-    Search,
+}
+
+/// An open tab: its content kind + a cached title for the tab strip.
+pub struct OpenTab {
+    pub kind: TabKind,
+    pub title: SharedString,
 }
 
 /// A journal day's editor + the subscription saving its edits.
@@ -59,7 +64,14 @@ pub struct PageEditor {
 
 pub struct AppView {
     db: Db,
-    view: View,
+    /// Open tabs (index 0 is the pinned Journal) and the active index.
+    pub tabs: Vec<OpenTab>,
+    pub active: usize,
+    /// When the sidebar search box has text, the content area shows search
+    /// results instead of the active tab's content.
+    searching: bool,
+    /// Horizontal scroll handle for the tab strip.
+    pub tab_scroll: ScrollHandle,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -130,7 +142,10 @@ impl AppView {
 
         let mut this = Self {
             db,
-            view: View::Journal,
+            tabs: vec![OpenTab { kind: TabKind::Journal, title: "Journal".into() }],
+            active: 0,
+            searching: false,
+            tab_scroll: ScrollHandle::new(),
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -245,19 +260,15 @@ impl AppView {
     // --- Navigation ---
 
     pub fn show_journal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.view = View::Journal;
-        self.page_editor = None;
-        for i in 0..self.loaded_days {
-            self.ensure_day_editor(date_for_offset(i), window, cx);
-        }
-        self.feed_scroll.set_offset(point(px(0.0), px(0.0)));
-        self.refresh_sidebar();
-        cx.notify();
+        // The journal is the pinned first tab.
+        self.activate_tab(0, window, cx);
     }
 
+    /// Open a page in the **foreground** (left-click): focus its tab if it's
+    /// already open, else open a new tab for it and switch to it.
     pub fn open_page_id(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         match self.db.get_page(id) {
-            Ok(Some(page)) => self.open_page(page, window, cx),
+            Ok(Some(page)) => self.open_page_foreground(page, window, cx),
             Ok(None) => log::warn!("page {id} not found"),
             Err(e) => log::error!("open page {id}: {e}"),
         }
@@ -265,12 +276,87 @@ impl AppView {
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.db.get_or_create_page(title) {
-            Ok(page) => self.open_page(page, window, cx),
+            Ok(page) => self.open_page_foreground(page, window, cx),
             Err(e) => log::error!("open page '{title}': {e}"),
         }
     }
 
-    fn open_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_page_foreground(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tab_index_for(page.id) {
+            self.activate_tab(ix, window, cx);
+        } else {
+            self.tabs.push(OpenTab { kind: TabKind::Page(page.id), title: page.title.into() });
+            self.activate_tab(self.tabs.len() - 1, window, cx);
+        }
+    }
+
+    /// Open a page in a **background** tab without leaving the current one
+    /// (right-click → "Open in new tab"). No-op if it's already open.
+    pub fn open_page_in_new_tab(&mut self, id: i64, cx: &mut Context<Self>) {
+        if self.tab_index_for(id).is_some() {
+            return;
+        }
+        match self.db.get_page(id) {
+            Ok(Some(page)) => {
+                self.tabs.push(OpenTab { kind: TabKind::Page(id), title: page.title.into() });
+                cx.notify();
+            }
+            Ok(None) => log::warn!("page {id} not found"),
+            Err(e) => log::error!("open page {id}: {e}"),
+        }
+    }
+
+    fn tab_index_for(&self, id: i64) -> Option<usize> {
+        self.tabs.iter().position(|t| matches!(t.kind, TabKind::Page(pid) if pid == id))
+    }
+
+    /// Switch to tab `ix` and (re)build its content. Tabs share one page
+    /// editor, so activating a Page tab rebuilds the editor from the DB.
+    pub fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tab) = self.tabs.get(ix) else { return };
+        let kind = tab.kind.clone();
+        self.active = ix;
+        self.searching = false;
+        match kind {
+            TabKind::Journal => {
+                self.page_editor = None;
+                for i in 0..self.loaded_days {
+                    self.ensure_day_editor(date_for_offset(i), window, cx);
+                }
+            }
+            TabKind::Page(id) => self.load_page_editor(id, window, cx),
+        }
+        cx.notify();
+    }
+
+    /// Close tab `ix`. The Journal (index 0) is pinned and never closes.
+    pub fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix == 0 || ix >= self.tabs.len() {
+            return;
+        }
+        self.tabs.remove(ix);
+        if self.active > ix {
+            self.active -= 1;
+        } else if self.active == ix {
+            self.active = self.active.min(self.tabs.len() - 1);
+        }
+        self.activate_tab(self.active, window, cx);
+    }
+
+    /// Build the single page editor for page `id` (the active Page tab).
+    fn load_page_editor(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let page = match self.db.get_page(id) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                log::warn!("page {id} not found");
+                self.page_editor = None;
+                return;
+            }
+            Err(e) => {
+                log::error!("load page {id}: {e}");
+                return;
+            }
+        };
         let pid = page.id;
         let state = make_editor(&page.content, window, cx);
         let sub = cx.subscribe_in(
@@ -302,10 +388,7 @@ impl AppView {
         );
         let backlinks = self.db.backlinks(pid).unwrap_or_default();
         self.page_editor = Some(PageEditor { title: page.title, state, _sub: sub, backlinks });
-        self.view = View::Page(pid);
-        self.page_editing = false; // open in reading mode; click to edit
-        self.refresh_sidebar();
-        cx.notify();
+        self.page_editing = false;
     }
 
     // --- Persistence ---
@@ -338,12 +421,10 @@ impl AppView {
         let q = self.search_input.read(cx).value().trim().to_string();
         if q.is_empty() {
             self.search_results.clear();
-            if matches!(self.view, View::Search) {
-                self.view = View::Journal;
-            }
+            self.searching = false;
         } else {
             self.search_results = self.db.search(&q, 50).unwrap_or_default();
-            self.view = View::Search;
+            self.searching = true;
         }
         cx.notify();
     }
@@ -489,11 +570,11 @@ impl AppView {
     // --- Read accessors for the UI ---
 
     pub fn is_journal_view(&self) -> bool {
-        matches!(self.view, View::Journal)
+        !self.searching && matches!(self.tabs[self.active].kind, TabKind::Journal)
     }
 
     pub fn is_page_active(&self, id: i64) -> bool {
-        self.view == View::Page(id)
+        !self.searching && matches!(self.tabs[self.active].kind, TabKind::Page(pid) if pid == id)
     }
 
     pub fn is_editing_day(&self, date: &str) -> bool {
@@ -537,18 +618,33 @@ impl AppView {
         });
     }
 
+    /// `OpenInNewTab` handler: open the right-clicked page in a background tab.
+    fn on_open_in_new_tab(&mut self, _: &OpenInNewTab, _window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((id, _)) = self.context_page.take() {
+            self.open_page_in_new_tab(id, cx);
+        }
+    }
+
     /// Delete a named page and refresh the UI. Journals are never deleted
-    /// (the DB guards this too). If the deleted page is the one on screen,
-    /// fall back to the journal feed.
+    /// (the DB guards this too). Any tabs showing the page are closed.
     fn delete_page(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         match self.db.delete_page(id) {
             Ok(true) => {
-                if self.view == View::Page(id) {
-                    self.show_journal(window, cx);
-                } else {
-                    self.refresh_sidebar();
-                    cx.notify();
+                // Close any tabs showing the deleted page (journal at 0 is safe).
+                let mut i = self.tabs.len();
+                while i > 1 {
+                    i -= 1;
+                    if matches!(self.tabs[i].kind, TabKind::Page(pid) if pid == id) {
+                        self.tabs.remove(i);
+                        if self.active > i {
+                            self.active -= 1;
+                        } else if self.active == i {
+                            self.active = self.active.min(self.tabs.len() - 1);
+                        }
+                    }
                 }
+                self.refresh_sidebar();
+                self.activate_tab(self.active, window, cx);
             }
             Ok(false) => {}
             Err(e) => log::error!("delete page {id}: {e}"),
@@ -614,8 +710,9 @@ impl Render for AppView {
                     None => cx.propagate(),
                 }
             }))
-            // Delete a page, dispatched by the sidebar's right-click menu.
+            // Sidebar right-click menu actions.
             .on_action(cx.listener(Self::on_delete_page))
+            .on_action(cx.listener(Self::on_open_in_new_tab))
             .child(
                 TitleBar::new().child(
                     div()
@@ -632,11 +729,28 @@ impl Render for AppView {
                     .flex()
                     .flex_row()
                     .child(ui::sidebar::render(self, cx))
-                    .child(match self.view {
-                        View::Journal => ui::journal::render(self, cx).into_any_element(),
-                        View::Search => ui::search::render(self, cx).into_any_element(),
-                        View::Page(_) => ui::page_view::render(self, cx).into_any_element(),
-                    }),
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .flex()
+                            .flex_col()
+                            .bg(theme::bg_content())
+                            .child(ui::tab_bar::render(self, cx))
+                            .child(div().flex_1().min_h_0().child(if self.searching {
+                                ui::search::render(self, cx).into_any_element()
+                            } else {
+                                match self.tabs[self.active].kind {
+                                    TabKind::Journal => {
+                                        ui::journal::render(self, cx).into_any_element()
+                                    }
+                                    TabKind::Page(_) => {
+                                        ui::page_view::render(self, cx).into_any_element()
+                                    }
+                                }
+                            })),
+                    ),
             )
             .children(overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render

@@ -7,12 +7,12 @@
 //! move, newline, etc.). Later bindings shadow earlier ones for the same
 //! context + keystroke, so ours are tried first.
 //!
-//! `DeletePage` has no keybinding — it's dispatched by the sidebar's
-//! right-click context menu and handled on `AppView`.
+//! `DeletePage` / `OpenInNewTab` have no keybinding — they're dispatched
+//! by the sidebar's right-click context menu and handled on `AppView`.
 
 use gpui::{App, KeyBinding, actions};
 
-actions!(rumin, [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage]);
+actions!(rumin, [SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab]);
 
 const INPUT_CONTEXT: &str = "Input";
 
