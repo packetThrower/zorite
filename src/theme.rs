@@ -99,6 +99,7 @@ pub fn markdown_style() -> gpui_markdown::MarkdownStyle {
         text_size: px(16.0),
         heading_color: text_primary(),
         link_color: accent(),
+        tag_color: from_rgb(0x9D7CD8, 1.0),
         code_color: from_rgb(0xD7BA7D, 1.0),
         code_bg: glass(),
         muted_color: text_tertiary(),

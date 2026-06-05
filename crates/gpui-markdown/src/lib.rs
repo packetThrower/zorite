@@ -32,6 +32,7 @@ pub struct MarkdownStyle {
     pub text_size: Pixels,
     pub heading_color: Hsla,
     pub link_color: Hsla,
+    pub tag_color: Hsla,
     pub code_color: Hsla,
     pub code_bg: Hsla,
     pub muted_color: Hsla,
@@ -45,6 +46,7 @@ impl Default for MarkdownStyle {
             text_size: px(15.0),
             heading_color: rgb(0xFFFFFF).into(),
             link_color: rgb(0x4C9EFF).into(),
+            tag_color: rgb(0x9D7CD8).into(),
             code_color: rgb(0xD7BA7D).into(),
             code_bg: rgba(0xFFFFFF14).into(),
             muted_color: rgb(0x9AA0A6).into(),
@@ -318,32 +320,65 @@ fn build_inline(nodes: &[mdast::Node], cur: HighlightStyle, style: &MarkdownStyl
     }
 }
 
-/// Push plain text, splitting out `[[wiki-links]]` into clickable runs.
+/// Push plain text, splitting out `[[wiki-links]]` and `#tags` into
+/// clickable runs. Both navigate to a page; a tag keeps its `#` in the
+/// display text but targets the bare name.
 fn push_text(value: &str, cur: HighlightStyle, style: &MarkdownStyle, out: &mut Inline) {
-    let mut rest = value;
-    loop {
-        let Some(open) = rest.find("[[") else {
-            push_run(rest, cur, out);
-            break;
-        };
-        let Some(close) = rest[open + 2..].find("]]") else {
-            push_run(rest, cur, out);
-            break;
-        };
-        push_run(&rest[..open], cur, out);
-        let title = rest[open + 2..open + 2 + close].trim();
-        if title.is_empty() {
-            push_run(&rest[open..open + 2 + close + 2], cur, out);
-        } else {
-            let mut c = cur;
-            c.color = Some(style.link_color);
-            let start = out.text.len();
-            push_run(title, c, out);
-            let end = out.text.len();
-            out.links.push((start..end, LinkTarget::Wiki(title.into())));
+    let bytes = value.as_bytes();
+    let mut plain_start = 0;
+    let mut i = 0;
+    while i < value.len() {
+        // [[wiki-link]]
+        if value[i..].starts_with("[[") {
+            if let Some(close) = value[i + 2..].find("]]") {
+                let title = value[i + 2..i + 2 + close].trim();
+                if !title.is_empty() {
+                    push_run(&value[plain_start..i], cur, out);
+                    push_link(title, title, style.link_color, cur, out);
+                    i += 2 + close + 2;
+                    plain_start = i;
+                    continue;
+                }
+            }
+            i += 1; // not a valid link; the '[' stays plain
+            continue;
         }
-        rest = &rest[open + 2 + close + 2..];
+        // #tag — at a word boundary, followed by tag characters
+        if bytes[i] == b'#' && (i == 0 || is_boundary(bytes[i - 1])) {
+            let mut j = i + 1;
+            while j < value.len() && is_tag_char(bytes[j]) {
+                j += 1;
+            }
+            if j > i + 1 {
+                let name = &value[i + 1..j];
+                push_run(&value[plain_start..i], cur, out);
+                push_link(&value[i..j], name, style.tag_color, cur, out);
+                i = j;
+                plain_start = i;
+                continue;
+            }
+        }
+        i += value[i..].chars().next().map_or(1, |c| c.len_utf8());
     }
+    push_run(&value[plain_start..], cur, out);
+}
+
+/// Push `display` as a clickable run that navigates to page `target`.
+fn push_link(display: &str, target: &str, color: Hsla, cur: HighlightStyle, out: &mut Inline) {
+    let mut c = cur;
+    c.color = Some(color);
+    let start = out.text.len();
+    push_run(display, c, out);
+    let end = out.text.len();
+    out.links.push((start..end, LinkTarget::Wiki(target.into())));
+}
+
+fn is_boundary(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'(' | b'[')
+}
+
+fn is_tag_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 fn push_run(s: &str, style: HighlightStyle, out: &mut Inline) {
@@ -390,6 +425,27 @@ mod tests {
             })
             .collect();
         assert_eq!(titles, vec!["Foo", "Bar"]);
+    }
+
+    #[test]
+    fn hashtags_become_clickable_links_targeting_bare_name() {
+        let inl = inline_of("a #foo and #bar-baz end");
+        assert_eq!(inl.text, "a #foo and #bar-baz end"); // display keeps the '#'
+        assert_eq!(inl.links.len(), 2);
+        assert_eq!(&inl.text[inl.links[0].0.clone()], "#foo");
+        match (&inl.links[0].1, &inl.links[1].1) {
+            (LinkTarget::Wiki(a), LinkTarget::Wiki(b)) => {
+                assert_eq!(a.as_ref(), "foo");
+                assert_eq!(b.as_ref(), "bar-baz");
+            }
+            _ => panic!("expected wiki targets"),
+        }
+    }
+
+    #[test]
+    fn heading_hash_with_space_is_not_a_tag() {
+        let inl = inline_of("# not a tag");
+        assert!(inl.links.is_empty());
     }
 
     #[test]

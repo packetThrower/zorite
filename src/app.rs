@@ -159,6 +159,8 @@ impl AppView {
                     if this.editing_day.as_deref() == Some(key.as_str()) {
                         this.editing_day = None;
                     }
+                    let value = st.read(cx).value().to_string();
+                    this.flush_journal(&key, &value);
                     cx.notify();
                 }
                 _ => {}
@@ -167,11 +169,23 @@ impl AppView {
         self.day_editors.insert(date, DayEditor { state, _sub: sub });
     }
 
+    /// Save a journal day's content on every keystroke — but NOT its
+    /// links/tags. Link re-indexing (which creates target pages) happens
+    /// on blur, so a half-typed `#tag` doesn't spawn a page per keystroke.
     fn save_journal(&mut self, date: &str, content: &str) {
-        match self.db.get_or_create_journal(date) {
-            Ok(page) => self.persist(page.id, content),
-            Err(e) => log::error!("save journal {date}: {e}"),
+        if let Ok(page) = self.db.get_or_create_journal(date) {
+            if let Err(e) = self.db.set_page_content(page.id, content) {
+                log::error!("save journal {date}: {e}");
+            }
         }
+    }
+
+    /// On blur: persist the day and re-index its `[[links]]` / `#tags`.
+    fn flush_journal(&mut self, date: &str, content: &str) {
+        if let Ok(page) = self.db.get_or_create_journal(date) {
+            self.persist(page.id, content);
+        }
+        self.refresh_sidebar();
     }
 
     /// Grow the feed if the user has scrolled near the bottom.
@@ -233,8 +247,11 @@ impl AppView {
             window,
             move |this: &mut AppView, st, ev: &InputEvent, _window, cx| match ev {
                 InputEvent::Change => {
+                    // Content only; link re-indexing happens on blur.
                     let value = st.read(cx).value().to_string();
-                    this.persist(pid, &value);
+                    if let Err(e) = this.db.set_page_content(pid, &value) {
+                        log::error!("save page {pid}: {e}");
+                    }
                 }
                 InputEvent::Focus => {
                     this.page_editing = true;
@@ -242,6 +259,9 @@ impl AppView {
                 }
                 InputEvent::Blur => {
                     this.page_editing = false;
+                    let value = st.read(cx).value().to_string();
+                    this.persist(pid, &value);
+                    this.refresh_sidebar();
                     cx.notify();
                 }
                 _ => {}

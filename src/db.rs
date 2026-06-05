@@ -63,15 +63,28 @@ impl Db {
     }
 
     fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version == 0 {
             conn.execute_batch(SCHEMA_V2)?;
+            version = 2;
         } else if version < 2 {
             // Atomic: a half-applied upgrade would otherwise wedge the DB
             // (e.g. a re-added `content` column on the next run).
             let tx = conn.transaction()?;
             migrate_v1_to_v2(&tx)?;
             tx.commit()?;
+            version = 2;
+        }
+        if version < 3 {
+            // One-time cleanup: an earlier bug re-indexed links on every
+            // keystroke, creating a page for every prefix of a typed
+            // `#tag`. Drop empty, unreferenced named pages — journals and
+            // any page that's actually linked are kept.
+            conn.execute_batch(
+                "DELETE FROM pages WHERE is_journal = 0 AND content = '' \
+                   AND id NOT IN (SELECT target_page_id FROM page_links);\
+                 PRAGMA user_version = 3;",
+            )?;
         }
         Ok(())
     }

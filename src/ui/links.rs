@@ -6,16 +6,48 @@
 /// is ignored.
 pub fn parse_links(content: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
+
+    // [[wiki-links]]
     let mut rest = content;
     while let Some(open) = rest.find("[[") {
         let Some(close_rel) = rest[open + 2..].find("]]") else { break };
-        let title = rest[open + 2..open + 2 + close_rel].trim();
-        if !title.is_empty() && !out.iter().any(|t| t.eq_ignore_ascii_case(title)) {
-            out.push(title.to_string());
-        }
+        push_unique(&mut out, &rest[open + 2..open + 2 + close_rel]);
         rest = &rest[open + 2 + close_rel + 2..];
     }
+
+    // #tags (a `#tag` links to a page named `tag`)
+    let bytes = content.as_bytes();
+    let mut i = 0;
+    while i < content.len() {
+        if bytes[i] == b'#' && (i == 0 || is_boundary(bytes[i - 1])) {
+            let mut j = i + 1;
+            while j < content.len() && is_tag_char(bytes[j]) {
+                j += 1;
+            }
+            if j > i + 1 {
+                push_unique(&mut out, &content[i + 1..j]);
+                i = j;
+                continue;
+            }
+        }
+        i += content[i..].chars().next().map_or(1, |c| c.len_utf8());
+    }
     out
+}
+
+fn push_unique(out: &mut Vec<String>, title: &str) {
+    let title = title.trim();
+    if !title.is_empty() && !out.iter().any(|t| t.eq_ignore_ascii_case(title)) {
+        out.push(title.to_string());
+    }
+}
+
+fn is_boundary(b: u8) -> bool {
+    matches!(b, b' ' | b'\t' | b'\n' | b'(' | b'[')
+}
+
+fn is_tag_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 #[cfg(test)]
@@ -53,5 +85,19 @@ mod tests {
     #[test]
     fn empty_brackets_ignored() {
         assert!(parse_links("x [[]] y").is_empty());
+    }
+
+    #[test]
+    fn extracts_tags_and_dedups_with_wikilinks() {
+        assert_eq!(
+            parse_links("see [[Foo]] and #bar then #foo"),
+            vec!["Foo".to_string(), "bar".to_string()]
+        );
+    }
+
+    #[test]
+    fn tag_needs_boundary_and_chars() {
+        assert!(parse_links("a#b is not a tag").is_empty());
+        assert!(parse_links("# heading not a tag").is_empty());
     }
 }
