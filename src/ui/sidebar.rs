@@ -32,6 +32,14 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .border_color(theme::border_subtle())
         .child(
             div()
+                .flex_shrink_0()
+                .p_2()
+                .border_b_1()
+                .border_color(theme::border_subtle())
+                .child(Input::new(&app.search_input)),
+        )
+        .child(
+            div()
                 .id("sidebar-scroll")
                 .flex_1()
                 .min_h_0()

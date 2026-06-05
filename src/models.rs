@@ -27,3 +27,11 @@ pub struct Backlink {
     pub source_page_title: String,
     pub snippet: String,
 }
+
+/// One full-text search result.
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    pub page_id: i64,
+    pub title: String,
+    pub snippet: String,
+}

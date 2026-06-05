@@ -23,7 +23,7 @@ use gpui_component::{
 };
 
 use crate::db::Db;
-use crate::models::{Backlink, Page};
+use crate::models::{Backlink, Page, SearchHit};
 use crate::theme;
 use crate::ui;
 
@@ -36,6 +36,7 @@ const FEED_MAX_DAYS: usize = 3650;
 enum View {
     Journal,
     Page(i64),
+    Search,
 }
 
 /// A journal day's editor + the subscription saving its edits.
@@ -73,6 +74,8 @@ pub struct AppView {
     pub journals: Vec<Page>,
     pub pages: Vec<Page>,
     pub new_page_input: Entity<InputState>,
+    pub search_input: Entity<InputState>,
+    pub search_results: Vec<SearchHit>,
 
     _subs: Vec<Subscription>,
     pub focus_handle: FocusHandle,
@@ -103,6 +106,17 @@ impl AppView {
             },
         );
 
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search…"));
+        let search_sub = cx.subscribe_in(
+            &search_input,
+            window,
+            |this: &mut AppView, _state, ev: &InputEvent, _window, cx| {
+                if let InputEvent::Change = ev {
+                    this.run_search(cx);
+                }
+            },
+        );
+
         let mut this = Self {
             db,
             view: View::Journal,
@@ -115,7 +129,9 @@ impl AppView {
             journals: Vec::new(),
             pages: Vec::new(),
             new_page_input,
-            _subs: vec![np_sub],
+            search_input,
+            search_results: Vec::new(),
+            _subs: vec![np_sub, search_sub],
             focus_handle: cx.focus_handle(),
         };
 
@@ -293,6 +309,21 @@ impl AppView {
         self.pages = self.db.list_pages().unwrap_or_default();
     }
 
+    /// Run the sidebar search box live. Empty query returns to the feed.
+    fn run_search(&mut self, cx: &mut Context<Self>) {
+        let q = self.search_input.read(cx).value().trim().to_string();
+        if q.is_empty() {
+            self.search_results.clear();
+            if matches!(self.view, View::Search) {
+                self.view = View::Journal;
+            }
+        } else {
+            self.search_results = self.db.search(&q, 50).unwrap_or_default();
+            self.view = View::Search;
+        }
+        cx.notify();
+    }
+
     /// Enter edit mode for a feed day: flip it to the raw editor *now*
     /// (so the `Input` mounts this frame), then focus it. Setting the
     /// state explicitly — rather than waiting on the editor's Focus event
@@ -359,10 +390,10 @@ impl Render for AppView {
                     .flex()
                     .flex_row()
                     .child(ui::sidebar::render(self, cx))
-                    .child(if self.is_journal_view() {
-                        ui::journal::render(self, cx).into_any_element()
-                    } else {
-                        ui::page_view::render(self, cx).into_any_element()
+                    .child(match self.view {
+                        View::Journal => ui::journal::render(self, cx).into_any_element(),
+                        View::Search => ui::search::render(self, cx).into_any_element(),
+                        View::Page(_) => ui::page_view::render(self, cx).into_any_element(),
                     }),
             )
     }

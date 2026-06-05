@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::models::{Backlink, Page};
+use crate::models::{Backlink, Page, SearchHit};
 use crate::paths;
 
 /// Fresh-install schema (applied when `user_version` is 0).
@@ -228,6 +228,58 @@ impl Db {
             });
         }
         Ok(out)
+    }
+}
+
+impl Db {
+    /// Full-text-ish search over page titles and content (substring,
+    /// case-insensitive). Title matches sort first, then journals by
+    /// date. Returns up to `limit` hits with a snippet around the match.
+    pub fn search(&self, query: &str, limit: i64) -> rusqlite::Result<Vec<SearchHit>> {
+        let q = query.trim();
+        if q.is_empty() {
+            return Ok(Vec::new());
+        }
+        let like = format!("%{}%", escape_like(q));
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, content FROM pages \
+             WHERE title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\' \
+             ORDER BY (CASE WHEN title LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END), \
+                      is_journal DESC, journal_date DESC, title COLLATE NOCASE \
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![like, limit], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (id, title, content) = r?;
+            out.push(SearchHit { page_id: id, title, snippet: snippet_for_query(&content, q) });
+        }
+        Ok(out)
+    }
+}
+
+/// Escape SQL LIKE wildcards so the query is matched literally.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+}
+
+/// The first content line containing `query` (case-insensitive), else
+/// the first non-empty line, trimmed and length-capped.
+fn snippet_for_query(content: &str, query: &str) -> String {
+    let needle = query.to_lowercase();
+    let line = content
+        .lines()
+        .find(|l| l.to_lowercase().contains(&needle))
+        .or_else(|| content.lines().find(|l| !l.trim().is_empty()))
+        .unwrap_or("")
+        .trim();
+    const MAX: usize = 140;
+    if line.chars().count() > MAX {
+        line.chars().take(MAX).collect::<String>() + "…"
+    } else {
+        line.to_string()
     }
 }
 
