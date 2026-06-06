@@ -25,6 +25,7 @@ use gpui::{
 use gpui_component::{
     Root, RopeExt, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants},
+    calendar::{Calendar, CalendarEvent, CalendarState},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
 };
@@ -142,6 +143,10 @@ pub struct AppView {
     pub pages: Vec<Page>,
     pub new_page_input: Entity<InputState>,
     pub search_input: Entity<InputState>,
+    /// Jump-to-date calendar (opened from the sidebar calendar icon); picking
+    /// a date opens that journal day.
+    pub calendar: Entity<CalendarState>,
+    show_calendar: bool,
     pub search_results: Vec<SearchHit>,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
@@ -182,6 +187,21 @@ impl AppView {
             },
         );
 
+        // Jump-to-date: the sidebar calendar icon opens this calendar; picking
+        // a date closes it and opens that journal day as a tab.
+        let calendar = cx.new(|cx| CalendarState::new(window, cx));
+        let calendar_sub = cx.subscribe_in(
+            &calendar,
+            window,
+            |this: &mut AppView, _state, ev: &CalendarEvent, window, cx| {
+                let CalendarEvent::Selected(date) = ev;
+                if let Some(day) = date.start() {
+                    this.show_calendar = false;
+                    this.open_journal_day(&day.to_string(), window, cx);
+                }
+            },
+        );
+
         let mut this = Self {
             db,
             tabs: vec![OpenTab {
@@ -207,13 +227,15 @@ impl AppView {
             pages: Vec::new(),
             new_page_input,
             search_input,
+            calendar,
+            show_calendar: false,
             search_results: Vec::new(),
             slash: None,
             templates: Vec::new(),
             context_page: None,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
-            _subs: vec![search_sub],
+            _subs: vec![search_sub, calendar_sub],
             focus_handle: cx.focus_handle(),
         };
 
@@ -388,6 +410,21 @@ impl AppView {
                 self.refresh_sidebar();
             }
             Err(e) => log::error!("open page '{title}': {e}"),
+        }
+    }
+
+    /// Toggle the jump-to-date calendar overlay (the sidebar calendar icon).
+    pub fn toggle_calendar(&mut self, cx: &mut Context<Self>) {
+        self.show_calendar = !self.show_calendar;
+        cx.notify();
+    }
+
+    /// Open a specific journal day (by ISO `YYYY-MM-DD`) as a focused tab,
+    /// creating the day if it doesn't exist yet. Used by the date picker.
+    pub fn open_journal_day(&mut self, date: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match self.db.get_or_create_journal(date) {
+            Ok(page) => self.open_page_foreground(page, window, cx),
+            Err(e) => log::error!("open journal {date}: {e}"),
         }
     }
 
@@ -1602,6 +1639,46 @@ impl Render for AppView {
             .into_any_element()
         });
 
+        // Jump-to-date calendar: a full-window layer (click-away to close) with
+        // the calendar anchored under the sidebar icon. Selecting a date closes
+        // it via the calendar subscription.
+        let calendar_overlay = self.show_calendar.then(|| {
+            gpui::deferred(
+                div()
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut AppView, _, _window, cx| {
+                            this.show_calendar = false;
+                            cx.notify();
+                        }),
+                    )
+                    .child(
+                        gpui::anchored()
+                            .position(gpui::point(px(8.0), px(86.0)))
+                            .snap_to_window_with_margin(px(8.0))
+                            .child(
+                                div()
+                                    // Clicks inside the calendar must not reach
+                                    // the click-away backdrop.
+                                    .occlude()
+                                    .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                        cx.stop_propagation()
+                                    })
+                                    .bg(theme::bg_sidebar())
+                                    .border_1()
+                                    .border_color(theme::border_subtle())
+                                    .rounded(px(8.0))
+                                    .shadow_lg()
+                                    .child(Calendar::new(&self.calendar)),
+                            ),
+                    ),
+            )
+            .into_any_element()
+        });
+
         // Each journal day fills most of the window height so days read as
         // distinct "pages" instead of a continuous wall of text.
         let day_min = px(f32::from(window.viewport_size().height) * 0.75);
@@ -1683,31 +1760,8 @@ impl Render for AppView {
                                 .items_center()
                                 .gap(px(2.0))
                                 .mr_2()
-                                .child(
-                                    div()
-                                        .id("settings-gear")
-                                        .px_2()
-                                        .py_1()
-                                        .rounded(px(6.0))
-                                        .text_size(px(14.0))
-                                        .text_color(theme::text_secondary())
-                                        .cursor_pointer()
-                                        .hover(|h| {
-                                            h.bg(theme::hover()).text_color(theme::text_primary())
-                                        })
-                                        .child("⚙")
-                                        // Defer: opening a window from inside the
-                                        // mouse-event callback aborts (no-unwind
-                                        // boundary). Run it after the event cycle.
-                                        .on_click(cx.listener(
-                                            |_this: &mut AppView, _, window, cx| {
-                                                let view = cx.entity();
-                                                window.defer(cx, move |_, cx| {
-                                                    AppView::open_settings(view, cx);
-                                                });
-                                            },
-                                        )),
-                                )
+                                // The settings gear lives in the sidebar (next to
+                                // search); the title bar keeps just the theme toggle.
                                 .child(
                                     div()
                                         .id("theme-toggle")
@@ -1762,6 +1816,7 @@ impl Render for AppView {
             )
             .children(overlay)
             .children(drag_overlay)
+            .children(calendar_overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.

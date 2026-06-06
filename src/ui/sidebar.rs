@@ -1,12 +1,13 @@
-//! The left rail: search, a link to the journal feed, and named pages.
-//! Right-click the pages area to create a new page; older days are found
-//! via search.
+//! The left rail: a row of icon buttons (jump-to-date and settings) above a
+//! search box, then a link to the journal feed and the named pages. Right-click
+//! the pages area to create a new page; older days are found via search or the
+//! date picker.
 
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
 };
-use gpui_component::{input::Input, menu::ContextMenuExt};
+use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt};
 
 use crate::actions::{DeletePage, NewPage, OpenInNewTab, RenamePage};
 use crate::app::AppView;
@@ -29,12 +30,33 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .border_r_1()
         .border_color(theme::border_subtle())
         .child(
+            // A row of icon buttons (a sidebar-collapse caret will join it
+            // later), with the search box on its own row below.
             div()
                 .flex_shrink_0()
                 .p_2()
                 .border_b_1()
                 .border_color(theme::border_subtle())
-                .child(Input::new(&app.search_input)),
+                .flex()
+                .flex_col()
+                .gap_2()
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .justify_end()
+                        .gap_1()
+                        .child(date_icon(cx))
+                        .child(settings_gear(cx)),
+                )
+                .child(
+                    Input::new(&app.search_input).prefix(
+                        Icon::new(IconName::Search)
+                            .size_4()
+                            .text_color(theme::text_tertiary()),
+                    ),
+                ),
         )
         .child(
             div()
@@ -71,6 +93,47 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             menu.menu("New page", Box::new(NewPage))
                         }),
                 ),
+        )
+}
+
+/// The jump-to-date calendar icon, beside the search box. Toggles the calendar
+/// overlay; picking a date opens that journal day.
+fn date_icon(cx: &mut Context<AppView>) -> impl IntoElement {
+    div()
+        .id("date-icon")
+        .flex_shrink_0()
+        .p_1p5()
+        .rounded(px(6.0))
+        .text_color(theme::text_secondary())
+        .cursor_pointer()
+        .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+        .child(Icon::new(IconName::Calendar).size_4())
+        .on_click(
+            cx.listener(|this: &mut AppView, _: &ClickEvent, _window, cx| {
+                this.toggle_calendar(cx);
+            }),
+        )
+}
+
+/// The settings gear, sitting beside the search box. Opens the Settings window
+/// (deferred — opening a window from inside a mouse callback aborts).
+fn settings_gear(cx: &mut Context<AppView>) -> impl IntoElement {
+    div()
+        .id("settings-gear")
+        .flex_shrink_0()
+        .p_1p5()
+        .rounded(px(6.0))
+        .text_color(theme::text_secondary())
+        .cursor_pointer()
+        .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+        .child(Icon::new(IconName::Settings).size_4())
+        .on_click(
+            cx.listener(|_this: &mut AppView, _: &ClickEvent, window, cx| {
+                let view = cx.entity();
+                window.defer(cx, move |_, cx| {
+                    AppView::open_settings(view, cx);
+                });
+            }),
         )
 }
 
