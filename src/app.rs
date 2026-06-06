@@ -800,21 +800,39 @@ impl AppView {
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
         let prev = self.autopair_prev(target);
-        let Some(action) = slash::autopair_action(&prev, &value, cursor) else {
-            self.set_autopair_prev(target, value);
-            return false;
-        };
-        let new = match action {
-            slash::AutoPair::Close(close) => {
-                format!("{}{close}{}", &value[..cursor], &value[cursor..])
+        // Each arm yields the rewritten text and where the caret should land.
+        let (new, caret) = match slash::autopair_action(&prev, &value, cursor) {
+            Some(slash::AutoPair::Close(close)) => (
+                format!("{}{close}{}", &value[..cursor], &value[cursor..]),
+                cursor,
+            ),
+            Some(slash::AutoPair::TypeOver(skip)) => (
+                format!("{}{}", &value[..cursor], &value[cursor + skip..]),
+                cursor,
+            ),
+            Some(slash::AutoPair::Wrap { close, inner }) => {
+                // `value` is already `…opener|suffix`; splice the selection back
+                // in plus its closer, caret left just inside the closer.
+                let caret = cursor + inner.len();
+                (
+                    format!("{}{inner}{close}{}", &value[..cursor], &value[cursor..]),
+                    caret,
+                )
             }
-            slash::AutoPair::TypeOver(skip) => {
-                format!("{}{}", &value[..cursor], &value[cursor + skip..])
-            }
+            None => match slash::autopair_backspace(&prev, &value, cursor) {
+                Some(skip) => (
+                    format!("{}{}", &value[..cursor], &value[cursor + skip..]),
+                    cursor,
+                ),
+                None => {
+                    self.set_autopair_prev(target, value);
+                    return false;
+                }
+            },
         };
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
-            let pos = st.text().offset_to_position(cursor);
+            let pos = st.text().offset_to_position(caret);
             st.set_cursor_position(pos, window, cx);
         });
         self.set_autopair_prev(target, new.clone());

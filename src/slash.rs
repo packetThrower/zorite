@@ -376,44 +376,85 @@ fn expand_template(body: &str, title: &str) -> (String, usize) {
 
 // --- Auto-pairing of brackets / quotes ---
 
-/// What to do after a bracket/quote was just typed at the caret.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// What to do in reaction to a bracket/quote edit at the caret.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub enum AutoPair {
     /// Insert this closing char after the caret (caret stays put).
     Close(char),
     /// The typed closer duplicates the one already at the caret — drop that
     /// existing char (this many bytes) so the caret just steps over it.
     TypeOver(usize),
+    /// An opener was typed over a selection: re-insert the selected `inner`
+    /// followed by `close` after the opener, wrapping it (`foo` → `(foo)`).
+    Wrap { close: char, inner: String },
 }
 
-/// Decide the auto-pair reaction to a single edit. `prev`/`new` are the editor
-/// text before/after the change and `cursor` is the caret byte offset in `new`.
-/// Returns `Some` only when exactly one bracket/quote was *inserted* at the
-/// caret (so deletes, pastes, multi-char edits, and cursor moves are ignored).
+/// Decide the auto-pair reaction to an edit. `prev`/`new` are the editor text
+/// before/after the change and `cursor` is the caret byte offset in `new`.
+/// Recognizes a single bracket/quote typed at the caret (type-over or
+/// auto-close) and an opener typed over a selection (wrap). Returns `None` for
+/// anything else — deletes, pastes, ordinary typing, and no-op changes.
 pub fn autopair_action(prev: &str, new: &str, cursor: usize) -> Option<AutoPair> {
-    if cursor == 0 || cursor > new.len() {
+    if cursor == 0 || cursor > new.len() || new == prev {
         return None;
     }
     let ch = new[..cursor].chars().next_back()?;
     let ch_len = ch.len_utf8();
-    // Confirm `new` is `prev` with exactly `ch` inserted ending at the caret.
-    let mut reconstructed = String::with_capacity(prev.len());
-    reconstructed.push_str(&new[..cursor - ch_len]);
-    reconstructed.push_str(&new[cursor..]);
-    if reconstructed != prev {
+    let prefix = &new[..cursor - ch_len];
+    let suffix = &new[cursor..];
+    // The change must be "replace prev's middle (the old selection, possibly
+    // empty) with `ch`": prev == prefix + <middle> + suffix.
+    if !prev.starts_with(prefix)
+        || !prev.ends_with(suffix)
+        || prev.len() < prefix.len() + suffix.len()
+    {
         return None;
     }
-    let next = new[cursor..].chars().next();
+    let inner = &prev[prefix.len()..prev.len() - suffix.len()];
+    if !inner.is_empty() {
+        // An opener typed over a selection wraps it; a non-opener just replaces.
+        let close = open_to_close(ch)?;
+        return Some(AutoPair::Wrap {
+            close,
+            inner: inner.to_string(),
+        });
+    }
+    // Pure single-char insertion.
+    let next = suffix.chars().next();
     // Type-over: a closer typed right in front of the same closer.
     if is_close_char(ch) && next == Some(ch) {
         return Some(AutoPair::TypeOver(ch_len));
     }
     // Auto-close an opener, subject to the prose-safe guards.
     if let Some(close) = open_to_close(ch) {
-        let before = new[..cursor - ch_len].chars().next_back();
+        let before = prefix.chars().next_back();
         if should_autoclose(ch, before, next) {
             return Some(AutoPair::Close(close));
         }
+    }
+    None
+}
+
+/// Backspacing an empty pair: if `new` is `prev` with a single opening bracket
+/// deleted at the caret and its matching closer now sits right at the caret,
+/// return that closer's byte length so the caller deletes it too (`(|)` → ``).
+pub fn autopair_backspace(prev: &str, new: &str, cursor: usize) -> Option<usize> {
+    if cursor > new.len() || prev.len() <= new.len() {
+        return None;
+    }
+    let prefix = &new[..cursor];
+    let suffix = &new[cursor..];
+    if !prev.starts_with(prefix) {
+        return None;
+    }
+    // Exactly one char (the deleted opener) sat between prefix and suffix.
+    let deleted = prev[cursor..].chars().next()?;
+    if &prev[cursor + deleted.len_utf8()..] != suffix {
+        return None;
+    }
+    let close = open_to_close(deleted)?;
+    if suffix.chars().next() == Some(close) {
+        return Some(close.len_utf8());
     }
     None
 }
@@ -631,5 +672,50 @@ mod tests {
         assert_eq!(autopair_action("x", "[x", 0), None);
         // A multi-char paste ending in a bracket isn't a single keystroke.
         assert_eq!(autopair_action("", "ab(", 3), None);
+        // No-op change (caret-only) doesn't wrap the char before the caret.
+        assert_eq!(autopair_action("()", "()", 1), None);
+    }
+
+    #[test]
+    fn autopair_wraps_a_selection() {
+        // Select "foo" (offsets 4..7) in "say foo" and type "(" -> "say (".
+        assert_eq!(
+            autopair_action("say foo", "say (", 5),
+            Some(AutoPair::Wrap {
+                close: ')',
+                inner: "foo".to_string(),
+            })
+        );
+        // Selecting everything and typing a quote wraps too.
+        assert_eq!(
+            autopair_action("foo", "\"", 1),
+            Some(AutoPair::Wrap {
+                close: '"',
+                inner: "foo".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn autopair_non_bracket_over_selection_does_not_wrap() {
+        assert_eq!(autopair_action("foo", "x", 1), None);
+    }
+
+    #[test]
+    fn autopair_backspace_deletes_empty_pair() {
+        // `(|)` backspace removes `(` -> `)` (caret 0); the `)` should go too.
+        assert_eq!(autopair_backspace("()", ")", 0), Some(1));
+        // `([|])` backspace removes `[` -> `(])` (caret 1); drop the orphan `]`.
+        assert_eq!(autopair_backspace("([])", "(])", 1), Some(1));
+    }
+
+    #[test]
+    fn autopair_backspace_ignores_non_empty_or_non_pairs() {
+        // The pair isn't empty (an `x` sits inside) -> leave the closer.
+        assert_eq!(autopair_backspace("(x)", "x)", 0), None);
+        // Deleting a non-opener.
+        assert_eq!(autopair_backspace("ab", "a", 1), None);
+        // Deleting the closer itself, not the opener.
+        assert_eq!(autopair_backspace("()", "(", 1), None);
     }
 }
