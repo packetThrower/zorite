@@ -16,7 +16,8 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [x] **Task-list checkboxes** (`- [ ]` / `- [x]`) — rendered via mdast `ListItem.checked` (the field does exist after all)
 - [x] `gpui-markdown` now covers CommonMark + GFM: footnotes, reference-style `[text][id]` links/images, and raw HTML (shown literally)
 - [ ] Place the caret at the click point when entering edit mode (currently keeps the last position)
-- [ ] `/time` and `/date` slash commands — insert the current time/date directly (distinct from the `{{time}}` / `{{date}}` *template* placeholders, which only expand inside a template)
+- [x] `/time` and `/date` slash commands — insert the current time/date directly (distinct from the `{{time}}` / `{{date}}` *template* placeholders, which only expand inside a template)
+- [ ] **Setting: configurable date format** — let the user choose the date (and time) format used by `/date` / `/time` and the `{{date}}` / `{{time}}` placeholders (currently hardcoded to `YYYY-MM-DD` / `HH:MM` in `slash::current_date`/`current_time`)
 
 ## Notes & navigation
 - [x] **Page rename** (and rewrite `[[links]]` pointing at it) — right-click → Rename page → dialog; `db.rename_page` rewrites links in a transaction

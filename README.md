@@ -20,10 +20,10 @@ and a SQLite backend.
 - **As-you-type completion** — typing `[[` suggests pages (and offers to create a
   new one), `#` suggests tags, and `{{` suggests template placeholders. Lists
   filter as you type and are capped so they stay manageable with many pages.
-- **`/` command palette** — a compact two-level menu: pick **Markdown** (headings,
-  lists, to-dos, quotes, code blocks, **tables**, dividers, inline formatting) or
-  **Templates**. Typing filters across everything, so `/table` or `/h1` jumps
-  straight to it.
+- **`/` command palette** — a compact menu: pick **Markdown** (headings, lists,
+  to-dos, quotes, code blocks, **tables**, dividers, inline formatting) or
+  **Templates**, or insert the current date/time with **`/date`** / **`/time`**.
+  Typing filters across everything, so `/table` or `/h1` jumps straight to it.
 - **Auto-paired brackets & quotes** — typing `(`, `[`, `{`, `<`, `"`, or `'`
   inserts the matching closer and leaves the caret between; typing the closer
   steps over it. Prose-aware, so it won't mangle contractions like `don't`.

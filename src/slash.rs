@@ -160,9 +160,11 @@ pub fn build_slash_items(
                     kind: ItemKind::Category(SlashLevel::Templates),
                 });
             }
+            datetime_items(&q, &mut out);
         }
         SlashLevel::Root => {
             markdown_items(&q, &mut out);
+            datetime_items(&q, &mut out);
             template_items(&q, templates, title, &mut out);
         }
         SlashLevel::Markdown => markdown_items(&q, &mut out),
@@ -193,6 +195,17 @@ fn template_items(q: &str, templates: &[Template], title: &str, out: &mut Vec<Pa
                 label: format!("!{}", t.name),
                 kind: ItemKind::Insert { snippet, caret },
             });
+        }
+    }
+}
+
+/// `/date` and `/time`: insert the current local date/time directly. Distinct
+/// from the `{{date}}` / `{{time}}` template placeholders, which only expand
+/// inside a template body. The value to be inserted is shown in the label.
+fn datetime_items(q: &str, out: &mut Vec<PaletteItem>) {
+    for (label, value) in [("Date", current_date()), ("Time", current_time())] {
+        if q.is_empty() || label.to_lowercase().contains(q) {
+            out.push(insert_item(format!("{label} ({value})"), value));
         }
     }
 }
@@ -349,18 +362,32 @@ fn template_header(line: &str) -> Option<&str> {
 
 /// Expand a template body: substitute `{{date}}`/`{{time}}`/`{{title}}`,
 /// and use `{{cursor}}` (removed) for the caret — else caret at the end.
-fn expand_template(body: &str, title: &str) -> (String, usize) {
-    let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    let date = format!(
+/// Local now, falling back to UTC when the offset can't be determined.
+fn local_now() -> time::OffsetDateTime {
+    time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc())
+}
+
+/// Current date as `YYYY-MM-DD`.
+fn current_date() -> String {
+    let now = local_now();
+    format!(
         "{:04}-{:02}-{:02}",
         now.year(),
         u8::from(now.month()),
         now.day()
-    );
-    let time = format!("{:02}:{:02}", now.hour(), now.minute());
+    )
+}
+
+/// Current time as `HH:MM` (24-hour).
+fn current_time() -> String {
+    let now = local_now();
+    format!("{:02}:{:02}", now.hour(), now.minute())
+}
+
+fn expand_template(body: &str, title: &str) -> (String, usize) {
     let mut s = body
-        .replace("{{date}}", &date)
-        .replace("{{time}}", &time)
+        .replace("{{date}}", &current_date())
+        .replace("{{time}}", &current_time())
         .replace("{{title}}", title);
     match s.find("{{cursor}}") {
         Some(pos) => {
@@ -613,6 +640,41 @@ mod tests {
         let (s, caret) = expand_template("# {{title}}\n{{cursor}}done", "Hi");
         assert_eq!(s, "# Hi\ndone");
         assert_eq!(caret, "# Hi\n".len());
+    }
+
+    #[test]
+    fn date_time_commands_insert_current_values() {
+        // Both appear at the root, and `/date` / `/time` narrow to each.
+        let root = build_slash_items(SlashLevel::Root, "", &[], "");
+        let labels: Vec<&str> = root.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.iter().any(|l| l.starts_with("Date (")));
+        assert!(labels.iter().any(|l| l.starts_with("Time (")));
+
+        let date = build_slash_items(SlashLevel::Root, "date", &[], "");
+        let item = date
+            .iter()
+            .find(|i| i.label.starts_with("Date ("))
+            .expect("date command");
+        let ItemKind::Insert { snippet, caret } = &item.kind else {
+            panic!("expected insert");
+        };
+        // YYYY-MM-DD, caret at the end.
+        assert_eq!(snippet.len(), 10);
+        assert_eq!(snippet.as_bytes()[4], b'-');
+        assert_eq!(snippet.as_bytes()[7], b'-');
+        assert_eq!(*caret, snippet.len());
+
+        let time = build_slash_items(SlashLevel::Root, "time", &[], "");
+        let item = time
+            .iter()
+            .find(|i| i.label.starts_with("Time ("))
+            .expect("time command");
+        let ItemKind::Insert { snippet, .. } = &item.kind else {
+            panic!("expected insert");
+        };
+        // HH:MM
+        assert_eq!(snippet.len(), 5);
+        assert_eq!(snippet.as_bytes()[2], b':');
     }
 
     #[test]
