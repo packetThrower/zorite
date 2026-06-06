@@ -176,12 +176,26 @@ impl Db {
             .optional()
     }
 
+    /// The named pages for the sidebar tree and autocomplete. Content is
+    /// intentionally **not** loaded — this runs on every sidebar refresh and
+    /// content dominates the cost (≈4× slower at 10k pages). The returned
+    /// `Page.content` is therefore empty; use [`get_page`](Self::get_page) when
+    /// you need a page's body.
     pub fn list_pages(&self) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, is_journal, journal_date, content FROM pages \
+            "SELECT id, title, is_journal, journal_date FROM pages \
              WHERE is_journal = 0 ORDER BY title COLLATE NOCASE",
         )?;
-        stmt.query_map([], row_to_page)?.collect()
+        stmt.query_map([], |row| {
+            Ok(Page {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                is_journal: row.get::<_, i64>(2)? != 0,
+                journal_date: row.get(3)?,
+                content: String::new(),
+            })
+        })?
+        .collect()
     }
 
     /// The ids of the most-recently-updated named pages, newest first. Used to

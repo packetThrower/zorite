@@ -24,10 +24,13 @@ import sqlite3, random, os, sys, datetime, time
 COUNT = int(sys.argv[1]) if len(sys.argv) > 1 else 10000
 PATH = sys.argv[2] if len(sys.argv) > 2 else "/tmp/zorite-perf.db"
 IMAGES = [
-    # Replace with image filenames present in <data_dir>/images/ to see them render.
+    # Image filenames present in <data_dir>/images/ to see them render. Override
+    # without editing this file via ZORITE_PERF_IMAGES="a.jpg,b.jpg".
     "sample-1.jpg",
     "sample-2.jpg",
 ]
+if os.environ.get("ZORITE_PERF_IMAGES"):
+    IMAGES = [s.strip() for s in os.environ["ZORITE_PERF_IMAGES"].split(",") if s.strip()]
 random.seed(42)
 
 if os.path.exists(PATH):

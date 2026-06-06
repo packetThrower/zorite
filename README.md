@@ -140,29 +140,32 @@ ZORITE_DB=/tmp/zorite-perf.db cargo run
 
 **Hot-path query timings** (SQLite, best of several runs on a development Mac):
 
-| Operation                                    | 1,000 pages | 10,000 pages |
-| -------------------------------------------- | ----------- | ------------ |
-| Load the page list (`list_pages`)            | 0.9 ms      | 17 ms        |
-| Search (substring `LIKE`, per keystroke)     | 0.5 ms      | 4.4 ms       |
-| Backlinks for a page (indexed)               | 0.01 ms     | 0.01 ms      |
-| Seed the recent list (first launch only)     | 0.15 ms     | 2.3 ms       |
+| Operation                                  | 1,000   | 10,000  | 50,000  |
+| ------------------------------------------ | ------- | ------- | ------- |
+| Load the page list (`list_pages`)          | 0.3 ms  | 4.6 ms  | 28 ms   |
+| Search (substring `LIKE`, per keystroke)   | 0.4 ms  | 4.4 ms  | 23 ms   |
+| Backlinks for a page (indexed)             | 0.01 ms | 0.01 ms | 0.01 ms |
+| Seed the recent list (first launch only)   | 0.1 ms  | 2.3 ms  | 12 ms   |
+
+`list_pages` loads only `id`/`title`, not page content — that keeps it ~4× faster
+(at 50k pages, 28 ms versus ~103 ms with content) and, just as importantly, keeps
+memory flat (below).
 
 **Memory** (resident set size):
 
-| Metric        | Empty DB | 10,000 pages |
-| ------------- | -------- | ------------ |
-| RAM (RSS)     | ~86 MB   | ~177 MB      |
-| Database file | 36 KB    | 14.8 MB      |
+| Metric        | Empty DB | 10,000 pages | 50,000 pages |
+| ------------- | -------- | ------------ | ------------ |
+| RAM (RSS)     | ~86 MB   | ~135 MB      | ~138 MB      |
+| Database file | 36 KB    | 14.8 MB      | 74.9 MB      |
 
-Of the ~90 MB increase, ~15 MB is the raw note text; the rest is the in-memory
-page list, SQLite's page cache, decoded image textures, and GPUI's retained
-render tree.
+RAM barely moves from 10k to 50k: the page list holds only `id`/`title` (~2 MB at
+50k), not the 75 MB of note text — bodies load one page at a time as you open
+them.
 
-At 10,000 pages launch, search, navigation, and scrolling are all immediate. The
-sidebar is capped to recently-viewed pages, so its cost is independent of the
-total. The figures that scale linearly are `list_pages` (it loads every page on
-each sidebar refresh — fetching only `id`/`title` would cut it ~4×, since the
-list doesn't need page content) and the journal feed (all loaded days stay
+At 50,000 pages, launch, navigation, and scrolling stay immediate, and the
+sidebar's cost is independent of the total (it's capped to recently-viewed
+pages). The remaining linear cost is search — a `LIKE` scan, where a full-text
+index would help at this scale — and the journal feed (all loaded days stay
 mounted). Both are on the [roadmap](TODO.md).
 
 ## Roadmap
