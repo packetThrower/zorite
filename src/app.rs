@@ -882,6 +882,48 @@ impl AppView {
         cx.notify();
     }
 
+    /// Like [`Self::edit_day`], but for clicking the empty area below a day:
+    /// drop the caret on a trailing blank line so you can start writing at the
+    /// bottom right away.
+    pub fn edit_day_at_end(&mut self, date: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing_day = Some(date.to_string());
+        if let Some(de) = self.day_editors.get(date) {
+            let editor = de.state.clone();
+            Self::focus_editor_at_end(&editor, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// [`Self::edit_page`] variant for clicking the page's open area.
+    pub fn edit_page_at_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.page_editing = true;
+        if let Some(pe) = self.page_editor.as_ref() {
+            let editor = pe.state.clone();
+            Self::focus_editor_at_end(&editor, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Focus `editor` with the caret on a trailing blank line, appending a
+    /// newline first when the content doesn't already end with one. The append
+    /// runs through `set_value`, so the editor's change handler persists it.
+    fn focus_editor_at_end(
+        editor: &Entity<InputState>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        editor.update(cx, |st, cx| {
+            let value = st.value().to_string();
+            if !value.is_empty() && !value.ends_with('\n') {
+                st.set_value(format!("{value}\n"), window, cx);
+            }
+            let end = st.text().len();
+            let pos = st.text().offset_to_position(end);
+            st.set_cursor_position(pos, window, cx);
+            st.focus(window, cx);
+        });
+    }
+
     // --- Read accessors for the UI ---
 
     pub fn is_journal_view(&self) -> bool {

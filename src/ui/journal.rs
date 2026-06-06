@@ -87,6 +87,25 @@ fn day_section(
         })
         .child(header)
         .child(body)
+        .child(day_open_area(i, date, cx))
+}
+
+/// The empty space filling the rest of a day below its content. Clicking it
+/// enters edit mode with the caret on a trailing blank line, so the whole day
+/// reads as one writable surface — not just the lines that already have text.
+fn day_open_area(i: usize, date: &str, cx: &mut Context<AppView>) -> impl IntoElement {
+    let d = date.to_string();
+    div()
+        .id(("day-open", i))
+        .flex_1()
+        .min_h(px(60.0))
+        .w_full()
+        .cursor_text()
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.edit_day_at_end(&d, window, cx);
+            }),
+        )
 }
 
 /// A non-editing day: rendered markdown (or a placeholder when empty),

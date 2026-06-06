@@ -3,7 +3,7 @@
 
 use gpui::{
     ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::input::{Input, InputState};
 
@@ -37,6 +37,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .p(px(28.0))
                         .flex()
                         .flex_col()
+                        // Fill the viewport so the open area below the content
+                        // is clickable all the way down.
+                        .min_h(relative(1.0))
                         .child(page_title(pe))
                         .child(if app.is_page_editing() {
                             Input::new(&pe.state)
@@ -49,7 +52,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         })
                         .when(!pe.backlinks.is_empty(), |this| {
                             this.child(backlinks_section(&pe.backlinks, cx))
-                        }),
+                        })
+                        .child(page_open_area(cx)),
                 ),
         )
         .into_any_element()
@@ -114,6 +118,23 @@ fn page_rendered(state: &Entity<InputState>, cx: &mut Context<AppView>) -> impl 
         .on_click(
             cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.edit_page(window, cx);
+            }),
+        )
+}
+
+/// The empty space below the page content (and any backlinks). Clicking it
+/// enters edit mode with the caret on a trailing blank line — same affordance
+/// as the journal feed's open day area.
+fn page_open_area(cx: &mut Context<AppView>) -> impl IntoElement {
+    div()
+        .id("page-open")
+        .flex_1()
+        .min_h(px(60.0))
+        .w_full()
+        .cursor_text()
+        .on_click(
+            cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.edit_page_at_end(window, cx);
             }),
         )
 }
