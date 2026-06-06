@@ -26,6 +26,9 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] Hierarchy follow-ups: collapsible namespace nodes in the sidebar; cascade-rename a namespace (rename `Foo` → rewrite `Foo::*` children + their `[[links]]`); a "New sub-page" action
 - [ ] **Page aliases** via `::alias` — resolve `[[alias]]` to the page (design note: disambiguate `::` here vs. the `parent::child` hierarchy syntax above)
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)
+- [x] **Sidebar shows recent pages** — the page tree is capped to the last 10 *viewed* named pages (persisted in `settings`; seeded from the most-recently-edited pages on first run). Reach the rest via search
+- [ ] **Favorites section in the sidebar** — pin chosen pages to a "Favorites" group above the page list (e.g. right-click → Favorite); persists across launches
+- [ ] Sidebar: a "show all pages" affordance (browse the full tree, not just recent)
 - [x] Journal: jump-to-date — a sidebar calendar date picker opens any day (creating it if needed)
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 

@@ -100,6 +100,9 @@ pub struct ImageDrag {
     width: f32,
 }
 
+/// How many recently-viewed pages the sidebar's page tree is capped to.
+const RECENT_PAGES_LIMIT: usize = 10;
+
 pub struct AppView {
     db: Db,
     /// Open tabs (index 0 is the pinned Journal) and the active index.
@@ -150,6 +153,9 @@ pub struct AppView {
     /// When collapsed, the sidebar shrinks to a thin icon rail (expand caret +
     /// the calendar/settings icons); the page list and search box hide.
     pub sidebar_collapsed: bool,
+    /// Ids of recently-viewed named pages, most-recent first (capped). The
+    /// sidebar page tree is filtered to these; persisted across launches.
+    pub recent_pages: Vec<i64>,
     pub search_results: Vec<SearchHit>,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
@@ -233,6 +239,7 @@ impl AppView {
             calendar,
             show_calendar: false,
             sidebar_collapsed: false,
+            recent_pages: Vec::new(),
             search_results: Vec::new(),
             slash: None,
             templates: Vec::new(),
@@ -248,6 +255,7 @@ impl AppView {
             this.ensure_day_editor(date_for_offset(i), window, cx);
         }
         this.refresh_sidebar();
+        this.recent_pages = this.load_recent_pages();
         // Load user themes on top of the built-ins, then apply the saved
         // (or default) skin + mode before the first paint.
         this.skins.extend(skins::load_user_skins());
@@ -430,6 +438,40 @@ impl AppView {
         cx.notify();
     }
 
+    /// Load the persisted recent-pages list, falling back to the most-recently
+    /// edited pages so the sidebar isn't empty before anything's been viewed.
+    fn load_recent_pages(&self) -> Vec<i64> {
+        let stored: Vec<i64> = self
+            .db
+            .get_setting("recent_pages")
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default();
+        if stored.is_empty() {
+            self.db
+                .recent_page_ids(RECENT_PAGES_LIMIT)
+                .unwrap_or_default()
+        } else {
+            stored
+        }
+    }
+
+    /// Mark a named page as most-recently-viewed (front of the list, capped)
+    /// and persist it. The sidebar page tree is filtered to this list.
+    fn record_recent(&mut self, page_id: i64) {
+        self.recent_pages.retain(|&id| id != page_id);
+        self.recent_pages.insert(0, page_id);
+        self.recent_pages.truncate(RECENT_PAGES_LIMIT);
+        let csv = self
+            .recent_pages
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Err(e) = self.db.set_setting("recent_pages", &csv) {
+            log::error!("save recent pages: {e}");
+        }
+    }
+
     /// Open a specific journal day (by ISO `YYYY-MM-DD`) as a focused tab,
     /// creating the day if it doesn't exist yet. Used by the date picker.
     pub fn open_journal_day(&mut self, date: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -440,6 +482,10 @@ impl AppView {
     }
 
     fn open_page_foreground(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        // Viewing a named page bumps it to the top of the sidebar's recent list.
+        if !page.is_journal {
+            self.record_recent(page.id);
+        }
         if let Some(ix) = self.tab_index_for(page.id) {
             self.activate_tab(ix, window, cx);
         } else {

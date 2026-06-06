@@ -25,7 +25,7 @@ pub struct PageNode {
 /// Build the page tree from a flat list of named pages, splitting each title on
 /// `::`. A title with an empty segment (e.g. a leading `::`) is kept as a single
 /// flat node. Each level is sorted case-insensitively by segment.
-pub fn build_tree(pages: &[Page]) -> Vec<PageNode> {
+pub fn build_tree<'a>(pages: impl IntoIterator<Item = &'a Page>) -> Vec<PageNode> {
     let mut roots: Vec<PageNode> = Vec::new();
     for page in pages {
         let split: Vec<&str> = page.title.split(SEP).map(str::trim).collect();

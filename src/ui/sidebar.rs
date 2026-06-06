@@ -1,8 +1,9 @@
 //! The left rail. Expanded, it's a row of icon buttons (collapse caret,
-//! jump-to-date, settings) above a search box, then the journal feed link and
-//! named pages. Collapsed, it shrinks to a thin icon rail with an expand caret
-//! (`>`) at the top plus the calendar/settings icons. Right-click the pages
-//! area to create a new page; older days are found via search or the date picker.
+//! jump-to-date, settings) above a search box, then the journal feed link and a
+//! "Recent" tree of the recently-viewed pages (`Foo::Bar` titles nest).
+//! Collapsed, it shrinks to a thin icon rail with an expand caret (`>`) at the
+//! top plus the calendar/settings icons. Right-click the pages area to create a
+//! new page; non-recent pages and older days are found via search.
 
 use gpui::{
     AnyElement, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
@@ -27,11 +28,17 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
 /// The full sidebar: a header (collapse caret + jump-to-date/settings icons,
 /// then the search box) above the journal feed link and the page list.
 fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
-    // `Foo::Bar` titles nest into a tree; intermediate namespace segments with
-    // no page of their own show as virtual (non-bold, still clickable) nodes.
-    let tree = hierarchy::build_tree(&app.pages);
+    // The tree is filtered to recently-viewed pages. `Foo::Bar` titles nest;
+    // a namespace segment with no recent page of its own still shows as a
+    // virtual (clickable) node so the path to a recent page is visible.
+    let tree = hierarchy::build_tree(
+        app.pages
+            .iter()
+            .filter(|p| app.recent_pages.contains(&p.id)),
+    );
     let mut page_rows: Vec<AnyElement> = Vec::new();
     push_tree_rows(&tree, 0, app, cx, &mut page_rows);
+    let no_pages = page_rows.is_empty();
 
     div()
         .w(px(240.0))
@@ -96,9 +103,13 @@ fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .flex()
                         .flex_col()
                         .child(journal_row(app.is_journal_view(), cx))
-                        .child(section_label("Pages"))
-                        .when(app.pages.is_empty(), |this| {
-                            this.child(empty_hint("No pages yet — right-click below to add one"))
+                        .child(section_label("Recent"))
+                        .when(no_pages, |this| {
+                            this.child(empty_hint(if app.pages.is_empty() {
+                                "No pages yet — right-click below to add one"
+                            } else {
+                                "No recent pages"
+                            }))
                         })
                         .children(page_rows),
                 )

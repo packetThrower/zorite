@@ -184,6 +184,17 @@ impl Db {
         stmt.query_map([], row_to_page)?.collect()
     }
 
+    /// The ids of the most-recently-updated named pages, newest first. Used to
+    /// seed the sidebar's "recent" list before the user has viewed anything.
+    pub fn recent_page_ids(&self, limit: usize) -> rusqlite::Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM pages WHERE is_journal = 0 \
+             ORDER BY updated_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, i64>(0))?;
+        rows.collect()
+    }
+
     pub fn set_page_content(&self, id: i64, content: &str) -> rusqlite::Result<()> {
         self.conn.execute(
             "UPDATE pages SET content = ?2, updated_at = datetime('now') WHERE id = ?1",
