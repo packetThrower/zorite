@@ -39,6 +39,11 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] True **list virtualization** in the journal feed (v1 keeps all loaded days mounted)
 - [ ] Move SQLite writes off the UI thread (background executor)
 
+## Data & migrations
+- [ ] **Back up before migrating** — copy the DB to `zorite.db.bak-v<N>` before applying schema migrations on launch, so a bad migration is recoverable
+- [ ] **Transactional migrations** — wrap each migration step (especially any data transform) in a transaction; today only `v1→v2` is, so a mid-way failure can leave a half-migrated DB
+- [ ] **Friendlier migration failure** — a failed migration currently falls back to an empty in-memory DB (the user opens to blank notes); surface the error and offer to restore the backup instead of silently showing emptiness
+
 ## App & polish
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
 - [x] **Collapsible sidebar** — a `<` caret collapses it to a thin icon rail (`>` to expand, plus the calendar/settings icons); the content area reclaims the space
