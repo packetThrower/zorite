@@ -19,7 +19,7 @@ use gpui::{
     WindowHandle, WindowOptions, div, px, size,
 };
 use gpui_component::{
-    RopeExt, Root, TitleBar, WindowExt,
+    Root, RopeExt, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
@@ -155,7 +155,10 @@ impl AppView {
 
         let mut this = Self {
             db,
-            tabs: vec![OpenTab { kind: TabKind::Journal, title: "Journal".into() }],
+            tabs: vec![OpenTab {
+                kind: TabKind::Journal,
+                title: "Journal".into(),
+            }],
             active: 0,
             searching: false,
             tab_scroll: ScrollHandle::new(),
@@ -191,7 +194,10 @@ impl AppView {
         // Load user themes on top of the built-ins, then apply the saved
         // (or default) skin + mode before the first paint.
         this.skins.extend(skins::load_user_skins());
-        this.skin_id = this.db.get_setting("theme_skin").unwrap_or_else(|| "zorite".to_string());
+        this.skin_id = this
+            .db
+            .get_setting("theme_skin")
+            .unwrap_or_else(|| "zorite".to_string());
         this.mode = this
             .db
             .get_setting("theme_mode")
@@ -246,7 +252,8 @@ impl AppView {
                 _ => {}
             },
         );
-        self.day_editors.insert(date, DayEditor { state, _sub: sub });
+        self.day_editors
+            .insert(date, DayEditor { state, _sub: sub });
     }
 
     /// Reload cached journal day editors from the DB. Called after an action
@@ -265,7 +272,8 @@ impl AppView {
                 .unwrap_or_default();
             if let Some(de) = self.day_editors.get(&date) {
                 if de.state.read(cx).value().to_string() != content {
-                    de.state.update(cx, |s, cx| s.set_value(content, window, cx));
+                    de.state
+                        .update(cx, |s, cx| s.set_value(content, window, cx));
                 }
             }
         }
@@ -345,7 +353,10 @@ impl AppView {
         if let Some(ix) = self.tab_index_for(page.id) {
             self.activate_tab(ix, window, cx);
         } else {
-            self.tabs.push(OpenTab { kind: TabKind::Page(page.id), title: page.title.into() });
+            self.tabs.push(OpenTab {
+                kind: TabKind::Page(page.id),
+                title: page.title.into(),
+            });
             self.activate_tab(self.tabs.len() - 1, window, cx);
         }
     }
@@ -358,7 +369,10 @@ impl AppView {
         }
         match self.db.get_page(id) {
             Ok(Some(page)) => {
-                self.tabs.push(OpenTab { kind: TabKind::Page(id), title: page.title.into() });
+                self.tabs.push(OpenTab {
+                    kind: TabKind::Page(id),
+                    title: page.title.into(),
+                });
                 cx.notify();
             }
             Ok(None) => log::warn!("page {id} not found"),
@@ -367,7 +381,9 @@ impl AppView {
     }
 
     fn tab_index_for(&self, id: i64) -> Option<usize> {
-        self.tabs.iter().position(|t| matches!(t.kind, TabKind::Page(pid) if pid == id))
+        self.tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Page(pid) if pid == id))
     }
 
     /// Switch to tab `ix` and (re)build its content. Tabs share one page
@@ -377,8 +393,10 @@ impl AppView {
     /// editor's `Blur` doesn't fire once it's dropped (switching/closing tabs),
     /// so flush here to avoid losing those edits.
     fn flush_page_editor(&mut self, cx: &mut Context<Self>) {
-        let Some((id, value)) =
-            self.page_editor.as_ref().map(|pe| (pe.id, pe.state.read(cx).value().to_string()))
+        let Some((id, value)) = self
+            .page_editor
+            .as_ref()
+            .map(|pe| (pe.id, pe.state.read(cx).value().to_string()))
         else {
             return;
         };
@@ -466,7 +484,8 @@ impl AppView {
         let backlinks = self.db.backlinks(pid).unwrap_or_default();
 
         // Inline-editable title: renames the page on Enter or blur.
-        let title_state = cx.new(|cx| InputState::new(window, cx).default_value(page.title.clone()));
+        let title_state =
+            cx.new(|cx| InputState::new(window, cx).default_value(page.title.clone()));
         let title_sub = cx.subscribe_in(
             &title_state,
             window,
@@ -558,17 +577,31 @@ impl AppView {
         let title = self.slash_title(&target);
         let items = slash::build_items(level, &query, &self.templates, &title);
         let selected = self.slash.as_ref().map_or(0, |s| s.selected);
-        let selected = if items.is_empty() { 0 } else { selected.min(items.len() - 1) };
-        self.slash = Some(Slash { target, query, start, caret, selected, level, items });
+        let selected = if items.is_empty() {
+            0
+        } else {
+            selected.min(items.len() - 1)
+        };
+        self.slash = Some(Slash {
+            target,
+            query,
+            start,
+            caret,
+            selected,
+            level,
+            items,
+        });
         cx.notify();
     }
 
     fn slash_title(&self, target: &SlashTarget) -> String {
         match target {
             SlashTarget::Day(d) => d.clone(),
-            SlashTarget::Page(_) => {
-                self.page_editor.as_ref().map(|pe| pe.title.clone()).unwrap_or_default()
-            }
+            SlashTarget::Page(_) => self
+                .page_editor
+                .as_ref()
+                .map(|pe| pe.title.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -606,7 +639,15 @@ impl AppView {
         };
         let title = self.slash_title(&target);
         let items = slash::build_items(level, &query, &self.templates, &title);
-        self.slash = Some(Slash { target, query, start, caret, selected: 0, level, items });
+        self.slash = Some(Slash {
+            target,
+            query,
+            start,
+            caret,
+            selected: 0,
+            level,
+            items,
+        });
         cx.notify();
     }
 
@@ -653,7 +694,13 @@ impl AppView {
     }
 
     /// Insert a snippet at the `/query`, then close the menu.
-    fn insert_slash(&mut self, snippet: String, caret: usize, window: &mut Window, cx: &mut Context<Self>) {
+    fn insert_slash(
+        &mut self,
+        snippet: String,
+        caret: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(s) = self.slash.take() else { return };
         let Some(editor) = self.editor_for(&s.target) else {
             cx.notify();
@@ -744,7 +791,10 @@ impl AppView {
     // --- Theme / appearance ---
 
     fn current_skin(&self) -> &Skin {
-        self.skins.iter().find(|s| s.id == self.skin_id).unwrap_or(&self.skins[0])
+        self.skins
+            .iter()
+            .find(|s| s.id == self.skin_id)
+            .unwrap_or(&self.skins[0])
     }
 
     /// Resolve the active skin + mode (+ OS appearance for Auto) to a
@@ -815,7 +865,12 @@ impl AppView {
     }
 
     /// Set the theme mode, apply it live, and persist the choice.
-    pub fn set_theme_mode(&mut self, mode: theme::Mode, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_theme_mode(
+        &mut self,
+        mode: theme::Mode,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.mode = mode;
         self.apply_theme(window, cx);
         let _ = self.db.set_setting("theme_mode", mode.as_str());
@@ -840,7 +895,10 @@ impl AppView {
         // Focus an existing settings window instead of duplicating it.
         let existing = view.read(cx).settings_window;
         if let Some(handle) = existing {
-            if handle.update(cx, |_, window, _| window.activate_window()).is_ok() {
+            if handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+            {
                 return;
             }
         }
@@ -877,7 +935,9 @@ impl AppView {
 
     /// `DeletePage` handler: confirm, then delete the remembered page.
     fn on_delete_page(&mut self, _: &DeletePage, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((id, title)) = self.context_page.take() else { return };
+        let Some((id, title)) = self.context_page.take() else {
+            return;
+        };
         let weak = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let weak = weak.clone();
@@ -901,7 +961,12 @@ impl AppView {
     }
 
     /// `OpenInNewTab` handler: open the right-clicked page in a background tab.
-    fn on_open_in_new_tab(&mut self, _: &OpenInNewTab, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_open_in_new_tab(
+        &mut self,
+        _: &OpenInNewTab,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some((id, _)) = self.context_page.take() {
             self.open_page_in_new_tab(id, cx);
         }
@@ -936,7 +1001,8 @@ impl AppView {
     /// `NewPage` handler: prompt for a title in a dialog, then create and
     /// open the page (dispatched from a pages-area right-click menu).
     fn on_new_page(&mut self, _: &NewPage, window: &mut Window, cx: &mut Context<Self>) {
-        self.new_page_input.update(cx, |s, cx| s.set_value("", window, cx));
+        self.new_page_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
         let input = self.new_page_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -956,22 +1022,26 @@ impl AppView {
                                 .label("Cancel")
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("new-page-create").primary().label("Create").on_click(
-                            move |_, window, cx| {
-                                let title = input_btn.read(cx).value().trim().to_string();
-                                if !title.is_empty() {
-                                    let _ = weak_btn
-                                        .update(cx, |this, cx| this.open_page_title(&title, window, cx));
-                                }
-                                window.close_dialog(cx);
-                            },
-                        )),
+                        .child(
+                            Button::new("new-page-create")
+                                .primary()
+                                .label("Create")
+                                .on_click(move |_, window, cx| {
+                                    let title = input_btn.read(cx).value().trim().to_string();
+                                    if !title.is_empty() {
+                                        let _ = weak_btn.update(cx, |this, cx| {
+                                            this.open_page_title(&title, window, cx)
+                                        });
+                                    }
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                 )
                 .on_ok(move |_, window, cx| {
                     let title = input_key.read(cx).value().trim().to_string();
                     if !title.is_empty() {
-                        let _ =
-                            weak_key.update(cx, |this, cx| this.open_page_title(&title, window, cx));
+                        let _ = weak_key
+                            .update(cx, |this, cx| this.open_page_title(&title, window, cx));
                     }
                     true
                 })
@@ -983,9 +1053,12 @@ impl AppView {
     /// `RenamePage` handler: open a dialog with a text field, pre-filled
     /// with the current title, to rename the right-clicked page.
     fn on_rename_page(&mut self, _: &RenamePage, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((id, title)) = self.context_page.take() else { return };
+        let Some((id, title)) = self.context_page.take() else {
+            return;
+        };
         self.rename_target = Some(id);
-        self.rename_input.update(cx, |s, cx| s.set_value(title.to_string(), window, cx));
+        self.rename_input
+            .update(cx, |s, cx| s.set_value(title.to_string(), window, cx));
 
         // `AlertDialog` is title/description-only; a text field needs the
         // generic `Dialog` (it impls `ParentElement`, so the Input goes in as
@@ -1032,7 +1105,9 @@ impl AppView {
     /// Apply a confirmed rename: rewrite `[[links]]`, refresh the sidebar,
     /// and update any open tab titles for the page.
     fn commit_rename(&mut self, new_title: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.rename_target.take() else { return };
+        let Some(id) = self.rename_target.take() else {
+            return;
+        };
         match self.db.rename_page(id, &new_title) {
             Ok(true) => {
                 let title: SharedString = new_title.trim().to_string().into();
@@ -1141,13 +1216,15 @@ impl Render for AppView {
                     cx.propagate();
                 }
             }))
-            .on_action(cx.listener(|this: &mut AppView, _: &SlashConfirm, window, cx| {
-                if this.slash.is_some() {
-                    this.confirm_slash(window, cx);
-                } else {
-                    cx.propagate();
-                }
-            }))
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &SlashConfirm, window, cx| {
+                    if this.slash.is_some() {
+                        this.confirm_slash(window, cx);
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
             .on_action(cx.listener(|this: &mut AppView, _: &SlashCancel, _, cx| {
                 // From a submenu, Esc backs out to the root categories;
                 // from the root it closes the menu.
@@ -1278,7 +1355,11 @@ impl Render for AppView {
 /// editor is one line when empty and grows line-by-line with content —
 /// the outer feed scrolls, never the individual day. The high `max_rows`
 /// effectively means "never scroll internally".
-fn make_editor(content: &str, window: &mut Window, cx: &mut Context<AppView>) -> Entity<InputState> {
+fn make_editor(
+    content: &str,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> Entity<InputState> {
     cx.new(|cx| {
         // Auto-grow so the editor expands to fit its content (the feed/page
         // scrolls, not the editor). Tab indentation is handled by our own
@@ -1293,7 +1374,12 @@ fn make_editor(content: &str, window: &mut Window, cx: &mut Context<AppView>) ->
 /// ISO `YYYY-MM-DD` for the day `i` days before today (local time).
 pub(crate) fn date_for_offset(i: usize) -> String {
     let dt = now_local() - time::Duration::days(i as i64);
-    format!("{:04}-{:02}-{:02}", dt.year(), u8::from(dt.month()), dt.day())
+    format!(
+        "{:04}-{:02}-{:02}",
+        dt.year(),
+        u8::from(dt.month()),
+        dt.day()
+    )
 }
 
 /// Human-friendly header for the day `i` days back, e.g.

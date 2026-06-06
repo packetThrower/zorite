@@ -1,7 +1,7 @@
 //! The slash-command popup list (keyboard-driven; rendered as an anchored
 //! overlay by `AppView`).
 
-use gpui::{IntoElement, ParentElement, Styled, div, px, prelude::FluentBuilder as _};
+use gpui::{IntoElement, ParentElement, Styled, div, prelude::FluentBuilder as _, px};
 
 use crate::slash::{ItemKind, Slash};
 use crate::theme;
@@ -45,7 +45,9 @@ pub fn render(slash: &Slash) -> impl IntoElement {
                 .items_center()
                 .justify_between()
                 .gap_4()
-                .when(selected, |d| d.bg(theme::accent_tint()).text_color(theme::text_primary()))
+                .when(selected, |d| {
+                    d.bg(theme::accent_tint()).text_color(theme::text_primary())
+                })
                 .when(!selected, |d| d.text_color(theme::text_secondary()))
                 .child(item.label.clone())
                 .when(is_category, |d| {

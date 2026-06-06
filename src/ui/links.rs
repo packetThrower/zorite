@@ -10,7 +10,9 @@ pub fn parse_links(content: &str) -> Vec<String> {
     // [[wiki-links]]
     let mut rest = content;
     while let Some(open) = rest.find("[[") {
-        let Some(close_rel) = rest[open + 2..].find("]]") else { break };
+        let Some(close_rel) = rest[open + 2..].find("]]") else {
+            break;
+        };
         push_unique(&mut out, &rest[open + 2..open + 2 + close_rel]);
         rest = &rest[open + 2 + close_rel + 2..];
     }
@@ -74,7 +76,10 @@ mod tests {
 
     #[test]
     fn inner_is_trimmed() {
-        assert_eq!(parse_links("[[  Spaced Name  ]]"), vec!["Spaced Name".to_string()]);
+        assert_eq!(
+            parse_links("[[  Spaced Name  ]]"),
+            vec!["Spaced Name".to_string()]
+        );
     }
 
     #[test]

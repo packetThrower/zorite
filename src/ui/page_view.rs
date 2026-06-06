@@ -3,7 +3,7 @@
 
 use gpui::{
     ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{Input, InputState};
 
@@ -13,7 +13,12 @@ use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let Some(pe) = app.page_editor.as_ref() else {
-        return div().flex_1().min_w_0().h_full().bg(theme::bg_content()).into_any_element();
+        return div()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .bg(theme::bg_content())
+            .into_any_element();
     };
 
     div()
@@ -106,9 +111,11 @@ fn page_rendered(state: &Entity<InputState>, cx: &mut Context<AppView>) -> impl 
         .min_h(px(24.0))
         .cursor_text()
         .child(inner)
-        .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.edit_page(window, cx);
-        }))
+        .on_click(
+            cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.edit_page(window, cx);
+            }),
+        )
 }
 
 fn backlinks_section(backlinks: &[Backlink], cx: &mut Context<AppView>) -> impl IntoElement {
@@ -161,7 +168,9 @@ fn backlink_row(i: usize, bl: &Backlink, cx: &mut Context<AppView>) -> impl Into
                 .text_color(theme::text_secondary())
                 .child(bl.snippet.clone()),
         )
-        .on_click(cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.open_page_id(page_id, window, cx);
-        }))
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.open_page_id(page_id, window, cx);
+            }),
+        )
 }

@@ -18,8 +18,15 @@ use gpui::{App, KeyBinding, actions};
 actions!(
     zorite,
     [
-        SlashUp, SlashDown, SlashConfirm, SlashCancel, DeletePage, OpenInNewTab, RenamePage,
-        NewPage, InsertTab
+        SlashUp,
+        SlashDown,
+        SlashConfirm,
+        SlashCancel,
+        DeletePage,
+        OpenInNewTab,
+        RenamePage,
+        NewPage,
+        InsertTab
     ]
 );
 

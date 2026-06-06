@@ -68,23 +68,87 @@ pub struct Snippet {
 /// Built-in markdown authoring snippets (for a `/` command palette).
 pub const SNIPPETS: &[Snippet] = &[
     // Blocks
-    Snippet { label: "Heading 1", snippet: "# ", caret: 2 },
-    Snippet { label: "Heading 2", snippet: "## ", caret: 3 },
-    Snippet { label: "Heading 3", snippet: "### ", caret: 4 },
-    Snippet { label: "Bullet list", snippet: "- ", caret: 2 },
-    Snippet { label: "Numbered list", snippet: "1. ", caret: 3 },
-    Snippet { label: "To-do", snippet: "- [ ] ", caret: 6 },
-    Snippet { label: "Quote", snippet: "> ", caret: 2 },
-    Snippet { label: "Code block", snippet: "```\n\n```", caret: 4 },
-    Snippet { label: "Table", snippet: "|  |  |\n| --- | --- |\n|  |  |\n", caret: 2 },
-    Snippet { label: "Divider", snippet: "---\n", caret: 4 },
+    Snippet {
+        label: "Heading 1",
+        snippet: "# ",
+        caret: 2,
+    },
+    Snippet {
+        label: "Heading 2",
+        snippet: "## ",
+        caret: 3,
+    },
+    Snippet {
+        label: "Heading 3",
+        snippet: "### ",
+        caret: 4,
+    },
+    Snippet {
+        label: "Bullet list",
+        snippet: "- ",
+        caret: 2,
+    },
+    Snippet {
+        label: "Numbered list",
+        snippet: "1. ",
+        caret: 3,
+    },
+    Snippet {
+        label: "To-do",
+        snippet: "- [ ] ",
+        caret: 6,
+    },
+    Snippet {
+        label: "Quote",
+        snippet: "> ",
+        caret: 2,
+    },
+    Snippet {
+        label: "Code block",
+        snippet: "```\n\n```",
+        caret: 4,
+    },
+    Snippet {
+        label: "Table",
+        snippet: "|  |  |\n| --- | --- |\n|  |  |\n",
+        caret: 2,
+    },
+    Snippet {
+        label: "Divider",
+        snippet: "---\n",
+        caret: 4,
+    },
     // Inline (caret lands between the markers)
-    Snippet { label: "Bold", snippet: "****", caret: 2 },
-    Snippet { label: "Italic", snippet: "**", caret: 1 },
-    Snippet { label: "Strikethrough", snippet: "~~~~", caret: 2 },
-    Snippet { label: "Inline code", snippet: "``", caret: 1 },
-    Snippet { label: "Link", snippet: "[]()", caret: 1 },
-    Snippet { label: "Image", snippet: "![]()", caret: 4 },
+    Snippet {
+        label: "Bold",
+        snippet: "****",
+        caret: 2,
+    },
+    Snippet {
+        label: "Italic",
+        snippet: "**",
+        caret: 1,
+    },
+    Snippet {
+        label: "Strikethrough",
+        snippet: "~~~~",
+        caret: 2,
+    },
+    Snippet {
+        label: "Inline code",
+        snippet: "``",
+        caret: 1,
+    },
+    Snippet {
+        label: "Link",
+        snippet: "[]()",
+        caret: 1,
+    },
+    Snippet {
+        label: "Image",
+        snippet: "![]()",
+        caret: 4,
+    },
 ];
 
 /// Called when a `[[wiki-link]]` is clicked, with the trimmed title.
@@ -219,7 +283,12 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             Some(q.into_any_element())
         }
         mdast::Node::ThematicBreak(_) => Some(
-            div().w_full().h(px(1.0)).my(px(6.0)).bg(ctx.style.rule_color).into_any_element(),
+            div()
+                .w_full()
+                .h(px(1.0))
+                .my(px(6.0))
+                .bg(ctx.style.rule_color)
+                .into_any_element(),
         ),
         mdast::Node::Table(t) => Some(render_table(t, ctx)),
         // Stray inline content at block level, or unsupported blocks:
@@ -238,7 +307,9 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
     let start = list.start.unwrap_or(1) as usize;
 
     for (i, item) in list.children.iter().enumerate() {
-        let mdast::Node::ListItem(li) = item else { continue };
+        let mdast::Node::ListItem(li) = item else {
+            continue;
+        };
         let marker = if list.ordered {
             format!("{}.", start + i)
         } else {
@@ -263,7 +334,12 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
                 .flex_row()
                 .gap(px(8.0))
                 .items_start()
-                .child(div().flex_shrink_0().text_color(ctx.style.muted_color).child(marker))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_color(ctx.style.muted_color)
+                        .child(marker),
+                )
                 .child(div().flex_1().min_w_0().child(content)),
         );
     }
@@ -312,7 +388,12 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         .into_any_element()
 }
 
-fn build_inline(nodes: &[mdast::Node], cur: HighlightStyle, style: &MarkdownStyle, out: &mut Inline) {
+fn build_inline(
+    nodes: &[mdast::Node],
+    cur: HighlightStyle,
+    style: &MarkdownStyle,
+    out: &mut Inline,
+) {
     for node in nodes {
         match node {
             mdast::Node::Text(t) => push_text(&t.value, cur, style, out),
@@ -338,13 +419,17 @@ fn build_inline(nodes: &[mdast::Node], cur: HighlightStyle, style: &MarkdownStyl
                 build_inline(&l.children, c, style, out);
                 let end = out.text.len();
                 if start < end {
-                    out.links.push((start..end, LinkTarget::Url(l.url.clone().into())));
+                    out.links
+                        .push((start..end, LinkTarget::Url(l.url.clone().into())));
                 }
             }
             mdast::Node::Break(_) => push_run("\n", cur, out),
             mdast::Node::Delete(d) => {
                 let mut c = cur;
-                c.strikethrough = Some(StrikethroughStyle { thickness: px(1.0), color: None });
+                c.strikethrough = Some(StrikethroughStyle {
+                    thickness: px(1.0),
+                    color: None,
+                });
                 build_inline(&d.children, c, style, out);
             }
             mdast::Node::Image(img) => {
@@ -360,7 +445,8 @@ fn build_inline(nodes: &[mdast::Node], cur: HighlightStyle, style: &MarkdownStyl
                 let start = out.text.len();
                 push_run(&label, c, out);
                 let end = out.text.len();
-                out.links.push((start..end, LinkTarget::Url(img.url.clone().into())));
+                out.links
+                    .push((start..end, LinkTarget::Url(img.url.clone().into())));
             }
             // Recurse into any other container node; ignore leaves we
             // don't special-case.
@@ -423,7 +509,8 @@ fn push_link(display: &str, target: &str, color: Hsla, cur: HighlightStyle, out:
     let start = out.text.len();
     push_run(display, c, out);
     let end = out.text.len();
-    out.links.push((start..end, LinkTarget::Wiki(target.into())));
+    out.links
+        .push((start..end, LinkTarget::Wiki(target.into())));
 }
 
 fn is_boundary(b: u8) -> bool {
@@ -464,13 +551,17 @@ fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
         .overflow_hidden();
 
     for (ri, row) in table.children.iter().enumerate() {
-        let mdast::Node::TableRow(r) = row else { continue };
+        let mdast::Node::TableRow(r) = row else {
+            continue;
+        };
         let mut row_el = div().flex().flex_row();
         if ri > 0 {
             row_el = row_el.border_t_1().border_color(border);
         }
         for cell in &r.children {
-            let mdast::Node::TableCell(c) = cell else { continue };
+            let mdast::Node::TableCell(c) = cell else {
+                continue;
+            };
             let mut cell_el = div()
                 .flex_1()
                 .min_w_0()
@@ -494,8 +585,16 @@ mod tests {
 
     fn inline_of(text: &str) -> Inline {
         let mut inl = Inline::default();
-        let nodes = vec![mdast::Node::Text(mdast::Text { value: text.into(), position: None })];
-        build_inline(&nodes, HighlightStyle::default(), &MarkdownStyle::default(), &mut inl);
+        let nodes = vec![mdast::Node::Text(mdast::Text {
+            value: text.into(),
+            position: None,
+        })];
+        build_inline(
+            &nodes,
+            HighlightStyle::default(),
+            &MarkdownStyle::default(),
+            &mut inl,
+        );
         inl
     }
 
@@ -565,7 +664,12 @@ mod tests {
                     _ => continue,
                 };
                 let mut inl = Inline::default();
-                build_inline(children, HighlightStyle::default(), &MarkdownStyle::default(), &mut inl);
+                build_inline(
+                    children,
+                    HighlightStyle::default(),
+                    &MarkdownStyle::default(),
+                    &mut inl,
+                );
                 text.push_str(&inl.text);
                 text.push('\n');
             }

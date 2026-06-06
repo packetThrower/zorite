@@ -2,9 +2,7 @@
 //! the rest are opened pages. Scrollable with an overflow menu when the
 //! tabs don't fit (gpui-component `TabBar`).
 
-use gpui::{
-    Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, div, px,
-};
+use gpui::{Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, div, px};
 use gpui_component::tab::{Tab, TabBar};
 
 use crate::app::AppView;

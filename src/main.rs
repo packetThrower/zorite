@@ -5,7 +5,10 @@
 //! a single window wrapped in gpui-component's `Root`.
 
 // On Windows release builds, don't pop a console window behind the GUI.
-#![cfg_attr(all(target_os = "windows", not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
 
 mod actions;
 mod app;

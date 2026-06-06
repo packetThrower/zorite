@@ -103,7 +103,9 @@ pub fn make_palette(
 
 /// The default dark palette (the "Zorite" skin) — also the thread-local seed.
 pub fn dark_palette() -> Palette {
-    make_palette(0x16171A, 0x1B1D21, 0x16171A, 0xFFFFFF, 0x0A84FF, 0x9D7CD8, 0xD7BA7D, true)
+    make_palette(
+        0x16171A, 0x1B1D21, 0x16171A, 0xFFFFFF, 0x0A84FF, 0x9D7CD8, 0xD7BA7D, true,
+    )
 }
 
 thread_local! {
@@ -220,7 +222,15 @@ impl Mode {
 /// the active palette, push it onto gpui-component's `Theme`, and repaint.
 pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App) {
     CURRENT.with(|c| *c.borrow_mut() = palette);
-    Theme::change(if is_dark { ThemeMode::Dark } else { ThemeMode::Light }, Some(window), cx);
+    Theme::change(
+        if is_dark {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        },
+        Some(window),
+        cx,
+    );
     apply_to_component_theme(&palette, cx);
     cx.refresh_windows();
 }

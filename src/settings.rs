@@ -9,8 +9,8 @@
 
 use gpui::{
     AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window, div,
-    px,
+    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
+    div, px,
 };
 use gpui_component::{
     IndexPath, TitleBar,
@@ -32,7 +32,10 @@ struct Opt {
 
 impl Opt {
     fn new(id: &str, title: &str) -> Self {
-        Self { id: id.to_string(), title: SharedString::from(title.to_string()) }
+        Self {
+            id: id.to_string(),
+            title: SharedString::from(title.to_string()),
+        }
     }
 }
 
@@ -52,7 +55,10 @@ fn make_select(
     window: &mut Window,
     cx: &mut Context<SettingsView>,
 ) -> Entity<SelectState<Vec<Opt>>> {
-    let idx = opts.iter().position(|o| o.id == selected).map(IndexPath::new);
+    let idx = opts
+        .iter()
+        .position(|o| o.id == selected)
+        .map(IndexPath::new);
     cx.new(|cx| SelectState::new(opts, idx, window, cx))
 }
 
@@ -78,7 +84,10 @@ pub struct SettingsView {
 impl SettingsView {
     pub fn new(app: WeakEntity<AppView>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let (t_opts, active_skin) = theme_opts(&app, cx);
-        let mode = app.upgrade().map(|a| a.read(cx).theme_mode()).unwrap_or_default();
+        let mode = app
+            .upgrade()
+            .map(|a| a.read(cx).theme_mode())
+            .unwrap_or_default();
         let a_opts = vec![
             Opt::new("light", "Light"),
             Opt::new("dark", "Dark"),
@@ -104,7 +113,12 @@ impl SettingsView {
             },
         ));
 
-        Self { app, theme_select, appearance_select, _subs: subs }
+        Self {
+            app,
+            theme_select,
+            appearance_select,
+            _subs: subs,
+        }
     }
 
     /// Subscribe to a theme `Select`'s confirm → apply the picked skin.
@@ -136,7 +150,9 @@ impl SettingsView {
 
     /// Re-scan themes on disk and rebuild the theme dropdown to include them.
     fn reload_skins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(app) = self.app.upgrade() else { return };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         app.update(cx, |a, cx| a.reload_skins(window, cx));
         let (opts, active) = theme_opts(&self.app, cx);
         let select = make_select(opts, &active, window, cx);
@@ -170,10 +186,15 @@ impl Render for SettingsView {
             .flex()
             .flex_row()
             .gap(px(8.0))
-            .child(text_button("reveal-themes", "Reveal themes folder", cx, |this, _w, cx| {
-                this.reveal_themes_folder(cx)
-            }))
-            .child(text_button("reload-themes", "Reload", cx, |this, w, cx| this.reload_skins(w, cx)));
+            .child(text_button(
+                "reveal-themes",
+                "Reveal themes folder",
+                cx,
+                |this, _w, cx| this.reveal_themes_folder(cx),
+            ))
+            .child(text_button("reload-themes", "Reload", cx, |this, w, cx| {
+                this.reload_skins(w, cx)
+            }));
 
         let list = if user_names.is_empty() {
             div()
@@ -198,7 +219,12 @@ impl Render for SettingsView {
             col.into_any_element()
         };
 
-        let installed = div().flex().flex_col().gap(px(12.0)).child(actions).child(list);
+        let installed = div()
+            .flex()
+            .flex_col()
+            .gap(px(12.0))
+            .child(actions)
+            .child(list);
 
         div()
             .flex()
@@ -217,7 +243,12 @@ impl Render for SettingsView {
                     .flex_row()
                     .items_center()
                     .gap(px(10.0))
-                    .child(div().text_size(px(26.0)).font_weight(FontWeight::BOLD).child("Settings"))
+                    .child(
+                        div()
+                            .text_size(px(26.0))
+                            .font_weight(FontWeight::BOLD)
+                            .child("Settings"),
+                    )
                     .child(version_chip()),
             )
             .child(
@@ -228,48 +259,56 @@ impl Render for SettingsView {
                     .flex_row()
                     .child(nav())
                     .child(
-                        div()
-                            .id("settings-content")
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_y_scroll()
-                            .px(px(24.0))
-                            .pb(px(24.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(16.0))
-                            .child(card(
-                                "App Theme",
-                                "Pick a built-in theme or one of your own.",
-                                Select::new(&self.theme_select).w_full(),
-                            ))
-                            .child(card(
-                                "Appearance",
-                                "Light or dark variant of the active theme. Auto follows your system.",
-                                Select::new(&self.appearance_select).w_full(),
-                            ))
-                            .child(card(
-                                "Installed themes",
-                                "Drop .json theme files in your themes folder, then Reload. Any \
+                    div()
+                        .id("settings-content")
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_y_scroll()
+                        .px(px(24.0))
+                        .pb(px(24.0))
+                        .flex()
+                        .flex_col()
+                        .gap(px(16.0))
+                        .child(card(
+                            "App Theme",
+                            "Pick a built-in theme or one of your own.",
+                            Select::new(&self.theme_select).w_full(),
+                        ))
+                        .child(card(
+                            "Appearance",
+                            "Light or dark variant of the active theme. Auto follows your system.",
+                            Select::new(&self.appearance_select).w_full(),
+                        ))
+                        .child(card(
+                            "Installed themes",
+                            "Drop .json theme files in your themes folder, then Reload. Any \
                                  color you omit falls back to the base palette.",
-                                installed,
-                            )),
-                    ),
+                            installed,
+                        )),
+                ),
             )
     }
 }
 
 fn nav() -> impl IntoElement {
-    div().flex_shrink_0().w(px(184.0)).pl(px(20.0)).pr(px(8.0)).flex().flex_col().gap(px(2.0)).child(
-        div()
-            .px(px(12.0))
-            .py(px(8.0))
-            .rounded(px(8.0))
-            .text_size(px(14.0))
-            .bg(theme::accent_tint())
-            .text_color(theme::text_primary())
-            .child("Appearance"),
-    )
+    div()
+        .flex_shrink_0()
+        .w(px(184.0))
+        .pl(px(20.0))
+        .pr(px(8.0))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .child(
+            div()
+                .px(px(12.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .text_size(px(14.0))
+                .bg(theme::accent_tint())
+                .text_color(theme::text_primary())
+                .child("Appearance"),
+        )
 }
 
 fn version_chip() -> impl IntoElement {
@@ -296,8 +335,18 @@ fn card(title: &str, desc: &str, control: impl IntoElement) -> impl IntoElement 
         .bg(theme::elevated())
         .border_1()
         .border_color(theme::border_subtle())
-        .child(div().text_size(px(16.0)).font_weight(FontWeight::SEMIBOLD).child(title.to_string()))
-        .child(div().text_size(px(13.0)).text_color(theme::text_secondary()).child(desc.to_string()))
+        .child(
+            div()
+                .text_size(px(16.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child(title.to_string()),
+        )
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(theme::text_secondary())
+                .child(desc.to_string()),
+        )
         .child(control)
 }
 
@@ -318,7 +367,10 @@ fn text_button(
         .text_color(theme::text_secondary())
         .text_size(px(13.0))
         .cursor_pointer()
-        .hover(|h| h.bg(theme::glass_strong()).text_color(theme::text_primary()))
+        .hover(|h| {
+            h.bg(theme::glass_strong())
+                .text_color(theme::text_primary())
+        })
         .child(label.to_string())
         .on_click(cx.listener(move |this, _, window, cx| on(this, window, cx)))
 }

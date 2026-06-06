@@ -121,7 +121,10 @@ fn markdown_items(q: &str, out: &mut Vec<PaletteItem>) {
         if q.is_empty() || s.label.to_lowercase().contains(q) {
             out.push(PaletteItem {
                 label: s.label.to_string(),
-                kind: ItemKind::Insert { snippet: s.snippet.to_string(), caret: s.caret },
+                kind: ItemKind::Insert {
+                    snippet: s.snippet.to_string(),
+                    caret: s.caret,
+                },
             });
         }
     }
@@ -149,7 +152,10 @@ pub fn parse_templates(content: &str) -> Vec<Template> {
     for line in content.lines() {
         if let Some(name) = template_header(line) {
             if let Some((n, body)) = current.take() {
-                out.push(Template { name: n, body: body.join("\n").trim().to_string() });
+                out.push(Template {
+                    name: n,
+                    body: body.join("\n").trim().to_string(),
+                });
             }
             current = Some((name.to_string(), Vec::new()));
         } else if let Some((_, body)) = current.as_mut() {
@@ -157,7 +163,10 @@ pub fn parse_templates(content: &str) -> Vec<Template> {
         }
     }
     if let Some((n, body)) = current {
-        out.push(Template { name: n, body: body.join("\n").trim().to_string() });
+        out.push(Template {
+            name: n,
+            body: body.join("\n").trim().to_string(),
+        });
     }
     out.retain(|t| !t.body.is_empty());
     out
@@ -176,7 +185,12 @@ fn template_header(line: &str) -> Option<&str> {
 /// and use `{{cursor}}` (removed) for the caret — else caret at the end.
 fn expand_template(body: &str, title: &str) -> (String, usize) {
     let now = time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    let date = format!("{:04}-{:02}-{:02}", now.year(), u8::from(now.month()), now.day());
+    let date = format!(
+        "{:04}-{:02}-{:02}",
+        now.year(),
+        u8::from(now.month()),
+        now.day()
+    );
     let time = format!("{:02}:{:02}", now.hour(), now.minute());
     let mut s = body
         .replace("{{date}}", &date)

@@ -4,7 +4,7 @@
 
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{input::Input, menu::ContextMenuExt};
 
@@ -85,15 +85,19 @@ fn journal_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
         .rounded(px(6.0))
         .text_size(px(13.0))
         .cursor_pointer()
-        .when(active, |d| d.bg(theme::accent_tint()).text_color(theme::text_primary()))
+        .when(active, |d| {
+            d.bg(theme::accent_tint()).text_color(theme::text_primary())
+        })
         .when(!active, |d| {
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
         .child("Journal")
-        .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.show_journal(window, cx);
-        }))
+        .on_click(
+            cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.show_journal(window, cx);
+            }),
+        )
 }
 
 fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -109,15 +113,19 @@ fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoEle
         .text_size(px(13.0))
         .cursor_pointer()
         .truncate()
-        .when(active, |d| d.bg(theme::accent_tint()).text_color(theme::text_primary()))
+        .when(active, |d| {
+            d.bg(theme::accent_tint()).text_color(theme::text_primary())
+        })
         .when(!active, |d| {
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
         .child(label.clone())
-        .on_click(cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.open_page_id(id, window, cx);
-        }));
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.open_page_id(id, window, cx);
+            }),
+        );
 
     // Named pages (never journals) get a right-click "Delete page" menu.
     // Right-click records the target; the menu item dispatches `DeletePage`,

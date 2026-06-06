@@ -16,7 +16,9 @@ pub fn data_dir() -> PathBuf {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("."));
-        home.join("Library").join("Application Support").join("zorite")
+        home.join("Library")
+            .join("Application Support")
+            .join("zorite")
     }
     #[cfg(target_os = "windows")]
     {
@@ -30,8 +32,7 @@ pub fn data_dir() -> PathBuf {
         std::env::var_os("XDG_DATA_HOME")
             .map(PathBuf::from)
             .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|h| PathBuf::from(h).join(".local").join("share"))
+                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
             })
             .unwrap_or_else(|| PathBuf::from("."))
             .join("zorite")

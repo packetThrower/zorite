@@ -2,7 +2,7 @@
 
 use gpui::{
     ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
 };
 
 use crate::app::AppView;
@@ -48,9 +48,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 )),
                         )
                         .when(hits.is_empty(), |d| {
-                            d.child(
-                                div().text_color(theme::text_tertiary()).child("No matches"),
-                            )
+                            d.child(div().text_color(theme::text_tertiary()).child("No matches"))
                         })
                         .children(rows),
                 ),
@@ -85,7 +83,9 @@ fn hit_row(i: usize, hit: &SearchHit, cx: &mut Context<AppView>) -> impl IntoEle
                     .child(hit.snippet.clone()),
             )
         })
-        .on_click(cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.open_page_id(id, window, cx);
-        }))
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.open_page_id(id, window, cx);
+            }),
+        )
 }

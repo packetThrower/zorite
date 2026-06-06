@@ -141,8 +141,10 @@ impl Db {
         {
             return Ok(page);
         }
-        self.conn
-            .execute("INSERT INTO pages (title, is_journal) VALUES (?1, 0)", params![title])?;
+        self.conn.execute(
+            "INSERT INTO pages (title, is_journal) VALUES (?1, 0)",
+            params![title],
+        )?;
         Ok(Page {
             id: self.conn.last_insert_rowid(),
             title: title.to_string(),
@@ -196,9 +198,10 @@ impl Db {
     /// removed by the `ON DELETE CASCADE` foreign keys. Returns whether a
     /// row was actually deleted.
     pub fn delete_page(&self, id: i64) -> rusqlite::Result<bool> {
-        let n = self
-            .conn
-            .execute("DELETE FROM pages WHERE id = ?1 AND is_journal = 0", params![id])?;
+        let n = self.conn.execute(
+            "DELETE FROM pages WHERE id = ?1 AND is_journal = 0",
+            params![id],
+        )?;
         Ok(n > 0)
     }
 
@@ -209,8 +212,12 @@ impl Db {
     /// so `page_links` (keyed by id) stay valid.
     pub fn rename_page(&self, id: i64, new_title: &str) -> rusqlite::Result<bool> {
         let new_title = new_title.trim();
-        let Some(page) = self.get_page(id)? else { return Ok(false) };
-        if page.is_journal || new_title.is_empty() || new_title.eq_ignore_ascii_case(page.title.trim())
+        let Some(page) = self.get_page(id)? else {
+            return Ok(false);
+        };
+        if page.is_journal
+            || new_title.is_empty()
+            || new_title.eq_ignore_ascii_case(page.title.trim())
         {
             return Ok(false);
         }
@@ -233,13 +240,17 @@ impl Db {
         let affected: Vec<(i64, String)> = {
             let mut stmt =
                 tx.prepare("SELECT id, content FROM pages WHERE content LIKE ?1 ESCAPE '\\'")?;
-            let rows =
-                stmt.query_map(params![like], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            let rows = stmt.query_map(params![like], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         for (pid, content) in &affected {
             let updated = content.replace(&old_link, &new_link);
-            tx.execute("UPDATE pages SET content = ?2 WHERE id = ?1", params![pid, updated])?;
+            tx.execute(
+                "UPDATE pages SET content = ?2 WHERE id = ?1",
+                params![pid, updated],
+            )?;
         }
         tx.commit()?;
         Ok(true)
@@ -250,7 +261,11 @@ impl Db {
     /// Read a setting, or `None` if absent (errors are swallowed to a None).
     pub fn get_setting(&self, key: &str) -> Option<String> {
         self.conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                params![key],
+                |r| r.get(0),
+            )
             .optional()
             .ok()
             .flatten()
@@ -275,8 +290,10 @@ impl Db {
         source_page_id: i64,
         target_titles: &[String],
     ) -> rusqlite::Result<()> {
-        self.conn
-            .execute("DELETE FROM page_links WHERE source_page_id = ?1", params![source_page_id])?;
+        self.conn.execute(
+            "DELETE FROM page_links WHERE source_page_id = ?1",
+            params![source_page_id],
+        )?;
         for title in target_titles {
             let target = self.get_or_create_page(title)?;
             if target.id != source_page_id {
@@ -293,7 +310,9 @@ impl Db {
     /// Pages that link to `page_id`, each with the linking line as a
     /// snippet — the "Linked References" list.
     pub fn backlinks(&self, page_id: i64) -> rusqlite::Result<Vec<Backlink>> {
-        let Some(target) = self.get_page(page_id)? else { return Ok(Vec::new()) };
+        let Some(target) = self.get_page(page_id)? else {
+            return Ok(Vec::new());
+        };
         let mut stmt = self.conn.prepare(
             "SELECT p.id, p.title, p.content FROM page_links l \
              JOIN pages p ON p.id = l.source_page_id \
@@ -301,7 +320,11 @@ impl Db {
              ORDER BY p.is_journal DESC, p.journal_date DESC, p.title COLLATE NOCASE",
         )?;
         let rows = stmt.query_map(params![page_id], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         let mut out = Vec::new();
         for r in rows {
@@ -334,12 +357,20 @@ impl Db {
              LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![like, limit], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         let mut out = Vec::new();
         for r in rows {
             let (id, title, content) = r?;
-            out.push(SearchHit { page_id: id, title, snippet: snippet_for_query(&content, q) });
+            out.push(SearchHit {
+                page_id: id,
+                title,
+                snippet: snippet_for_query(&content, q),
+            });
         }
         Ok(out)
     }
@@ -347,7 +378,9 @@ impl Db {
 
 /// Escape SQL LIKE wildcards so the query is matched literally.
 fn escape_like(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 /// The first content line containing `query` (case-insensitive), else
@@ -417,21 +450,28 @@ fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
     // Fold each page's blocks into a markdown bullet list.
     for pid in &page_ids {
         let blocks: Vec<(i64, Option<i64>, i64, String)> = {
-            let mut stmt = conn
-                .prepare("SELECT id, parent_id, position, content FROM blocks WHERE page_id = ?1")?;
+            let mut stmt = conn.prepare(
+                "SELECT id, parent_id, position, content FROM blocks WHERE page_id = ?1",
+            )?;
             let rows = stmt.query_map(params![pid], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?;
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         let md = blocks_to_markdown(&blocks);
-        conn.execute("UPDATE pages SET content = ?2 WHERE id = ?1", params![pid, md])?;
+        conn.execute(
+            "UPDATE pages SET content = ?2 WHERE id = ?1",
+            params![pid, md],
+        )?;
     }
 
     // Re-derive links from the new content.
     for pid in &page_ids {
-        let content: String =
-            conn.query_row("SELECT content FROM pages WHERE id = ?1", params![pid], |r| r.get(0))?;
+        let content: String = conn.query_row(
+            "SELECT content FROM pages WHERE id = ?1",
+            params![pid],
+            |r| r.get(0),
+        )?;
         for title in crate::ui::links::parse_links(&content) {
             let tid = migration_target_page_id(conn, &title)?;
             if tid != *pid {
@@ -444,7 +484,9 @@ fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
         }
     }
 
-    conn.execute_batch("DROP TABLE IF EXISTS links; DROP TABLE IF EXISTS blocks; PRAGMA user_version = 2;")?;
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS links; DROP TABLE IF EXISTS blocks; PRAGMA user_version = 2;",
+    )?;
     Ok(())
 }
 
@@ -460,7 +502,10 @@ fn migration_target_page_id(conn: &Connection, title: &str) -> rusqlite::Result<
     {
         return Ok(id);
     }
-    conn.execute("INSERT INTO pages (title, is_journal, content) VALUES (?1, 0, '')", params![title])?;
+    conn.execute(
+        "INSERT INTO pages (title, is_journal, content) VALUES (?1, 0, '')",
+        params![title],
+    )?;
     Ok(conn.last_insert_rowid())
 }
 
@@ -480,7 +525,9 @@ fn blocks_to_markdown(blocks: &[(i64, Option<i64>, i64, String)]) -> String {
         children: &HashMap<Option<i64>, Vec<&'a (i64, Option<i64>, i64, String)>>,
         lines: &mut Vec<String>,
     ) {
-        let Some(kids) = children.get(&parent) else { return };
+        let Some(kids) = children.get(&parent) else {
+            return;
+        };
         for b in kids {
             lines.push(format!("{}- {}", "  ".repeat(depth), b.3));
             walk(Some(b.0), depth + 1, children, lines);
@@ -501,12 +548,16 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let foo = db.get_or_create_page("Foo").unwrap();
         let other = db.get_or_create_page("Other").unwrap();
-        db.set_page_content(other.id, "see [[Foo]] and more").unwrap();
+        db.set_page_content(other.id, "see [[Foo]] and more")
+            .unwrap();
 
         // Rename Foo -> Bar: title changes and the link is rewritten.
         assert!(db.rename_page(foo.id, "Bar").unwrap());
         assert_eq!(db.get_page(foo.id).unwrap().unwrap().title, "Bar");
-        assert_eq!(db.get_page(other.id).unwrap().unwrap().content, "see [[Bar]] and more");
+        assert_eq!(
+            db.get_page(other.id).unwrap().unwrap().content,
+            "see [[Bar]] and more"
+        );
 
         // Guards: a name taken by another page, an empty name, and journals.
         assert!(!db.rename_page(foo.id, "Other").unwrap());

@@ -4,7 +4,7 @@
 
 use gpui::{
     ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Pixels, SharedString, StatefulInteractiveElement, Styled, div, px, prelude::FluentBuilder as _,
+    Pixels, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{Input, InputState};
 
@@ -119,9 +119,11 @@ fn rendered_day(
         .min_h(px(24.0))
         .cursor_text()
         .child(inner)
-        .on_click(cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.edit_day(&d, window, cx);
-        }))
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.edit_day(&d, window, cx);
+            }),
+        )
 }
 
 fn load_older(cx: &mut Context<AppView>) -> impl IntoElement {
@@ -136,7 +138,9 @@ fn load_older(cx: &mut Context<AppView>) -> impl IntoElement {
         .cursor_pointer()
         .hover(|h| h.text_color(theme::text_secondary()))
         .child("Load older days")
-        .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.extend_feed(window, cx);
-        }))
+        .on_click(
+            cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.extend_feed(window, cx);
+            }),
+        )
 }
