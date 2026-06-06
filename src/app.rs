@@ -147,6 +147,9 @@ pub struct AppView {
     /// a date opens that journal day.
     pub calendar: Entity<CalendarState>,
     show_calendar: bool,
+    /// When collapsed, the sidebar shrinks to a thin icon rail (expand caret +
+    /// the calendar/settings icons); the page list and search box hide.
+    pub sidebar_collapsed: bool,
     pub search_results: Vec<SearchHit>,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
@@ -229,6 +232,7 @@ impl AppView {
             search_input,
             calendar,
             show_calendar: false,
+            sidebar_collapsed: false,
             search_results: Vec::new(),
             slash: None,
             templates: Vec::new(),
@@ -416,6 +420,13 @@ impl AppView {
     /// Toggle the jump-to-date calendar overlay (the sidebar calendar icon).
     pub fn toggle_calendar(&mut self, cx: &mut Context<Self>) {
         self.show_calendar = !self.show_calendar;
+        cx.notify();
+    }
+
+    /// Collapse the sidebar to a thin icon rail, or expand it back. Driven by
+    /// the caret at the top of the sidebar (`<` to collapse, `>` to expand).
+    pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = !self.sidebar_collapsed;
         cx.notify();
     }
 

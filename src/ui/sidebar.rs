@@ -1,11 +1,13 @@
-//! The left rail: a row of icon buttons (jump-to-date and settings) above a
-//! search box, then a link to the journal feed and the named pages. Right-click
-//! the pages area to create a new page; older days are found via search or the
-//! date picker.
+//! The left rail. Expanded, it's a row of icon buttons (collapse caret,
+//! jump-to-date, settings) above a search box, then the journal feed link and
+//! named pages. Collapsed, it shrinks to a thin icon rail with an expand caret
+//! (`>`) at the top plus the calendar/settings icons. Right-click the pages
+//! area to create a new page; older days are found via search or the date picker.
 
 use gpui::{
-    ClickEvent, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
+    ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    SharedString, Stateful, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _,
+    px,
 };
 use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt};
 
@@ -15,6 +17,16 @@ use crate::models::Page;
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+    if app.sidebar_collapsed {
+        collapsed_rail(cx).into_any_element()
+    } else {
+        expanded(app, cx).into_any_element()
+    }
+}
+
+/// The full sidebar: a header (collapse caret + jump-to-date/settings icons,
+/// then the search box) above the journal feed link and the page list.
+fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let mut page_rows = Vec::new();
     for p in &app.pages {
         page_rows.push(nav_row(p, app.is_page_active(p.id), cx).into_any_element());
@@ -30,8 +42,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .border_r_1()
         .border_color(theme::border_subtle())
         .child(
-            // A row of icon buttons (a sidebar-collapse caret will join it
-            // later), with the search box on its own row below.
+            // Header: the collapse caret on the left, the jump-to-date and
+            // settings icons on the right, with the search box on the row below.
             div()
                 .flex_shrink_0()
                 .p_2()
@@ -45,10 +57,17 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .flex()
                         .flex_row()
                         .items_center()
-                        .justify_end()
-                        .gap_1()
-                        .child(date_icon(cx))
-                        .child(settings_gear(cx)),
+                        .justify_between()
+                        .child(collapse_caret(cx))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_1()
+                                .child(date_icon(cx))
+                                .child(settings_gear(cx)),
+                        ),
                 )
                 .child(
                     Input::new(&app.search_input).prefix(
@@ -96,45 +115,79 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         )
 }
 
-/// The jump-to-date calendar icon, beside the search box. Toggles the calendar
-/// overlay; picking a date opens that journal day.
-fn date_icon(cx: &mut Context<AppView>) -> impl IntoElement {
+/// The collapsed sidebar: a thin icon rail with the expand caret (`>`) at the
+/// top, then the jump-to-date and settings icons.
+fn collapsed_rail(cx: &mut Context<AppView>) -> impl IntoElement {
     div()
-        .id("date-icon")
+        .w(px(48.0))
+        .h_full()
         .flex_shrink_0()
-        .p_1p5()
-        .rounded(px(6.0))
-        .text_color(theme::text_secondary())
-        .cursor_pointer()
-        .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
-        .child(Icon::new(IconName::Calendar).size_4())
-        .on_click(
-            cx.listener(|this: &mut AppView, _: &ClickEvent, _window, cx| {
-                this.toggle_calendar(cx);
-            }),
-        )
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap_1()
+        .pt_2()
+        .bg(theme::bg_sidebar())
+        .border_r_1()
+        .border_color(theme::border_subtle())
+        .child(expand_caret(cx))
+        .child(date_icon(cx))
+        .child(settings_gear(cx))
 }
 
-/// The settings gear, sitting beside the search box. Opens the Settings window
-/// (deferred — opening a window from inside a mouse callback aborts).
-fn settings_gear(cx: &mut Context<AppView>) -> impl IntoElement {
+/// Shared styling for the square sidebar icon buttons. The caller chains
+/// `.on_click(...)`.
+fn icon_btn(id: &'static str, icon: IconName) -> Stateful<Div> {
     div()
-        .id("settings-gear")
+        .id(id)
         .flex_shrink_0()
         .p_1p5()
         .rounded(px(6.0))
         .text_color(theme::text_secondary())
         .cursor_pointer()
         .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
-        .child(Icon::new(IconName::Settings).size_4())
-        .on_click(
-            cx.listener(|_this: &mut AppView, _: &ClickEvent, window, cx| {
-                let view = cx.entity();
-                window.defer(cx, move |_, cx| {
-                    AppView::open_settings(view, cx);
-                });
-            }),
-        )
+        .child(Icon::new(icon).size_4())
+}
+
+/// Collapse caret (`<`), in the expanded header — hides the sidebar to a rail.
+fn collapse_caret(cx: &mut Context<AppView>) -> impl IntoElement {
+    icon_btn("collapse-sidebar", IconName::ChevronLeft).on_click(cx.listener(
+        |this: &mut AppView, _: &ClickEvent, _window, cx| {
+            this.toggle_sidebar(cx);
+        },
+    ))
+}
+
+/// Expand caret (`>`), at the top of the collapsed rail — reopens the sidebar.
+fn expand_caret(cx: &mut Context<AppView>) -> impl IntoElement {
+    icon_btn("expand-sidebar", IconName::ChevronRight).on_click(cx.listener(
+        |this: &mut AppView, _: &ClickEvent, _window, cx| {
+            this.toggle_sidebar(cx);
+        },
+    ))
+}
+
+/// The jump-to-date calendar icon. Toggles the calendar overlay; picking a date
+/// opens that journal day.
+fn date_icon(cx: &mut Context<AppView>) -> impl IntoElement {
+    icon_btn("date-icon", IconName::Calendar).on_click(cx.listener(
+        |this: &mut AppView, _: &ClickEvent, _window, cx| {
+            this.toggle_calendar(cx);
+        },
+    ))
+}
+
+/// The settings gear. Opens the Settings window (deferred — opening a window
+/// from inside a mouse callback aborts).
+fn settings_gear(cx: &mut Context<AppView>) -> impl IntoElement {
+    icon_btn("settings-gear", IconName::Settings).on_click(cx.listener(
+        |_this: &mut AppView, _: &ClickEvent, window, cx| {
+            let view = cx.entity();
+            window.defer(cx, move |_, cx| {
+                AppView::open_settings(view, cx);
+            });
+        },
+    ))
 }
 
 fn journal_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {

@@ -34,6 +34,8 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 
 ## App & polish
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
+- [x] **Collapsible sidebar** — a `<` caret collapses it to a thin icon rail (`>` to expand, plus the calendar/settings icons); the content area reclaims the space
+- [ ] Sidebar: remember the collapsed state across launches, and add a keyboard shortcut to toggle it
 - [ ] Window-bounds persistence (reopen where you left off)
 - [ ] App icon + packaging (cargo-packager: `.dmg` / `.msi` / `.deb`)
 - [ ] Add a `LICENSE` file (Cargo.toml already declares `GPL-3.0-or-later`)
