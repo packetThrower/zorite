@@ -86,6 +86,20 @@ impl Db {
                  PRAGMA user_version = 3;",
             )?;
         }
+        if version < 4 {
+            // Page aliases (Logseq-style `alias::` property): alternate names
+            // that resolve to a page.
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS page_aliases (\
+                    page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,\
+                    alias   TEXT NOT NULL,\
+                    PRIMARY KEY (page_id, alias)\
+                 );\
+                 CREATE INDEX IF NOT EXISTS idx_page_aliases_alias \
+                    ON page_aliases(alias COLLATE NOCASE);\
+                 PRAGMA user_version = 4;",
+            )?;
+        }
         // Key/value app settings (theme mode, etc.). Idempotent, so no
         // `user_version` bump is needed.
         conn.execute_batch(
@@ -125,8 +139,10 @@ impl Db {
             .optional()
     }
 
-    /// A named page by title (case-insensitive), creating it if absent —
-    /// what a `[[wiki-link]]` resolves to.
+    /// A named page by title (case-insensitive), creating it if absent — what a
+    /// `[[wiki-link]]` resolves to. An exact title wins; failing that, a page
+    /// whose `alias::` list contains the name resolves to that page; otherwise a
+    /// new page is created.
     pub fn get_or_create_page(&self, title: &str) -> rusqlite::Result<Page> {
         let title = title.trim();
         if let Some(page) = self
@@ -139,6 +155,9 @@ impl Db {
             )
             .optional()?
         {
+            return Ok(page);
+        }
+        if let Some(page) = self.get_page_by_alias(title)? {
             return Ok(page);
         }
         self.conn.execute(
@@ -171,6 +190,20 @@ impl Db {
                 "SELECT id, title, is_journal, journal_date, content FROM pages \
                  WHERE title = ?1 COLLATE NOCASE",
                 params![title.trim()],
+                row_to_page,
+            )
+            .optional()
+    }
+
+    /// Look up a page by one of its `alias::` names (case-insensitive). If two
+    /// pages claim the same alias, the lowest page id wins (arbitrary but stable).
+    pub fn get_page_by_alias(&self, alias: &str) -> rusqlite::Result<Option<Page>> {
+        self.conn
+            .query_row(
+                "SELECT p.id, p.title, p.is_journal, p.journal_date, p.content \
+                 FROM page_aliases a JOIN pages p ON p.id = a.page_id \
+                 WHERE a.alias = ?1 COLLATE NOCASE ORDER BY p.id LIMIT 1",
+                params![alias.trim()],
                 row_to_page,
             )
             .optional()
@@ -303,6 +336,35 @@ impl Db {
              ON CONFLICT(key) DO UPDATE SET value = ?2",
             params![key, value],
         )?;
+        Ok(())
+    }
+
+    // --- Aliases ---
+
+    /// A page's alias names, sorted — used to populate the alias field.
+    pub fn get_page_aliases(&self, page_id: i64) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT alias FROM page_aliases WHERE page_id = ?1 ORDER BY alias COLLATE NOCASE",
+        )?;
+        stmt.query_map(params![page_id], |r| r.get::<_, String>(0))?
+            .collect()
+    }
+
+    /// Replace a page's aliases with the given list (empty clears them).
+    pub fn rebuild_page_aliases(&self, page_id: i64, aliases: &[String]) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM page_aliases WHERE page_id = ?1",
+            params![page_id],
+        )?;
+        for alias in aliases {
+            let alias = alias.trim();
+            if !alias.is_empty() {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO page_aliases (page_id, alias) VALUES (?1, ?2)",
+                    params![page_id, alias],
+                )?;
+            }
+        }
         Ok(())
     }
 

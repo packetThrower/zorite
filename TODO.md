@@ -24,7 +24,8 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
 - [x] **Page hierarchy** via `[[parent::child]]` — Logseq-style: the `::` path *is* the page title, so the sidebar tree and each page's "Sub-pages" index are derived from titles (no parent column). Intermediate namespace segments show as virtual nodes and materialize on click. See `src/hierarchy.rs`
 - [ ] Hierarchy follow-ups: collapsible namespace nodes in the sidebar; cascade-rename a namespace (rename `Foo` → rewrite `Foo::*` children + their `[[links]]`); a "New sub-page" action
-- [ ] **Page aliases** via `::alias` — resolve `[[alias]]` to the page (design note: disambiguate `::` here vs. the `parent::child` hierarchy syntax above)
+- [x] **Page aliases** — a subdued `alias::` field under the page title takes a comma list of alternate names; `[[name]]` then resolves to that page (exact title wins). Stored in a `page_aliases` table; resolution lives in `get_or_create_page`, so links and backlinks follow it
+- [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)
 - [x] **Sidebar shows recent pages** — the page tree is capped to the last 10 *viewed* named pages (persisted in `settings`; seeded from the most-recently-edited pages on first run). Reach the rest via search
 - [ ] **Favorites section in the sidebar** — pin chosen pages to a "Favorites" group above the page list (e.g. right-click → Favorite); persists across launches

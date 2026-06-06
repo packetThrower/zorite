@@ -93,6 +93,9 @@ fn page_title(pe: &PageEditor) -> impl IntoElement {
     } else {
         div()
             .mb_4()
+            .flex()
+            .flex_col()
+            .gap_1()
             .child(
                 // The input's default line-height/height are sized for body
                 // text; at 24px they clip descenders, so override them.
@@ -105,8 +108,34 @@ fn page_title(pe: &PageEditor) -> impl IntoElement {
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text_primary()),
             )
+            .child(alias_row(pe))
             .into_any_element()
     }
+}
+
+/// The subdued `alias::` field under a named page's title — edits the page's
+/// aliases as a comma-separated list (committed on Enter/blur). Replaces typing
+/// the property in the body.
+fn alias_row(pe: &PageEditor) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_1()
+        .text_size(px(12.0))
+        .text_color(theme::text_tertiary())
+        .child("alias::")
+        .child(
+            div().flex_1().min_w_0().child(
+                Input::new(&pe.alias_state)
+                    .appearance(false)
+                    .text_size(px(12.0))
+                    .line_height(px(16.0))
+                    .py(px(0.0))
+                    .h(px(18.0))
+                    .text_color(theme::text_secondary()),
+            ),
+        )
 }
 
 /// The page body in reading mode: rendered markdown (or a placeholder

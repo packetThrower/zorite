@@ -77,12 +77,16 @@ pub struct PageEditor {
     pub title: String,
     /// Inline-editable page title (named pages only); renames on Enter/blur.
     pub title_state: Entity<InputState>,
+    /// The page's aliases as a comma-separated list (named pages); commits on
+    /// Enter/blur. Replaces typing an `alias::` property in the body.
+    pub alias_state: Entity<InputState>,
     pub is_journal: bool,
     pub state: Entity<InputState>,
     /// Last-change text snapshot for auto-pair detection (see `DayEditor::prev`).
     prev: String,
     _sub: Subscription,
     _title_sub: Subscription,
+    _alias_sub: Subscription,
     pub backlinks: Vec<Backlink>,
 }
 
@@ -529,16 +533,20 @@ impl AppView {
     /// editor's `Blur` doesn't fire once it's dropped (switching/closing tabs),
     /// so flush here to avoid losing those edits.
     fn flush_page_editor(&mut self, cx: &mut Context<Self>) {
-        let Some((id, value)) = self
-            .page_editor
-            .as_ref()
-            .map(|pe| (pe.id, pe.state.read(cx).value().to_string()))
-        else {
+        let Some((id, content, aliases)) = self.page_editor.as_ref().map(|pe| {
+            (
+                pe.id,
+                pe.state.read(cx).value().to_string(),
+                pe.alias_state.read(cx).value().to_string(),
+            )
+        }) else {
             return;
         };
-        if let Err(e) = self.db.set_page_content(id, &value) {
-            log::error!("flush page {id}: {e}");
-        }
+        // Re-index content and save aliases, not just save the body — edits made
+        // right before switching/closing a tab don't fire the editors' `Blur`
+        // once they're dropped.
+        self.persist(id, &content);
+        self.commit_aliases(id, &aliases);
     }
 
     pub fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -637,15 +645,35 @@ impl AppView {
             },
         );
 
+        // Alias field: a comma-separated list, committed on Enter/blur.
+        let aliases = self.db.get_page_aliases(pid).unwrap_or_default().join(", ");
+        let alias_state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("alias1, alias2, …")
+                .default_value(aliases)
+        });
+        let alias_sub = cx.subscribe_in(
+            &alias_state,
+            window,
+            move |this: &mut AppView, st, ev: &InputEvent, _window, cx| {
+                if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    let value = st.read(cx).value().to_string();
+                    this.commit_aliases(pid, &value);
+                }
+            },
+        );
+
         self.page_editor = Some(PageEditor {
             id: pid,
             title: page.title,
             title_state,
+            alias_state,
             is_journal: page.is_journal,
             state,
             prev: page.content,
             _sub: sub,
             _title_sub: title_sub,
+            _alias_sub: alias_sub,
             backlinks,
         });
         self.page_editing = false;
@@ -653,7 +681,8 @@ impl AppView {
 
     // --- Persistence ---
 
-    /// Save a page's content and re-index its outgoing `[[links]]`.
+    /// Save a page's content and re-index its outgoing `[[links]]`. Aliases are
+    /// edited via the alias field (see `commit_aliases`), not parsed from the body.
     fn persist(&mut self, page_id: i64, content: &str) {
         if let Err(e) = self.db.set_page_content(page_id, content) {
             log::error!("save page {page_id}: {e}");
@@ -661,6 +690,14 @@ impl AppView {
         let titles = ui::links::parse_links(content);
         if let Err(e) = self.db.rebuild_page_links(page_id, &titles) {
             log::error!("rebuild links for page {page_id}: {e}");
+        }
+    }
+
+    /// Save the alias field's comma-separated list as the page's aliases.
+    fn commit_aliases(&mut self, page_id: i64, value: &str) {
+        let aliases = ui::links::parse_alias_list(value);
+        if let Err(e) = self.db.rebuild_page_aliases(page_id, &aliases) {
+            log::error!("save aliases for page {page_id}: {e}");
         }
     }
 

@@ -37,6 +37,16 @@ pub fn parse_links(content: &str) -> Vec<String> {
     out
 }
 
+/// Split a page's alias field — a comma-separated list like `hen, rooster,
+/// chick` — into trimmed, case-insensitively de-duplicated names.
+pub fn parse_alias_list(input: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in input.split(',') {
+        push_unique(&mut out, name);
+    }
+    out
+}
+
 fn push_unique(out: &mut Vec<String>, title: &str) {
     let title = title.trim();
     if !title.is_empty() && !out.iter().any(|t| t.eq_ignore_ascii_case(title)) {
@@ -104,5 +114,19 @@ mod tests {
     fn tag_needs_boundary_and_chars() {
         assert!(parse_links("a#b is not a tag").is_empty());
         assert!(parse_links("# heading not a tag").is_empty());
+    }
+
+    #[test]
+    fn alias_list_splits_trims_and_dedups() {
+        assert_eq!(
+            parse_alias_list("hen, rooster ,Hen,"),
+            vec!["hen", "rooster"]
+        );
+    }
+
+    #[test]
+    fn alias_list_empty() {
+        assert!(parse_alias_list("").is_empty());
+        assert!(parse_alias_list("  ,  , ").is_empty());
     }
 }
