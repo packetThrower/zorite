@@ -33,7 +33,7 @@ use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
 use crate::settings::SettingsView;
 use crate::skins::{self, Skin};
-use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template};
+use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template, Trigger};
 use crate::theme;
 use crate::ui;
 
@@ -563,7 +563,7 @@ impl AppView {
             let s = editor.read(cx);
             (s.value().to_string(), s.cursor())
         };
-        let Some((start, query)) = slash::detect(&value, cursor) else {
+        let Some((trigger, start, query)) = slash::detect(&value, cursor) else {
             self.slash = None;
             cx.notify();
             return;
@@ -573,9 +573,20 @@ impl AppView {
             cx.notify();
             return;
         };
-        let level = self.slash.as_ref().map_or(SlashLevel::Root, |s| s.level);
+        // Only the slash menu has submenu levels; carry the level forward only
+        // while the completion stays a slash one.
+        let level = self
+            .slash
+            .as_ref()
+            .filter(|s| s.trigger == Trigger::Slash)
+            .map_or(SlashLevel::Root, |s| s.level);
         let title = self.slash_title(&target);
-        let items = slash::build_items(level, &query, &self.templates, &title);
+        let items = match trigger {
+            Trigger::Slash => slash::build_slash_items(level, &query, &self.templates, &title),
+            Trigger::Link => slash::build_link_items(&query, &self.pages),
+            Trigger::Tag => slash::build_tag_items(&query, &self.pages),
+            Trigger::Placeholder => slash::build_placeholder_items(&query),
+        };
         let selected = self.slash.as_ref().map_or(0, |s| s.selected);
         let selected = if items.is_empty() {
             0
@@ -584,6 +595,7 @@ impl AppView {
         };
         self.slash = Some(Slash {
             target,
+            trigger,
             query,
             start,
             caret,
@@ -638,9 +650,10 @@ impl AppView {
             return;
         };
         let title = self.slash_title(&target);
-        let items = slash::build_items(level, &query, &self.templates, &title);
+        let items = slash::build_slash_items(level, &query, &self.templates, &title);
         self.slash = Some(Slash {
             target,
+            trigger: Trigger::Slash,
             query,
             start,
             caret,
@@ -656,6 +669,11 @@ impl AppView {
     /// Tab is handled here). Propagates when no editor is focused so Tab works
     /// normally elsewhere (search box, dialogs).
     fn on_insert_tab(&mut self, _: &InsertTab, window: &mut Window, cx: &mut Context<Self>) {
+        // If a completion menu is open, Tab accepts the selection (like Enter).
+        if self.slash.is_some() {
+            self.confirm_slash(window, cx);
+            return;
+        }
         let target = if let Some(date) = self.editing_day.clone() {
             SlashTarget::Day(date)
         } else if self.page_editing {

@@ -7,6 +7,8 @@
 use gpui::{Bounds, Pixels};
 use gpui_markdown::SNIPPETS;
 
+use crate::models::Page;
+
 /// The reserved page whose content defines templates. Each template is a
 /// line `!name` followed by its body (until the next `!name` or EOF).
 pub const TEMPLATES_PAGE: &str = "Templates";
@@ -17,6 +19,19 @@ pub enum SlashLevel {
     Root,
     Markdown,
     Templates,
+}
+
+/// Which completion is open, keyed by its trigger prefix.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Trigger {
+    /// `/` — markdown commands + templates (has submenu levels).
+    Slash,
+    /// `[[` — link to a page.
+    Link,
+    /// `#` — tag (also a page).
+    Tag,
+    /// `{{` — template placeholder.
+    Placeholder,
 }
 
 /// What a palette entry does when chosen.
@@ -49,6 +64,7 @@ pub enum SlashTarget {
 /// Open palette state.
 pub struct Slash {
     pub target: SlashTarget,
+    pub trigger: Trigger,
     pub query: String,
     /// Byte offset of the `/` in the editor text.
     pub start: usize,
@@ -61,31 +77,70 @@ pub struct Slash {
     pub items: Vec<PaletteItem>,
 }
 
-/// If the caret sits just after a `/token` (`token` = `[A-Za-z0-9-]*`, the
-/// `/` at start-of-text or after whitespace), return the `/` byte offset
-/// and the token. `None` otherwise (e.g. `and/or`).
-pub fn detect(value: &str, cursor: usize) -> Option<(usize, String)> {
+/// Detect a completion trigger ending at the caret: the trigger, the byte
+/// offset of its first char (insertion replaces from there), and the query
+/// typed after it. `[[` / `{{` (queries may contain spaces) take priority
+/// over the single-char `#` / `/`.
+pub fn detect(value: &str, cursor: usize) -> Option<(Trigger, usize, String)> {
     let cursor = cursor.min(value.len());
+    if let Some((start, q)) = detect_bracket(value, cursor, "[[", "]]") {
+        return Some((Trigger::Link, start, q));
+    }
+    if let Some((start, q)) = detect_bracket(value, cursor, "{{", "}}") {
+        return Some((Trigger::Placeholder, start, q));
+    }
+    // Tag: `#` at a boundary with at least one tag char after it, so a lone
+    // `#` and markdown headings (`# `) don't trigger.
+    if let Some((start, q)) = detect_token(value, cursor, b'#', is_tag_char) {
+        if !q.is_empty() {
+            return Some((Trigger::Tag, start, q));
+        }
+    }
+    if let Some((start, q)) = detect_token(value, cursor, b'/', is_token_char) {
+        return Some((Trigger::Slash, start, q));
+    }
+    None
+}
+
+/// An open `open`..caret span with no `close`, newline, or nested `open`
+/// between — i.e. an unclosed `[[` / `{{` on the current line.
+fn detect_bracket(value: &str, cursor: usize, open: &str, close: &str) -> Option<(usize, String)> {
+    let open_pos = value[..cursor].rfind(open)?;
+    let query = &value[open_pos + open.len()..cursor];
+    if query.contains(close) || query.contains('\n') || query.contains(open) {
+        return None;
+    }
+    Some((open_pos, query.to_string()))
+}
+
+/// A `prefix` byte at a word boundary, followed by an `is_char` run up to
+/// the caret. Returns the prefix offset and the run.
+fn detect_token(
+    value: &str,
+    cursor: usize,
+    prefix: u8,
+    is_char: fn(u8) -> bool,
+) -> Option<(usize, String)> {
     let bytes = value.as_bytes();
     let mut i = cursor;
-    while i > 0 && is_token_char(bytes[i - 1]) {
+    while i > 0 && is_char(bytes[i - 1]) {
         i -= 1;
     }
-    if i == 0 || bytes[i - 1] != b'/' {
+    if i == 0 || bytes[i - 1] != prefix {
         return None;
     }
-    let slash = i - 1;
-    if slash > 0 && !is_boundary(bytes[slash - 1]) {
+    let start = i - 1;
+    if start > 0 && !is_boundary(bytes[start - 1]) {
         return None;
     }
-    Some((slash, value[i..cursor].to_string()))
+    Some((start, value[i..cursor].to_string()))
 }
 
 /// Build the palette for the current level + query:
 /// - Root + empty query → the category rows (`Markdown ›`, `Templates ›`).
 /// - Root + a query → a flattened search over everything (so `/table` works).
 /// - a submenu → that category's items, filtered by the query.
-pub fn build_items(
+pub fn build_slash_items(
     level: SlashLevel,
     query: &str,
     templates: &[Template],
@@ -140,6 +195,117 @@ fn template_items(q: &str, templates: &[Template], title: &str, out: &mut Vec<Pa
             });
         }
     }
+}
+
+/// Max page-sourced completion rows shown at once; type to narrow further.
+const MAX_COMPLETION_ITEMS: usize = 8;
+
+/// Page-link items for `[[query`: the best-matching page titles → `[[Title]]`,
+/// plus a "Create" entry when the query names a page that doesn't exist yet.
+pub fn build_link_items(query: &str, pages: &[Page]) -> Vec<PaletteItem> {
+    let q = query.trim().to_lowercase();
+    let (titles, exact) = ranked_titles(&q, pages, |_| true);
+    let mut out: Vec<PaletteItem> = titles
+        .into_iter()
+        .map(|t| insert_item(t.clone(), format!("[[{t}]]")))
+        .collect();
+    let trimmed = query.trim();
+    if !trimmed.is_empty() && !exact {
+        out.push(insert_item(
+            format!("Create \"{trimmed}\""),
+            format!("[[{trimmed}]]"),
+        ));
+    }
+    out
+}
+
+/// Tag items for `#query`: the best-matching tag-valid page titles → `#tag`,
+/// plus a "Create" entry. (`#tag` links to a page named `tag`, so pages are
+/// the source.)
+pub fn build_tag_items(query: &str, pages: &[Page]) -> Vec<PaletteItem> {
+    let q = query.trim().to_lowercase();
+    let (titles, exact) = ranked_titles(&q, pages, is_valid_tag);
+    let mut out: Vec<PaletteItem> = titles
+        .into_iter()
+        .map(|t| insert_item(format!("#{t}"), format!("#{t}")))
+        .collect();
+    let trimmed = query.trim();
+    if !trimmed.is_empty() && is_valid_tag(trimmed) && !exact {
+        out.push(insert_item(
+            format!("Create #{trimmed}"),
+            format!("#{trimmed}"),
+        ));
+    }
+    out
+}
+
+/// Page titles matching `q` (already lowercased; empty = all), kept only when
+/// `accept` holds, ranked prefix-matches-first then alphabetically, and capped
+/// at `MAX_COMPLETION_ITEMS`. Returns the titles and whether one equals `q`.
+fn ranked_titles(q: &str, pages: &[Page], accept: fn(&str) -> bool) -> (Vec<String>, bool) {
+    // Empty query: `list_pages` is already alphabetical, so just take a few.
+    if q.is_empty() {
+        let titles = pages
+            .iter()
+            .filter(|p| accept(&p.title))
+            .take(MAX_COMPLETION_ITEMS)
+            .map(|p| p.title.clone())
+            .collect();
+        return (titles, false);
+    }
+    let mut matches: Vec<(u8, &str)> = Vec::new();
+    let mut exact = false;
+    for p in pages {
+        if !accept(&p.title) {
+            continue;
+        }
+        let lower = p.title.to_lowercase();
+        if let Some(pos) = lower.find(q) {
+            exact |= lower == q;
+            // Rank 0 = prefix match, 1 = match elsewhere.
+            matches.push((u8::from(pos != 0), p.title.as_str()));
+        }
+    }
+    matches.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
+    let titles = matches
+        .into_iter()
+        .take(MAX_COMPLETION_ITEMS)
+        .map(|(_, t)| t.to_string())
+        .collect();
+    (titles, exact)
+}
+
+/// Placeholder items for `{{query`: the template placeholders → `{{name}}`.
+pub fn build_placeholder_items(query: &str) -> Vec<PaletteItem> {
+    let q = query.trim().to_lowercase();
+    let mut out = Vec::new();
+    for name in ["date", "time", "title", "cursor"] {
+        if q.is_empty() || name.contains(q.as_str()) {
+            let ph = ["{{", name, "}}"].concat();
+            out.push(insert_item(ph.clone(), ph));
+        }
+    }
+    out
+}
+
+/// An `Insert` palette item that drops the caret at the end of `snippet`.
+fn insert_item(label: String, snippet: String) -> PaletteItem {
+    let caret = snippet.len();
+    PaletteItem {
+        label,
+        kind: ItemKind::Insert { snippet, caret },
+    }
+}
+
+fn is_valid_tag(s: &str) -> bool {
+    !s.is_empty() && s.bytes().all(is_tag_char)
+}
+
+fn is_tag_char(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b == b'-'
 }
 
 /// Parse the `Templates` page into named templates. A `!name` at the start
@@ -222,17 +388,87 @@ mod tests {
 
     #[test]
     fn slash_alone_triggers_empty_query() {
-        assert_eq!(detect("/", 1), Some((0, String::new())));
+        assert_eq!(detect("/", 1), Some((Trigger::Slash, 0, String::new())));
     }
 
     #[test]
     fn slash_query_at_start() {
-        assert_eq!(detect("/todo", 5), Some((0, "todo".to_string())));
+        assert_eq!(
+            detect("/todo", 5),
+            Some((Trigger::Slash, 0, "todo".to_string()))
+        );
     }
 
     #[test]
     fn midword_slash_is_ignored() {
         assert_eq!(detect("and/or", 6), None);
+    }
+
+    #[test]
+    fn link_trigger_allows_spaces() {
+        assert_eq!(
+            detect("see [[Palo Al", 13),
+            Some((Trigger::Link, 4, "Palo Al".to_string()))
+        );
+    }
+
+    #[test]
+    fn closed_link_does_not_trigger() {
+        assert_eq!(detect("see [[Foo]] x", 13), None);
+    }
+
+    #[test]
+    fn tag_needs_a_char_heading_does_not() {
+        assert_eq!(
+            detect("a #pro", 6),
+            Some((Trigger::Tag, 2, "pro".to_string()))
+        );
+        assert_eq!(detect("# heading", 2), None);
+    }
+
+    #[test]
+    fn placeholder_trigger() {
+        assert_eq!(
+            detect("x {{da", 6),
+            Some((Trigger::Placeholder, 2, "da".to_string()))
+        );
+    }
+
+    #[test]
+    fn placeholder_items_insert_braces() {
+        let items = build_placeholder_items("da");
+        assert_eq!(items.len(), 1);
+        let ItemKind::Insert { snippet, caret } = &items[0].kind else {
+            panic!("expected insert");
+        };
+        assert_eq!(snippet, "{{date}}");
+        assert_eq!(*caret, "{{date}}".len());
+    }
+
+    #[test]
+    fn link_items_offer_create_for_new_title() {
+        let items = build_link_items("New", &[]);
+        assert_eq!(items.len(), 1);
+        let ItemKind::Insert { snippet, .. } = &items[0].kind else {
+            panic!("expected insert");
+        };
+        assert_eq!(snippet, "[[New]]");
+    }
+
+    #[test]
+    fn link_items_are_capped() {
+        let pages: Vec<Page> = (0..20)
+            .map(|i| Page {
+                id: i,
+                title: format!("proj{i:02}"),
+                is_journal: false,
+                journal_date: None,
+                content: String::new(),
+            })
+            .collect();
+        let items = build_link_items("proj", &pages);
+        // Capped matches + one "Create" entry (no exact "proj").
+        assert_eq!(items.len(), MAX_COMPLETION_ITEMS + 1);
     }
 
     #[test]

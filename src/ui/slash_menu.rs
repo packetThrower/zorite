@@ -1,7 +1,10 @@
 //! The slash-command popup list (keyboard-driven; rendered as an anchored
 //! overlay by `AppView`).
 
-use gpui::{IntoElement, ParentElement, Styled, div, prelude::FluentBuilder as _, px};
+use gpui::{
+    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, div,
+    prelude::FluentBuilder as _, px,
+};
 
 use crate::slash::{ItemKind, Slash};
 use crate::theme;
@@ -10,7 +13,12 @@ pub fn render(slash: &Slash) -> impl IntoElement {
     let items = &slash.items;
 
     let mut col = div()
+        .id("completion-menu")
         .min_w(px(220.0))
+        // Bound the height (page lists are capped, but templates etc. can be
+        // long) and scroll the overflow rather than spilling off-window.
+        .max_h(px(280.0))
+        .overflow_y_scroll()
         .bg(theme::bg_sidebar())
         .border_1()
         .border_color(theme::border_subtle())
