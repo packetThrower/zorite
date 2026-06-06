@@ -800,7 +800,7 @@ fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
         if ri > 0 {
             row_el = row_el.border_t_1().border_color(border);
         }
-        for cell in &r.children {
+        for (ci, cell) in r.children.iter().enumerate() {
             let mdast::Node::TableCell(c) = cell else {
                 continue;
             };
@@ -811,6 +811,12 @@ fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
                 .py(px(6.0))
                 .border_r_1()
                 .border_color(border);
+            // Honor the column's GFM alignment (`:---:` / `---:`).
+            match table.align.get(ci) {
+                Some(mdast::AlignKind::Center) => cell_el = cell_el.text_center(),
+                Some(mdast::AlignKind::Right) => cell_el = cell_el.text_right(),
+                _ => {}
+            }
             if ri == 0 {
                 cell_el = cell_el.font_weight(FontWeight::BOLD);
             }
