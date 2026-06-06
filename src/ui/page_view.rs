@@ -2,13 +2,14 @@
 //! "Linked References" panel.
 
 use gpui::{
-    ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
+    ClickEvent, Context, ExternalPaths, FontWeight, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px, relative,
 };
-use gpui_component::input::{Input, InputState};
+use gpui_component::input::Input;
 
 use crate::app::{AppView, PageEditor};
 use crate::models::Backlink;
+use crate::slash::SlashTarget;
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -21,6 +22,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             .into_any_element();
     };
 
+    let page_id = pe.id;
     div()
         .flex_1()
         .min_w_0()
@@ -31,6 +33,17 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .id("page-scroll")
                 .size_full()
                 .overflow_y_scroll()
+                // Drop image files onto the page to add them.
+                .on_drop(cx.listener(
+                    move |this: &mut AppView, paths: &ExternalPaths, window, cx| {
+                        this.insert_dropped_images(
+                            SlashTarget::Page(page_id),
+                            paths.paths(),
+                            window,
+                            cx,
+                        );
+                    },
+                ))
                 .child(
                     div()
                         // Match the journal feed: uniform padding, left-aligned.
@@ -48,7 +61,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 .text_color(theme::text_primary())
                                 .into_any_element()
                         } else {
-                            page_rendered(&pe.state, cx).into_any_element()
+                            page_rendered(app, pe, cx).into_any_element()
                         })
                         .when(!pe.backlinks.is_empty(), |this| {
                             this.child(backlinks_section(&pe.backlinks, cx))
@@ -92,8 +105,8 @@ fn page_title(pe: &PageEditor) -> impl IntoElement {
 
 /// The page body in reading mode: rendered markdown (or a placeholder
 /// when empty), clickable to enter edit mode.
-fn page_rendered(state: &Entity<InputState>, cx: &mut Context<AppView>) -> impl IntoElement {
-    let content = state.read(cx).value();
+fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> impl IntoElement {
+    let content = pe.state.read(cx).value();
     let inner = if content.trim().is_empty() {
         div()
             .text_size(px(16.0))
@@ -104,6 +117,11 @@ fn page_rendered(state: &Entity<InputState>, cx: &mut Context<AppView>) -> impl 
         let weak = cx.entity().downgrade();
         gpui_markdown::MarkdownView::new("page-md", content)
             .style(theme::markdown_style())
+            .on_image(crate::ui::image::renderer(
+                app,
+                SlashTarget::Page(pe.id),
+                cx,
+            ))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))

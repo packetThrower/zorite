@@ -1,2 +1,4 @@
 /target
 .DS_Store
+# Scratch image files used while testing; real images live in the app data dir.
+/images

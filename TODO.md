@@ -7,7 +7,11 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [x] **Auto-pair brackets/quotes** (`()` `[]` `{}` `<>` `""` `''`) with type-over and prose-safe guards (contraction-aware quotes, `<` only after a word); confirming a `[[`/`{{` completion absorbs the auto-inserted closer
 - [x] Auto-pair: **wrap the selection** — typing an opener with text selected wraps it (`foo` → `(foo)`); done in the change handler by diffing against the prior text, no key-level interception needed
 - [x] Auto-pair: **backspace deletes an empty pair** (`(|)` + backspace → remove both)
-- [ ] Real inline **image rendering** (images currently render as clickable links; needs async image loading)
+- [x] **Inline image rendering** — standalone `![](path-or-url)` images render for real (async, aspect-ratio preserved, capped to content width); an image at the start of a paragraph renders with trailing text as a caption below
+- [x] Image **resize** — drag the corner handle (live preview); persists as `![](src){width=N}` in the markdown
+- [x] Image **insert** — paste from clipboard (`Cmd+V`) or drag-and-drop a file; copied into the data-dir `images/` folder and referenced relatively
+- [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
+- [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 - [ ] Slash menu: **click-to-insert** a command (keyboard-only today; needs to avoid blurring the editor on click)
 - [ ] **Task-list checkboxes** (`- [ ]` / `- [x]`) — the `markdown` 1.0 crate's `ListItem` has no `checked` field, so this needs a different parser or post-processing
 - [ ] Broaden `gpui-markdown` coverage: footnotes, nested-list edge cases

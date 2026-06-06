@@ -154,6 +154,27 @@ pub const SNIPPETS: &[Snippet] = &[
 /// Called when a `[[wiki-link]]` is clicked, with the trimmed title.
 pub type WikiLinkHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 
+/// A standalone image (a paragraph that is just `![alt](src)`, optionally
+/// followed by a `{width=N}` attribute). Handed to the host's [`ImageRenderer`]
+/// so it can render a real, possibly interactive, image element.
+pub struct ImageInfo {
+    /// The image URL/path as written in the markdown.
+    pub src: SharedString,
+    /// The alt text (may be empty).
+    pub alt: SharedString,
+    /// An explicit width in pixels from a `{width=N}` attribute, if present.
+    pub width: Option<f32>,
+    /// The byte range in the source to replace with `{width=N}` when resizing:
+    /// an empty range (just after the image) when there's no attribute yet, or
+    /// the existing attribute's span when there is one.
+    pub attr_target: Range<usize>,
+}
+
+/// Renders a standalone image. The element's event handlers run later (with
+/// their own context), so building it needs no window/app — letting the host
+/// supply a stateful, draggable image while this crate stays host-agnostic.
+pub type ImageRenderer = Rc<dyn Fn(ImageInfo) -> AnyElement>;
+
 /// A rendered markdown document element.
 #[derive(IntoElement)]
 pub struct MarkdownView {
@@ -161,6 +182,7 @@ pub struct MarkdownView {
     source: SharedString,
     style: MarkdownStyle,
     on_wiki_link: Option<WikiLinkHandler>,
+    on_image: Option<ImageRenderer>,
 }
 
 impl MarkdownView {
@@ -172,6 +194,7 @@ impl MarkdownView {
             source: source.into(),
             style: MarkdownStyle::default(),
             on_wiki_link: None,
+            on_image: None,
         }
     }
 
@@ -184,6 +207,13 @@ impl MarkdownView {
         self.on_wiki_link = Some(handler);
         self
     }
+
+    /// Supply a renderer for standalone images. Without one, images fall back
+    /// to a clickable "🖼 alt" text label.
+    pub fn on_image(mut self, handler: ImageRenderer) -> Self {
+        self.on_image = Some(handler);
+        self
+    }
 }
 
 impl RenderOnce for MarkdownView {
@@ -192,6 +222,7 @@ impl RenderOnce for MarkdownView {
         let mut ctx = Ctx {
             style: self.style,
             on_wiki_link: self.on_wiki_link,
+            on_image: self.on_image,
             id_base: self.id_base,
             counter: 0,
         };
@@ -220,6 +251,7 @@ impl RenderOnce for MarkdownView {
 struct Ctx {
     style: MarkdownStyle,
     on_wiki_link: Option<WikiLinkHandler>,
+    on_image: Option<ImageRenderer>,
     id_base: SharedString,
     counter: usize,
 }
@@ -228,7 +260,30 @@ struct Ctx {
 
 fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
     match node {
-        mdast::Node::Paragraph(p) => Some(inline_element(&p.children, ctx)),
+        mdast::Node::Paragraph(p) => {
+            // A paragraph that *starts* with `![alt](src)` (optionally
+            // `{width=N}`) renders as a real image via the host. Any text that
+            // follows on the same line (a caption typed right under it) renders
+            // below the image rather than reverting the whole thing to text.
+            if let Some(renderer) = ctx.on_image.clone() {
+                if let Some((info, rest)) = leading_image(&p.children) {
+                    let image = renderer(info);
+                    if rest.is_empty() {
+                        return Some(image);
+                    }
+                    return Some(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .child(image)
+                            .child(inline_element(&rest, ctx))
+                            .into_any_element(),
+                    );
+                }
+            }
+            Some(inline_element(&p.children, ctx))
+        }
         mdast::Node::Heading(h) => {
             let scale = match h.depth {
                 1 => 1.8,
@@ -296,6 +351,85 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
         mdast::Node::Text(t) => Some(StyledText::new(t.value.clone()).into_any_element()),
         _ => None,
     }
+}
+
+/// If a paragraph *begins* with an image (ignoring leading whitespace), return
+/// it as an [`ImageInfo`] — picking up a `{width=N}` attribute typed right after
+/// it — along with the remaining inline nodes (e.g. a caption on the next line)
+/// to render below the image. `None` if the paragraph doesn't start with an
+/// image.
+fn leading_image(children: &[mdast::Node]) -> Option<(ImageInfo, Vec<mdast::Node>)> {
+    let mut iter = children.iter();
+    let mut first = iter.next()?;
+    // Skip a purely-whitespace leading text node.
+    if let mdast::Node::Text(t) = first {
+        if t.value.trim().is_empty() {
+            first = iter.next()?;
+        }
+    }
+    let mdast::Node::Image(img) = first else {
+        return None;
+    };
+    let img_end = img.position.as_ref()?.end.offset;
+
+    let rest: Vec<&mdast::Node> = iter.collect();
+    let mut width = None;
+    let mut attr_end = img_end;
+    let mut out: Vec<mdast::Node> = Vec::new();
+
+    // The text immediately after the image may begin with `{width=N}`.
+    if let Some((mdast::Node::Text(t), tail)) = rest.split_first() {
+        let remainder = if let Some((w, after)) = parse_leading_width(&t.value) {
+            width = Some(w);
+            let consumed = t.value.len() - after.len();
+            attr_end = t
+                .position
+                .as_ref()
+                .map_or(img_end, |p| p.start.offset + consumed);
+            after
+        } else {
+            &t.value
+        };
+        let remainder = remainder.trim_start();
+        if !remainder.is_empty() {
+            out.push(text_node(remainder));
+        }
+        out.extend(tail.iter().map(|n| (*n).clone()));
+    } else {
+        out.extend(rest.iter().map(|n| (*n).clone()));
+    }
+
+    let attr_target = if width.is_some() {
+        img_end..attr_end
+    } else {
+        img_end..img_end
+    };
+    Some((
+        ImageInfo {
+            src: img.url.clone().into(),
+            alt: img.alt.clone().into(),
+            width,
+            attr_target,
+        },
+        out,
+    ))
+}
+
+/// Parse a leading `{width=320}` / `{width=320px}` from `s`, returning the width
+/// and the text after the closing `}`.
+fn parse_leading_width(s: &str) -> Option<(f32, &str)> {
+    let rest = s.strip_prefix("{width=")?;
+    let close = rest.find('}')?;
+    let num = rest[..close].strip_suffix("px").unwrap_or(&rest[..close]);
+    let w = num.trim().parse::<f32>().ok().filter(|w| *w > 0.0)?;
+    Some((w, &rest[close + 1..]))
+}
+
+fn text_node(value: &str) -> mdast::Node {
+    mdast::Node::Text(mdast::Text {
+        value: value.to_string(),
+        position: None,
+    })
 }
 
 fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
@@ -647,6 +781,52 @@ mod tests {
         let inl = inline_of("a [[]] b");
         assert_eq!(inl.text, "a [[]] b");
         assert!(inl.links.is_empty());
+    }
+
+    #[test]
+    fn parse_leading_width_variants() {
+        assert_eq!(parse_leading_width("{width=320}"), Some((320.0, "")));
+        assert_eq!(
+            parse_leading_width("{width=200px}\nHere"),
+            Some((200.0, "\nHere"))
+        );
+        assert_eq!(parse_leading_width("{width=0}"), None);
+        assert_eq!(parse_leading_width("just text"), None);
+    }
+
+    #[test]
+    fn leading_image_detection() {
+        fn para_children(md: &str) -> Vec<mdast::Node> {
+            let tree = markdown::to_mdast(md, &markdown::ParseOptions::gfm()).unwrap();
+            if let mdast::Node::Root(root) = tree {
+                for n in root.children {
+                    if let mdast::Node::Paragraph(p) = n {
+                        return p.children;
+                    }
+                }
+            }
+            vec![]
+        }
+        let (info, rest) = leading_image(&para_children("![alt](/x.png)")).unwrap();
+        assert_eq!(info.src.as_ref(), "/x.png");
+        assert_eq!(info.alt.as_ref(), "alt");
+        assert_eq!(info.width, None);
+        assert!(rest.is_empty());
+
+        let (sized, rest) = leading_image(&para_children("![](/x.png){width=200}")).unwrap();
+        assert_eq!(sized.width, Some(200.0));
+        // The attribute span is non-empty so a resize replaces it in place.
+        assert!(sized.attr_target.start < sized.attr_target.end);
+        assert!(rest.is_empty());
+
+        // A caption typed on the next line: the image still renders, and the
+        // text is returned as `rest` to show below it (the reported bug).
+        let (capt, rest) = leading_image(&para_children("![](/x.png){width=200}\nHere")).unwrap();
+        assert_eq!(capt.width, Some(200.0));
+        assert!(!rest.is_empty());
+
+        // Text before the image isn't a leading-image block.
+        assert!(leading_image(&para_children("see ![](/x.png) here")).is_none());
     }
 
     #[test]

@@ -10,11 +10,15 @@
 //! gives a real Word-like typing experience (native Enter / selection /
 //! undo / IME). Content saves on `Change` and re-indexes `[[links]]`.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ops::Range;
+use std::rc::Rc;
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, FocusHandle, InteractiveElement, IntoElement,
-    ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
+    App, AppContext, Bounds, ClipboardEntry, Context, CursorStyle, Entity, FocusHandle,
+    ImageFormat, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
+    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
     Subscription, TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowDecorations,
     WindowHandle, WindowOptions, div, px, size,
 };
@@ -26,8 +30,8 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    DeletePage, InsertTab, NewPage, OpenInNewTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
-    SlashUp,
+    DeletePage, InsertTab, NewPage, OpenInNewTab, PasteImage, RenamePage, SlashCancel,
+    SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
@@ -68,7 +72,7 @@ pub struct DayEditor {
 pub struct PageEditor {
     /// The page's id, so the editor can be flushed without consulting the
     /// active tab (used before the editor is dropped).
-    id: i64,
+    pub id: i64,
     pub title: String,
     /// Inline-editable page title (named pages only); renames on Enter/blur.
     pub title_state: Entity<InputState>,
@@ -79,6 +83,20 @@ pub struct PageEditor {
     _sub: Subscription,
     _title_sub: Subscription,
     pub backlinks: Vec<Backlink>,
+}
+
+/// An in-progress image resize drag (dragging the corner handle of a rendered
+/// image). Tracked on `AppView` because the markdown renderer is stateless.
+pub struct ImageDrag {
+    /// Which editor's source holds the image being resized.
+    target: SlashTarget,
+    /// Byte range in that source to overwrite with `{width=N}`.
+    attr_target: Range<usize>,
+    /// Mouse x when the drag began, and the image's width then.
+    start_x: Pixels,
+    start_width: f32,
+    /// The live width as the mouse moves (px).
+    width: f32,
 }
 
 pub struct AppView {
@@ -113,6 +131,12 @@ pub struct AppView {
 
     // Single-page view.
     pub page_editor: Option<PageEditor>,
+
+    // Image resize: live drag state, plus rendered image widths captured during
+    // paint (keyed by the image's source attr offset) so a drag knows its
+    // starting size. The map is shared into the renderer's measure callbacks.
+    image_drag: Option<ImageDrag>,
+    image_widths: Rc<RefCell<HashMap<usize, f32>>>,
 
     // Sidebar.
     pub pages: Vec<Page>,
@@ -176,6 +200,8 @@ impl AppView {
             page_editing: false,
             loaded_days: 0,
             day_editors: HashMap::new(),
+            image_drag: None,
+            image_widths: Rc::new(RefCell::new(HashMap::new())),
             feed_scroll: ScrollHandle::new(),
             page_editor: None,
             pages: Vec::new(),
@@ -782,6 +808,188 @@ impl AppView {
         }
     }
 
+    /// Shared map of rendered image widths (keyed by source attr offset),
+    /// handed to the renderer so its measure callbacks can record sizes.
+    pub fn image_widths(&self) -> Rc<RefCell<HashMap<usize, f32>>> {
+        self.image_widths.clone()
+    }
+
+    /// The image currently being resized, as `(attr offset, live width)`, so
+    /// the renderer can preview that width while dragging.
+    pub fn image_drag_snapshot(&self) -> Option<(usize, f32)> {
+        self.image_drag
+            .as_ref()
+            .map(|d| (d.attr_target.start, d.width))
+    }
+
+    /// Begin resizing an image: capture the start position and its current
+    /// rendered width (measured during paint).
+    pub fn start_image_drag(
+        &mut self,
+        target: SlashTarget,
+        attr_target: Range<usize>,
+        start_x: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let start_width = self
+            .image_widths
+            .borrow()
+            .get(&attr_target.start)
+            .copied()
+            .unwrap_or(320.0);
+        self.image_drag = Some(ImageDrag {
+            target,
+            attr_target,
+            start_x,
+            start_width,
+            width: start_width,
+        });
+        cx.notify();
+    }
+
+    /// Update the live width as the mouse moves during a resize drag.
+    fn update_image_drag(&mut self, x: Pixels, cx: &mut Context<Self>) {
+        if let Some(d) = self.image_drag.as_mut() {
+            let delta = f32::from(x) - f32::from(d.start_x);
+            d.width = (d.start_width + delta).clamp(40.0, 2000.0);
+            cx.notify();
+        }
+    }
+
+    /// Finish a resize drag: write `{width=N}` into the source and persist.
+    fn finish_image_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(d) = self.image_drag.take() else {
+            return;
+        };
+        let width = d.width.round() as i64;
+        if let Some(editor) = self.editor_for(&d.target) {
+            let value = editor.read(cx).value().to_string();
+            let start = d.attr_target.start.min(value.len());
+            let end = d.attr_target.end.min(value.len());
+            let new = format!("{}{{width={width}}}{}", &value[..start], &value[end..]);
+            editor.update(cx, |st, cx| {
+                st.set_value(new.clone(), window, cx);
+            });
+            match &d.target {
+                SlashTarget::Day(day) => self.save_journal(day, &new),
+                SlashTarget::Page(pid) => {
+                    if let Err(e) = self.db.set_page_content(*pid, &new) {
+                        log::error!("save page {pid}: {e}");
+                    }
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// The day/page editor that currently has focus, if any (for paste).
+    fn focused_editor_target(&self) -> Option<SlashTarget> {
+        if let Some(d) = self.editing_day.clone() {
+            Some(SlashTarget::Day(d))
+        } else if self.page_editing {
+            match self.tabs.get(self.active).map(|t| t.kind) {
+                Some(TabKind::Page(id)) => Some(SlashTarget::Page(id)),
+                _ => None,
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Insert `![](rel)` into `target`'s source as its own block — at the caret
+    /// when `at_cursor`, else appended — then persist.
+    fn insert_image_markdown(
+        &mut self,
+        target: &SlashTarget,
+        rel: &str,
+        at_cursor: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.editor_for(target) else {
+            return;
+        };
+        let value = editor.read(cx).value().to_string();
+        let pos = if at_cursor {
+            editor.read(cx).cursor().min(value.len())
+        } else {
+            value.len()
+        };
+        let (before, after) = value.split_at(pos);
+        // Keep the image on its own line (a blank line before unless we're
+        // already at a block boundary, and a newline after).
+        let lead = if before.is_empty() || before.ends_with("\n\n") {
+            ""
+        } else if before.ends_with('\n') {
+            "\n"
+        } else {
+            "\n\n"
+        };
+        let trail = if after.starts_with('\n') { "" } else { "\n" };
+        let snippet = format!("{lead}![]({rel}){trail}");
+        let caret = pos + snippet.len();
+        let new = format!("{before}{snippet}{after}");
+        editor.update(cx, |st, cx| {
+            st.set_value(new.clone(), window, cx);
+            let p = st.text().offset_to_position(caret.min(new.len()));
+            st.set_cursor_position(p, window, cx);
+        });
+        match target {
+            SlashTarget::Day(d) => self.save_journal(d, &new),
+            SlashTarget::Page(pid) => {
+                if let Err(e) = self.db.set_page_content(*pid, &new) {
+                    log::error!("save page {pid}: {e}");
+                }
+            }
+        }
+        cx.notify();
+    }
+
+    /// `Cmd+V`: if the clipboard holds an image and a day/page editor is
+    /// focused, save it and insert a reference. Otherwise propagate so
+    /// gpui-component's normal text paste runs.
+    fn on_paste_image(&mut self, _: &PasteImage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(target) = self.focused_editor_target() else {
+            cx.propagate();
+            return;
+        };
+        let Some(item) = cx.read_from_clipboard() else {
+            cx.propagate();
+            return;
+        };
+        let image = item.entries().iter().find_map(|e| match e {
+            ClipboardEntry::Image(img) => Some((img.bytes().to_vec(), clipboard_ext(img.format()))),
+            _ => None,
+        });
+        let Some((bytes, ext)) = image else {
+            cx.propagate();
+            return;
+        };
+        match crate::images::import_bytes(&bytes, ext) {
+            Ok(rel) => self.insert_image_markdown(&target, &rel, true, window, cx),
+            Err(e) => log::error!("save pasted image: {e}"),
+        }
+    }
+
+    /// Import dropped image files into `target` (appended as image blocks).
+    pub fn insert_dropped_images(
+        &mut self,
+        target: SlashTarget,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        for path in paths {
+            if !crate::images::is_supported(path) {
+                continue;
+            }
+            match crate::images::import_file(path) {
+                Ok(rel) => self.insert_image_markdown(&target, &rel, false, window, cx),
+                Err(e) => log::error!("import dropped image {}: {e}", path.display()),
+            }
+        }
+    }
+
     /// Auto-pair brackets/quotes in the target editor. Compares the editor's
     /// text to its `prev` snapshot; if a single opener was just typed it inserts
     /// the matching closer (caret stays between), and if a closer was typed in
@@ -1371,6 +1579,30 @@ impl Render for AppView {
             .into_any_element()
         });
 
+        // While resizing an image, a transparent full-window layer captures the
+        // mouse so the drag continues even as the pointer leaves the handle.
+        let drag_overlay = self.image_drag.as_ref().map(|_| {
+            gpui::deferred(
+                div()
+                    .occlude()
+                    .absolute()
+                    .inset_0()
+                    .cursor(CursorStyle::ResizeLeftRight)
+                    .on_mouse_move(cx.listener(
+                        |this: &mut AppView, ev: &MouseMoveEvent, _window, cx| {
+                            this.update_image_drag(ev.position.x, cx);
+                        },
+                    ))
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut AppView, _ev: &MouseUpEvent, window, cx| {
+                            this.finish_image_drag(window, cx);
+                        }),
+                    ),
+            )
+            .into_any_element()
+        });
+
         // Each journal day fills most of the window height so days read as
         // distinct "pages" instead of a continuous wall of text.
         let day_min = px(f32::from(window.viewport_size().height) * 0.75);
@@ -1429,6 +1661,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_insert_tab))
+            .on_action(cx.listener(Self::on_paste_image))
             .child(
                 TitleBar::new().child(
                     div()
@@ -1529,10 +1762,25 @@ impl Render for AppView {
                     ),
             )
             .children(overlay)
+            .children(drag_overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.
             .children(Root::render_dialog_layer(window, cx))
+    }
+}
+
+/// Map a clipboard image format to a file extension for the saved file.
+fn clipboard_ext(format: ImageFormat) -> &'static str {
+    match format {
+        ImageFormat::Png => "png",
+        ImageFormat::Jpeg => "jpg",
+        ImageFormat::Webp => "webp",
+        ImageFormat::Gif => "gif",
+        ImageFormat::Bmp => "bmp",
+        ImageFormat::Tiff => "tiff",
+        ImageFormat::Svg => "svg",
+        _ => "png",
     }
 }
 

@@ -30,10 +30,15 @@ and a SQLite backend.
 - **Templates** — reusable snippets defined on a `Templates` page, inserted from
   `/` with `{{date}}` / `{{time}}` / `{{title}}` / `{{cursor}}` placeholders.
 - **Full-text search** across all notes.
+- **Inline images** — `![](path-or-url)` images render for real; **paste** (Cmd+V)
+  or **drag-and-drop** a file to add one (copied into the data dir's `images/`
+  folder), and **drag the corner handle to resize** (saved as `{width=N}` in the
+  markdown).
 - **Markdown rendering** — headings, bold/italic/code, lists, quotes, GFM tables,
-  strikethrough, and images-as-links — via a custom renderer crate,
+  and strikethrough — via a custom renderer crate,
   [`gpui-markdown`](crates/gpui-markdown/README.md).
-- **Local SQLite** storage; everything stays on your machine.
+- **Local SQLite** storage for notes; images live beside it as files. Everything
+  stays on your machine.
 
 ## Templates
 

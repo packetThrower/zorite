@@ -3,12 +3,14 @@
 //! as formatted markdown — click a day to edit it.
 
 use gpui::{
-    ClickEvent, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Pixels, SharedString, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
+    ClickEvent, Context, Entity, ExternalPaths, FontWeight, InteractiveElement, IntoElement,
+    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{Input, InputState};
 
 use crate::app::{self, AppView};
+use crate::slash::SlashTarget;
 use crate::theme;
 
 pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -71,9 +73,10 @@ fn day_section(
             .text_color(theme::text_primary())
             .into_any_element()
     } else {
-        rendered_day(i, date, state.read(cx).value(), cx).into_any_element()
+        rendered_day(app, i, date, state.read(cx).value(), cx).into_any_element()
     };
 
+    let drop_date = date.to_string();
     div()
         .flex()
         .flex_col()
@@ -85,6 +88,17 @@ fn day_section(
         .when(i > 0, |d| {
             d.pt(px(40.0)).border_t_1().border_color(theme::divider())
         })
+        // Drop image files onto a day to add them to it.
+        .on_drop(cx.listener(
+            move |this: &mut AppView, paths: &ExternalPaths, window, cx| {
+                this.insert_dropped_images(
+                    SlashTarget::Day(drop_date.clone()),
+                    paths.paths(),
+                    window,
+                    cx,
+                );
+            },
+        ))
         .child(header)
         .child(body)
         .child(day_open_area(i, date, cx))
@@ -111,6 +125,7 @@ fn day_open_area(i: usize, date: &str, cx: &mut Context<AppView>) -> impl IntoEl
 /// A non-editing day: rendered markdown (or a placeholder when empty),
 /// clickable to enter edit mode.
 fn rendered_day(
+    app: &AppView,
     i: usize,
     date: &str,
     content: SharedString,
@@ -127,6 +142,11 @@ fn rendered_day(
         let weak = cx.entity().downgrade();
         gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
             .style(theme::markdown_style())
+            .on_image(crate::ui::image::renderer(
+                app,
+                SlashTarget::Day(d.clone()),
+                cx,
+            ))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))

@@ -48,3 +48,9 @@ pub fn db_path() -> PathBuf {
 pub fn themes_dir() -> PathBuf {
     data_dir().join("themes")
 }
+
+/// Directory for images pasted or dropped into notes. Markdown references them
+/// relatively (`images/<name>`), resolved against [`data_dir`].
+pub fn images_dir() -> PathBuf {
+    data_dir().join("images")
+}

@@ -26,7 +26,8 @@ actions!(
         OpenInNewTab,
         RenamePage,
         NewPage,
-        InsertTab
+        InsertTab,
+        PasteImage
     ]
 );
 
@@ -39,5 +40,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", SlashConfirm, Some(INPUT_CONTEXT)),
         KeyBinding::new("escape", SlashCancel, Some(INPUT_CONTEXT)),
         KeyBinding::new("tab", InsertTab, Some(INPUT_CONTEXT)),
+        // Cmd+V: paste a clipboard image into a day/page editor; the handler
+        // propagates (to gpui-component's text paste) when there's no image.
+        KeyBinding::new("cmd-v", PasteImage, Some(INPUT_CONTEXT)),
     ]);
 }
