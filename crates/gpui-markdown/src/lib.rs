@@ -10,10 +10,14 @@
 //! (`on_wiki_link`) rather than knowing anything about the host app.
 //! Standard `[text](url)` links open externally via `cx.open_url`.
 //!
-//! Scope (v1): headings, paragraphs, bold/italic/inline-code, fenced code
-//! blocks, ordered/unordered nested lists, blockquotes, thematic breaks,
-//! hard breaks, and links. Tables/images/footnotes render as plain text.
+//! Covers CommonMark + GFM: headings, paragraphs, bold/italic/strikethrough/
+//! inline-code, fenced code blocks, ordered/unordered/nested and task lists,
+//! blockquotes, thematic breaks, hard breaks, tables, links (inline and
+//! reference-style), images (rendered by the host via `on_image`), footnotes,
+//! and raw HTML (shown literally, never executed). `[[wiki-links]]` and
+//! `#tags` become clickable via caller callbacks.
 
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -225,6 +229,7 @@ impl RenderOnce for MarkdownView {
             on_image: self.on_image,
             id_base: self.id_base,
             counter: 0,
+            definitions: HashMap::new(),
         };
 
         let mut col = div()
@@ -236,6 +241,9 @@ impl RenderOnce for MarkdownView {
 
         match markdown::to_mdast(&source, &markdown::ParseOptions::gfm()) {
             Ok(mdast::Node::Root(root)) => {
+                for node in &root.children {
+                    collect_definitions(node, &mut ctx.definitions);
+                }
                 for node in &root.children {
                     if let Some(el) = render_block(node, &mut ctx) {
                         col = col.child(el);
@@ -254,6 +262,9 @@ struct Ctx {
     on_image: Option<ImageRenderer>,
     id_base: SharedString,
     counter: usize,
+    /// `[id] -> url` from reference definitions (`[id]: url`), collected up
+    /// front so `[text][id]` references resolve regardless of definition order.
+    definitions: HashMap<String, String>,
 }
 
 // --- Block rendering ---
@@ -346,6 +357,36 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                 .into_any_element(),
         ),
         mdast::Node::Table(t) => Some(render_table(t, ctx)),
+        // A footnote definition: `[label] <content>`, rendered muted/smaller
+        // where it sits (authors put these at the bottom).
+        mdast::Node::FootnoteDefinition(f) => {
+            let label = f.label.clone().unwrap_or_else(|| f.identifier.clone());
+            let muted = ctx.style.muted_color;
+            let mut body = div().flex().flex_col().gap(px(4.0));
+            for child in &f.children {
+                if let Some(el) = render_block(child, ctx) {
+                    body = body.child(el);
+                }
+            }
+            Some(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(6.0))
+                    .text_size(px(f32::from(ctx.style.text_size) * 0.9))
+                    .text_color(muted)
+                    .child(div().flex_shrink_0().child(format!("[{label}]")))
+                    .child(body)
+                    .into_any_element(),
+            )
+        }
+        // Raw HTML block: show the literal source (muted), never executed.
+        mdast::Node::Html(h) => Some(
+            div()
+                .text_color(ctx.style.muted_color)
+                .child(StyledText::new(h.value.clone()))
+                .into_any_element(),
+        ),
         // Stray inline content at block level, or unsupported blocks:
         // render whatever text we can.
         mdast::Node::Text(t) => Some(StyledText::new(t.value.clone()).into_any_element()),
@@ -444,7 +485,11 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
         let mdast::Node::ListItem(li) = item else {
             continue;
         };
-        let marker = if list.ordered {
+        // GFM task items (`- [ ]` / `- [x]`) carry `checked`; render a box
+        // instead of a bullet/number.
+        let marker = if let Some(done) = li.checked {
+            (if done { "☑" } else { "☐" }).to_string()
+        } else if list.ordered {
             format!("{}.", start + i)
         } else {
             "•".to_string()
@@ -496,7 +541,13 @@ struct Inline {
 
 fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     let mut inl = Inline::default();
-    build_inline(nodes, HighlightStyle::default(), &ctx.style, &mut inl);
+    build_inline(
+        nodes,
+        HighlightStyle::default(),
+        &ctx.style,
+        &ctx.definitions,
+        &mut inl,
+    );
 
     let styled = StyledText::new(inl.text).with_highlights(inl.highlights);
     if inl.links.is_empty() {
@@ -526,6 +577,7 @@ fn build_inline(
     nodes: &[mdast::Node],
     cur: HighlightStyle,
     style: &MarkdownStyle,
+    defs: &HashMap<String, String>,
     out: &mut Inline,
 ) {
     for node in nodes {
@@ -534,12 +586,12 @@ fn build_inline(
             mdast::Node::Strong(s) => {
                 let mut c = cur;
                 c.font_weight = Some(FontWeight::BOLD);
-                build_inline(&s.children, c, style, out);
+                build_inline(&s.children, c, style, defs, out);
             }
             mdast::Node::Emphasis(e) => {
                 let mut c = cur;
                 c.font_style = Some(FontStyle::Italic);
-                build_inline(&e.children, c, style, out);
+                build_inline(&e.children, c, style, defs, out);
             }
             mdast::Node::InlineCode(ic) => {
                 let mut c = cur;
@@ -550,7 +602,7 @@ fn build_inline(
                 let mut c = cur;
                 c.color = Some(style.link_color);
                 let start = out.text.len();
-                build_inline(&l.children, c, style, out);
+                build_inline(&l.children, c, style, defs, out);
                 let end = out.text.len();
                 if start < end {
                     out.links
@@ -564,7 +616,7 @@ fn build_inline(
                     thickness: px(1.0),
                     color: None,
                 });
-                build_inline(&d.children, c, style, out);
+                build_inline(&d.children, c, style, defs, out);
             }
             mdast::Node::Image(img) => {
                 // Render as a clickable label opening the URL (real image
@@ -582,11 +634,53 @@ fn build_inline(
                 out.links
                     .push((start..end, LinkTarget::Url(img.url.clone().into())));
             }
+            mdast::Node::FootnoteReference(f) => {
+                // Render `[label]` as a marker (not clickable — jumping would
+                // need anchors this text renderer doesn't have).
+                let label = f.label.clone().unwrap_or_else(|| f.identifier.clone());
+                let mut c = cur;
+                c.color = Some(style.link_color);
+                push_run(&format!("[{label}]"), c, out);
+            }
+            mdast::Node::LinkReference(l) => {
+                // `[text][id]` resolved against the collected definitions; if
+                // unresolved, the text still renders (just not linked).
+                if let Some(url) = defs.get(&l.identifier).cloned() {
+                    let mut c = cur;
+                    c.color = Some(style.link_color);
+                    let start = out.text.len();
+                    build_inline(&l.children, c, style, defs, out);
+                    let end = out.text.len();
+                    if start < end {
+                        out.links.push((start..end, LinkTarget::Url(url.into())));
+                    }
+                } else {
+                    build_inline(&l.children, cur, style, defs, out);
+                }
+            }
+            mdast::Node::ImageReference(img) => {
+                let label = if img.alt.is_empty() {
+                    "🖼 image".to_string()
+                } else {
+                    format!("🖼 {}", img.alt)
+                };
+                let mut c = cur;
+                c.color = Some(style.link_color);
+                let start = out.text.len();
+                push_run(&label, c, out);
+                let end = out.text.len();
+                if let Some(url) = defs.get(&img.identifier) {
+                    out.links
+                        .push((start..end, LinkTarget::Url(url.clone().into())));
+                }
+            }
+            // Inline raw HTML: render the literal source, never executed.
+            mdast::Node::Html(h) => push_run(&h.value, cur, out),
             // Recurse into any other container node; ignore leaves we
             // don't special-case.
             other => {
                 if let Some(children) = node_children(other) {
-                    build_inline(children, cur, style, out);
+                    build_inline(children, cur, style, defs, out);
                 }
             }
         }
@@ -673,6 +767,20 @@ fn node_children(node: &mdast::Node) -> Option<&[mdast::Node]> {
     }
 }
 
+/// Walk the whole tree collecting reference definitions (`[id]: url`) so that
+/// `[text][id]` / `![alt][id]` resolve no matter where the definition appears.
+fn collect_definitions(node: &mdast::Node, out: &mut HashMap<String, String>) {
+    if let mdast::Node::Definition(d) = node {
+        out.entry(d.identifier.clone())
+            .or_insert_with(|| d.url.clone());
+    }
+    if let Some(children) = node.children() {
+        for child in children {
+            collect_definitions(child, out);
+        }
+    }
+}
+
 /// Render a GFM table as a bordered grid; the first row is the header.
 fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
     let border = ctx.style.muted_color;
@@ -727,6 +835,7 @@ mod tests {
             &nodes,
             HighlightStyle::default(),
             &MarkdownStyle::default(),
+            &HashMap::new(),
             &mut inl,
         );
         inl
@@ -829,6 +938,61 @@ mod tests {
         assert!(leading_image(&para_children("see ![](/x.png) here")).is_none());
     }
 
+    fn first_para(md: &str) -> Vec<mdast::Node> {
+        let tree = markdown::to_mdast(md, &markdown::ParseOptions::gfm()).unwrap();
+        if let mdast::Node::Root(root) = tree {
+            for n in root.children {
+                if let mdast::Node::Paragraph(p) = n {
+                    return p.children;
+                }
+            }
+        }
+        vec![]
+    }
+
+    #[test]
+    fn reference_link_resolves_against_definition() {
+        let md = "[the docs][d]\n\n[d]: https://example.com";
+        let tree = markdown::to_mdast(md, &markdown::ParseOptions::gfm()).unwrap();
+        let mut defs = HashMap::new();
+        if let mdast::Node::Root(root) = &tree {
+            for n in &root.children {
+                collect_definitions(n, &mut defs);
+            }
+        }
+        assert_eq!(
+            defs.get("d").map(String::as_str),
+            Some("https://example.com")
+        );
+
+        let mut inl = Inline::default();
+        build_inline(
+            &first_para(md),
+            HighlightStyle::default(),
+            &MarkdownStyle::default(),
+            &defs,
+            &mut inl,
+        );
+        assert_eq!(inl.text, "the docs");
+        assert_eq!(inl.links.len(), 1);
+        assert!(
+            matches!(&inl.links[0].1, LinkTarget::Url(u) if u.as_ref() == "https://example.com")
+        );
+    }
+
+    #[test]
+    fn footnote_reference_renders_marker() {
+        let mut inl = Inline::default();
+        build_inline(
+            &first_para("text[^1]\n\n[^1]: the note"),
+            HighlightStyle::default(),
+            &MarkdownStyle::default(),
+            &HashMap::new(),
+            &mut inl,
+        );
+        assert_eq!(inl.text, "text[1]");
+    }
+
     #[test]
     fn document_extracts_inline_text_from_blocks() {
         // Walk representative markdown the way `render_block` does: pull
@@ -848,6 +1012,7 @@ mod tests {
                     children,
                     HighlightStyle::default(),
                     &MarkdownStyle::default(),
+                    &HashMap::new(),
                     &mut inl,
                 );
                 text.push_str(&inl.text);

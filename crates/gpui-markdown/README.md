@@ -10,11 +10,14 @@ Standard `[text](url)` links open externally.
 
 ## Features
 
-- Headings, paragraphs, **bold** / *italic* / `inline code`
-- Bullet / numbered / nested lists, blockquotes, fenced code blocks, thematic breaks
-- GFM **tables** and ~~strikethrough~~
+- Headings, paragraphs, **bold** / *italic* / ~~strikethrough~~ / `inline code`
+- Bullet / numbered / nested / **task** lists (`- [ ]`/`- [x]`), blockquotes,
+  fenced code blocks, thematic breaks
+- GFM **tables**, **footnotes**, and reference-style `[text][id]` links/images
+- Raw HTML shown literally (never executed)
 - `[[wiki-links]]` and `#tags` → clickable, dispatched to your callback
-- Images rendered as clickable links (real inline image rendering is a TODO)
+- **Images** rendered by a host-supplied `on_image` closure (so the host owns
+  loading and any interaction); falls back to a clickable label otherwise
 - `SNIPPETS` — a table of markdown authoring snippets (label + text + caret offset)
   a host can surface in a `/` command palette
 
