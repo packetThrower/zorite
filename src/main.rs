@@ -13,6 +13,7 @@
 mod actions;
 mod app;
 mod db;
+mod hierarchy;
 mod images;
 mod models;
 mod paths;

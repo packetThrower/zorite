@@ -8,7 +8,8 @@ use gpui::{
 use gpui_component::input::Input;
 
 use crate::app::{AppView, PageEditor};
-use crate::models::Backlink;
+use crate::hierarchy;
+use crate::models::{Backlink, Page};
 use crate::slash::SlashTarget;
 use crate::theme;
 
@@ -23,6 +24,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     };
 
     let page_id = pe.id;
+    // Pages titled `<this>::<leaf>` are sub-pages; this page acts as their index.
+    let children = hierarchy::direct_children(&app.pages, &pe.title);
     div()
         .flex_1()
         .min_w_0()
@@ -62,6 +65,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 .into_any_element()
                         } else {
                             page_rendered(app, pe, cx).into_any_element()
+                        })
+                        .when(!children.is_empty(), |this| {
+                            this.child(sub_pages_section(&pe.title, &children, cx))
                         })
                         .when(!pe.backlinks.is_empty(), |this| {
                             this.child(backlinks_section(&pe.backlinks, cx))
@@ -155,6 +161,90 @@ fn page_open_area(cx: &mut Context<AppView>) -> impl IntoElement {
                 this.edit_page_at_end(window, cx);
             }),
         )
+}
+
+/// The "Sub-pages" index: pages nested directly under this one (`<title>::*`),
+/// shown by their leaf segment as a clickable, comma-separated list.
+fn sub_pages_section(
+    parent_title: &str,
+    children: &[&Page],
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let base = parent_title.len() + hierarchy::SEP.len();
+    let last = children.len().saturating_sub(1);
+    div()
+        .mt(px(28.0))
+        .pt_4()
+        .border_t_1()
+        .border_color(theme::border_subtle())
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .pb_1()
+                .text_size(px(11.0))
+                .text_color(theme::text_tertiary())
+                .child(format!("SUB-PAGES ({})", children.len())),
+        )
+        .child(
+            // One wrapping line of `Leaf, Leaf, Leaf`, each name clickable.
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap_y(px(2.0))
+                .text_size(px(14.0))
+                .children(
+                    children
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            let leaf = p.title.get(base..).unwrap_or(&p.title).to_string();
+                            sub_page_item(i, p.id, leaf, i != last, cx).into_any_element()
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+        )
+}
+
+/// One clickable sub-page name, with a trailing comma unless it's the last.
+fn sub_page_item(
+    i: usize,
+    id: i64,
+    leaf: String,
+    comma: bool,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .flex_shrink_0()
+        .child(
+            div()
+                .id(("subpage", i))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .text_color(theme::accent())
+                .cursor_pointer()
+                .hover(|h| h.bg(theme::glass()))
+                .child(leaf)
+                .on_click(
+                    cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                        this.open_page_id(id, window, cx);
+                    }),
+                ),
+        )
+        .when(comma, |d| {
+            d.child(
+                div()
+                    .pr(px(5.0))
+                    .text_color(theme::text_tertiary())
+                    .child(","),
+            )
+        })
 }
 
 fn backlinks_section(backlinks: &[Backlink], cx: &mut Context<AppView>) -> impl IntoElement {

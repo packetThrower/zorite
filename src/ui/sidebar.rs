@@ -5,15 +5,15 @@
 //! area to create a new page; older days are found via search or the date picker.
 
 use gpui::{
-    ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    SharedString, Stateful, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _,
-    px,
+    AnyElement, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, div,
+    prelude::FluentBuilder as _, px,
 };
 use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt};
 
 use crate::actions::{DeletePage, NewPage, OpenInNewTab, RenamePage};
 use crate::app::AppView;
-use crate::models::Page;
+use crate::hierarchy::{self, PageNode};
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -27,10 +27,11 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
 /// The full sidebar: a header (collapse caret + jump-to-date/settings icons,
 /// then the search box) above the journal feed link and the page list.
 fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
-    let mut page_rows = Vec::new();
-    for p in &app.pages {
-        page_rows.push(nav_row(p, app.is_page_active(p.id), cx).into_any_element());
-    }
+    // `Foo::Bar` titles nest into a tree; intermediate namespace segments with
+    // no page of their own show as virtual (non-bold, still clickable) nodes.
+    let tree = hierarchy::build_tree(&app.pages);
+    let mut page_rows: Vec<AnyElement> = Vec::new();
+    push_tree_rows(&tree, 0, app, cx, &mut page_rows);
 
     div()
         .w(px(240.0))
@@ -216,14 +217,34 @@ fn journal_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
         )
 }
 
-fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
-    let id = page.id;
-    let label: SharedString = page.title.clone().into();
-    let deletable = !page.is_journal;
+/// Flatten the page tree into indented rows in pre-order (parent, then its
+/// children one level deeper).
+fn push_tree_rows(
+    nodes: &[PageNode],
+    depth: usize,
+    app: &AppView,
+    cx: &mut Context<AppView>,
+    out: &mut Vec<AnyElement>,
+) {
+    for node in nodes {
+        let active = node.id.is_some_and(|id| app.is_page_active(id));
+        out.push(tree_row(node, depth, active, cx));
+        push_tree_rows(&node.children, depth + 1, app, cx, out);
+    }
+}
+
+/// One row in the page tree, indented by `depth`. Real pages get a right-click
+/// menu (open in new tab / rename / delete); virtual namespace nodes don't.
+/// Clicking either opens the page by its full path, creating it if needed.
+fn tree_row(node: &PageNode, depth: usize, active: bool, cx: &mut Context<AppView>) -> AnyElement {
+    let label: SharedString = node.segment.clone().into();
+    let click_path = node.path.clone();
 
     let row = div()
-        .id(("nav", id as usize))
-        .px_2()
+        .id(SharedString::from(format!("pn:{}", node.path)))
+        // Indent each level; the base matches the other rows' `px_2`.
+        .pl(px(8.0 + depth as f32 * 14.0))
+        .pr_2()
         .py_1p5()
         .rounded(px(6.0))
         .text_size(px(13.0))
@@ -236,21 +257,21 @@ fn nav_row(page: &Page, active: bool, cx: &mut Context<AppView>) -> impl IntoEle
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
-        .child(label.clone())
+        .child(label)
         .on_click(
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-                this.open_page_id(id, window, cx);
+                this.open_page_title(&click_path, window, cx);
             }),
         );
 
-    // Named pages (never journals) get a right-click "Delete page" menu.
-    // Right-click records the target; the menu item dispatches `DeletePage`,
-    // handled on `AppView` (which confirms before deleting).
-    if deletable {
+    // Right-click records the target page; the menu item dispatches an action
+    // handled on `AppView` (delete confirms first).
+    if let Some(id) = node.id {
+        let menu_label: SharedString = node.path.clone().into();
         row.on_mouse_down(
             MouseButton::Right,
             cx.listener(move |this: &mut AppView, _, _window, _cx| {
-                this.set_context_page(id, label.clone());
+                this.set_context_page(id, menu_label.clone());
             }),
         )
         .context_menu(|menu, _window, _cx| {

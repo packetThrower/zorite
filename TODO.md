@@ -22,7 +22,8 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 ## Notes & navigation
 - [x] **Page rename** (and rewrite `[[links]]` pointing at it) — right-click → Rename page → dialog; `db.rename_page` rewrites links in a transaction
 - [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
-- [ ] **Page hierarchy** via `[[parent::child]]` — nest a page under a parent; the parent page acts as an index (linked list) of its children
+- [x] **Page hierarchy** via `[[parent::child]]` — Logseq-style: the `::` path *is* the page title, so the sidebar tree and each page's "Sub-pages" index are derived from titles (no parent column). Intermediate namespace segments show as virtual nodes and materialize on click. See `src/hierarchy.rs`
+- [ ] Hierarchy follow-ups: collapsible namespace nodes in the sidebar; cascade-rename a namespace (rename `Foo` → rewrite `Foo::*` children + their `[[links]]`); a "New sub-page" action
 - [ ] **Page aliases** via `::alias` — resolve `[[alias]]` to the page (design note: disambiguate `::` here vs. the `parent::child` hierarchy syntax above)
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)
 - [x] Journal: jump-to-date — a sidebar calendar date picker opens any day (creating it if needed)
