@@ -17,6 +17,11 @@ and a SQLite backend.
   feel — every line is just editable text.
 - **`[[wiki-links]]` and `#tags`** — clickable in the rendered view, navigate to
   (and auto-create) pages, and power **backlinks** ("Linked References").
+- **Page hierarchy** — name a page `Projects::Tasks` to nest it with `::`; the
+  sidebar shows the namespace tree and each page lists its **sub-pages** as an
+  index (Logseq-style — the path *is* the title).
+- **Page aliases** — a subdued `alias::` field under the page title takes a comma
+  list of alternate names, so `[[hen]]` can resolve to your `chicken` page.
 - **As-you-type completion** — typing `[[` suggests pages (and offers to create a
   new one), `#` suggests tags, and `{{` suggests template placeholders. Lists
   filter as you type and are capped so they stay manageable with many pages.
@@ -30,6 +35,9 @@ and a SQLite backend.
 - **Templates** — reusable snippets defined on a `Templates` page, inserted from
   `/` with `{{date}}` / `{{time}}` / `{{title}}` / `{{cursor}}` placeholders.
 - **Full-text search** across all notes.
+- **Sidebar** — collapses to a slim icon rail; a calendar icon jumps to any date
+  (creating the day if needed); the page list shows your recently-viewed pages
+  (the rest are a search away).
 - **Inline images** — `![](path-or-url)` images render for real; **paste** (Cmd+V)
   or **drag-and-drop** a file to add one (copied into the data dir's `images/`
   folder), and **drag the corner handle to resize** (saved as `{width=N}` in the
