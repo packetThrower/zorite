@@ -33,6 +33,7 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 
 ## Performance
+- [ ] **Lighter `list_pages`** — it loads full page *content* on every sidebar refresh, but the page list only needs `id`/`title`; a content-free query is ~4× faster at 10k pages (17 ms → 4.6 ms). See the [Performance](README.md#performance) section
 - [ ] True **list virtualization** in the journal feed (v1 keeps all loaded days mounted)
 - [ ] Move SQLite writes off the UI thread (background executor)
 

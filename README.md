@@ -125,6 +125,46 @@ zorite/
 
 `gpui-markdown` is host-agnostic; see its [README](crates/gpui-markdown/README.md).
 
+## Performance
+
+zorite stays responsive with large note collections. The numbers below come from
+synthetic databases built by [`scripts/gen_perf_db.py`](scripts/gen_perf_db.py)
+— a 3-level `Area::Topic::Note` namespace tree with `[[wiki-links]]`, inline
+images, and a couple weeks of journal days. The `ZORITE_DB` environment variable
+points the app at a throwaway database, so your real notes are never touched:
+
+```sh
+python3 scripts/gen_perf_db.py 10000 /tmp/zorite-perf.db
+ZORITE_DB=/tmp/zorite-perf.db cargo run
+```
+
+**Hot-path query timings** (SQLite, best of several runs on a development Mac):
+
+| Operation                                    | 1,000 pages | 10,000 pages |
+| -------------------------------------------- | ----------- | ------------ |
+| Load the page list (`list_pages`)            | 0.9 ms      | 17 ms        |
+| Search (substring `LIKE`, per keystroke)     | 0.5 ms      | 4.4 ms       |
+| Backlinks for a page (indexed)               | 0.01 ms     | 0.01 ms      |
+| Seed the recent list (first launch only)     | 0.15 ms     | 2.3 ms       |
+
+**Memory** (resident set size):
+
+| Metric        | Empty DB | 10,000 pages |
+| ------------- | -------- | ------------ |
+| RAM (RSS)     | ~86 MB   | ~177 MB      |
+| Database file | 36 KB    | 14.8 MB      |
+
+Of the ~90 MB increase, ~15 MB is the raw note text; the rest is the in-memory
+page list, SQLite's page cache, decoded image textures, and GPUI's retained
+render tree.
+
+At 10,000 pages launch, search, navigation, and scrolling are all immediate. The
+sidebar is capped to recently-viewed pages, so its cost is independent of the
+total. The figures that scale linearly are `list_pages` (it loads every page on
+each sidebar refresh — fetching only `id`/`title` would cut it ~4×, since the
+list doesn't need page content) and the journal feed (all loaded days stay
+mounted). Both are on the [roadmap](TODO.md).
+
 ## Roadmap
 
 See [TODO.md](TODO.md).

@@ -39,8 +39,13 @@ pub fn data_dir() -> PathBuf {
     }
 }
 
-/// Absolute path to the SQLite database file.
+/// Absolute path to the SQLite database file. `ZORITE_DB` overrides it — handy
+/// for running against a throwaway database (tests, benchmarks) without
+/// touching the real one.
 pub fn db_path() -> PathBuf {
+    if let Some(path) = std::env::var_os("ZORITE_DB") {
+        return PathBuf::from(path);
+    }
     data_dir().join("zorite.db")
 }
 
