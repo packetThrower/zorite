@@ -3,6 +3,10 @@
 Roadmap / known follow-ups. Roughly priority-ordered within each section.
 
 ## Editor & rendering
+- [x] **As-you-type completion** — `[[` (pages, with a "Create" entry), `#` (tags), and `{{` (template placeholders); reuses the slash popup, ranks matches, and caps the list so it stays usable with many pages
+- [x] **Auto-pair brackets/quotes** (`()` `[]` `{}` `<>` `""` `''`) with type-over and prose-safe guards (contraction-aware quotes, `<` only after a word); confirming a `[[`/`{{` completion absorbs the auto-inserted closer
+- [ ] Auto-pair: **wrap the selection** when an opener is typed with text selected (needs key-level interception; v1 is post-insertion only)
+- [ ] Auto-pair: **backspace deletes an empty pair** (`(|)` + backspace → remove both)
 - [ ] Real inline **image rendering** (images currently render as clickable links; needs async image loading)
 - [ ] Slash menu: **click-to-insert** a command (keyboard-only today; needs to avoid blurring the editor on click)
 - [ ] **Task-list checkboxes** (`- [ ]` / `- [x]`) — the `markdown` 1.0 crate's `ListItem` has no `checked` field, so this needs a different parser or post-processing

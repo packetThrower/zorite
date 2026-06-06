@@ -58,6 +58,9 @@ pub struct OpenTab {
 /// A journal day's editor + the subscription saving its edits.
 pub struct DayEditor {
     pub state: Entity<InputState>,
+    /// The editor's text as of the last change, used to detect single-char
+    /// bracket/quote insertions for auto-pairing.
+    prev: String,
     _sub: Subscription,
 }
 
@@ -71,6 +74,8 @@ pub struct PageEditor {
     pub title_state: Entity<InputState>,
     pub is_journal: bool,
     pub state: Entity<InputState>,
+    /// Last-change text snapshot for auto-pair detection (see `DayEditor::prev`).
+    prev: String,
     _sub: Subscription,
     _title_sub: Subscription,
     pub backlinks: Vec<Backlink>,
@@ -230,8 +235,13 @@ impl AppView {
         let sub = cx.subscribe_in(
             &state,
             window,
-            move |this: &mut AppView, st, ev: &InputEvent, _window, cx| match ev {
+            move |this: &mut AppView, st, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
+                    // Auto-pair first; if it inserted a closer, the resulting
+                    // change re-enters here to save + refresh the menu.
+                    if this.maybe_autopair(&SlashTarget::Day(key.clone()), window, cx) {
+                        return;
+                    }
                     let value = st.read(cx).value().to_string();
                     this.save_journal(&key, &value);
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
@@ -252,8 +262,14 @@ impl AppView {
                 _ => {}
             },
         );
-        self.day_editors
-            .insert(date, DayEditor { state, _sub: sub });
+        self.day_editors.insert(
+            date,
+            DayEditor {
+                prev: content,
+                state,
+                _sub: sub,
+            },
+        );
     }
 
     /// Reload cached journal day editors from the DB. Called after an action
@@ -457,8 +473,11 @@ impl AppView {
         let sub = cx.subscribe_in(
             &state,
             window,
-            move |this: &mut AppView, st, ev: &InputEvent, _window, cx| match ev {
+            move |this: &mut AppView, st, ev: &InputEvent, window, cx| match ev {
                 InputEvent::Change => {
+                    if this.maybe_autopair(&SlashTarget::Page(pid), window, cx) {
+                        return;
+                    }
                     // Content only; link re-indexing happens on blur.
                     let value = st.read(cx).value().to_string();
                     if let Err(e) = this.db.set_page_content(pid, &value) {
@@ -504,6 +523,7 @@ impl AppView {
             title_state,
             is_journal: page.is_journal,
             state,
+            prev: page.content,
             _sub: sub,
             _title_sub: title_sub,
             backlinks,
@@ -727,7 +747,17 @@ impl AppView {
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
         let start = s.start.min(cursor);
-        let new = format!("{}{}{}", &value[..start], snippet, &value[cursor..]);
+        // If auto-pairing already placed this snippet's own closing delimiter
+        // right after the caret (e.g. the `]]` from `[[`), absorb it so the
+        // completion doesn't double up (`[[Title]]]]`).
+        let mut tail = cursor;
+        for closer in ["]]", "}}"] {
+            if snippet.ends_with(closer) && value[tail..].starts_with(closer) {
+                tail += closer.len();
+                break;
+            }
+        }
+        let new = format!("{}{}{}", &value[..start], snippet, &value[tail..]);
         let caret_off = start + caret;
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
@@ -749,6 +779,84 @@ impl AppView {
         match target {
             SlashTarget::Day(d) => self.day_editors.get(d).map(|de| de.state.clone()),
             SlashTarget::Page(_) => self.page_editor.as_ref().map(|pe| pe.state.clone()),
+        }
+    }
+
+    /// Auto-pair brackets/quotes in the target editor. Compares the editor's
+    /// text to its `prev` snapshot; if a single opener was just typed it inserts
+    /// the matching closer (caret stays between), and if a closer was typed in
+    /// front of its twin it steps over instead of duplicating. Returns whether
+    /// it changed the text (the caller then skips its own save/refresh, since
+    /// our edit re-enters the change handler). Always refreshes `prev`.
+    fn maybe_autopair(
+        &mut self,
+        target: &SlashTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(editor) = self.editor_for(target) else {
+            return false;
+        };
+        let value = editor.read(cx).value().to_string();
+        let cursor = editor.read(cx).cursor().min(value.len());
+        let prev = self.autopair_prev(target);
+        let Some(action) = slash::autopair_action(&prev, &value, cursor) else {
+            self.set_autopair_prev(target, value);
+            return false;
+        };
+        let new = match action {
+            slash::AutoPair::Close(close) => {
+                format!("{}{close}{}", &value[..cursor], &value[cursor..])
+            }
+            slash::AutoPair::TypeOver(skip) => {
+                format!("{}{}", &value[..cursor], &value[cursor + skip..])
+            }
+        };
+        editor.update(cx, |st, cx| {
+            st.set_value(new.clone(), window, cx);
+            let pos = st.text().offset_to_position(cursor);
+            st.set_cursor_position(pos, window, cx);
+        });
+        self.set_autopair_prev(target, new.clone());
+        match target {
+            SlashTarget::Day(d) => self.save_journal(d, &new),
+            SlashTarget::Page(pid) => {
+                if let Err(e) = self.db.set_page_content(*pid, &new) {
+                    log::error!("save page {pid}: {e}");
+                }
+            }
+        }
+        cx.notify();
+        true
+    }
+
+    fn autopair_prev(&self, target: &SlashTarget) -> String {
+        match target {
+            SlashTarget::Day(d) => self
+                .day_editors
+                .get(d)
+                .map(|de| de.prev.clone())
+                .unwrap_or_default(),
+            SlashTarget::Page(_) => self
+                .page_editor
+                .as_ref()
+                .map(|pe| pe.prev.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    fn set_autopair_prev(&mut self, target: &SlashTarget, value: String) {
+        match target {
+            SlashTarget::Day(d) => {
+                if let Some(de) = self.day_editors.get_mut(d) {
+                    de.prev = value;
+                }
+            }
+            SlashTarget::Page(_) => {
+                if let Some(pe) = self.page_editor.as_mut() {
+                    pe.prev = value;
+                }
+            }
         }
     }
 

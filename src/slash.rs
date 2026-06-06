@@ -374,6 +374,85 @@ fn expand_template(body: &str, title: &str) -> (String, usize) {
     }
 }
 
+// --- Auto-pairing of brackets / quotes ---
+
+/// What to do after a bracket/quote was just typed at the caret.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AutoPair {
+    /// Insert this closing char after the caret (caret stays put).
+    Close(char),
+    /// The typed closer duplicates the one already at the caret — drop that
+    /// existing char (this many bytes) so the caret just steps over it.
+    TypeOver(usize),
+}
+
+/// Decide the auto-pair reaction to a single edit. `prev`/`new` are the editor
+/// text before/after the change and `cursor` is the caret byte offset in `new`.
+/// Returns `Some` only when exactly one bracket/quote was *inserted* at the
+/// caret (so deletes, pastes, multi-char edits, and cursor moves are ignored).
+pub fn autopair_action(prev: &str, new: &str, cursor: usize) -> Option<AutoPair> {
+    if cursor == 0 || cursor > new.len() {
+        return None;
+    }
+    let ch = new[..cursor].chars().next_back()?;
+    let ch_len = ch.len_utf8();
+    // Confirm `new` is `prev` with exactly `ch` inserted ending at the caret.
+    let mut reconstructed = String::with_capacity(prev.len());
+    reconstructed.push_str(&new[..cursor - ch_len]);
+    reconstructed.push_str(&new[cursor..]);
+    if reconstructed != prev {
+        return None;
+    }
+    let next = new[cursor..].chars().next();
+    // Type-over: a closer typed right in front of the same closer.
+    if is_close_char(ch) && next == Some(ch) {
+        return Some(AutoPair::TypeOver(ch_len));
+    }
+    // Auto-close an opener, subject to the prose-safe guards.
+    if let Some(close) = open_to_close(ch) {
+        let before = new[..cursor - ch_len].chars().next_back();
+        if should_autoclose(ch, before, next) {
+            return Some(AutoPair::Close(close));
+        }
+    }
+    None
+}
+
+/// The closing char for an opening bracket/quote (quotes pair with themselves).
+fn open_to_close(c: char) -> Option<char> {
+    Some(match c {
+        '(' => ')',
+        '[' => ']',
+        '{' => '}',
+        '<' => '>',
+        '"' => '"',
+        '\'' => '\'',
+        _ => return None,
+    })
+}
+
+fn is_close_char(c: char) -> bool {
+    matches!(c, ')' | ']' | '}' | '>' | '"' | '\'')
+}
+
+/// A "word" char — auto-pairing avoids jamming pairs into identifiers/contractions.
+fn is_word(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Whether to auto-close `open`, given the chars surrounding the caret. The
+/// shared rule is "don't insert a closer straight in front of a word". Quotes
+/// also won't pair after a word (so `don't` survives); `<` only pairs after a
+/// word (so prose `a < b` is left alone but `Vec<` becomes `Vec<>`).
+fn should_autoclose(open: char, before: Option<char>, next: Option<char>) -> bool {
+    let next_ok = next.is_none_or(|c| !is_word(c));
+    match open {
+        '"' | '\'' => next_ok && before.is_none_or(|c| !is_word(c)),
+        '<' => next_ok && before.is_some_and(is_word),
+        _ => next_ok,
+    }
+}
+
 fn is_token_char(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'-'
 }
@@ -493,5 +572,64 @@ mod tests {
         let (s, caret) = expand_template("# {{title}}\n{{cursor}}done", "Hi");
         assert_eq!(s, "# Hi\ndone");
         assert_eq!(caret, "# Hi\n".len());
+    }
+
+    #[test]
+    fn autopair_closes_brackets_at_end() {
+        assert_eq!(autopair_action("", "(", 1), Some(AutoPair::Close(')')));
+        assert_eq!(autopair_action("", "[", 1), Some(AutoPair::Close(']')));
+        assert_eq!(autopair_action("", "{", 1), Some(AutoPair::Close('}')));
+        assert_eq!(autopair_action("a ", "a (", 3), Some(AutoPair::Close(')')));
+    }
+
+    #[test]
+    fn autopair_skips_bracket_in_front_of_word() {
+        // `(` typed right before `word` shouldn't jam a `)` into it.
+        assert_eq!(autopair_action("word", "(word", 1), None);
+    }
+
+    #[test]
+    fn autopair_types_over_matching_closer() {
+        // At `(|)` typing `)` steps over the existing one instead of adding.
+        assert_eq!(autopair_action("()", "())", 2), Some(AutoPair::TypeOver(1)));
+        // Walking out of `[[x|]]` by typing `]` (caret now sits after it, at 4).
+        assert_eq!(
+            autopair_action("[[x]]", "[[x]]]", 4),
+            Some(AutoPair::TypeOver(1))
+        );
+    }
+
+    #[test]
+    fn autopair_quote_is_contraction_safe() {
+        // `'` after a word char (don|t) is an apostrophe, not an open quote.
+        assert_eq!(autopair_action("don", "don'", 4), None);
+        // `'` after a space opens a quote pair.
+        assert_eq!(
+            autopair_action("say ", "say '", 5),
+            Some(AutoPair::Close('\''))
+        );
+        assert_eq!(autopair_action("", "\"", 1), Some(AutoPair::Close('"')));
+    }
+
+    #[test]
+    fn autopair_angle_only_after_word() {
+        // `Vec<` is generic-like → pair; prose `a < b` is not.
+        assert_eq!(
+            autopair_action("Vec", "Vec<", 4),
+            Some(AutoPair::Close('>'))
+        );
+        assert_eq!(autopair_action("a ", "a <", 3), None);
+    }
+
+    #[test]
+    fn autopair_ignores_non_insertions() {
+        // Deletion (text got shorter).
+        assert_eq!(autopair_action("abc", "ab", 2), None);
+        // Cursor moved with no edit.
+        assert_eq!(autopair_action("[x]", "[x]", 1), None);
+        // Caret at start.
+        assert_eq!(autopair_action("x", "[x", 0), None);
+        // A multi-char paste ending in a bracket isn't a single keystroke.
+        assert_eq!(autopair_action("", "ab(", 3), None);
     }
 }
