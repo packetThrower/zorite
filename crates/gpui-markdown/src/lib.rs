@@ -561,14 +561,19 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     let on_wiki = ctx.on_wiki_link.clone();
 
     InteractiveText::new(id, styled)
-        .on_click(ranges, move |ix, window, cx| match targets.get(ix) {
-            Some(LinkTarget::Wiki(title)) => {
-                if let Some(handler) = &on_wiki {
-                    handler(title.clone(), window, cx);
+        .on_click(ranges, move |ix, window, cx| {
+            // The click was on a link range; consume it so it doesn't also reach
+            // a surrounding host handler (e.g. a click-to-edit area).
+            cx.stop_propagation();
+            match targets.get(ix) {
+                Some(LinkTarget::Wiki(title)) => {
+                    if let Some(handler) = &on_wiki {
+                        handler(title.clone(), window, cx);
+                    }
                 }
+                Some(LinkTarget::Url(url)) => cx.open_url(url),
+                None => {}
             }
-            Some(LinkTarget::Url(url)) => cx.open_url(url),
-            None => {}
         })
         .into_any_element()
 }
