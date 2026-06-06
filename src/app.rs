@@ -312,11 +312,11 @@ impl AppView {
                 .flatten()
                 .map(|p| p.content)
                 .unwrap_or_default();
-            if let Some(de) = self.day_editors.get(&date) {
-                if de.state.read(cx).value().to_string() != content {
-                    de.state
-                        .update(cx, |s, cx| s.set_value(content, window, cx));
-                }
+            if let Some(de) = self.day_editors.get(&date)
+                && de.state.read(cx).value() != content
+            {
+                de.state
+                    .update(cx, |s, cx| s.set_value(content, window, cx));
             }
         }
     }
@@ -325,10 +325,10 @@ impl AppView {
     /// links/tags. Link re-indexing (which creates target pages) happens
     /// on blur, so a half-typed `#tag` doesn't spawn a page per keystroke.
     fn save_journal(&mut self, date: &str, content: &str) {
-        if let Ok(page) = self.db.get_or_create_journal(date) {
-            if let Err(e) = self.db.set_page_content(page.id, content) {
-                log::error!("save journal {date}: {e}");
-            }
+        if let Ok(page) = self.db.get_or_create_journal(date)
+            && let Err(e) = self.db.set_page_content(page.id, content)
+        {
+            log::error!("save journal {date}: {e}");
         }
     }
 
@@ -451,7 +451,7 @@ impl AppView {
         // Save the page we're leaving before its editor is dropped/replaced.
         self.flush_page_editor(cx);
         let Some(tab) = self.tabs.get(ix) else { return };
-        let kind = tab.kind.clone();
+        let kind = tab.kind;
         self.active = ix;
         self.searching = false;
         match kind {
@@ -1288,13 +1288,12 @@ impl AppView {
     pub fn open_settings(view: Entity<AppView>, cx: &mut App) {
         // Focus an existing settings window instead of duplicating it.
         let existing = view.read(cx).settings_window;
-        if let Some(handle) = existing {
-            if handle
+        if let Some(handle) = existing
+            && handle
                 .update(cx, |_, window, _| window.activate_window())
                 .is_ok()
-            {
-                return;
-            }
+        {
+            return;
         }
         let app = view.downgrade();
         let bounds = Bounds::centered(None, size(px(720.0), px(560.0)), cx);

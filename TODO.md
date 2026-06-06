@@ -24,7 +24,7 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] **Page hierarchy** via `[[parent::child]]` — nest a page under a parent; the parent page acts as an index (linked list) of its children
 - [ ] **Page aliases** via `::alias` — resolve `[[alias]]` to the page (design note: disambiguate `::` here vs. the `parent::child` hierarchy syntax above)
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)
-- [ ] Journal: jump-to-date / calendar
+- [ ] Journal: jump-to-date / calendar (the `Page.journal_date` field is already populated for this)
 
 ## Performance
 - [ ] True **list virtualization** in the journal feed (v1 keeps all loaded days mounted)

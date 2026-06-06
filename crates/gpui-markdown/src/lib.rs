@@ -265,22 +265,22 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             // `{width=N}`) renders as a real image via the host. Any text that
             // follows on the same line (a caption typed right under it) renders
             // below the image rather than reverting the whole thing to text.
-            if let Some(renderer) = ctx.on_image.clone() {
-                if let Some((info, rest)) = leading_image(&p.children) {
-                    let image = renderer(info);
-                    if rest.is_empty() {
-                        return Some(image);
-                    }
-                    return Some(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .gap(px(6.0))
-                            .child(image)
-                            .child(inline_element(&rest, ctx))
-                            .into_any_element(),
-                    );
+            if let Some(renderer) = ctx.on_image.clone()
+                && let Some((info, rest)) = leading_image(&p.children)
+            {
+                let image = renderer(info);
+                if rest.is_empty() {
+                    return Some(image);
                 }
+                return Some(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.0))
+                        .child(image)
+                        .child(inline_element(&rest, ctx))
+                        .into_any_element(),
+                );
             }
             Some(inline_element(&p.children, ctx))
         }
@@ -362,10 +362,10 @@ fn leading_image(children: &[mdast::Node]) -> Option<(ImageInfo, Vec<mdast::Node
     let mut iter = children.iter();
     let mut first = iter.next()?;
     // Skip a purely-whitespace leading text node.
-    if let mdast::Node::Text(t) = first {
-        if t.value.trim().is_empty() {
-            first = iter.next()?;
-        }
+    if let mdast::Node::Text(t) = first
+        && t.value.trim().is_empty()
+    {
+        first = iter.next()?;
     }
     let mdast::Node::Image(img) = first else {
         return None;

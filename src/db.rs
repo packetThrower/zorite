@@ -222,10 +222,10 @@ impl Db {
             return Ok(false);
         }
         // Reject a collision with a different existing page.
-        if let Some(existing) = self.get_page_by_title(new_title)? {
-            if existing.id != id {
-                return Ok(false);
-            }
+        if let Some(existing) = self.get_page_by_title(new_title)?
+            && existing.id != id
+        {
+            return Ok(false);
         }
 
         let old_link = format!("[[{}]]", page.title);
@@ -449,7 +449,7 @@ fn migrate_v1_to_v2(conn: &Connection) -> rusqlite::Result<()> {
 
     // Fold each page's blocks into a markdown bullet list.
     for pid in &page_ids {
-        let blocks: Vec<(i64, Option<i64>, i64, String)> = {
+        let blocks: Vec<V1Block> = {
             let mut stmt = conn.prepare(
                 "SELECT id, parent_id, position, content FROM blocks WHERE page_id = ?1",
             )?;
@@ -509,9 +509,12 @@ fn migration_target_page_id(conn: &Connection, title: &str) -> rusqlite::Result<
     Ok(conn.last_insert_rowid())
 }
 
+/// A v1 outliner block row: `(id, parent_id, sort_order, text)`.
+type V1Block = (i64, Option<i64>, i64, String);
+
 /// Build a markdown bullet list from v1 blocks, indenting by tree depth.
-fn blocks_to_markdown(blocks: &[(i64, Option<i64>, i64, String)]) -> String {
-    let mut children: HashMap<Option<i64>, Vec<&(i64, Option<i64>, i64, String)>> = HashMap::new();
+fn blocks_to_markdown(blocks: &[V1Block]) -> String {
+    let mut children: HashMap<Option<i64>, Vec<&V1Block>> = HashMap::new();
     for b in blocks {
         children.entry(b.1).or_default().push(b);
     }
@@ -519,10 +522,10 @@ fn blocks_to_markdown(blocks: &[(i64, Option<i64>, i64, String)]) -> String {
         kids.sort_by_key(|b| b.2);
     }
 
-    fn walk<'a>(
+    fn walk(
         parent: Option<i64>,
         depth: usize,
-        children: &HashMap<Option<i64>, Vec<&'a (i64, Option<i64>, i64, String)>>,
+        children: &HashMap<Option<i64>, Vec<&V1Block>>,
         lines: &mut Vec<String>,
     ) {
         let Some(kids) = children.get(&parent) else {

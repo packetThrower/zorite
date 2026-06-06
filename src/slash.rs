@@ -91,10 +91,10 @@ pub fn detect(value: &str, cursor: usize) -> Option<(Trigger, usize, String)> {
     }
     // Tag: `#` at a boundary with at least one tag char after it, so a lone
     // `#` and markdown headings (`# `) don't trigger.
-    if let Some((start, q)) = detect_token(value, cursor, b'#', is_tag_char) {
-        if !q.is_empty() {
-            return Some((Trigger::Tag, start, q));
-        }
+    if let Some((start, q)) = detect_token(value, cursor, b'#', is_tag_char)
+        && !q.is_empty()
+    {
+        return Some((Trigger::Tag, start, q));
     }
     if let Some((start, q)) = detect_token(value, cursor, b'/', is_token_char) {
         return Some((Trigger::Slash, start, q));
@@ -453,7 +453,7 @@ pub fn autopair_backspace(prev: &str, new: &str, cursor: usize) -> Option<usize>
         return None;
     }
     let close = open_to_close(deleted)?;
-    if suffix.chars().next() == Some(close) {
+    if suffix.starts_with(close) {
         return Some(close.len_utf8());
     }
     None

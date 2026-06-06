@@ -63,6 +63,8 @@ fn accent_variants(accent: Hsla) -> (Hsla, Hsla, Hsla) {
 /// secondary/tertiary text tints derive from the overlay color (white on
 /// dark, black on light), so a skin is just ~7 colors per mode. Args:
 /// `bg_window, bg_sidebar, bg_content, fg, accent, tag, code` (packed RGB).
+// A flat list of base colors is clearer here than a wrapper struct.
+#[allow(clippy::too_many_arguments)]
 pub fn make_palette(
     bg_window: u32,
     bg_sidebar: u32,

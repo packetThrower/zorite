@@ -7,11 +7,12 @@
 pub struct Page {
     pub id: i64,
     pub title: String,
-    /// Persisted and used via DB queries (e.g. `list_pages`) rather
-    /// than read off the struct directly — kept for completeness.
-    #[allow(dead_code)]
+    /// Whether this is a daily journal page (vs. a user-named page).
     pub is_journal: bool,
-    /// ISO `YYYY-MM-DD` for journal pages; `None` for named pages.
+    /// ISO `YYYY-MM-DD` for journal pages; `None` for named pages. Currently
+    /// only written — the DB column drives query ordering, and the date is
+    /// otherwise read from the page title. Kept (hence `allow(dead_code)`) for
+    /// the planned jump-to-date / calendar feature (see TODO.md).
     #[allow(dead_code)]
     pub journal_date: Option<String>,
     /// The page's markdown text.
