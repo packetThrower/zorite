@@ -401,6 +401,86 @@ fn expand_template(body: &str, title: &str) -> (String, usize) {
     }
 }
 
+// --- Markdown list / quote auto-continuation (Enter) ---
+
+/// What pressing Enter should do on a markdown list / blockquote line.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ListEdit {
+    /// Insert this text at the caret — a newline plus the continued marker
+    /// (e.g. `"\n- "`, `"\n2. "`, `"\n> "`, `"\n- [ ] "`), indent preserved.
+    Continue(String),
+    /// The current item is empty (just a marker); remove it. Delete the byte
+    /// range `start..end` and leave the caret at `start` (an empty line).
+    Exit { start: usize, end: usize },
+}
+
+/// Decide how Enter continues a markdown list/quote at `cursor` in `value`.
+/// Recognizes `-`/`*`/`+` bullets, `N.`/`N)` ordered items, `- [ ]` task items,
+/// and `>` blockquotes (leading indent preserved). A non-empty item continues
+/// with the next marker; an empty item exits the list. `None` when the current
+/// line isn't a list/quote item.
+pub fn list_continuation(value: &str, cursor: usize) -> Option<ListEdit> {
+    let cursor = cursor.min(value.len());
+    let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = value[cursor..]
+        .find('\n')
+        .map_or(value.len(), |i| cursor + i);
+    let line = &value[line_start..line_end];
+    let indent_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let (indent, rest) = line.split_at(indent_len);
+    let (marker, content) = parse_list_marker(rest)?;
+    if content.trim().is_empty() {
+        Some(ListEdit::Exit {
+            start: line_start,
+            end: line_end,
+        })
+    } else {
+        Some(ListEdit::Continue(format!("\n{indent}{marker}")))
+    }
+}
+
+/// Parse a list/quote marker at the start of `rest` (after indent). Returns the
+/// marker to begin the *next* line with, plus the content after this line's
+/// marker. Task items are checked before plain bullets.
+fn parse_list_marker(rest: &str) -> Option<(String, &str)> {
+    let bullet = rest.chars().next().filter(|c| matches!(c, '-' | '*' | '+'));
+    if let Some(b) = bullet
+        && let Some(after) = rest[1..].strip_prefix(' ')
+    {
+        // Task item: `<bullet> [ ] content` (the box char is ignored — new items
+        // start unchecked).
+        if after.len() >= 3
+            && after.starts_with('[')
+            && after.as_bytes()[2] == b']'
+            && let Some(content) = after[3..].strip_prefix(' ')
+        {
+            return Some((format!("{b} [ ] "), content));
+        }
+        // Plain bullet: `<bullet> content`.
+        return Some((format!("{b} "), after));
+    }
+    // Ordered: `N. content` or `N) content` — continue with the next number.
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits > 0
+        && let Ok(n) = rest[..digits].parse::<u64>()
+    {
+        let after_num = &rest[digits..];
+        for sep in ['.', ')'] {
+            if let Some(after_sep) = after_num.strip_prefix(sep)
+                && let Some(content) = after_sep.strip_prefix(' ')
+            {
+                return Some((format!("{}{sep} ", n + 1), content));
+            }
+        }
+    }
+    // Blockquote: `> content` (or `>content`).
+    if let Some(after) = rest.strip_prefix('>') {
+        let content = after.strip_prefix(' ').unwrap_or(after);
+        return Some(("> ".to_string(), content));
+    }
+    None
+}
+
 // --- Auto-pairing of brackets / quotes ---
 
 /// What to do in reaction to a bracket/quote edit at the caret.
@@ -532,6 +612,67 @@ fn is_boundary(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cont(s: &str) -> Option<ListEdit> {
+        list_continuation(s, s.len())
+    }
+
+    #[test]
+    fn list_continues_bullets() {
+        assert_eq!(cont("- a"), Some(ListEdit::Continue("\n- ".into())));
+        assert_eq!(cont("* a"), Some(ListEdit::Continue("\n* ".into())));
+        assert_eq!(cont("+ a"), Some(ListEdit::Continue("\n+ ".into())));
+    }
+
+    #[test]
+    fn list_continues_ordered_incrementing() {
+        assert_eq!(cont("1. a"), Some(ListEdit::Continue("\n2. ".into())));
+        assert_eq!(cont("9. x"), Some(ListEdit::Continue("\n10. ".into())));
+        assert_eq!(cont("3) y"), Some(ListEdit::Continue("\n4) ".into())));
+    }
+
+    #[test]
+    fn list_continues_task_unchecked() {
+        assert_eq!(
+            cont("- [x] done"),
+            Some(ListEdit::Continue("\n- [ ] ".into()))
+        );
+        assert_eq!(
+            cont("- [ ] todo"),
+            Some(ListEdit::Continue("\n- [ ] ".into()))
+        );
+    }
+
+    #[test]
+    fn list_continues_blockquote_and_preserves_indent() {
+        assert_eq!(cont("> hi"), Some(ListEdit::Continue("\n> ".into())));
+        assert_eq!(cont("  - a"), Some(ListEdit::Continue("\n  - ".into())));
+    }
+
+    #[test]
+    fn list_empty_item_exits() {
+        assert_eq!(cont("- "), Some(ListEdit::Exit { start: 0, end: 2 }));
+        assert_eq!(cont("1. "), Some(ListEdit::Exit { start: 0, end: 3 }));
+        assert_eq!(cont("> "), Some(ListEdit::Exit { start: 0, end: 2 }));
+        assert_eq!(cont("- [ ] "), Some(ListEdit::Exit { start: 0, end: 6 }));
+    }
+
+    #[test]
+    fn list_continuation_ignores_non_lists() {
+        assert_eq!(cont("hello"), None);
+        assert_eq!(cont(""), None);
+        assert_eq!(cont("-nospace"), None);
+    }
+
+    #[test]
+    fn list_continuation_uses_the_caret_line() {
+        // Cursor at the end of the second (list) line continues that line.
+        let v = "intro\n- one";
+        assert_eq!(
+            list_continuation(v, v.len()),
+            Some(ListEdit::Continue("\n- ".into()))
+        );
+    }
 
     #[test]
     fn slash_alone_triggers_empty_query() {

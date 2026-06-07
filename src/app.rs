@@ -1113,6 +1113,44 @@ impl AppView {
         }
     }
 
+    /// On Enter with the slash menu closed: continue a markdown list / blockquote
+    /// onto the next line (indent preserved, ordered numbers incremented), or
+    /// remove the marker when the current item is empty. Returns whether it
+    /// handled the Enter (so the caller skips inserting a plain newline).
+    fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(target) = self.focused_editor_target() else {
+            return false;
+        };
+        let Some(editor) = self.editor_for(&target) else {
+            return false;
+        };
+        let value = editor.read(cx).value().to_string();
+        let cursor = editor.read(cx).cursor().min(value.len());
+        let Some(edit) = slash::list_continuation(&value, cursor) else {
+            return false;
+        };
+        let (new, caret) = match edit {
+            slash::ListEdit::Continue(insert) => (
+                format!("{}{}{}", &value[..cursor], insert, &value[cursor..]),
+                cursor + insert.len(),
+            ),
+            slash::ListEdit::Exit { start, end } => {
+                (format!("{}{}", &value[..start], &value[end..]), start)
+            }
+        };
+        editor.update(cx, |st, cx| {
+            st.set_value(new.clone(), window, cx);
+            let pos = st.text().offset_to_position(caret.min(new.len()));
+            st.set_cursor_position(pos, window, cx);
+        });
+        match &target {
+            SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        cx.notify();
+        true
+    }
+
     /// Shared map of rendered image widths (keyed by source attr offset),
     /// handed to the renderer so its measure callbacks can record sizes.
     pub fn image_widths(&self) -> Rc<RefCell<HashMap<usize, f32>>> {
@@ -2232,7 +2270,7 @@ impl Render for AppView {
                 cx.listener(|this: &mut AppView, _: &SlashConfirm, window, cx| {
                     if this.slash.is_some() {
                         this.confirm_slash(window, cx);
-                    } else {
+                    } else if !this.continue_list(window, cx) {
                         cx.propagate();
                     }
                 }),
