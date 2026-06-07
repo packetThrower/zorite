@@ -12,12 +12,15 @@ name = "zorite"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/gpui-markdown"]
+members = ["crates/gpui-markdown", "crates/gpui-pdf"]
 resolver = "2"
 
 [dependencies]
 # Our own markdown renderer (clickable wiki-links), a workspace crate.
 gpui-markdown = { path = "crates/gpui-markdown" }
+
+# Our own page-virtualized PDF viewer (pure-Rust hayro), a workspace crate.
+gpui-pdf = { path = "crates/gpui-pdf" }
 
 # SQLite backend. `bundled` compiles SQLite from source and links it
 # statically into the binary — no system libsqlite3 dependency on any
@@ -65,12 +68,6 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
 # the icon set tracks the `IconName` enum in gpui-component.
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "2d2524d89efc47270e9a0ee18f10fa72cd573eff" }
 
-# Pure-Rust PDF rasterizer (no native library) — renders `![](file.pdf)` pages
-# to images for inline display. Same renderer Zed's PDF viewer uses.
-hayro = "0.7"
-# Build `image::Frame`/`RgbaImage` for `gpui::RenderImage`. Pin to gpui's `image`
-# minor (0.25) so the `Frame` type unifies with what `RenderImage::new` expects.
-image = "0.25"
 # Parse `file://` URLs into filesystem paths correctly across platforms (Windows
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.
 url = "2"

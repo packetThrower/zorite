@@ -2463,6 +2463,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-pdf"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "hayro",
+ "image",
+ "log",
+]
+
+[[package]]
 name = "gpui_linux"
 version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed#13e7c1176804c790ec2971d2e592e5363c982d04"
@@ -8822,9 +8832,8 @@ dependencies = [
  "gpui-component",
  "gpui-component-assets",
  "gpui-markdown",
+ "gpui-pdf",
  "gpui_platform",
- "hayro",
- "image",
  "log",
  "rusqlite",
  "serde",
