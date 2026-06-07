@@ -81,6 +81,30 @@ pub struct GlobalDocSignal(pub Entity<DocSignal>);
 
 impl Global for GlobalDocSignal {}
 
+/// The payload + floating preview for a tab being dragged in the strip. Dropping
+/// it on another tab reorders (`reorder_tab`); dropping it in the content area
+/// tears it off into a new window (`tear_off_tab`) — browser-style.
+#[derive(Clone)]
+pub struct TabDrag {
+    pub ix: usize,
+    pub title: SharedString,
+}
+
+impl Render for TabDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px_3()
+            .py_1()
+            .rounded(px(6.0))
+            .bg(theme::glass_strong())
+            .border_1()
+            .border_color(theme::border_subtle())
+            .text_size(px(13.0))
+            .text_color(theme::text_primary())
+            .child(self.title.clone())
+    }
+}
+
 /// A loaded PDF for the viewer. Page sizes drive instant layout; pages are
 /// rasterized lazily for the viewport window only (see `ensure_pdf_window`), so
 /// memory stays bounded by what's on screen rather than the whole document.
@@ -1764,6 +1788,45 @@ impl AppView {
         }
     }
 
+    /// Drag-reorder: move tab `from` to where tab `to` sits. `to == tabs.len()`
+    /// appends to the very end (the drop zone past the last tab). The pinned
+    /// Journal (index 0) never moves, and nothing moves before it.
+    pub fn reorder_tab(
+        &mut self,
+        from: usize,
+        to: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let n = self.tabs.len();
+        if from == 0 || to == 0 || from >= n || to > n || from == to {
+            return;
+        }
+        // Track the active tab by identity so it stays selected after the move.
+        let active_kind = self.tabs[self.active].kind.clone();
+        let tab = self.tabs.remove(from);
+        let dest = if from < to { to - 1 } else { to };
+        self.tabs.insert(dest.clamp(1, self.tabs.len()), tab);
+        self.active = self
+            .tabs
+            .iter()
+            .position(|t| t.kind == active_kind)
+            .unwrap_or(self.active.min(self.tabs.len() - 1));
+        cx.notify();
+    }
+
+    /// Tear a tab off into its own new window (drag it off the strip into the
+    /// content area). Removes it from this window and reopens its content in a
+    /// fresh window. The pinned Journal isn't torn off.
+    fn tear_off_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix == 0 || ix >= self.tabs.len() {
+            return;
+        }
+        let target = self.tabs[ix].kind.clone();
+        self.close_tab(ix, window, cx);
+        window.defer(cx, move |_, cx| AppView::open_in_new_window(target, cx));
+    }
+
     // --- Delete page (sidebar right-click → confirm) ---
 
     /// Remember which page a right-click context menu targets, so the
@@ -2236,21 +2299,36 @@ impl Render for AppView {
                             .flex_col()
                             .bg(theme::bg_content())
                             .child(ui::tab_bar::render(self, cx))
-                            .child(div().flex_1().min_h_0().child(if self.searching {
-                                ui::search::render(self, cx).into_any_element()
-                            } else {
-                                match self.tabs[self.active].kind.clone() {
-                                    TabKind::Journal => {
-                                        ui::journal::render(self, day_min, cx).into_any_element()
-                                    }
-                                    TabKind::Page(_) => {
-                                        ui::page_view::render(self, cx).into_any_element()
-                                    }
-                                    TabKind::Pdf(path) => {
-                                        ui::pdf_view::render(self, &path, cx).into_any_element()
-                                    }
-                                }
-                            })),
+                            // Dropping a dragged tab here (off the strip, into the
+                            // content area) tears it off into a new window —
+                            // browser-style.
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .on_drop(cx.listener(
+                                        |this: &mut AppView, drag: &TabDrag, window, cx| {
+                                            this.tear_off_tab(drag.ix, window, cx);
+                                        },
+                                    ))
+                                    .child(if self.searching {
+                                        ui::search::render(self, cx).into_any_element()
+                                    } else {
+                                        match self.tabs[self.active].kind.clone() {
+                                            TabKind::Journal => {
+                                                ui::journal::render(self, day_min, cx)
+                                                    .into_any_element()
+                                            }
+                                            TabKind::Page(_) => {
+                                                ui::page_view::render(self, cx).into_any_element()
+                                            }
+                                            TabKind::Pdf(path) => {
+                                                ui::pdf_view::render(self, &path, cx)
+                                                    .into_any_element()
+                                            }
+                                        }
+                                    }),
+                            ),
                     ),
             )
             .children(overlay)
