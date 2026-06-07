@@ -44,8 +44,14 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("tab", InsertTab, Some(INPUT_CONTEXT)),
         // Shift+Tab outdents the caret's list line (no-op if nothing to remove).
         KeyBinding::new("shift-tab", Outdent, Some(INPUT_CONTEXT)),
-        // Cmd+V: paste a clipboard image into a day/page editor; the handler
-        // propagates (to gpui-component's text paste) when there's no image.
-        KeyBinding::new("cmd-v", PasteImage, Some(INPUT_CONTEXT)),
     ]);
+    // Paste-image: bind the platform's real paste chord — Cmd+V on macOS, Ctrl+V on
+    // Windows/Linux. gpui treats `cmd-` and `ctrl-` as distinct chords, so a bare
+    // `cmd-v` binding never fires off-Mac and image paste would be dead there. The
+    // handler checks the clipboard for an image and otherwise propagates to
+    // gpui-component's native text paste, so binding the real chord is safe.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([KeyBinding::new("cmd-v", PasteImage, Some(INPUT_CONTEXT))]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([KeyBinding::new("ctrl-v", PasteImage, Some(INPUT_CONTEXT))]);
 }
