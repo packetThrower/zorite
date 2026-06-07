@@ -42,11 +42,18 @@ and a SQLite backend.
   or **drag-and-drop** a file to add one (copied into the data dir's `images/`
   folder), and **drag the corner handle to resize** (saved as `{width=N}` in the
   markdown).
+- **PDF viewer** — link a PDF with `[[file.pdf]]` or `![](file.pdf)`, or **drop a
+  PDF onto a note**, to get a chip that opens it in a dedicated viewer tab.
+  Rendering uses the pure-Rust [`hayro`](https://crates.io/crates/hayro) crate (no
+  native dependencies). The viewer is **page-virtualized**: only the pages near the
+  viewport are rasterized, and pages scrolled away are freed (memory *and* GPU
+  texture), so an 800-page document stays as light as a one-pager. Dropped PDFs are
+  copied into the data dir's `pdf/` folder.
 - **Markdown rendering** — headings, bold/italic/code, lists, quotes, GFM tables,
   and strikethrough — via a custom renderer crate,
   [`gpui-markdown`](crates/gpui-markdown/README.md).
-- **Local SQLite** storage for notes; images live beside it as files. Everything
-  stays on your machine.
+- **Local SQLite** storage for notes; images and PDFs live beside it as files.
+  Everything stays on your machine.
 
 ## Templates
 
