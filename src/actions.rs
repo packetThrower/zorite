@@ -28,6 +28,7 @@ actions!(
         RenamePage,
         NewPage,
         InsertTab,
+        Outdent,
         PasteImage
     ]
 );
@@ -41,6 +42,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("enter", SlashConfirm, Some(INPUT_CONTEXT)),
         KeyBinding::new("escape", SlashCancel, Some(INPUT_CONTEXT)),
         KeyBinding::new("tab", InsertTab, Some(INPUT_CONTEXT)),
+        // Shift+Tab outdents the caret's list line (no-op if nothing to remove).
+        KeyBinding::new("shift-tab", Outdent, Some(INPUT_CONTEXT)),
         // Cmd+V: paste a clipboard image into a day/page editor; the handler
         // propagates (to gpui-component's text paste) when there's no image.
         KeyBinding::new("cmd-v", PasteImage, Some(INPUT_CONTEXT)),

@@ -33,7 +33,7 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    DeletePage, InsertTab, NewPage, OpenInNewTab, OpenInNewWindow, PasteImage, RenamePage,
+    DeletePage, InsertTab, NewPage, OpenInNewTab, OpenInNewWindow, Outdent, PasteImage, RenamePage,
     SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
@@ -1033,17 +1033,7 @@ impl AppView {
             self.confirm_slash(window, cx);
             return;
         }
-        let target = if let Some(date) = self.editing_day.clone() {
-            SlashTarget::Day(date)
-        } else if self.page_editing {
-            match self.tabs.get(self.active).map(|t| t.kind.clone()) {
-                Some(TabKind::Page(id)) => SlashTarget::Page(id),
-                _ => {
-                    cx.propagate();
-                    return;
-                }
-            }
-        } else {
+        let Some(target) = self.focused_editor_target() else {
             cx.propagate();
             return;
         };
@@ -1053,13 +1043,55 @@ impl AppView {
         };
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
-        let new = format!("{}  {}", &value[..cursor], &value[cursor..]);
+        // On a list/quote line, Tab indents the whole item; elsewhere it inserts
+        // two spaces at the caret.
+        let (new, caret) = slash::indent_list_line(&value, cursor).unwrap_or_else(|| {
+            (
+                format!("{}  {}", &value[..cursor], &value[cursor..]),
+                cursor + 2,
+            )
+        });
+        self.apply_editor_edit(&target, &editor, new, caret, window, cx);
+    }
+
+    /// `Outdent` (Shift+Tab): remove one indent level from the caret's line.
+    /// No-op when there's nothing to remove (so it doesn't shift focus).
+    fn on_outdent(&mut self, _: &Outdent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.slash.is_some() {
+            return;
+        }
+        let Some(target) = self.focused_editor_target() else {
+            cx.propagate();
+            return;
+        };
+        let Some(editor) = self.editor_for(&target) else {
+            cx.propagate();
+            return;
+        };
+        let value = editor.read(cx).value().to_string();
+        let cursor = editor.read(cx).cursor().min(value.len());
+        if let Some((new, caret)) = slash::outdent_line(&value, cursor) {
+            self.apply_editor_edit(&target, &editor, new, caret, window, cx);
+        }
+    }
+
+    /// Replace a focused editor's text and place the caret, then persist + signal.
+    /// Shared by the Tab/Shift+Tab handlers.
+    fn apply_editor_edit(
+        &mut self,
+        target: &SlashTarget,
+        editor: &Entity<InputState>,
+        new: String,
+        caret: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
-            let pos = st.text().offset_to_position(cursor + 2);
+            let pos = st.text().offset_to_position(caret.min(new.len()));
             st.set_cursor_position(pos, window, cx);
         });
-        match &target {
+        match target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
             SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
@@ -2294,6 +2326,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_insert_tab))
+            .on_action(cx.listener(Self::on_outdent))
             .on_action(cx.listener(Self::on_paste_image))
             .child(
                 TitleBar::new().child(

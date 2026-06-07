@@ -481,6 +481,50 @@ fn parse_list_marker(rest: &str) -> Option<(String, &str)> {
     None
 }
 
+/// One indent level for Tab / Shift+Tab on list items — two spaces, matching the
+/// editor's plain-Tab insert.
+pub const INDENT: &str = "  ";
+
+/// If the caret's line is a list/quote item, indent it one level (insert
+/// [`INDENT`] at the line start), returning the new text and shifted caret.
+/// `None` when the line isn't a list item, so the caller can insert a literal
+/// tab instead.
+pub fn indent_list_line(value: &str, cursor: usize) -> Option<(String, usize)> {
+    let cursor = cursor.min(value.len());
+    let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = value[cursor..]
+        .find('\n')
+        .map_or(value.len(), |i| cursor + i);
+    let line = &value[line_start..line_end];
+    let indent_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+    parse_list_marker(&line[indent_len..])?; // only list / quote lines
+    let new = format!("{}{INDENT}{}", &value[..line_start], &value[line_start..]);
+    Some((new, cursor + INDENT.len()))
+}
+
+/// Outdent the caret's line one level: remove up to [`INDENT`] of leading spaces
+/// (or one leading tab). Returns the new text and caret, or `None` if the line
+/// has no leading indent to remove.
+pub fn outdent_line(value: &str, cursor: usize) -> Option<(String, usize)> {
+    let cursor = cursor.min(value.len());
+    let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line = &value[line_start..];
+    let removed = if line.starts_with('\t') {
+        1
+    } else {
+        line.bytes()
+            .take(INDENT.len())
+            .take_while(|b| *b == b' ')
+            .count()
+    };
+    if removed == 0 {
+        return None;
+    }
+    let new = format!("{}{}", &value[..line_start], &value[line_start + removed..]);
+    let caret = cursor.saturating_sub(removed).max(line_start);
+    Some((new, caret))
+}
+
 // --- Auto-pairing of brackets / quotes ---
 
 /// What to do in reaction to a bracket/quote edit at the caret.
@@ -672,6 +716,30 @@ mod tests {
             list_continuation(v, v.len()),
             Some(ListEdit::Continue("\n- ".into()))
         );
+    }
+
+    #[test]
+    fn tab_indents_list_lines() {
+        assert_eq!(indent_list_line("- a", 3), Some(("  - a".into(), 5)));
+        assert_eq!(indent_list_line("* x", 1), Some(("  * x".into(), 3)));
+        assert_eq!(indent_list_line("1. y", 4), Some(("  1. y".into(), 6)));
+        // Only the caret's line is indented.
+        assert_eq!(
+            indent_list_line("- a\n- b", 7),
+            Some(("- a\n  - b".into(), 9))
+        );
+    }
+
+    #[test]
+    fn tab_ignores_non_list_lines() {
+        assert_eq!(indent_list_line("hello", 5), None);
+    }
+
+    #[test]
+    fn shift_tab_outdents() {
+        assert_eq!(outdent_line("  - a", 5), Some(("- a".into(), 3)));
+        assert_eq!(outdent_line("    x", 5), Some(("  x".into(), 3)));
+        assert_eq!(outdent_line("- a", 3), None);
     }
 
     #[test]
