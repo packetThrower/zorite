@@ -417,6 +417,8 @@ impl AppView {
                     this.slash = None;
                     let value = st.read(cx).value().to_string();
                     this.flush_journal(&key, &value);
+                    // Link re-index changed backlinks elsewhere — sync windows.
+                    this.signal_doc_changed(cx);
                     cx.notify();
                 }
                 _ => {}
@@ -508,6 +510,17 @@ impl AppView {
                 self.load_page_editor(id, window, cx);
             }
         }
+        // Refresh the active page's backlinks (another window may have edited a
+        // page that links here) and the sidebar list (a page may have been
+        // created / renamed / deleted elsewhere).
+        if let Some(id) = self.page_editor.as_ref().map(|pe| pe.id)
+            && let Ok(bl) = self.db.backlinks(id)
+            && let Some(pe) = self.page_editor.as_mut()
+            && pe.id == id
+        {
+            pe.backlinks = bl;
+        }
+        self.refresh_sidebar();
         cx.notify();
     }
 
@@ -570,8 +583,10 @@ impl AppView {
             Ok(page) => {
                 self.open_page_foreground(page, window, cx);
                 // The page may be newly created (via the New-page dialog or a
-                // [[link]]), so refresh the sidebar to show it.
+                // [[link]]), so refresh the sidebar to show it — and tell other
+                // windows so their sidebars pick up the new page too.
                 self.refresh_sidebar();
+                self.signal_doc_changed(cx);
             }
             Err(e) => log::error!("open page '{title}': {e}"),
         }
@@ -695,6 +710,7 @@ impl AppView {
         // once they're dropped.
         self.persist(id, &content);
         self.commit_aliases(id, &aliases);
+        self.signal_doc_changed(cx);
     }
 
     pub fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -788,6 +804,7 @@ impl AppView {
                     let value = st.read(cx).value().to_string();
                     this.persist(pid, &value);
                     this.refresh_sidebar();
+                    this.signal_doc_changed(cx);
                     cx.notify();
                 }
                 _ => {}
@@ -1914,6 +1931,7 @@ impl AppView {
                     }
                 }
                 self.refresh_sidebar();
+                self.signal_doc_changed(cx);
                 self.activate_tab(self.active, window, cx);
             }
             Ok(false) => {}
@@ -2041,6 +2059,7 @@ impl AppView {
                 }
                 self.refresh_sidebar();
                 self.reload_day_editors(window, cx);
+                self.signal_doc_changed(cx);
                 self.activate_tab(self.active, window, cx);
             }
             Ok(false) => {}
@@ -2084,6 +2103,7 @@ impl AppView {
                 }
                 self.refresh_sidebar();
                 self.reload_day_editors(window, cx);
+                self.signal_doc_changed(cx);
                 cx.notify();
             }
             Ok(false) => {
