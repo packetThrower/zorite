@@ -48,6 +48,9 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
 - [x] **Collapsible sidebar** — a `<` caret collapses it to a thin icon rail (`>` to expand, plus the calendar/settings icons); the content area reclaims the space
 - [ ] Sidebar: remember the collapsed state across launches, and add a keyboard shortcut to toggle it
+- [x] **Multi-window** — right-click a sidebar page or a tab → "Open in new window" opens a full, independent second window focused on that page (`AppView::open_in_new_window`). Each window is its own `AppView` with its own SQLite connection to the same file. See `src/app.rs`, `src/ui/tab_bar.rs`
+- [ ] Multi-window: **drag a tab out to tear off a new window** (browser-style) + reorder tabs within the strip. No library support (gpui-component's dock only rearranges within one window); custom-build on `on_drag_move` + `mouse_position` vs `window.bounds()` → `open_in_new_window`. Wayland: the compositor controls new-window placement
+- [ ] Multi-window: **live cross-window sync** — today windows share the DB file but not in-memory state, so editing the *same* page in two windows is last-write-wins. A shared observable model would let edits reflect live
 - [ ] Window-bounds persistence (reopen where you left off)
 - [ ] App icon + packaging (cargo-packager: `.dmg` / `.msi` / `.deb`)
 - [ ] Add a `LICENSE` file (Cargo.toml already declares `GPL-3.0-or-later`)

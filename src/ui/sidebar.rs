@@ -12,7 +12,7 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt};
 
-use crate::actions::{DeletePage, NewPage, OpenInNewTab, RenamePage};
+use crate::actions::{DeletePage, NewPage, OpenInNewTab, OpenInNewWindow, RenamePage};
 use crate::app::AppView;
 use crate::hierarchy::{self, PageNode};
 use crate::theme;
@@ -287,6 +287,7 @@ fn tree_row(node: &PageNode, depth: usize, active: bool, cx: &mut Context<AppVie
         )
         .context_menu(|menu, _window, _cx| {
             menu.menu("Open in new tab", Box::new(OpenInNewTab))
+                .menu("Open in new window", Box::new(OpenInNewWindow))
                 .separator()
                 .menu("Rename page", Box::new(RenamePage))
                 .menu("Delete page", Box::new(DeletePage))

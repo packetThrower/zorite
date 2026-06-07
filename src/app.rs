@@ -33,8 +33,8 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    DeletePage, InsertTab, NewPage, OpenInNewTab, PasteImage, RenamePage, SlashCancel,
-    SlashConfirm, SlashDown, SlashUp,
+    DeletePage, InsertTab, NewPage, OpenInNewTab, OpenInNewWindow, PasteImage, RenamePage,
+    SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
@@ -203,6 +203,9 @@ pub struct AppView {
     /// The page (id + title) targeted by an open right-click context menu,
     /// read by the `DeletePage` / `RenamePage` actions.
     context_page: Option<(i64, SharedString)>,
+    /// The target of a right-click "Open in new window" — a page (sidebar or
+    /// tab) or a PDF/journal tab. Set on right-click, taken by the handler.
+    context_target: Option<TabKind>,
     /// The rename dialog's text field, and the page being renamed.
     rename_input: Entity<InputState>,
     rename_target: Option<i64>,
@@ -285,6 +288,7 @@ impl AppView {
             slash: None,
             templates: Vec::new(),
             context_page: None,
+            context_target: None,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
             _subs: vec![search_sub, calendar_sub],
@@ -1665,12 +1669,60 @@ impl AppView {
         }
     }
 
+    /// Open `target` in a new top-level window — a full, independent `AppView`
+    /// (its own SQLite connection to the same file) focused on the given page /
+    /// PDF / journal, like a new browser window. Run at the App level from a
+    /// deferred closure (`open_window` must not run mid-`AppView` update). Each
+    /// window is independent; they share the database file, so edits are visible
+    /// across windows on the next read (same-page concurrent edits = last write
+    /// wins — there's no live in-memory sync yet).
+    pub fn open_in_new_window(target: TabKind, cx: &mut App) {
+        let bounds = Bounds::centered(None, size(px(1100.0), px(800.0)), cx);
+        let opened = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("zorite".into()),
+                    ..TitleBar::title_bar_options()
+                }),
+                app_id: Some("zorite".into()),
+                window_decorations: Some(WindowDecorations::Client),
+                ..Default::default()
+            },
+            move |window, cx| {
+                window.set_client_inset(px(10.0));
+                let view = cx.new(|cx| AppView::new(window, cx));
+                view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
+                match target {
+                    TabKind::Page(id) => {
+                        view.update(cx, |this, cx| this.open_page_id(id, window, cx));
+                    }
+                    TabKind::Pdf(path) => {
+                        view.update(cx, |this, cx| this.open_pdf(path, window, cx));
+                    }
+                    TabKind::Journal => {}
+                }
+                cx.new(|cx| gpui_component::Root::new(view, window, cx))
+            },
+        );
+        if let Err(err) = opened {
+            log::error!("open new window: {err}");
+        }
+    }
+
     // --- Delete page (sidebar right-click → confirm) ---
 
     /// Remember which page a right-click context menu targets, so the
     /// `DeletePage` action knows what to delete. Called from the sidebar.
     pub fn set_context_page(&mut self, id: i64, title: SharedString) {
         self.context_page = Some((id, title));
+        self.context_target = Some(TabKind::Page(id));
+    }
+
+    /// Remember a tab's content as the "Open in new window" target (called from
+    /// the tab strip's right-click, where there's no page id — e.g. a PDF tab).
+    pub fn set_context_target(&mut self, target: TabKind) {
+        self.context_target = Some(target);
     }
 
     /// `DeletePage` handler: confirm, then delete the remembered page.
@@ -1709,6 +1761,20 @@ impl AppView {
     ) {
         if let Some((id, _)) = self.context_page.take() {
             self.open_page_in_new_tab(id, cx);
+        }
+    }
+
+    /// `OpenInNewWindow` handler (sidebar page or tab right-click): open the
+    /// remembered target in a fresh window. Deferred to the App level because
+    /// `open_window` must not run while this `AppView` is mid-update.
+    fn on_open_in_new_window(
+        &mut self,
+        _: &OpenInNewWindow,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(target) = self.context_target.take() {
+            window.defer(cx, move |_, cx| AppView::open_in_new_window(target, cx));
         }
     }
 
@@ -2049,6 +2115,7 @@ impl Render for AppView {
             // Sidebar right-click menu actions.
             .on_action(cx.listener(Self::on_delete_page))
             .on_action(cx.listener(Self::on_open_in_new_tab))
+            .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_insert_tab))

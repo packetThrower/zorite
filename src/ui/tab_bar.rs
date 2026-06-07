@@ -3,8 +3,10 @@
 //! tabs don't fit (gpui-component `TabBar`).
 
 use gpui::{Context, InteractiveElement, IntoElement, MouseButton, ParentElement, Styled, div, px};
+use gpui_component::menu::ContextMenuExt;
 use gpui_component::tab::{Tab, TabBar};
 
+use crate::actions::OpenInNewWindow;
 use crate::app::AppView;
 use crate::theme;
 
@@ -15,7 +17,25 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .selected_index(app.active);
 
     for (i, tab) in app.tabs.iter().enumerate() {
-        let mut t = Tab::new().label(tab.title.clone()).on_click(cx.listener(
+        // The tab's label hosts a right-click "Open in new window" menu. The
+        // gpui-component `ContextMenu` can't be attached to a `Tab` directly
+        // (`TabBar::child` wants `Into<Tab>`, but `context_menu` returns a
+        // wrapper), so it lives on the tab's child element. Right-click also
+        // records which tab is the target.
+        let kind = tab.kind.clone();
+        let label = div()
+            .id(("tab-label", i))
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this: &mut AppView, _ev, _window, _cx| {
+                    this.set_context_target(kind.clone());
+                }),
+            )
+            .child(tab.title.clone())
+            .context_menu(|menu, _window, _cx| {
+                menu.menu("Open in new window", Box::new(OpenInNewWindow))
+            });
+        let mut t = Tab::new().child(label).on_click(cx.listener(
             move |this: &mut AppView, _ev, window, cx| {
                 this.activate_tab(i, window, cx);
             },
