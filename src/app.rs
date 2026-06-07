@@ -1710,15 +1710,16 @@ impl AppView {
     /// Resolve the active skin + mode (+ OS appearance for Auto) to a
     /// palette and push it live to every window.
     fn apply_theme(&self, window: &mut Window, cx: &mut Context<Self>) {
-        let is_dark = match self.mode {
-            theme::Mode::Light => false,
-            theme::Mode::Dark => true,
-            theme::Mode::Auto => self.system_dark,
-        };
-        let palette = {
-            let skin = self.current_skin();
-            if is_dark { skin.dark } else { skin.light }
-        };
+        let skin = self.current_skin();
+        // A dark-only theme ignores the Light/Dark/Auto setting and forces dark,
+        // so the window chrome / titlebar matches its always-dark content.
+        let is_dark = skin.dark_only
+            || match self.mode {
+                theme::Mode::Light => false,
+                theme::Mode::Dark => true,
+                theme::Mode::Auto => self.system_dark,
+            };
+        let palette = if is_dark { skin.dark } else { skin.light };
         theme::apply(palette, is_dark, window, cx);
     }
 

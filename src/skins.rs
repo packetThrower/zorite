@@ -13,6 +13,9 @@ pub struct Skin {
     pub name: String,
     pub light: Palette,
     pub dark: Palette,
+    /// "Always dark": ignore the Light/Dark/Auto mode and render dark (including
+    /// the window chrome / titlebar). For themes that only define a dark look.
+    pub dark_only: bool,
 }
 
 /// Base colors for one mode: `(bg_window, bg_sidebar, bg_content, fg, accent, tag, code)`.
@@ -36,6 +39,21 @@ impl Skin {
             light: make_palette(
                 light.0, light.1, light.2, light.3, light.4, light.5, light.6, false,
             ),
+            dark_only: false,
+        }
+    }
+
+    /// A dark-only theme: both Light and Dark modes use the dark palette (built
+    /// as dark so the derived overlays/borders stay correct), and the window
+    /// chrome / titlebar is forced dark via `dark_only`.
+    fn builtin_dark(id: &str, name: &str, dark: Base) -> Self {
+        let palette = || make_palette(dark.0, dark.1, dark.2, dark.3, dark.4, dark.5, dark.6, true);
+        Self {
+            id: id.to_string(),
+            name: name.to_string(),
+            dark: palette(),
+            light: palette(),
+            dark_only: true,
         }
     }
 }
@@ -64,14 +82,46 @@ pub fn builtin_skins() -> Vec<Skin> {
                 0xFDF6E3, 0xEEE8D5, 0xFDF6E3, 0x586E75, 0x268BD2, 0x6C71C4, 0xB58900,
             ),
         ),
+        // --- Ported from Baudrun ---
         Skin::builtin(
-            "gruvbox",
-            "Gruvbox",
+            "tokyo-night",
+            "Tokyo Night",
             (
-                0x282828, 0x3C3836, 0x282828, 0xEBDBB2, 0xFE8019, 0xD3869B, 0xFABD2F,
+                0x1A1B26, 0x16161E, 0x1A1B26, 0xC0CAF5, 0x7AA2F7, 0xBB9AF7, 0xE0AF68,
             ),
             (
-                0xFBF1C7, 0xEBDBB2, 0xFBF1C7, 0x3C3836, 0xD65D0E, 0x8F3F71, 0xB57614,
+                0xE1E2E7, 0xC4C8DA, 0xE1E2E7, 0x3760BF, 0x2E7DE9, 0x9854F1, 0x8C6C3E,
+            ),
+        ),
+        Skin::builtin(
+            "foundry",
+            "Foundry",
+            (
+                0x1C1208, 0x160D04, 0x221709, 0xFFE9CF, 0xFF9D2E, 0xFFB863, 0xFFE066,
+            ),
+            (
+                0xFAF4EA, 0xF1E8D8, 0xFFFDF8, 0x3D2410, 0xB3560A, 0xD4691A, 0xB88600,
+            ),
+        ),
+        // Cyberpunk/Synthwave is dark-only in Baudrun — same palette in both modes.
+        Skin::builtin_dark(
+            "cyberpunk",
+            "Cyberpunk",
+            (
+                0x120522, 0x0A0317, 0x1A0D2E, 0xF0E6FF, 0xFF006E, 0x00E5FF, 0xFFE600,
+            ),
+        ),
+        // E-Ink (paper/ink) — monochrome; its native accent is near-invisible on
+        // its dark ground, so we use the sepia tone so the active tab / headings
+        // stay legible.
+        Skin::builtin(
+            "e-ink",
+            "E-Ink",
+            (
+                0x1A1A1A, 0x1F1F1F, 0x1A1A1A, 0xD0C9BB, 0xC0A060, 0x6A6458, 0x7A9070,
+            ),
+            (
+                0xF4ECE0, 0xEBE3D6, 0xF8F1E5, 0x1A1A1A, 0x5A4A1A, 0x3A3A3A, 0x2A4A2A,
             ),
         ),
         Skin::builtin(
@@ -103,7 +153,9 @@ struct ColorSet {
     code: Option<String>,
 }
 
-/// A user theme file: `{ "id", "name", "dark": {…}, "light": {…} }`.
+/// A user theme file: `{ "id", "name", "dark": {…}, "light": {…} }`. Set
+/// `"dark_only": true` for an always-dark theme — the light block is ignored and
+/// the window chrome stays dark regardless of the Light/Dark/Auto setting.
 #[derive(Deserialize)]
 struct SkinFile {
     id: String,
@@ -112,6 +164,8 @@ struct SkinFile {
     dark: ColorSet,
     #[serde(default)]
     light: ColorSet,
+    #[serde(default)]
+    dark_only: bool,
 }
 
 /// Parse `#RRGGBB` / `#RRGGBBAA` (alpha ignored) to packed RGB.
@@ -161,12 +215,18 @@ pub fn load_user_skins() -> Vec<Skin> {
         match serde_json::from_str::<SkinFile>(&text) {
             Ok(f) => {
                 let dark = build_palette(&f.dark, ZORITE_DARK, true);
-                let light = build_palette(&f.light, ZORITE_LIGHT, false);
+                // A dark-only theme renders the dark palette in both modes.
+                let light = if f.dark_only {
+                    build_palette(&f.dark, ZORITE_DARK, true)
+                } else {
+                    build_palette(&f.light, ZORITE_LIGHT, false)
+                };
                 out.push(Skin {
                     id: f.id,
                     name: f.name,
                     light,
                     dark,
+                    dark_only: f.dark_only,
                 });
             }
             Err(e) => log::warn!("theme {}: {e}", path.display()),

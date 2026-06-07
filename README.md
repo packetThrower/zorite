@@ -79,8 +79,9 @@ the caret lands). Built-in markdown commands live in
 
 ## Themes
 
-zorite ships several built-in themes (Zorite, Nord, Solarized, Gruvbox,
-Dracula), each with a light and dark variant. Open **Settings** (the ⚙ in the
+zorite ships several built-in themes (Zorite, Nord, Solarized, Dracula, Tokyo
+Night, Foundry, Cyberpunk, E-Ink), each with a light and dark variant (Cyberpunk
+is dark-only). Open **Settings** (the ⚙ in the
 title bar) to pick a theme and choose **Light / Dark / Auto** (Auto follows your
 system appearance). A quick light/dark toggle also lives in the title bar.
 
@@ -109,7 +110,9 @@ colors:
 ```
 
 Tokens (each `#RRGGBB`): `bg_window`, `bg_sidebar`, `bg_content`, `fg` (text),
-`accent`, `tag`, `code`. Provide a `dark` and/or `light` block.
+`accent`, `tag`, `code`. Provide a `dark` and/or `light` block. Add
+`"dark_only": true` for an always-dark theme — the `light` block is ignored and
+the window chrome (titlebar) stays dark regardless of the Light/Dark/Auto setting.
 
 ## Build & run
 
