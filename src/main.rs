@@ -30,7 +30,7 @@ use gpui::{
 };
 use gpui_component::{Root, TitleBar};
 
-use app::AppView;
+use app::{AppView, DocSignal, GlobalDocSignal};
 
 fn main() {
     env_logger::init();
@@ -40,6 +40,10 @@ fn main() {
         gpui_component::init(cx);
         // Slash-menu keys (up/down/enter/escape, gated on the menu being open).
         actions::bind_keys(cx);
+        // Shared cross-window save signal — every window's AppView subscribes for
+        // live multi-window sync.
+        let doc_signal = cx.new(|_| DocSignal);
+        cx.set_global(GlobalDocSignal(doc_signal));
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
         if let Err(err) = cx.open_window(

@@ -18,9 +18,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, Bounds, ClipboardEntry, Context, CursorStyle, Entity, FocusHandle,
-    ImageFormat, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, RenderImage, ScrollHandle, SharedString,
+    App, AppContext, Bounds, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
+    FocusHandle, Global, ImageFormat, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent,
+    MouseUpEvent, ParentElement, Pixels, Render, RenderImage, ScrollHandle, SharedString,
     StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, Window, WindowAppearance,
     WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div, px, size,
 };
@@ -63,6 +63,23 @@ pub struct OpenTab {
     pub kind: TabKind,
     pub title: SharedString,
 }
+
+/// A process-wide signal that note content was saved to the database. Every
+/// window's `AppView` subscribes; when one window saves, the others reload the
+/// now-stale journal days / active page from the shared DB, giving live
+/// cross-window updates. Held in a gpui global so windows opened later share the
+/// same instance.
+pub struct DocSignal;
+
+/// Emitted by [`DocSignal`] after a content save.
+pub struct DocChanged;
+
+impl EventEmitter<DocChanged> for DocSignal {}
+
+/// Global wrapper holding the shared [`DocSignal`] entity (set once at startup).
+pub struct GlobalDocSignal(pub Entity<DocSignal>);
+
+impl Global for GlobalDocSignal {}
 
 /// A loaded PDF for the viewer. Page sizes drive instant layout; pages are
 /// rasterized lazily for the viewport window only (see `ensure_pdf_window`), so
@@ -206,6 +223,9 @@ pub struct AppView {
     /// The target of a right-click "Open in new window" — a page (sidebar or
     /// tab) or a PDF/journal tab. Set on right-click, taken by the handler.
     context_target: Option<TabKind>,
+    /// Shared cross-window save signal (see [`DocSignal`]): this window emits on
+    /// save and reloads stale content on other windows' saves (live multi-window).
+    doc_signal: Entity<DocSignal>,
     /// The rename dialog's text field, and the page being renamed.
     rename_input: Entity<InputState>,
     rename_target: Option<i64>,
@@ -253,6 +273,16 @@ impl AppView {
             },
         );
 
+        // Live multi-window sync: share one save-signal across all windows.
+        let doc_signal = cx.global::<GlobalDocSignal>().0.clone();
+        let doc_sub = cx.subscribe_in(
+            &doc_signal,
+            window,
+            |this: &mut AppView, _sig, _ev: &DocChanged, window, cx| {
+                this.apply_external_edit(window, cx);
+            },
+        );
+
         let mut this = Self {
             db,
             tabs: vec![OpenTab {
@@ -289,9 +319,10 @@ impl AppView {
             templates: Vec::new(),
             context_page: None,
             context_target: None,
+            doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
-            _subs: vec![search_sub, calendar_sub],
+            _subs: vec![search_sub, calendar_sub, doc_sub],
             focus_handle: cx.focus_handle(),
         };
 
@@ -348,7 +379,7 @@ impl AppView {
                         return;
                     }
                     let value = st.read(cx).value().to_string();
-                    this.save_journal(&key, &value);
+                    this.save_journal(&key, &value, cx);
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                 }
                 InputEvent::Focus => {
@@ -384,6 +415,11 @@ impl AppView {
     fn reload_day_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let dates: Vec<String> = self.day_editors.keys().cloned().collect();
         for date in dates {
+            // Never reload the day being edited here — that would clobber the
+            // in-progress edit with the DB copy.
+            if self.editing_day.as_deref() == Some(date.as_str()) {
+                continue;
+            }
             let content = self
                 .db
                 .get_journal_by_date(&date)
@@ -403,12 +439,52 @@ impl AppView {
     /// Save a journal day's content on every keystroke — but NOT its
     /// links/tags. Link re-indexing (which creates target pages) happens
     /// on blur, so a half-typed `#tag` doesn't spawn a page per keystroke.
-    fn save_journal(&mut self, date: &str, content: &str) {
-        if let Ok(page) = self.db.get_or_create_journal(date)
-            && let Err(e) = self.db.set_page_content(page.id, content)
-        {
-            log::error!("save journal {date}: {e}");
+    fn save_journal(&mut self, date: &str, content: &str, cx: &mut Context<Self>) {
+        if let Ok(page) = self.db.get_or_create_journal(date) {
+            self.save_page_content(page.id, content, cx);
         }
+    }
+
+    /// Save a page's content to the DB and signal other windows to refresh. The
+    /// single choke point for content writes, so every save reaches other windows.
+    fn save_page_content(&mut self, id: i64, content: &str, cx: &mut Context<Self>) {
+        if let Err(e) = self.db.set_page_content(id, content) {
+            log::error!("save page {id}: {e}");
+        }
+        self.signal_doc_changed(cx);
+    }
+
+    /// Notify every window (including this one) that content changed, so each
+    /// reloads any now-stale journal days / active page from the shared database.
+    fn signal_doc_changed(&self, cx: &mut Context<Self>) {
+        self.doc_signal.update(cx, |_, cx| cx.emit(DocChanged));
+    }
+
+    /// Reload stale content after another window saved: refresh changed journal
+    /// days and the active page editor from the DB. Value-comparison means we only
+    /// touch what actually changed — and never clobber what we're editing here
+    /// (our own just-saved content already matches the DB).
+    fn apply_external_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.reload_day_editors(window, cx);
+        if !self.page_editing {
+            let stale = match self.page_editor.as_ref() {
+                Some(pe) => {
+                    let id = pe.id;
+                    let current = pe.state.read(cx).value().to_string();
+                    self.db
+                        .get_page(id)
+                        .ok()
+                        .flatten()
+                        .filter(|p| p.content != current)
+                        .map(|_| id)
+                }
+                None => None,
+            };
+            if let Some(id) = stale {
+                self.load_page_editor(id, window, cx);
+            }
+        }
+        cx.notify();
     }
 
     /// On blur: persist the day and re-index its `[[links]]` / `#tags`.
@@ -675,9 +751,7 @@ impl AppView {
                     }
                     // Content only; link re-indexing happens on blur.
                     let value = st.read(cx).value().to_string();
-                    if let Err(e) = this.db.set_page_content(pid, &value) {
-                        log::error!("save page {pid}: {e}");
-                    }
+                    this.save_page_content(pid, &value, cx);
                     this.update_slash(SlashTarget::Page(pid), cx);
                 }
                 InputEvent::Focus => {
@@ -945,12 +1019,8 @@ impl AppView {
             st.set_cursor_position(pos, window, cx);
         });
         match &target {
-            SlashTarget::Day(d) => self.save_journal(d, &new),
-            SlashTarget::Page(pid) => {
-                if let Err(e) = self.db.set_page_content(*pid, &new) {
-                    log::error!("save page {pid}: {e}");
-                }
-            }
+            SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
         cx.notify();
     }
@@ -989,12 +1059,8 @@ impl AppView {
             st.set_cursor_position(pos, window, cx);
         });
         match &s.target {
-            SlashTarget::Day(d) => self.save_journal(d, &new),
-            SlashTarget::Page(pid) => {
-                if let Err(e) = self.db.set_page_content(*pid, &new) {
-                    log::error!("save page {pid}: {e}");
-                }
-            }
+            SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
         cx.notify();
     }
@@ -1216,12 +1282,8 @@ impl AppView {
                 st.set_value(new.clone(), window, cx);
             });
             match &d.target {
-                SlashTarget::Day(day) => self.save_journal(day, &new),
-                SlashTarget::Page(pid) => {
-                    if let Err(e) = self.db.set_page_content(*pid, &new) {
-                        log::error!("save page {pid}: {e}");
-                    }
-                }
+                SlashTarget::Day(day) => self.save_journal(day, &new, cx),
+                SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
             }
         }
         cx.notify();
@@ -1280,12 +1342,8 @@ impl AppView {
             st.set_cursor_position(p, window, cx);
         });
         match target {
-            SlashTarget::Day(d) => self.save_journal(d, &new),
-            SlashTarget::Page(pid) => {
-                if let Err(e) = self.db.set_page_content(*pid, &new) {
-                    log::error!("save page {pid}: {e}");
-                }
-            }
+            SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
         cx.notify();
     }
@@ -1396,12 +1454,8 @@ impl AppView {
         });
         self.set_autopair_prev(target, new.clone());
         match target {
-            SlashTarget::Day(d) => self.save_journal(d, &new),
-            SlashTarget::Page(pid) => {
-                if let Err(e) = self.db.set_page_content(*pid, &new) {
-                    log::error!("save page {pid}: {e}");
-                }
-            }
+            SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
         cx.notify();
         true
