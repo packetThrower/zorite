@@ -66,13 +66,18 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         } else {
                             page_rendered(app, pe, cx).into_any_element()
                         })
+                        // A large editable surface right under the content (like the
+                        // journal's open day area), so the page stays easy to click
+                        // into even when a PDF chip fills the body and sub-page /
+                        // reference sections sit below. It grows to fill, pushing
+                        // those sections to the bottom.
+                        .child(page_open_area(cx))
                         .when(!children.is_empty(), |this| {
                             this.child(sub_pages_section(&pe.title, &children, cx))
                         })
                         .when(!pe.backlinks.is_empty(), |this| {
                             this.child(backlinks_section(&pe.backlinks, cx))
-                        })
-                        .child(page_open_area(cx)),
+                        }),
                 ),
         )
         .into_any_element()
@@ -175,9 +180,10 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         )
 }
 
-/// The empty space below the page content (and any backlinks). Clicking it
-/// enters edit mode with the caret on a trailing blank line — same affordance
-/// as the journal feed's open day area.
+/// The large editable surface directly below the page content (and above the
+/// sub-pages / references sections). Clicking it enters edit mode with the caret
+/// on a trailing blank line — the same affordance as the journal feed's open day
+/// area, so the page stays easy to click into even with a PDF chip in the body.
 fn page_open_area(cx: &mut Context<AppView>) -> impl IntoElement {
     div()
         .id("page-open")
