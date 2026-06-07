@@ -91,7 +91,7 @@ fn day_section(
         // Drop image files onto a day to add them to it.
         .on_drop(cx.listener(
             move |this: &mut AppView, paths: &ExternalPaths, window, cx| {
-                this.insert_dropped_images(
+                this.insert_dropped_files(
                     SlashTarget::Day(drop_date.clone()),
                     paths.paths(),
                     window,

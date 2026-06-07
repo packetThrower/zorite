@@ -55,8 +55,12 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 
 ## Import & export
 - [ ] **Logseq import** — bring in existing Logseq pages/journals (markdown)
-- [ ] **Print / PDF export** — generate a PDF (e.g. a markdown-to-PDF crate)
-- [ ] In-app **PDF rendering / embedding** (large project)
+- [ ] **Print / PDF export** — generate a PDF from a note (`oxidize-pdf` can generate; or a typeset path like typst/`printpdf`)
+- [x] In-app **PDF viewer** — `[[file.pdf]]` / `![](file.pdf)` open a dedicated viewer tab (`ui::pdf_view`); pages are sized from `render_dimensions()` for instant layout. Closing the tab frees both the CPU images and their **GPU atlas textures** (`cx.drop_image` — raw `RenderImage`s are never auto-evicted; this was an ~140 MB/open leak). See `src/pdf.rs`
+- [x] PDF: **viewport virtualization** — only the on-screen pages (±2) are rasterized; far ones are evicted (image + GPU texture), so memory is bounded by the viewport, not the page count (`AppView::ensure_pdf_window` + `pdf_view::keep_window`). Verified: scrolling a 32-page PDF end-to-end holds ~178 MB vs 403 MB before
+- [ ] PDF: **DPI-aware render scale** — `pdf::SCALE` is a fixed 1.5×; derive it from the window scale factor (and re-render on change) for crisp pages on HiDPI without over-allocating on standard displays
+- [ ] PDF: **zoom + page navigation** (jump to page N, fit-width/fit-page) in the viewer toolbar
+- [ ] PDF: **Logseq-style markup** — area/text highlights on a page, stored as references (`[[file.pdf#p3]]`) linked from notes; text highlights would add a text-extraction crate (e.g. `oxidize-pdf`)
 
 ## gpui-markdown crate
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize

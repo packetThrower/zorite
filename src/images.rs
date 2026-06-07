@@ -1,7 +1,7 @@
-//! Importing images that are pasted or dropped into notes. Files are copied
-//! into [`paths::images_dir`] and referenced from markdown relatively as
-//! `images/<name>` (resolved against the data dir by the image renderer), so
-//! notes stay portable.
+//! Importing images and PDFs that are pasted or dropped into notes. Files are
+//! copied into a managed data-dir folder ([`paths::images_dir`] / [`paths::pdf_dir`])
+//! and referenced from markdown relatively (`images/<name>` / `pdf/<name>`,
+//! resolved against the data dir), so notes stay portable.
 
 use std::fs;
 use std::path::Path;
@@ -25,17 +25,36 @@ pub fn is_supported(path: &Path) -> bool {
 /// Copy an external image file into the images dir; return its `images/<name>`
 /// reference for the markdown.
 pub fn import_file(src: &Path) -> std::io::Result<String> {
-    let dir = paths::images_dir();
-    fs::create_dir_all(&dir)?;
-    let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+    import_into(src, &paths::images_dir(), "images", "png")
+}
+
+/// Copy an external PDF into the pdf dir; return its `pdf/<name>` reference (the
+/// PDF viewer resolves it against the data dir).
+pub fn import_pdf(src: &Path) -> std::io::Result<String> {
+    import_into(src, &paths::pdf_dir(), "pdf", "pdf")
+}
+
+/// Copy `src` into `dir`, giving it a unique, sanitized name; return the relative
+/// `<rel_prefix>/<name>` reference. `default_ext` is used if `src` has none.
+fn import_into(
+    src: &Path,
+    dir: &Path,
+    rel_prefix: &str,
+    default_ext: &str,
+) -> std::io::Result<String> {
+    fs::create_dir_all(dir)?;
+    let stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(rel_prefix);
     let ext = src
         .extension()
         .and_then(|e| e.to_str())
-        .unwrap_or("png")
+        .unwrap_or(default_ext)
         .to_lowercase();
-    let name = unique_name(&dir, &sanitize(stem), &ext);
+    let name = unique_name(dir, &sanitize(stem), &ext);
     fs::copy(src, dir.join(&name))?;
-    Ok(format!("images/{name}"))
+    Ok(format!("{rel_prefix}/{name}"))
 }
 
 /// Save pasted image bytes into the images dir; return its `images/<name>` ref.

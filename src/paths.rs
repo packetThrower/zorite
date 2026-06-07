@@ -59,3 +59,9 @@ pub fn themes_dir() -> PathBuf {
 pub fn images_dir() -> PathBuf {
     data_dir().join("images")
 }
+
+/// Directory for PDFs dropped into notes. Markdown references them relatively
+/// (`pdf/<name>`), resolved against [`data_dir`] by the PDF viewer.
+pub fn pdf_dir() -> PathBuf {
+    data_dir().join("pdf")
+}

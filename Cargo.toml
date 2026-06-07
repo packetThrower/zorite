@@ -65,6 +65,13 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
 # the icon set tracks the `IconName` enum in gpui-component.
 gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "2d2524d89efc47270e9a0ee18f10fa72cd573eff" }
 
+# Pure-Rust PDF rasterizer (no native library) — renders `![](file.pdf)` pages
+# to images for inline display. Same renderer Zed's PDF viewer uses.
+hayro = "0.7"
+# Build `image::Frame`/`RgbaImage` for `gpui::RenderImage`. Pin to gpui's `image`
+# minor (0.25) so the `Frame` type unifies with what `RenderImage::new` expects.
+image = "0.25"
+
 # Release profile mirrors the references: smallest, fastest binary.
 [profile.release]
 panic = "abort"

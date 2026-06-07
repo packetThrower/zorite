@@ -13,14 +13,16 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui::{
     App, AppContext, Bounds, ClipboardEntry, Context, CursorStyle, Entity, FocusHandle,
     ImageFormat, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent,
-    ParentElement, Pixels, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled,
-    Subscription, TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowDecorations,
-    WindowHandle, WindowOptions, div, px, size,
+    ParentElement, Pixels, Render, RenderImage, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, Window, WindowAppearance,
+    WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div, px, size,
 };
 use gpui_component::{
     Root, RopeExt, TitleBar, WindowExt,
@@ -47,17 +49,44 @@ const FEED_CHUNK: usize = 7;
 /// Hard cap on how far back the feed loads (~10 years), a runaway guard.
 const FEED_MAX_DAYS: usize = 3650;
 
-/// What a tab shows. The Journal is the pinned tab 0; the rest are pages.
-#[derive(Clone, Copy, PartialEq, Eq)]
+/// What a tab shows. The Journal is the pinned tab 0; the rest are pages or PDFs.
+#[derive(Clone, PartialEq, Eq)]
 pub enum TabKind {
     Journal,
     Page(i64),
+    /// A PDF viewer for the file at this path.
+    Pdf(PathBuf),
 }
 
 /// An open tab: its content kind + a cached title for the tab strip.
 pub struct OpenTab {
     pub kind: TabKind,
     pub title: SharedString,
+}
+
+/// A loaded PDF for the viewer. Page sizes drive instant layout; pages are
+/// rasterized lazily for the viewport window only (see `ensure_pdf_window`), so
+/// memory stays bounded by what's on screen rather than the whole document.
+pub struct PdfDoc {
+    /// The parsed PDF, kept so pages can be rasterized on demand as the viewport
+    /// moves — parsed once, not per page. `None` until the background load done.
+    pub pdf: Option<Arc<crate::pdf::Document>>,
+    /// `(width, height)` in points per page — drives page-slot sizing.
+    pub dims: Vec<(f32, f32)>,
+    /// Per-page render state; only pages near the viewport are `Ready`.
+    pub pages: Vec<PageSlot>,
+}
+
+/// A page's rasterization state. Off-screen pages are `Empty` (their image — and
+/// its GPU atlas texture — freed) so an open PDF doesn't hold every page at once.
+#[derive(Clone)]
+pub enum PageSlot {
+    /// Not rendered (never was, or evicted after scrolling away).
+    Empty,
+    /// A background rasterization is in flight.
+    Loading,
+    /// Rasterized and ready to paint.
+    Ready(Arc<RenderImage>),
 }
 
 /// A journal day's editor + the subscription saving its edits.
@@ -145,6 +174,12 @@ pub struct AppView {
     // starting size. The map is shared into the renderer's measure callbacks.
     image_drag: Option<ImageDrag>,
     image_widths: Rc<RefCell<HashMap<usize, f32>>>,
+
+    // Open PDFs (page sizes + rasterized pages), keyed by resolved path;
+    // filled off-thread by `open_pdf` and read by the PDF viewer. Evicted when
+    // the tab closes. `pdf_scroll` is the viewer's scroll position.
+    pub pdf_docs: HashMap<PathBuf, PdfDoc>,
+    pub pdf_scroll: ScrollHandle,
 
     // Sidebar.
     pub pages: Vec<Page>,
@@ -235,6 +270,8 @@ impl AppView {
             day_editors: HashMap::new(),
             image_drag: None,
             image_widths: Rc::new(RefCell::new(HashMap::new())),
+            pdf_docs: HashMap::new(),
+            pdf_scroll: ScrollHandle::new(),
             feed_scroll: ScrollHandle::new(),
             page_editor: None,
             pages: Vec::new(),
@@ -418,6 +455,13 @@ impl AppView {
     }
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A `[[file.pdf]]` link opens the PDF viewer instead of a page.
+        if crate::pdf::is_pdf(title)
+            && let Some(path) = crate::pdf::resolve_path(title)
+        {
+            self.open_pdf(path, window, cx);
+            return;
+        }
         match self.db.get_or_create_page(title) {
             Ok(page) => {
                 self.open_page_foreground(page, window, cx);
@@ -553,7 +597,7 @@ impl AppView {
         // Save the page we're leaving before its editor is dropped/replaced.
         self.flush_page_editor(cx);
         let Some(tab) = self.tabs.get(ix) else { return };
-        let kind = tab.kind;
+        let kind = tab.kind.clone();
         self.active = ix;
         self.searching = false;
         match kind {
@@ -564,6 +608,7 @@ impl AppView {
                 }
             }
             TabKind::Page(id) => self.load_page_editor(id, window, cx),
+            TabKind::Pdf(_) => self.page_editor = None,
         }
         cx.notify();
     }
@@ -572,6 +617,24 @@ impl AppView {
     pub fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         if ix == 0 || ix >= self.tabs.len() {
             return;
+        }
+        // Free a PDF's rasterized pages when its viewer closes — both the CPU-side
+        // pixel buffers (by dropping the `Arc`s) AND the GPU atlas textures. gpui
+        // caches one atlas texture per `RenderImage` on paint and only frees it via
+        // `drop_image`; a raw `ImageSource::Render` is never auto-evicted, so without
+        // this the textures leak and accumulate across open/close cycles.
+        let evict = match &self.tabs[ix].kind {
+            TabKind::Pdf(path) => Some(path.clone()),
+            _ => None,
+        };
+        if let Some(path) = evict
+            && let Some(doc) = self.pdf_docs.remove(&path)
+        {
+            for slot in doc.pages {
+                if let PageSlot::Ready(arc) = slot {
+                    cx.drop_image(arc, Some(window));
+                }
+            }
         }
         self.tabs.remove(ix);
         if self.active > ix {
@@ -854,7 +917,7 @@ impl AppView {
         let target = if let Some(date) = self.editing_day.clone() {
             SlashTarget::Day(date)
         } else if self.page_editing {
-            match self.tabs.get(self.active).map(|t| t.kind) {
+            match self.tabs.get(self.active).map(|t| t.kind.clone()) {
                 Some(TabKind::Page(id)) => SlashTarget::Page(id),
                 _ => {
                     cx.propagate();
@@ -953,6 +1016,153 @@ impl AppView {
             .map(|d| (d.attr_target.start, d.width))
     }
 
+    /// Open a PDF in its own viewer tab (focusing it if already open). Reads the
+    /// file + page sizes off-thread for instant layout; the pages themselves are
+    /// rasterized lazily by `ensure_pdf_window` as they scroll into view.
+    pub fn open_pdf(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(&t.kind, TabKind::Pdf(p) if *p == path))
+        {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        let title: SharedString = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "PDF".to_string())
+            .into();
+        self.tabs.push(OpenTab {
+            kind: TabKind::Pdf(path.clone()),
+            title,
+        });
+        self.activate_tab(self.tabs.len() - 1, window, cx);
+
+        if self.pdf_docs.contains_key(&path) {
+            return; // already loaded / loading
+        }
+        self.pdf_docs.insert(
+            path.clone(),
+            PdfDoc {
+                pdf: None,
+                dims: Vec::new(),
+                pages: Vec::new(),
+            },
+        );
+        let load_path = path.clone();
+        cx.spawn(async move |this, cx| {
+            // Read + parse (once) + measure off-thread.
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    let bytes = Arc::new(std::fs::read(&load_path).map_err(|e| e.to_string())?);
+                    let doc = crate::pdf::parse(bytes)?;
+                    let dims = crate::pdf::page_dims(&doc);
+                    Ok::<_, String>((doc, dims))
+                })
+                .await;
+            let (doc, dims) = match prepared {
+                Ok(x) => x,
+                Err(e) => {
+                    log::error!("load pdf {}: {e}", path.display());
+                    return;
+                }
+            };
+            let n = dims.len();
+            // Store the parsed doc + sizes and mark every page Empty; the next
+            // render runs `ensure_pdf_window`, which rasterizes the visible window.
+            let _ = this.update(cx, |this, cx| {
+                if let Some(d) = this.pdf_docs.get_mut(&path) {
+                    d.pdf = Some(doc);
+                    d.dims = dims;
+                    d.pages = vec![PageSlot::Empty; n];
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Keep only the pages near the viewport rasterized: render missing pages in
+    /// the visible window and evict (drop image + GPU texture) the rest. Called
+    /// every frame from `render` — cheap (a window calc + slot scan); it only
+    /// spawns/evicts when the window actually changes. This is what bounds an open
+    /// PDF's memory to the on-screen pages instead of the whole document.
+    fn ensure_pdf_window(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        match self.pdf_docs.get(path) {
+            Some(doc) if !doc.dims.is_empty() && doc.pdf.is_some() => {}
+            _ => return, // not loaded yet (still reading/parsing)
+        }
+        let scroll_y = f32::from(-self.pdf_scroll.offset().y);
+        let viewport_h = f32::from(self.pdf_scroll.bounds().size.height);
+        let (start, end) = {
+            let dims = &self.pdf_docs.get(path).unwrap().dims;
+            ui::pdf_view::keep_window(dims, scroll_y, viewport_h)
+        };
+
+        // Pass 1 (immutable): decide what to evict / render.
+        let mut to_evict: Vec<(usize, Arc<RenderImage>)> = Vec::new();
+        let mut to_render: Vec<usize> = Vec::new();
+        {
+            let doc = self.pdf_docs.get(path).unwrap();
+            for (i, slot) in doc.pages.iter().enumerate() {
+                let in_window = i >= start && i <= end;
+                match slot {
+                    PageSlot::Ready(arc) if !in_window => to_evict.push((i, arc.clone())),
+                    PageSlot::Empty if in_window => to_render.push(i),
+                    _ => {}
+                }
+            }
+        }
+        if to_evict.is_empty() && to_render.is_empty() {
+            return;
+        }
+
+        // Pass 2 (mutable): apply the new slot states.
+        {
+            let doc = self.pdf_docs.get_mut(path).unwrap();
+            for (i, _) in &to_evict {
+                doc.pages[*i] = PageSlot::Empty;
+            }
+            for i in &to_render {
+                doc.pages[*i] = PageSlot::Loading;
+            }
+        }
+        // Free the GPU atlas texture for each evicted page (see `close_tab`).
+        for (_, arc) in to_evict {
+            cx.drop_image(arc, Some(window));
+        }
+
+        // Rasterize newly-visible pages off-thread (sharing the parsed doc); paint
+        // each as it lands.
+        let pdf = self.pdf_docs.get(path).unwrap().pdf.clone().unwrap();
+        let owned_path = path.to_path_buf();
+        for i in to_render {
+            let pdf = pdf.clone();
+            let path = owned_path.clone();
+            cx.spawn(async move |this, cx| {
+                let page = cx
+                    .background_executor()
+                    .spawn(async move { crate::pdf::render_page(&pdf, i, crate::pdf::SCALE).ok() })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    // Only store if still wanted (not evicted mid-flight).
+                    if let Some(doc) = this.pdf_docs.get_mut(&path)
+                        && let Some(slot @ PageSlot::Loading) = doc.pages.get_mut(i)
+                    {
+                        *slot = match page {
+                            Some(img) => PageSlot::Ready(img),
+                            None => PageSlot::Empty, // failed; allow a later retry
+                        };
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        }
+    }
+
     /// Begin resizing an image: capture the start position and its current
     /// rendered width (measured during paint).
     pub fn start_image_drag(
@@ -1018,7 +1228,7 @@ impl AppView {
         if let Some(d) = self.editing_day.clone() {
             Some(SlashTarget::Day(d))
         } else if self.page_editing {
-            match self.tabs.get(self.active).map(|t| t.kind) {
+            match self.tabs.get(self.active).map(|t| t.kind.clone()) {
                 Some(TabKind::Page(id)) => Some(SlashTarget::Page(id)),
                 _ => None,
             }
@@ -1102,8 +1312,10 @@ impl AppView {
         }
     }
 
-    /// Import dropped image files into `target` (appended as image blocks).
-    pub fn insert_dropped_images(
+    /// Import dropped files into `target` (appended as blocks): images render
+    /// inline, PDFs are copied into the `pdf/` folder and become a viewer chip.
+    /// Other file types are ignored.
+    pub fn insert_dropped_files(
         &mut self,
         target: SlashTarget,
         paths: &[std::path::PathBuf],
@@ -1111,12 +1323,16 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         for path in paths {
-            if !crate::images::is_supported(path) {
+            let imported = if crate::images::is_supported(path) {
+                crate::images::import_file(path)
+            } else if crate::pdf::is_pdf(&path.to_string_lossy()) {
+                crate::images::import_pdf(path)
+            } else {
                 continue;
-            }
-            match crate::images::import_file(path) {
+            };
+            match imported {
                 Ok(rel) => self.insert_image_markdown(&target, &rel, false, window, cx),
-                Err(e) => log::error!("import dropped image {}: {e}", path.display()),
+                Err(e) => log::error!("import dropped file {}: {e}", path.display()),
             }
         }
     }
@@ -1699,6 +1915,11 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // If a PDF tab is active, keep only the on-screen pages rasterized.
+        if let TabKind::Pdf(path) = self.tabs[self.active].kind.clone() {
+            self.ensure_pdf_window(&path, window, cx);
+        }
+
         let overlay = self.slash.as_ref().map(|s| {
             gpui::deferred(
                 gpui::anchored()
@@ -1897,12 +2118,15 @@ impl Render for AppView {
                             .child(div().flex_1().min_h_0().child(if self.searching {
                                 ui::search::render(self, cx).into_any_element()
                             } else {
-                                match self.tabs[self.active].kind {
+                                match self.tabs[self.active].kind.clone() {
                                     TabKind::Journal => {
                                         ui::journal::render(self, day_min, cx).into_any_element()
                                     }
                                     TabKind::Page(_) => {
                                         ui::page_view::render(self, cx).into_any_element()
+                                    }
+                                    TabKind::Pdf(path) => {
+                                        ui::pdf_view::render(self, &path, cx).into_any_element()
                                     }
                                 }
                             })),

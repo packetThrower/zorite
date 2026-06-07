@@ -39,7 +39,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 // Drop image files onto the page to add them.
                 .on_drop(cx.listener(
                     move |this: &mut AppView, paths: &ExternalPaths, window, cx| {
-                        this.insert_dropped_images(
+                        this.insert_dropped_files(
                             SlashTarget::Page(page_id),
                             paths.paths(),
                             window,

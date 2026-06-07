@@ -10,8 +10,8 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, Bounds, CursorStyle, ImageSource, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, SharedUri, Styled, WeakEntity, canvas, div, img, px,
-    relative,
+    MouseDownEvent, ParentElement, Pixels, SharedString, SharedUri, StatefulInteractiveElement,
+    Styled, WeakEntity, canvas, div, img, px, relative,
 };
 use gpui_markdown::{ImageInfo, ImageRenderer};
 
@@ -40,6 +40,10 @@ fn build(
     widths: Rc<RefCell<HashMap<usize, f32>>>,
     weak: WeakEntity<AppView>,
 ) -> AnyElement {
+    // A `![](file.pdf)` reference is a chip that opens the PDF viewer tab.
+    if crate::pdf::is_pdf(&info.src) {
+        return pdf_chip(&info, weak);
+    }
     let Some(source) = image_source(&info.src) else {
         return fallback(&info);
     };
@@ -95,6 +99,42 @@ fn build(
         .flex()
         .items_start()
         .child(div().relative().child(image).child(measure).child(handle))
+        .into_any_element()
+}
+
+/// A `![](file.pdf)` reference renders as a clickable chip that opens the PDF in
+/// its own viewer tab (keeping the note light — the pages live in the viewer).
+fn pdf_chip(info: &ImageInfo, weak: WeakEntity<AppView>) -> AnyElement {
+    let src = info.src.clone();
+    let label = crate::pdf::resolve_path(&src)
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .unwrap_or_else(|| src.to_string());
+    div()
+        .id(SharedString::from(format!("pdf-chip:{src}")))
+        .my(px(4.0))
+        .px_3()
+        .py_2()
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(theme::border_subtle())
+        .bg(theme::glass())
+        .cursor_pointer()
+        .hover(|h| h.bg(theme::glass_strong()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child("📄")
+        .child(
+            div()
+                .text_color(theme::accent())
+                .child(format!("{label} — open")),
+        )
+        .on_click(move |_ev, window, cx| {
+            if let Some(path) = crate::pdf::resolve_path(&src) {
+                let _ = weak.update(cx, |this, cx| this.open_pdf(path, window, cx));
+            }
+        })
         .into_any_element()
 }
 

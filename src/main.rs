@@ -17,6 +17,7 @@ mod hierarchy;
 mod images;
 mod models;
 mod paths;
+mod pdf;
 mod settings;
 mod skins;
 mod slash;
