@@ -1045,7 +1045,7 @@ impl AppView {
         let cursor = editor.read(cx).cursor().min(value.len());
         // On a list/quote line, Tab indents the whole item; elsewhere it inserts
         // two spaces at the caret.
-        let (new, caret) = slash::indent_list_line(&value, cursor).unwrap_or_else(|| {
+        let (new, caret) = gpui_markdown::indent_list_line(&value, cursor).unwrap_or_else(|| {
             (
                 format!("{}  {}", &value[..cursor], &value[cursor..]),
                 cursor + 2,
@@ -1070,7 +1070,7 @@ impl AppView {
         };
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
-        if let Some((new, caret)) = slash::outdent_line(&value, cursor) {
+        if let Some((new, caret)) = gpui_markdown::outdent_line(&value, cursor) {
             self.apply_editor_edit(&target, &editor, new, caret, window, cx);
         }
     }
@@ -1158,15 +1158,15 @@ impl AppView {
         };
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
-        let Some(edit) = slash::list_continuation(&value, cursor) else {
+        let Some(edit) = gpui_markdown::list_continuation(&value, cursor) else {
             return false;
         };
         let (new, caret) = match edit {
-            slash::ListEdit::Continue(insert) => (
+            gpui_markdown::ListEdit::Continue(insert) => (
                 format!("{}{}{}", &value[..cursor], insert, &value[cursor..]),
                 cursor + insert.len(),
             ),
-            slash::ListEdit::Exit { start, end } => {
+            gpui_markdown::ListEdit::Exit { start, end } => {
                 (format!("{}{}", &value[..start], &value[end..]), start)
             }
         };

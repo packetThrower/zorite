@@ -832,9 +832,222 @@ fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
     grid.into_any_element()
 }
 
+// --- Editor helpers: markdown list / quote continuation + indent ---
+//
+// Pure, host-agnostic transforms over `(text, caret)` — no gpui or editor
+// dependency. A markdown editor built on this crate wires Enter to
+// `list_continuation` and Tab / Shift+Tab to `indent_list_line` / `outdent_line`,
+// then applies the returned edit to its own input.
+
+/// What pressing Enter should do on a markdown list / blockquote line.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum ListEdit {
+    /// Insert this text at the caret — a newline plus the continued marker
+    /// (e.g. `"\n- "`, `"\n2. "`, `"\n> "`, `"\n- [ ] "`), indent preserved.
+    Continue(String),
+    /// The current item is empty (just a marker); remove it. Delete the byte
+    /// range `start..end` and leave the caret at `start` (an empty line).
+    Exit { start: usize, end: usize },
+}
+
+/// Decide how Enter continues a markdown list/quote at `cursor` in `value`.
+/// Recognizes `-`/`*`/`+` bullets, `N.`/`N)` ordered items, `- [ ]` task items,
+/// and `>` blockquotes (leading indent preserved). A non-empty item continues
+/// with the next marker; an empty item exits the list. `None` when the current
+/// line isn't a list/quote item.
+pub fn list_continuation(value: &str, cursor: usize) -> Option<ListEdit> {
+    let cursor = cursor.min(value.len());
+    let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = value[cursor..]
+        .find('\n')
+        .map_or(value.len(), |i| cursor + i);
+    let line = &value[line_start..line_end];
+    let indent_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+    let (indent, rest) = line.split_at(indent_len);
+    let (marker, content) = parse_list_marker(rest)?;
+    if content.trim().is_empty() {
+        Some(ListEdit::Exit {
+            start: line_start,
+            end: line_end,
+        })
+    } else {
+        Some(ListEdit::Continue(format!("\n{indent}{marker}")))
+    }
+}
+
+/// Parse a list/quote marker at the start of `rest` (after indent). Returns the
+/// marker to begin the *next* line with, plus the content after this line's
+/// marker. Task items are checked before plain bullets.
+fn parse_list_marker(rest: &str) -> Option<(String, &str)> {
+    let bullet = rest.chars().next().filter(|c| matches!(c, '-' | '*' | '+'));
+    if let Some(b) = bullet
+        && let Some(after) = rest[1..].strip_prefix(' ')
+    {
+        // Task item: `<bullet> [ ] content` (the box char is ignored — new items
+        // start unchecked).
+        if after.len() >= 3
+            && after.starts_with('[')
+            && after.as_bytes()[2] == b']'
+            && let Some(content) = after[3..].strip_prefix(' ')
+        {
+            return Some((format!("{b} [ ] "), content));
+        }
+        // Plain bullet: `<bullet> content`.
+        return Some((format!("{b} "), after));
+    }
+    // Ordered: `N. content` or `N) content` — continue with the next number.
+    let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits > 0
+        && let Ok(n) = rest[..digits].parse::<u64>()
+    {
+        let after_num = &rest[digits..];
+        for sep in ['.', ')'] {
+            if let Some(after_sep) = after_num.strip_prefix(sep)
+                && let Some(content) = after_sep.strip_prefix(' ')
+            {
+                return Some((format!("{}{sep} ", n + 1), content));
+            }
+        }
+    }
+    // Blockquote: `> content` (or `>content`).
+    if let Some(after) = rest.strip_prefix('>') {
+        let content = after.strip_prefix(' ').unwrap_or(after);
+        return Some(("> ".to_string(), content));
+    }
+    None
+}
+
+/// One indent level for Tab / Shift+Tab on list items — two spaces.
+pub const INDENT: &str = "  ";
+
+/// If the caret's line is a list/quote item, indent it one level (insert
+/// [`INDENT`] at the line start), returning the new text and shifted caret.
+/// `None` when the line isn't a list item, so the caller can insert a literal
+/// tab instead.
+pub fn indent_list_line(value: &str, cursor: usize) -> Option<(String, usize)> {
+    let cursor = cursor.min(value.len());
+    let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line_end = value[cursor..]
+        .find('\n')
+        .map_or(value.len(), |i| cursor + i);
+    let line = &value[line_start..line_end];
+    let indent_len = line.len() - line.trim_start_matches([' ', '\t']).len();
+    parse_list_marker(&line[indent_len..])?; // only list / quote lines
+    let new = format!("{}{INDENT}{}", &value[..line_start], &value[line_start..]);
+    Some((new, cursor + INDENT.len()))
+}
+
+/// Outdent the caret's line one level: remove up to [`INDENT`] of leading spaces
+/// (or one leading tab). Returns the new text and caret, or `None` if the line
+/// has no leading indent to remove.
+pub fn outdent_line(value: &str, cursor: usize) -> Option<(String, usize)> {
+    let cursor = cursor.min(value.len());
+    let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let line = &value[line_start..];
+    let removed = if line.starts_with('\t') {
+        1
+    } else {
+        line.bytes()
+            .take(INDENT.len())
+            .take_while(|b| *b == b' ')
+            .count()
+    };
+    if removed == 0 {
+        return None;
+    }
+    let new = format!("{}{}", &value[..line_start], &value[line_start + removed..]);
+    let caret = cursor.saturating_sub(removed).max(line_start);
+    Some((new, caret))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cont(s: &str) -> Option<ListEdit> {
+        list_continuation(s, s.len())
+    }
+
+    #[test]
+    fn list_continues_bullets() {
+        assert_eq!(cont("- a"), Some(ListEdit::Continue("\n- ".into())));
+        assert_eq!(cont("* a"), Some(ListEdit::Continue("\n* ".into())));
+        assert_eq!(cont("+ a"), Some(ListEdit::Continue("\n+ ".into())));
+    }
+
+    #[test]
+    fn list_continues_ordered_incrementing() {
+        assert_eq!(cont("1. a"), Some(ListEdit::Continue("\n2. ".into())));
+        assert_eq!(cont("9. x"), Some(ListEdit::Continue("\n10. ".into())));
+        assert_eq!(cont("3) y"), Some(ListEdit::Continue("\n4) ".into())));
+    }
+
+    #[test]
+    fn list_continues_task_unchecked() {
+        assert_eq!(
+            cont("- [x] done"),
+            Some(ListEdit::Continue("\n- [ ] ".into()))
+        );
+        assert_eq!(
+            cont("- [ ] todo"),
+            Some(ListEdit::Continue("\n- [ ] ".into()))
+        );
+    }
+
+    #[test]
+    fn list_continues_blockquote_and_preserves_indent() {
+        assert_eq!(cont("> hi"), Some(ListEdit::Continue("\n> ".into())));
+        assert_eq!(cont("  - a"), Some(ListEdit::Continue("\n  - ".into())));
+    }
+
+    #[test]
+    fn list_empty_item_exits() {
+        assert_eq!(cont("- "), Some(ListEdit::Exit { start: 0, end: 2 }));
+        assert_eq!(cont("1. "), Some(ListEdit::Exit { start: 0, end: 3 }));
+        assert_eq!(cont("> "), Some(ListEdit::Exit { start: 0, end: 2 }));
+        assert_eq!(cont("- [ ] "), Some(ListEdit::Exit { start: 0, end: 6 }));
+    }
+
+    #[test]
+    fn list_continuation_ignores_non_lists() {
+        assert_eq!(cont("hello"), None);
+        assert_eq!(cont(""), None);
+        assert_eq!(cont("-nospace"), None);
+    }
+
+    #[test]
+    fn list_continuation_uses_the_caret_line() {
+        // Cursor at the end of the second (list) line continues that line.
+        let v = "intro\n- one";
+        assert_eq!(
+            list_continuation(v, v.len()),
+            Some(ListEdit::Continue("\n- ".into()))
+        );
+    }
+
+    #[test]
+    fn tab_indents_list_lines() {
+        assert_eq!(indent_list_line("- a", 3), Some(("  - a".into(), 5)));
+        assert_eq!(indent_list_line("* x", 1), Some(("  * x".into(), 3)));
+        assert_eq!(indent_list_line("1. y", 4), Some(("  1. y".into(), 6)));
+        // Only the caret's line is indented.
+        assert_eq!(
+            indent_list_line("- a\n- b", 7),
+            Some(("- a\n  - b".into(), 9))
+        );
+    }
+
+    #[test]
+    fn tab_ignores_non_list_lines() {
+        assert_eq!(indent_list_line("hello", 5), None);
+    }
+
+    #[test]
+    fn shift_tab_outdents() {
+        assert_eq!(outdent_line("  - a", 5), Some(("- a".into(), 3)));
+        assert_eq!(outdent_line("    x", 5), Some(("  x".into(), 3)));
+        assert_eq!(outdent_line("- a", 3), None);
+    }
 
     fn inline_of(text: &str) -> Inline {
         let mut inl = Inline::default();

@@ -20,6 +20,11 @@ closure you provide. Standard `[text](url)` links open externally.
 - **Images** rendered by a host-supplied closure (so the host owns loading and any
   interaction); falls back to a clickable label otherwise
 - `SNIPPETS` — authoring snippets a host can surface in a `/` command palette
+- **Editor helpers** — pure `(text, caret)` transforms (no gpui/input dependency)
+  for building a markdown editor: `list_continuation` (Enter continues a
+  `-`/`*`/`+` / `N.` / `- [ ]` / `>` item, or exits an empty one) and
+  `indent_list_line` / `outdent_line` (Tab / Shift+Tab). The host wires the keys
+  and applies the returned edit to its own input.
 
 See [`sample.md`](sample.md) for a document exercising everything.
 
