@@ -15,6 +15,7 @@ use gpui::{
 use gpui_component::{
     IndexPath, TitleBar,
     select::{Select, SelectEvent, SelectItem, SelectState},
+    slider::{Slider, SliderEvent, SliderState},
 };
 
 use crate::app::AppView;
@@ -78,6 +79,7 @@ pub struct SettingsView {
     app: WeakEntity<AppView>,
     theme_select: Entity<SelectState<Vec<Opt>>>,
     appearance_select: Entity<SelectState<Vec<Opt>>>,
+    quality_slider: Entity<SliderState>,
     _subs: Vec<Subscription>,
 }
 
@@ -113,10 +115,36 @@ impl SettingsView {
             },
         ));
 
+        // PDF render-quality slider (percentage of native DPI).
+        let qpct = app
+            .upgrade()
+            .map(|a| a.read(cx).pdf_quality() * 100.0)
+            .unwrap_or(100.0);
+        let quality_slider = cx.new(|_| {
+            SliderState::new()
+                .min(50.0)
+                .max(200.0)
+                .step(5.0)
+                .default_value(qpct)
+        });
+        subs.push(cx.subscribe_in(
+            &quality_slider,
+            window,
+            |this: &mut SettingsView, _, ev: &SliderEvent, _window, cx| {
+                if let SliderEvent::Change(v) = ev
+                    && let Some(app) = this.app.upgrade()
+                {
+                    app.update(cx, |a, cx| a.set_pdf_quality(v.start() / 100.0, cx));
+                    cx.notify();
+                }
+            },
+        ));
+
         Self {
             app,
             theme_select,
             appearance_select,
+            quality_slider,
             _subs: subs,
         }
     }
@@ -180,6 +208,23 @@ impl SettingsView {
 impl Render for SettingsView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let user_names = self.user_theme_names(cx);
+
+        let qpct = self
+            .app
+            .upgrade()
+            .map(|a| (a.read(cx).pdf_quality() * 100.0).round() as i32)
+            .unwrap_or(100);
+        let quality_control = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(Slider::new(&self.quality_slider).w_full())
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_tertiary())
+                    .child(format!("{qpct}%")),
+            );
 
         // Installed-themes card body: the actions + the list (or empty state).
         let actions = div()
@@ -278,6 +323,12 @@ impl Render for SettingsView {
                             "Appearance",
                             "Light or dark variant of the active theme. Auto follows your system.",
                             Select::new(&self.appearance_select).w_full(),
+                        ))
+                        .child(card(
+                            "PDF render quality",
+                            "Higher is sharper but slower; lower speeds up rendering on slower \
+                                 machines. 100% = your display's native resolution.",
+                            quality_control,
                         ))
                         .child(card(
                             "Installed themes",

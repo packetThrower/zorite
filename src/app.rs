@@ -47,6 +47,10 @@ use crate::ui;
 const FEED_CHUNK: usize = 7;
 /// Hard cap on how far back the feed loads (~10 years), a runaway guard.
 const FEED_MAX_DAYS: usize = 3650;
+/// Default PDF render-quality multiplier (fraction of native DPI) for a fresh
+/// install. 0.75 trades a little sharpness for noticeably faster rendering,
+/// especially on slower (non-ARM) machines; users can raise it in Settings.
+const DEFAULT_PDF_QUALITY: f32 = 0.75;
 
 /// What a tab shows. The Journal is the pinned tab 0; the rest are pages or PDFs.
 #[derive(Clone, PartialEq, Eq)]
@@ -170,6 +174,9 @@ pub struct AppView {
     /// Available themes (built-ins + user) and the active one's id.
     skins: Vec<Skin>,
     skin_id: String,
+    /// PDF render-quality multiplier (1.0 = native DPI), persisted; mirrored into the
+    /// `crate::pdf` global that each `PdfView`'s quality closure reads.
+    pdf_quality: f32,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -294,6 +301,7 @@ impl AppView {
             settings_window: None,
             skins: skins::builtin_skins(),
             skin_id: String::new(),
+            pdf_quality: DEFAULT_PDF_QUALITY,
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -340,6 +348,12 @@ impl AppView {
             .get_setting("theme_mode")
             .map(|s| theme::Mode::from_str(&s))
             .unwrap_or_default();
+        this.pdf_quality = this
+            .db
+            .get_setting("pdf_quality")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_PDF_QUALITY);
+        crate::pdf::set_quality(this.pdf_quality);
         this.system_dark = matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
@@ -1206,6 +1220,7 @@ impl AppView {
                     header_fg: theme::text_secondary(),
                     header_muted: theme::text_tertiary(),
                 }),
+                Rc::new(crate::pdf::quality),
                 cx,
             )
         });
@@ -1653,6 +1668,27 @@ impl AppView {
         self.mode = mode;
         self.apply_theme(window, cx);
         let _ = self.db.set_setting("theme_mode", mode.as_str());
+    }
+
+    /// The current PDF render-quality multiplier (1.0 = native DPI).
+    pub fn pdf_quality(&self) -> f32 {
+        self.pdf_quality
+    }
+
+    /// Set the PDF render-quality multiplier, persist it, and re-render open PDFs so
+    /// they pick up the new scale. Each viewer keeps its current bitmap on screen
+    /// (rescaled) until the crisp re-render lands, so nothing blanks.
+    pub fn set_pdf_quality(&mut self, quality: f32, cx: &mut Context<Self>) {
+        let q = quality.clamp(0.25, 3.0);
+        if (q - self.pdf_quality).abs() < 0.001 {
+            return;
+        }
+        self.pdf_quality = q;
+        crate::pdf::set_quality(q);
+        let _ = self.db.set_setting("pdf_quality", &q.to_string());
+        for view in self.pdf_views.values() {
+            view.update(cx, |_view, cx| cx.notify());
+        }
     }
 
     /// Quick cycle for the title-bar toggle: Light → Dark → Auto → Light.

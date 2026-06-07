@@ -16,12 +16,21 @@ scrolling, rendering, and memory on its own.
   pages near the viewport are rasterized. Pages scrolled away are freed — CPU pixel
   buffer *and* GPU atlas texture — so an 800-page document stays as light as a
   one-pager.
+- **Zoom & navigation, no flicker.** Built-in zoom (− / + / reset and ⌘=/⌘-/⌘0) and
+  navigation (‹ / › with a click-to-edit page counter you can type a number into,
+  plus PageUp / PageDown / Home / End). On a zoom or quality change the page never
+  blanks — the current bitmap stays on screen (rescaled) until the crisp re-render
+  lands. The nearest pages render first.
+- **DPI-aware, host-settable quality.** Pages rasterize at the display's pixel ratio
+  × zoom × a quality multiplier the host supplies (read reactively, like the theme),
+  so a settings slider can trade sharpness for speed on slower machines — crisp on
+  Retina by default.
 - **Off-thread rendering.** The file is read, parsed *once*, and measured on a
   background thread; pages rasterize on the background executor and paint as they
   land. The UI never blocks.
 - **Self-contained.** `PdfView` is a gpui entity that owns its document, scroll
-  position, render/evict loop, and styling. Drop the `Entity<PdfView>` into your
-  element tree — no per-frame plumbing from the host.
+  position, zoom, render/evict loop, and styling. Drop the `Entity<PdfView>` into
+  your element tree — no per-frame plumbing from the host.
 - **Theme-reactive.** Colors come from a closure read at paint time, so the viewer
   follows live theme changes (and can differ per window) with no push from the host.
 - **Pure primitives.** [`parse`], [`page_dims`], [`render_page`], and the
@@ -47,6 +56,7 @@ let view = cx.new(|cx| {
             header_fg: my_theme::text(),
             header_muted: my_theme::muted_fg(),
         }),
+        Rc::new(|| 1.0),                        // render-quality multiplier (1.0 = native DPI)
         cx,
     )
 });
@@ -66,13 +76,24 @@ A self-contained, page-virtualized viewer entity (`impl Render`).
 
 | Method | Signature | Purpose |
 | --- | --- | --- |
-| `new` | `fn new(path: PathBuf, style: PdfStyleFn, cx: &mut Context<Self>) -> Self` | Create a viewer and start the off-thread read + parse + measure. Call inside `cx.new(\|cx\| …)`. |
+| `new` | `fn new(path: PathBuf, style: PdfStyleFn, quality: PdfQualityFn, cx: &mut Context<Self>) -> Self` | Create a viewer and start the off-thread read + parse + measure. `style` and `quality` are read at paint time (see below). Call inside `cx.new(\|cx\| …)`. |
 | `release` | `fn release(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Free every rasterized page (CPU buffer + GPU atlas texture). Call before dropping the view — gpui only frees a `RenderImage`'s atlas texture via `drop_image`, never on plain drop. |
+| `set_zoom` / `zoom_in` / `zoom_out` / `reset_zoom` | `fn …(&mut self, cx: &mut Context<Self>)` (`set_zoom` also takes `zoom: f32`) | Change zoom (clamped 0.5–3.0), keeping the current page in view; the visible pages re-rasterize crisp at the new scale, with no blank. |
+| `go_to_page` / `next_page` / `prev_page` | `fn …(&mut self, cx: &mut Context<Self>)` (`go_to_page` also takes `index: usize`) | Scroll so the target page sits at the top of the viewport. |
+
+The viewer renders a header with these controls — including a click-to-edit page
+counter (type a number, Enter to jump) — and handles the keyboard shortcuts PageUp /
+PageDown / Home / End and ⌘=/⌘-/⌘0 when focused (it focuses on click). Pages rasterize
+at the display's pixel ratio × zoom × the quality multiplier.
+
+Quality is host-set: there's no `set_quality` method because the viewer reads the
+`PdfQualityFn` each paint, so changing the host's value re-renders every open viewer
+(in every window) automatically.
 
 Each `PdfView` owns its own scroll handle, so multiple open at once scroll
 independently.
 
-### `PdfStyle` and `PdfStyleFn`
+### `PdfStyle`, `PdfStyleFn`, and `PdfQualityFn`
 
 ```rust
 pub struct PdfStyle {
@@ -85,16 +106,18 @@ pub struct PdfStyle {
 }
 
 pub type PdfStyleFn = Rc<dyn Fn() -> PdfStyle>;
+pub type PdfQualityFn = Rc<dyn Fn() -> f32>;   // render-quality multiplier source
 ```
 
-`PdfStyle::default()` is a neutral dark palette. The viewer reads its colors through
-the `PdfStyleFn` at paint time (not stored), so returning fresh colors each call lets
-it track live theme changes.
+`PdfStyle::default()` is a neutral dark palette. The viewer reads its colors — and its
+quality multiplier — through these closures at paint time (not stored), so returning
+fresh values each call lets it follow live theme / settings changes (in every window)
+with no push from the host. `quality` is `1.0` = native DPI; lower is faster and
+softer, higher supersamples (clamped internally).
 
 ### Low-level primitives
 
 ```rust
-pub const SCALE: f32;                                   // default page render scale
 pub type Document;                                      // a parsed PDF (hayro)
 
 pub fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, String>;
@@ -103,8 +126,8 @@ pub fn render_page(doc: &Document, idx: usize, scale: f32)
     -> Result<Arc<gpui::RenderImage>, String>;          // BGRA over white
 pub fn is_pdf(src: &str) -> bool;                       // extension check
 
-pub const PAGE_WIDTH: f32;
-pub fn keep_window(dims: &[(f32, f32)], scroll_y: f32, viewport_h: f32)
+pub const PAGE_WIDTH: f32;                             // base column width at zoom 1
+pub fn keep_window(dims: &[(f32, f32)], page_width: f32, scroll_y: f32, viewport_h: f32)
     -> (usize, usize);                                  // inclusive visible range
 ```
 
@@ -116,7 +139,8 @@ pages internally, so share it via `Arc` across background tasks.
 Early, but solid for scroll-to-read viewing. Renders via the pure-Rust
 [`hayro`](https://crates.io/crates/hayro) crate. Not yet published to crates.io.
 
-Roadmap: zoom + page navigation, DPI-aware scale, and text/annotation layers.
+Roadmap: text selection / search and annotation layers (hayro is render-only, so
+these need a text-extraction layer).
 
 ## License
 

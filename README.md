@@ -47,8 +47,13 @@ and a SQLite backend.
   Rendering uses the pure-Rust [`hayro`](https://crates.io/crates/hayro) crate (no
   native dependencies). The viewer is **page-virtualized**: only the pages near the
   viewport are rasterized, and pages scrolled away are freed (memory *and* GPU
-  texture), so an 800-page document stays as light as a one-pager. Dropped PDFs are
-  copied into the data dir's `pdf/` folder.
+  texture), so an 800-page document stays as light as a one-pager. It has **zoom**
+  (− / + / ⌘=/⌘-/⌘0), **page navigation** (‹ / › with a counter you can click and
+  type a page number into, and PageUp / PageDown / Home / End), and **DPI-aware**
+  rendering so pages are crisp on Retina — with an adjustable **render-quality**
+  slider in Settings (lower for speed on slower machines). Zooming never blanks the
+  page. Dropped PDFs are copied into the data dir's `pdf/` folder; the viewer is the
+  reusable [`gpui-pdf`](crates/gpui-pdf/README.md) crate.
 - **Markdown rendering** — headings, bold/italic/code, lists, quotes, GFM tables,
   and strikethrough — via a custom renderer crate,
   [`gpui-markdown`](crates/gpui-markdown/README.md).
