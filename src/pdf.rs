@@ -65,22 +65,12 @@ pub fn is_pdf(src: &str) -> bool {
     src.to_lowercase().trim_end().ends_with(".pdf")
 }
 
-/// Resolve a PDF reference to a file path: `file://` and absolute paths as-is,
-/// relative against the data dir. Remote (http) PDFs aren't supported yet.
-/// `None` if it doesn't resolve to an existing file.
+/// Resolve a PDF reference to an existing local file. Path resolution (handling
+/// `file://`, absolute, and data-dir-relative refs across platforms) lives in
+/// [`crate::paths::resolve_local`]; this just rejects remote (http) PDFs and
+/// requires the file to exist.
 pub fn resolve_path(src: &str) -> Option<PathBuf> {
-    let src = src.trim();
-    if src.starts_with("http://") || src.starts_with("https://") {
-        return None;
-    }
-    let path = if let Some(p) = src.strip_prefix("file://") {
-        PathBuf::from(p)
-    } else if src.starts_with('/') {
-        PathBuf::from(src)
-    } else {
-        crate::paths::data_dir().join(src)
-    };
-    path.exists().then_some(path)
+    crate::paths::resolve_local(src).filter(|p| p.exists())
 }
 
 #[cfg(test)]

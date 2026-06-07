@@ -71,6 +71,9 @@ hayro = "0.7"
 # Build `image::Frame`/`RgbaImage` for `gpui::RenderImage`. Pin to gpui's `image`
 # minor (0.25) so the `Frame` type unifies with what `RenderImage::new` expects.
 image = "0.25"
+# Parse `file://` URLs into filesystem paths correctly across platforms (Windows
+# `file:///C:/…`, percent-decoding). Already in the tree via gpui.
+url = "2"
 
 # Release profile mirrors the references: smallest, fastest binary.
 [profile.release]

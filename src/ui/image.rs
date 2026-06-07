@@ -5,7 +5,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 
 use gpui::{
@@ -138,20 +137,15 @@ fn pdf_chip(info: &ImageInfo, weak: WeakEntity<AppView>) -> AnyElement {
         .into_any_element()
 }
 
-/// Resolve a markdown image `src` to a gpui image source. http(s) URLs and
-/// `file://` URLs load directly; absolute paths load as-is; relative paths
-/// resolve against the data dir (where the managed `images/` folder lives).
+/// Resolve a markdown image `src` to a gpui image source: http(s) URLs load
+/// remotely; local refs (`file://`, absolute, or data-dir-relative) are resolved
+/// cross-platform by [`crate::paths::resolve_local`] and load if the file exists.
 fn image_source(src: &str) -> Option<ImageSource> {
     if src.starts_with("http://") || src.starts_with("https://") {
-        Some(SharedUri::from(src.to_string()).into())
-    } else if let Some(path) = src.strip_prefix("file://") {
-        Some(PathBuf::from(path).into())
-    } else if src.starts_with('/') {
-        Some(PathBuf::from(src).into())
-    } else {
-        let path = crate::paths::data_dir().join(src);
-        path.exists().then(|| path.into())
+        return Some(SharedUri::from(src.to_string()).into());
     }
+    let path = crate::paths::resolve_local(src)?;
+    path.exists().then(|| path.into())
 }
 
 fn fallback(info: &ImageInfo) -> AnyElement {
