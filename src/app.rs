@@ -558,11 +558,22 @@ impl AppView {
     }
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
-        // A `[[file.pdf]]` link opens the PDF viewer instead of a page.
-        if crate::pdf::is_pdf(title)
-            && let Some(path) = crate::pdf::resolve_path(title)
+        // A `[[file.pdf]]` link opens the PDF viewer instead of a page; a `#pN`
+        // fragment (`[[file.pdf#p12]]`) also jumps to page N when it's already loaded.
+        let (base, target_page) = match title.split_once('#') {
+            Some((b, frag)) => (b, frag.trim_start_matches(['p', 'P']).parse::<usize>().ok()),
+            None => (title, None),
+        };
+        if crate::pdf::is_pdf(base)
+            && let Some(path) = crate::pdf::resolve_path(base)
         {
-            self.open_pdf(path, window, cx);
+            self.open_pdf(path.clone(), window, cx);
+            if let Some(n) = target_page
+                && n > 0
+                && let Some(v) = self.pdf_views.get(&path)
+            {
+                v.update(cx, |v, cx| v.go_to_page(n - 1, cx));
+            }
             return;
         }
         match self.db.get_or_create_page(title) {
@@ -1223,6 +1234,27 @@ impl AppView {
                 Rc::new(crate::pdf::quality),
                 cx,
             )
+        });
+        // Markup: load this PDF's saved highlights from its per-PDF "(highlights)"
+        // page and render them; clicking one opens that notes page.
+        let notes_title = crate::pdf::highlights_title(&path);
+        let highlights = crate::pdf::parse_highlights(
+            &self
+                .db
+                .get_page_by_title(&notes_title)
+                .ok()
+                .flatten()
+                .map(|p| p.content)
+                .unwrap_or_default(),
+        );
+        let weak = cx.entity().downgrade();
+        view.update(cx, move |v, cx| {
+            v.set_highlights(highlights, cx);
+            v.set_on_highlight(Rc::new(move |_id, window, cx| {
+                if let Some(app) = weak.upgrade() {
+                    app.update(cx, |a, cx| a.open_page_title(&notes_title, window, cx));
+                }
+            }));
         });
         self.pdf_views.insert(path, view);
     }

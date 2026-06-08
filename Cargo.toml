@@ -20,7 +20,8 @@ resolver = "2"
 gpui-markdown = { path = "crates/gpui-markdown" }
 
 # Our own page-virtualized PDF viewer (pure-Rust hayro), a workspace crate.
-gpui-pdf = { path = "crates/gpui-pdf" }
+# `markup` adds the text-extraction layer + highlight rendering (Logseq-style).
+gpui-pdf = { path = "crates/gpui-pdf", features = ["markup"] }
 
 # SQLite backend. `bundled` compiles SQLite from source and links it
 # statically into the binary — no system libsqlite3 dependency on any
