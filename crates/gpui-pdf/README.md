@@ -82,9 +82,12 @@ A self-contained, page-virtualized viewer entity (`impl Render`).
 | `go_to_page` / `next_page` / `prev_page` | `fn …(&mut self, cx: &mut Context<Self>)` (`go_to_page` also takes `index: usize`) | Scroll so the target page sits at the top of the viewport. |
 
 The viewer renders a header with these controls — including a click-to-edit page
-counter (type a number, Enter to jump) — and handles the keyboard shortcuts PageUp /
-PageDown / Home / End and ⌘=/⌘-/⌘0 when focused (it focuses on click). Pages rasterize
-at the display's pixel ratio × zoom × the quality multiplier.
+counter (type a number, Enter to jump). Every control also has a keyboard shortcut
+(shown in its tooltip), all handled when the viewer is focused (it focuses on click):
+PageUp / PageDown / Home / End to navigate, ⌘= / ⌘- / ⌘0 to zoom, ⌘⌥G to jump to a
+page, and (with the relevant feature) ⌘⇧H to toggle highlight mode, ⌘F to find with
+⌘G / ⌘⇧G stepping matches. Pages rasterize at the display's pixel ratio × zoom × the
+quality multiplier.
 
 Quality is host-set: there's no `set_quality` method because the viewer reads the
 `PdfQualityFn` each paint, so changing the host's value re-renders every open viewer

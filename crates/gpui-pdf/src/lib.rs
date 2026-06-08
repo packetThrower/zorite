@@ -1289,7 +1289,7 @@ impl Render for PdfView {
                 window.focus(&this.focus, cx);
                 cx.notify();
             }))
-            .tooltip(self.tip("Go to page…"));
+            .tooltip(self.tip("Go to page (⌘⌥G)"));
 
         // Header: filename · N pages … (spacer) … page nav · zoom.
         let header = div()
@@ -1314,19 +1314,19 @@ impl Render for PdfView {
             .child(
                 self.control("pdf-prev", "‹")
                     .on_click(cx.listener(|this, _, _window, cx| this.prev_page(cx)))
-                    .tooltip(self.tip("Previous page")),
+                    .tooltip(self.tip("Previous page (PageUp)")),
             )
             .child(counter)
             .child(
                 self.control("pdf-next", "›")
                     .on_click(cx.listener(|this, _, _window, cx| this.next_page(cx)))
-                    .tooltip(self.tip("Next page")),
+                    .tooltip(self.tip("Next page (PageDown)")),
             )
             .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
             .child(
                 self.control("pdf-zoom-out", "−")
                     .on_click(cx.listener(|this, _, _window, cx| this.zoom_out(cx)))
-                    .tooltip(self.tip("Zoom out")),
+                    .tooltip(self.tip("Zoom out (⌘−)")),
             )
             .child(
                 self.control(
@@ -1334,12 +1334,12 @@ impl Render for PdfView {
                     format!("{}%", (self.zoom * 100.0).round() as i32),
                 )
                 .on_click(cx.listener(|this, _, _window, cx| this.reset_zoom(cx)))
-                .tooltip(self.tip("Reset zoom")),
+                .tooltip(self.tip("Reset zoom (⌘0)")),
             )
             .child(
                 self.control("pdf-zoom-in", "+")
                     .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx)))
-                    .tooltip(self.tip("Zoom in")),
+                    .tooltip(self.tip("Zoom in (⌘+)")),
             );
 
         // Highlight-mode toggle + color picker (markup): the pen turns drag-to-select
@@ -1370,7 +1370,7 @@ impl Render for PdfView {
                 .child("✎")
                 .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
                 .on_click(cx.listener(|this, _, _window, cx| this.toggle_select_mode(cx)))
-                .tooltip(self.tip("Highlight — pick a color"));
+                .tooltip(self.tip("Highlight — pick a color (⌘⇧H)"));
 
             // Color-picker dropdown, deferred so it paints over the page area below.
             let dropdown = if self.palette_open && !self.palette.is_empty() {
@@ -1498,11 +1498,25 @@ impl Render for PdfView {
                     return;
                 }
                 let secondary = ev.keystroke.modifiers.secondary();
+                // ⌘⌥G: jump to a page (focus the page-number field to type into).
+                if secondary && ev.keystroke.modifiers.alt && key == "g" {
+                    this.page_input.get_or_insert_with(String::new);
+                    cx.notify();
+                    return;
+                }
                 #[cfg(feature = "search")]
                 {
-                    // ⌘F / Ctrl-F toggles the find bar.
+                    // ⌘F toggles the find bar; ⌘G / ⌘⇧G step matches (bar open or not).
                     if secondary && key == "f" {
                         this.toggle_search(cx);
+                        return;
+                    }
+                    if secondary && key == "g" {
+                        if ev.keystroke.modifiers.shift {
+                            this.prev_match(cx);
+                        } else {
+                            this.next_match(cx);
+                        }
                         return;
                     }
                     // While the bar is open, type to edit the query and Enter/⇧Enter to
@@ -1540,6 +1554,12 @@ impl Render for PdfView {
                             }
                         }
                     }
+                }
+                // ⌘⇧H: toggle highlight mode.
+                #[cfg(feature = "markup")]
+                if secondary && ev.keystroke.modifiers.shift && key == "h" {
+                    this.toggle_select_mode(cx);
+                    return;
                 }
                 match key {
                     "pagedown" => this.next_page(cx),
@@ -1662,12 +1682,12 @@ impl Render for PdfView {
                     .child(
                         self.control("pdf-find-prev", "‹")
                             .on_click(cx.listener(|this, _, _w, cx| this.prev_match(cx)))
-                            .tooltip(self.tip("Previous match (⇧⏎)")),
+                            .tooltip(self.tip("Previous match (⇧⏎ / ⌘⇧G)")),
                     )
                     .child(
                         self.control("pdf-find-next", "›")
                             .on_click(cx.listener(|this, _, _w, cx| this.next_match(cx)))
-                            .tooltip(self.tip("Next match (⏎)")),
+                            .tooltip(self.tip("Next match (⏎ / ⌘G)")),
                     )
                     .child(
                         self.control("pdf-find-close", "✕")
