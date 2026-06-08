@@ -134,13 +134,45 @@ pub fn keep_window(dims: &[(f32, f32)], page_width: f32, scroll_y: f32, viewport
 Parse once, then rasterize pages on demand — `hayro::Pdf` is `Send + Sync` and caches
 pages internally, so share it via `Arc` across background tasks.
 
+## Markup (`markup` feature)
+
+Opt-in text-anchored highlights, with **no heavyweight dependency** — a custom hayro
+`Device` extracts the page's text + glyph rectangles (only `kurbo` geometry, already
+in hayro's tree; no oxidize-pdf). Storage stays the host's: hand the viewer the
+highlights to draw (e.g. derived from notes that quote the PDF) and it locates each
+quote and boxes it.
+
+```rust
+// Text layer (also usable standalone, e.g. for search):
+pub fn extract_page_text(doc: &Document, page: usize) -> Option<PageText>;
+impl PageText {
+    pub fn text(&self) -> String;                            // readable reconstruction
+    pub fn locate(&self, needle: &str, occurrence: usize)
+        -> Vec<NormRect>;                                    // one rect per line spanned
+}
+pub struct NormRect { pub x: f32, pub y: f32, pub w: f32, pub h: f32 } // 0..1 of the page
+
+// Drawing highlights on the viewer:
+pub struct Highlight { pub id: u64, pub page: usize, pub quote: String,
+                       pub occurrence: usize, pub color: Hsla }
+impl PdfView {
+    pub fn set_highlights(&mut self, highlights: Vec<Highlight>, cx: &mut Context<Self>);
+    pub fn set_on_highlight(&mut self, handler: HighlightClickFn); // click → id
+}
+```
+
+`locate` matches case- and whitespace-insensitively (so a quote survives PDF spacing
+quirks) and returns one normalized rect per line it spans. The viewer extracts a
+page's text lazily — off-thread, cached — when a highlighted page scrolls into view.
+Because coordinates are normalized, highlights track zoom and DPI for free.
+
 ## Status
 
 Early, but solid for scroll-to-read viewing. Renders via the pure-Rust
 [`hayro`](https://crates.io/crates/hayro) crate. Not yet published to crates.io.
 
-Roadmap: text selection / search and annotation layers (hayro is render-only, so
-these need a text-extraction layer).
+Text extraction + highlight rendering are available behind `markup` (dep-free).
+Roadmap: interactive text selection (drag to create a highlight) and a find-in-PDF UI.
 
 ## License
 

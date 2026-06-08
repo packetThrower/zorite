@@ -269,6 +269,37 @@ pub type PdfStyleFn = Rc<dyn Fn() -> PdfStyle>;
 /// window — automatically. Clamped to a sane range internally.
 pub type PdfQualityFn = Rc<dyn Fn() -> f32>;
 
+/// A highlight to draw on the PDF, located by its quote. The host derives these from
+/// its own store (e.g. the markdown blocks that link this PDF) and hands them to the
+/// viewer via [`PdfView::set_highlights`]; the viewer finds the quote with the text
+/// layer and draws a translucent box over each line it spans. (`markup` feature.)
+#[cfg(feature = "markup")]
+#[derive(Clone)]
+pub struct Highlight {
+    /// Host identifier, echoed back on click (e.g. to jump to the source note).
+    pub id: u64,
+    /// 0-based page the quote is on.
+    pub page: usize,
+    /// The quoted text to locate (matched case- and whitespace-insensitively).
+    pub quote: String,
+    /// Which occurrence on the page (0-based), for a quote that repeats.
+    pub occurrence: usize,
+    /// Fill color; drawn translucent.
+    pub color: Hsla,
+}
+
+/// Invoked with a [`Highlight`]'s `id` when the user clicks it. (`markup` feature.)
+#[cfg(feature = "markup")]
+pub type HighlightClickFn = Rc<dyn Fn(u64, &mut Window, &mut gpui::App)>;
+
+/// Cache state for a page's extracted text layer. (`markup` feature.)
+#[cfg(feature = "markup")]
+enum TextSlot {
+    Loading,
+    Ready(PageText),
+    Failed,
+}
+
 /// A page-virtualized PDF viewer: a scrollable column of page slots, each sized from
 /// the PDF's page dimensions up front (so the scrollbar is correct for the whole
 /// document) but only rasterized while near the viewport. Pages scrolled away are
@@ -313,6 +344,15 @@ pub struct PdfView {
     /// `Some` while the page-number field is being edited (the typed digits).
     page_input: Option<String>,
     focus: FocusHandle,
+    /// Highlights to draw (markup), provided by the host.
+    #[cfg(feature = "markup")]
+    highlights: Vec<Highlight>,
+    /// Per-page extracted text layer, built lazily for pages with highlights.
+    #[cfg(feature = "markup")]
+    page_text: std::collections::HashMap<usize, TextSlot>,
+    /// Click handler for a highlight (markup).
+    #[cfg(feature = "markup")]
+    on_highlight: Option<HighlightClickFn>,
 }
 
 impl PdfView {
@@ -372,7 +412,60 @@ impl PdfView {
             pending_drops: Vec::new(),
             page_input: None,
             focus: cx.focus_handle(),
+            #[cfg(feature = "markup")]
+            highlights: Vec::new(),
+            #[cfg(feature = "markup")]
+            page_text: std::collections::HashMap::new(),
+            #[cfg(feature = "markup")]
+            on_highlight: None,
         }
+    }
+
+    /// Set the highlights to draw — the host derives these from its own store (e.g.
+    /// the markdown blocks that link this PDF). Pages with highlights extract their
+    /// text layer lazily as they scroll into view, then each quote is located and
+    /// boxed. (`markup` feature.)
+    #[cfg(feature = "markup")]
+    pub fn set_highlights(&mut self, highlights: Vec<Highlight>, cx: &mut Context<Self>) {
+        self.highlights = highlights;
+        cx.notify();
+    }
+
+    /// Set the handler invoked with a highlight's `id` when it's clicked (e.g. to jump
+    /// to the source note). (`markup` feature.)
+    #[cfg(feature = "markup")]
+    pub fn set_on_highlight(&mut self, handler: HighlightClickFn) {
+        self.on_highlight = Some(handler);
+    }
+
+    /// Extract `page`'s text layer off-thread (cached), so its highlights can be
+    /// located on the next frame. (`markup` feature.)
+    #[cfg(feature = "markup")]
+    fn ensure_page_text(&mut self, page: usize, cx: &mut Context<Self>) {
+        if self.page_text.contains_key(&page) {
+            return;
+        }
+        let Some(pdf) = self.pdf.clone() else {
+            return;
+        };
+        self.page_text.insert(page, TextSlot::Loading);
+        cx.spawn(async move |this, cx| {
+            let extracted = cx
+                .background_executor()
+                .spawn(async move { extract_page_text(&pdf, page) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.page_text.insert(
+                    page,
+                    match extracted {
+                        Some(pt) => TextSlot::Ready(pt),
+                        None => TextSlot::Failed,
+                    },
+                );
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Free every rasterized page — CPU pixel buffer (by dropping the `Arc`s) *and*
@@ -486,6 +579,22 @@ impl PdfView {
         let viewport_h = f32::from(self.scroll.bounds().size.height);
         let (start, end) = keep_window(&self.dims, page_width, scroll_y, viewport_h);
         let generation = self.generation;
+
+        // Extract the text layer for any visible page that has highlights, so they can
+        // be located and drawn (off-thread, cached). Before the early-out below, so
+        // highlights on an already-rendered page still get their text extracted.
+        #[cfg(feature = "markup")]
+        {
+            let pages: Vec<usize> = self
+                .highlights
+                .iter()
+                .map(|h| h.page)
+                .filter(|p| *p >= start && *p <= end)
+                .collect();
+            for p in pages {
+                self.ensure_page_text(p, cx);
+            }
+        }
 
         // Decide what to (re-)render and what to evict. A visible page renders if it
         // has no bitmap or a stale-generation one; it keeps showing the old bitmap
@@ -611,6 +720,7 @@ impl Render for PdfView {
         for (i, dim) in self.dims.iter().enumerate() {
             let disp_h = display_height(*dim, page_width);
             let slot = div()
+                .relative()
                 .w(px(page_width))
                 .h(px(disp_h))
                 .rounded(px(2.0))
@@ -631,6 +741,41 @@ impl Render for PdfView {
                             .text_color(style.placeholder_fg)
                             .child(format!("Page {}", i + 1)),
                     ),
+            };
+            // Markup: overlay a translucent, clickable box on each line of every
+            // located quote on this page.
+            #[cfg(feature = "markup")]
+            let slot = {
+                let mut slot = slot;
+                if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i) {
+                    for h in self.highlights.iter().filter(|h| h.page == i) {
+                        let fill = Hsla { a: 0.35, ..h.color };
+                        for (ri, r) in pt.locate(&h.quote, h.occurrence).into_iter().enumerate() {
+                            let id = h.id;
+                            slot = slot.child(
+                                div()
+                                    .id(gpui::SharedString::from(format!(
+                                        "pdf-hl-{i}-{}-{ri}",
+                                        h.id
+                                    )))
+                                    .absolute()
+                                    .left(px(r.x * page_width))
+                                    .top(px(r.y * disp_h))
+                                    .w(px(r.w * page_width))
+                                    .h(px(r.h * disp_h))
+                                    .rounded(px(1.0))
+                                    .bg(fill)
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        if let Some(cb) = this.on_highlight.clone() {
+                                            cb(id, window, cx);
+                                        }
+                                    })),
+                            );
+                        }
+                    }
+                }
+                slot
             };
             col = col.child(slot);
         }
