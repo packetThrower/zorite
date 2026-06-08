@@ -8828,6 +8828,7 @@ checksum = "b8848ee67ecc8aedbaf3e4122217aff892639231befc6a1b58d29fff4c2cabaa"
 name = "zorite"
 version = "0.1.0"
 dependencies = [
+ "embed-resource",
  "env_logger",
  "gpui",
  "gpui-component",

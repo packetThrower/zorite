@@ -73,6 +73,12 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.
 url = "2"
 
+# Embeds the Windows .exe icon (resources/icon.rc -> resources/icons/icon.ico)
+# into the PE resource section via build.rs. `embed_resource::compile` is a
+# no-op on macOS / Linux, so this build-dep is harmless off-Windows.
+[build-dependencies]
+embed-resource = "3"
+
 # Release profile mirrors the references: smallest, fastest binary.
 [profile.release]
 panic = "abort"
@@ -80,3 +86,65 @@ codegen-units = 1
 lto = true
 opt-level = 3
 strip = true
+
+# ───────────────────── Packaging (cargo-packager / cargo-wix) ─────────────────────
+# Drives `cargo packager` (.app/.dmg, NSIS .exe, .deb, .AppImage) and `cargo wix`
+# (.msi) in .github/workflows/release.yml. A normal `cargo build` ignores these.
+[package.metadata.packager]
+product-name = "Zorite"
+identifier = "io.github.packetThrower.Zorite"
+category = "Productivity"
+copyright = "© 2026 packetThrower / zorite contributors"
+homepage = "https://github.com/packetThrower/zorite"
+authors = ["packetThrower"]
+publisher = "packetThrower"
+description = "A local-first outliner and daily-journal note app (Logseq-style)."
+long-description = """
+Zorite is a cross-platform (macOS + Windows + Linux) local-first daily-journal \
+and outliner note app. Logseq-style: an infinite-scroll journal of daily pages \
+plus linked [[wiki-link]] pages, written in Markdown and stored in a local SQLite \
+database. Embed and annotate PDFs, drop in images, and search across everything — \
+no cloud, no account; your notes stay on your machine.\
+"""
+before-packaging-command = "cargo build --release"
+icons = ["resources/icons/icon.icns", "resources/icons/icon.png", "resources/icons/icon.ico"]
+
+[package.metadata.packager.deb]
+# Runtime libs for gpui's Wayland + X11 surface + font-kit. Without an explicit
+# `depends`, a fresh install fails to launch with a missing-.so error. Keep in
+# lockstep with the fpm --depends list in release.yml's .rpm step.
+depends = [
+  "libxkbcommon0",
+  "libxkbcommon-x11-0",
+  "libwayland-client0",
+  "libwayland-cursor0",
+  "libx11-6",
+  "libxcb1",
+  "libxcb-cursor0",
+  "libxcb-randr0",
+  "libxcb-render0",
+  "libxcb-shape0",
+  "libxcb-xfixes0",
+  "libxcb-xkb1",
+  "libfontconfig1",
+  "libfreetype6",
+]
+# Desktop entry (launcher discovery) + hicolor icon.
+files = { "packaging/linux/zorite.desktop" = "/usr/share/applications/zorite.desktop", "resources/icons/icon.png" = "/usr/share/icons/hicolor/512x512/apps/zorite.png" }
+
+[package.metadata.packager.macos]
+# Hand-curated Info.plist (single-instance launch, high-DPI, stable bundle id).
+info-plist-path = "resources/Info.plist"
+minimum-system-version = "11.0"
+# Ad-hoc codesign (`-`) so Gatekeeper doesn't flag the bundle as "damaged".
+# Not notarized — first launch is still the right-click -> Open path until an
+# Apple Developer account lands.
+signing-identity = "-"
+
+# cargo-wix config for the per-arch .msi (built by `cargo wix` in release.yml, on
+# stable tags only — MSI ProductVersion rejects alphanumeric prereleases).
+[package.metadata.wix]
+# Stable per-app GUID. MUST match the UpgradeCode in packaging/windows/wix/main.wxs.
+# Distinct from every other packetThrower app. Never change once an installer ships.
+upgrade-guid = "B73F422B-02A5-4E09-A278-E810B2F7B903"
+include = ["packaging/windows/wix/main.wxs"]

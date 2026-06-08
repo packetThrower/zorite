@@ -1,0 +1,31 @@
+<svg viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+    <stop offset="0%" stop-color="#2e4368"/><stop offset="100%" stop-color="#162237"/>
+  </linearGradient>
+  <radialGradient id="goldGrad" cx="0.35" cy="0.25" r="0.85">
+    <stop offset="0%" stop-color="#fff2c4"/><stop offset="40%" stop-color="#f0c060"/>
+    <stop offset="80%" stop-color="#a87420"/><stop offset="100%" stop-color="#5a3a10"/>
+  </radialGradient>
+  <linearGradient id="silver" x1="0" y1="205" x2="0" y2="819" gradientUnits="userSpaceOnUse">
+    <stop offset="0%" stop-color="#DCE0E9"/><stop offset="50%" stop-color="#99A1B2"/><stop offset="100%" stop-color="#676F80"/>
+  </linearGradient>
+  <filter id="sh" x="-15%" y="-15%" width="130%" height="140%">
+    <feGaussianBlur in="SourceAlpha" stdDeviation="14"/><feOffset dx="0" dy="22"/>
+    <feComponentTransfer><feFuncA type="linear" slope="0.45"/></feComponentTransfer>
+    <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+  </filter>
+  <clipPath id="sq"><rect x="0" y="0" width="1024" height="1024" rx="225" ry="225"/></clipPath>
+</defs>
+<g clip-path="url(#sq)"><rect width="1024" height="1024" fill="url(#bgGrad)"/>
+<g filter="url(#sh)">
+  <rect x="292" y="205" width="440" height="614" rx="30" fill="none" stroke="url(#silver)" stroke-width="22"/>
+  <g stroke-linecap="round">
+   <circle cx="352" cy="302" r="17" fill="url(#goldGrad)"/><line x1="386" y1="302" x2="684" y2="302" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="406" cy="386" r="17" fill="url(#goldGrad)"/><line x1="440" y1="386" x2="684" y2="386" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="406" cy="470" r="17" fill="url(#goldGrad)"/><line x1="440" y1="470" x2="642" y2="470" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="352" cy="554" r="17" fill="url(#goldGrad)"/><line x1="386" y1="554" x2="684" y2="554" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="406" cy="638" r="17" fill="url(#goldGrad)"/><line x1="440" y1="638" x2="666" y2="638" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="352" cy="722" r="17" fill="url(#goldGrad)"/><line x1="386" y1="722" x2="612" y2="722" stroke="url(#silver)" stroke-width="17"/>
+  </g>
+</g></g></svg>

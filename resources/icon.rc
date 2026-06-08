@@ -1,0 +1,9 @@
+// Windows resource script. Embeds resources/icons/icon.ico into the
+// zorite.exe PE resource section so Windows shows the Zorite icon on the
+// .exe in Explorer, the taskbar, Alt-Tab, and the Start menu. Resource
+// ID 1 (IDI_APPLICATION convention) is what Windows looks up first when
+// assigning a window / shortcut icon for an executable.
+//
+// Path is relative to this .rc file (embed-resource convention).
+
+1 ICON "icons/icon.ico"

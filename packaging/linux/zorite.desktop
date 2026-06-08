@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Zorite
+GenericName=Notes
+Comment=Local-first daily-journal and outliner notes
+Exec=zorite
+Icon=zorite
+Terminal=false
+StartupWMClass=zorite
+Categories=Office;Utility;TextEditor;
+Keywords=notes;journal;outliner;markdown;logseq;

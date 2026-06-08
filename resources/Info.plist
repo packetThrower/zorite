@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS bundle metadata for Zorite. cargo-packager's `info-plist-path`
+  reads this and writes it into Zorite.app/Contents/Info.plist at bundle
+  time, merging with its own defaults. release.yml patches the version
+  keys from the tag.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSupportedPlatforms</key>
+    <array>
+        <string>MacOSX</string>
+    </array>
+
+    <key>CFBundleName</key>
+    <string>Zorite</string>
+    <key>CFBundleDisplayName</key>
+    <string>Zorite</string>
+    <!--
+      Must match the binary file name inside Contents/MacOS/. The Cargo
+      `[[bin]] name = "zorite"` (lowercase) is what cargo-packager writes
+      there; LaunchServices uses this key to find the binary to spawn.
+    -->
+    <key>CFBundleExecutable</key>
+    <string>zorite</string>
+    <key>CFBundleIdentifier</key>
+    <string>io.github.packetThrower.Zorite</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>0.0.1</string>
+    <key>CFBundleVersion</key>
+    <string>0.0.1</string>
+
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+
+    <key>NSHighResolutionCapable</key>
+    <true/>
+
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>© 2026 packetThrower / zorite contributors</string>
+
+    <!--
+      Single-instance launch: a second activation (dock click, `open -a
+      Zorite`) routes to the running process instead of spawning a rival
+      one racing on the same SQLite file.
+    -->
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
+</dict>
+</plist>

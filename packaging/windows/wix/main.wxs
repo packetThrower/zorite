@@ -1,0 +1,184 @@
+<?xml version='1.0' encoding='utf-8'?>
+
+<!--
+    Zorite WiX source. Built into per-arch .msi installers via
+    cargo-wix in CI on a Windows native-arch runner (the cargo-wix
+    invocation passes the target triple and nocapture flag; see the
+    release.yml workflow for the full command). Replaces cargo-
+    packager's `-f wix` path, which bundled WiX 3.11 and therefore
+    couldn't pass `-arch arm64` to candle.exe — see commit history
+    on the workflow rename for the full backstory.
+
+    Why this file is hand-edited rather than cargo-wix-init-generated:
+    the default template carries a WixUI_InstallDir flow that requires
+    a license.rtf, plus default ARP entries that don't carry the
+    metadata the winget validator scans for. Customising in-place
+    keeps the file under our control and aligned with what winget's
+    automated executable-discovery step expects.
+
+    Winget conformance check-list this file satisfies:
+      * InstallScope = perMachine          : registry writes to HKLM,
+                                              files to ProgramFiles64
+      * ARPINSTALLLOCATION set explicitly  : winget reads this to
+                                              find the primary .exe
+                                              after install
+      * Stable UpgradeCode                 : version-to-version
+                                              upgrades replace cleanly
+                                              via MajorUpgrade
+      * ProductCode = '*'                  : auto-generated per build,
+                                              required for MSI semantics
+      * ARPHELPLINK / ARPURLINFOABOUT      : Apps and Features links
+                                              to the right places
+      * ARPPRODUCTICON                     : Apps and Features shows
+                                              the Zorite icon instead
+                                              of Windows Installer's
+                                              generic blue glyph
+      * ARPNOMODIFY / ARPNOREPAIR          : hide the buttons we
+                                              don't actually support
+                                              (no feature tree, no
+                                              file repair beyond
+                                              reinstall)
+-->
+
+<!--
+    `sys.BUILDARCH` is set by candle.exe's `-arch` flag (passed by
+    cargo-wix from the cargo target triple). On x64 and arm64 we
+    drop files under `Program Files\Zorite\`; on 32-bit hosts —
+    which we don't actually ship for, but cover defensively — we
+    fall back to the 32-bit `Program Files` folder.
+-->
+<?if $(sys.BUILDARCH) = x64 or $(sys.BUILDARCH) = arm64 ?>
+    <?define PlatformProgramFilesFolder = "ProgramFiles64Folder" ?>
+<?else ?>
+    <?define PlatformProgramFilesFolder = "ProgramFilesFolder" ?>
+<?endif ?>
+
+<Wix xmlns='http://schemas.microsoft.com/wix/2006/wi'>
+
+    <Product
+        Id='*'
+        Name='Zorite'
+        UpgradeCode='B73F422B-02A5-4E09-A278-E810B2F7B903'
+        Manufacturer='packetThrower'
+        Language='1033'
+        Codepage='1252'
+        Version='$(var.Version)'>
+
+        <Package Id='*'
+            Keywords='Installer'
+            Description='Zorite — local-first daily-journal and outliner notes'
+            Manufacturer='packetThrower'
+            InstallerVersion='500'
+            Languages='1033'
+            Compressed='yes'
+            InstallScope='perMachine'
+            SummaryCodepage='1252'/>
+
+        <!--
+            Replace-on-upgrade. `afterInstallInitialize` means the
+            new install removes the old one cleanly before files
+            land, avoiding the side-by-side scenarios that confuse
+            Apps & Features. `DowngradeErrorMessage` fires when the
+            user double-clicks an older .msi over a newer install
+            (winget itself blocks downgrades, so this is for the
+            hand-installed path only).
+        -->
+        <MajorUpgrade
+            Schedule='afterInstallInitialize'
+            DowngradeErrorMessage='A newer version of Zorite is already installed. Setup will now exit.'/>
+
+        <Media Id='1' Cabinet='zorite.cab' EmbedCab='yes'/>
+
+        <Directory Id='TARGETDIR' Name='SourceDir'>
+            <Directory Id='$(var.PlatformProgramFilesFolder)'>
+                <Directory Id='APPLICATIONFOLDER' Name='Zorite'>
+                    <Component Id='MainExecutable' Guid='*'>
+                        <File Id='ZoriteExe'
+                            Name='Zorite.exe'
+                            DiskId='1'
+                            Source='$(var.CargoTargetBinDir)\zorite.exe'
+                            KeyPath='yes'/>
+                    </Component>
+                </Directory>
+            </Directory>
+
+            <!--
+                Start Menu shortcut. winget's executable-discovery
+                step also checks .lnk targets in known menu paths;
+                pointing one at Zorite.exe doubles as a backup
+                discovery anchor if the ARP InstallLocation lookup
+                ever drifts.
+            -->
+            <Directory Id='ProgramMenuFolder'>
+                <Component Id='StartMenuShortcut' Guid='93F5CD50-96F3-44B4-9DD7-33ACA186497C'>
+                    <Shortcut Id='ZoriteStartMenuShortcut'
+                        Name='Zorite'
+                        Description='Local-first daily-journal and outliner notes'
+                        Target='[APPLICATIONFOLDER]Zorite.exe'
+                        WorkingDirectory='APPLICATIONFOLDER'/>
+                    <RegistryValue Root='HKCU'
+                        Key='Software\packetThrower\Zorite'
+                        Name='installed'
+                        Type='integer'
+                        Value='1'
+                        KeyPath='yes'/>
+                </Component>
+            </Directory>
+        </Directory>
+
+        <Feature Id='Main' Title='Zorite' Description='Zorite application' Level='1'>
+            <ComponentRef Id='MainExecutable'/>
+            <ComponentRef Id='StartMenuShortcut'/>
+        </Feature>
+
+        <!--
+            App icon for Apps and Features. Without ARPPRODUCTICON
+            set, the listing shows Windows Installer's generic blue
+            MSI glyph. Reusing `resources/icons/icon.ico` (the same
+            multi-resolution .ico the embed-resource build script
+            compiles into Zorite.exe's PE resource section) means
+            the icon shown in Apps and Features matches the icon
+            on the .exe in Explorer / taskbar / Alt-Tab.
+
+            The `Id='AppIcon.ico'` value MUST end in `.ico` —
+            Windows Installer uses the suffix to figure out the
+            resource type when serialising the icon into the .msi
+            stream. A bare `Id='AppIcon'` would compile but produce
+            a corrupted icon at install time.
+        -->
+        <Icon Id='AppIcon.ico' SourceFile='resources/icons/icon.ico'/>
+        <Property Id='ARPPRODUCTICON' Value='AppIcon.ico'/>
+
+        <!--
+            The four winget-relevant ARP properties:
+
+            * ARPINSTALLLOCATION — written to
+              HKLM\…\Uninstall\<ProductCode>\InstallLocation by
+              Windows Installer. This is the value the winget
+              validator reads to find Zorite.exe post-install.
+              Setting it explicitly avoids the validator falling
+              back to heuristics and missing the binary.
+            * ARPHELPLINK / ARPURLINFOABOUT — populate the
+              "Help" and "Product website" links in Apps &
+              Features. Mostly metadata polish, but winget's
+              moderators do glance at these.
+            * ARPNOMODIFY / ARPNOREPAIR — Zorite has no feature
+              tree and the .msi can't repair a corrupted install
+              (no patch resources), so hide those buttons in
+              Apps & Features.
+        -->
+        <SetProperty Id='ARPINSTALLLOCATION' Value='[APPLICATIONFOLDER]' After='CostFinalize'/>
+        <Property Id='ARPHELPLINK' Value='https://github.com/packetThrower/zorite'/>
+        <Property Id='ARPURLINFOABOUT' Value='https://github.com/packetThrower/zorite'/>
+        <Property Id='ARPNOMODIFY' Value='yes'/>
+        <Property Id='ARPNOREPAIR' Value='yes'/>
+
+        <!--
+            No UIRef. winget runs the .msi with `/quiet`, and double-
+            click installs get Windows Installer's built-in progress
+            dialog — sufficient for a single-binary app. Skipping
+            WixUI_* means we don't need a license.rtf in the repo.
+        -->
+    </Product>
+
+</Wix>
