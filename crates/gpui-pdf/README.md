@@ -157,22 +157,31 @@ pub struct Highlight { pub id: u64, pub page: usize, pub quote: String,
                        pub occurrence: usize, pub color: Hsla }
 impl PdfView {
     pub fn set_highlights(&mut self, highlights: Vec<Highlight>, cx: &mut Context<Self>);
-    pub fn set_on_highlight(&mut self, handler: HighlightClickFn); // click → id
+    pub fn set_on_highlight(&mut self, handler: HighlightClickFn);       // click → id
+    // Interactive creation: a ✎ toggle in the header turns on "highlight mode", where
+    // dragging over text resolves a selection and fires the create handler.
+    pub fn set_on_create_highlight(&mut self, handler: CreateHighlightFn); // (page, quote, occurrence)
+    pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>);
+}
+impl PageText {              // drag → selection, also usable directly
+    pub fn select(&self, from: NormPoint, to: NormPoint) -> Option<Selection>;
 }
 ```
 
 `locate` matches case- and whitespace-insensitively (so a quote survives PDF spacing
 quirks) and returns one normalized rect per line it spans. The viewer extracts a
 page's text lazily — off-thread, cached — when a highlighted page scrolls into view.
-Because coordinates are normalized, highlights track zoom and DPI for free.
+Because coordinates are normalized, highlights track zoom and DPI for free. The host
+owns storage: on create it persists the quote (however it likes) and feeds the
+highlights back via `set_highlights`.
 
 ## Status
 
 Early, but solid for scroll-to-read viewing. Renders via the pure-Rust
 [`hayro`](https://crates.io/crates/hayro) crate. Not yet published to crates.io.
 
-Text extraction + highlight rendering are available behind `markup` (dep-free).
-Roadmap: interactive text selection (drag to create a highlight) and a find-in-PDF UI.
+Text extraction, highlight rendering, and drag-to-select creation are all available
+behind `markup` (dep-free). Roadmap: a find-in-PDF UI on top of the text layer.
 
 ## License
 

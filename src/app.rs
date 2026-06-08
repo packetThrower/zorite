@@ -13,7 +13,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
@@ -1248,6 +1248,8 @@ impl AppView {
                 .unwrap_or_default(),
         );
         let weak = cx.entity().downgrade();
+        let create_weak = weak.clone();
+        let create_path = path.clone();
         view.update(cx, move |v, cx| {
             v.set_highlights(highlights, cx);
             v.set_on_highlight(Rc::new(move |_id, window, cx| {
@@ -1255,8 +1257,58 @@ impl AppView {
                     app.update(cx, |a, cx| a.open_page_title(&notes_title, window, cx));
                 }
             }));
+            // Drag-select in the viewer → append a highlight block to the notes page.
+            v.set_on_create_highlight(Rc::new(move |page, quote, occ, window, cx| {
+                if let Some(app) = create_weak.upgrade() {
+                    app.update(cx, |a, cx| {
+                        a.add_pdf_highlight(&create_path, page, &quote, occ, window, cx)
+                    });
+                }
+            }));
         });
         self.pdf_views.insert(path, view);
+    }
+
+    /// Append a drag-selected highlight to the PDF's per-PDF notes page, then
+    /// re-render the open viewer so it shows up immediately.
+    fn add_pdf_highlight(
+        &mut self,
+        pdf_path: &Path,
+        page: usize,
+        quote: &str,
+        _occurrence: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let q: String = quote.split_whitespace().collect::<Vec<_>>().join(" ");
+        if q.is_empty() {
+            return;
+        }
+        let title = crate::pdf::highlights_title(pdf_path);
+        let Ok(p) = self.db.get_or_create_page(&title) else {
+            return;
+        };
+        let line = format!("- p{}: {}", page + 1, q);
+        let content = if p.content.trim().is_empty() {
+            line
+        } else {
+            format!("{}\n{}", p.content.trim_end(), line)
+        };
+        self.save_page_content(p.id, &content, cx);
+        // Refresh the open viewer's highlights — but *deferred*. We're called from
+        // inside that viewer's own mouse handler (its entity is leased), so updating
+        // it synchronously would be a reentrant entity update and panic. Run it after
+        // the lease ends.
+        let highlights = crate::pdf::parse_highlights(&content);
+        let path = pdf_path.to_path_buf();
+        let view = cx.entity();
+        cx.defer(move |cx| {
+            view.update(cx, |this, cx| {
+                if let Some(v) = this.pdf_views.get(&path) {
+                    v.update(cx, |v, cx| v.set_highlights(highlights, cx));
+                }
+            });
+        });
     }
 
     /// Begin resizing an image: capture the start position and its current

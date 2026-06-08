@@ -36,17 +36,20 @@ use std::sync::Arc;
 
 use gpui::{
     Context, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    ParentElement, Render, RenderImage, ScrollHandle, StatefulInteractiveElement, Styled, Window,
-    div, hsla, img, point, px,
+    MouseDownEvent, ParentElement, Render, RenderImage, ScrollHandle, StatefulInteractiveElement,
+    Styled, Window, div, hsla, img, point, px,
 };
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use image::{Frame, RgbaImage};
 
 #[cfg(feature = "markup")]
+use gpui::MouseMoveEvent;
+
+#[cfg(feature = "markup")]
 mod text;
 #[cfg(feature = "markup")]
-pub use text::{NormRect, PageText, extract_page_text};
+pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 
 // ─────────────────────────────── Low-level primitives ───────────────────────────────
 
@@ -292,6 +295,12 @@ pub struct Highlight {
 #[cfg(feature = "markup")]
 pub type HighlightClickFn = Rc<dyn Fn(u64, &mut Window, &mut gpui::App)>;
 
+/// Invoked when the user finishes a drag-selection in "highlight mode": the page
+/// (0-based), the selected one-line quote, and which occurrence of it on the page.
+/// The host turns this into a stored note. (`markup` feature.)
+#[cfg(feature = "markup")]
+pub type CreateHighlightFn = Rc<dyn Fn(usize, String, usize, &mut Window, &mut gpui::App)>;
+
 /// Cache state for a page's extracted text layer. (`markup` feature.)
 #[cfg(feature = "markup")]
 enum TextSlot {
@@ -353,6 +362,15 @@ pub struct PdfView {
     /// Click handler for a highlight (markup).
     #[cfg(feature = "markup")]
     on_highlight: Option<HighlightClickFn>,
+    /// "Highlight mode": dragging over text selects + creates a highlight (markup).
+    #[cfg(feature = "markup")]
+    selecting: bool,
+    /// In-progress drag selection: (page, start, current) in normalized coords.
+    #[cfg(feature = "markup")]
+    sel_drag: Option<(usize, NormPoint, NormPoint)>,
+    /// Called when a drag-selection finishes, so the host stores the note (markup).
+    #[cfg(feature = "markup")]
+    on_create: Option<CreateHighlightFn>,
 }
 
 impl PdfView {
@@ -418,6 +436,12 @@ impl PdfView {
             page_text: std::collections::HashMap::new(),
             #[cfg(feature = "markup")]
             on_highlight: None,
+            #[cfg(feature = "markup")]
+            selecting: false,
+            #[cfg(feature = "markup")]
+            sel_drag: None,
+            #[cfg(feature = "markup")]
+            on_create: None,
         }
     }
 
@@ -436,6 +460,53 @@ impl PdfView {
     #[cfg(feature = "markup")]
     pub fn set_on_highlight(&mut self, handler: HighlightClickFn) {
         self.on_highlight = Some(handler);
+    }
+
+    /// Set the handler invoked when a drag-selection finishes. (`markup` feature.)
+    #[cfg(feature = "markup")]
+    pub fn set_on_create_highlight(&mut self, handler: CreateHighlightFn) {
+        self.on_create = Some(handler);
+    }
+
+    /// Toggle "highlight mode": when on, dragging over text selects it and fires the
+    /// create handler instead of doing nothing. (`markup` feature.)
+    #[cfg(feature = "markup")]
+    pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>) {
+        self.selecting = !self.selecting;
+        self.sel_drag = None;
+        cx.notify();
+    }
+
+    /// Map a window-space point to the page it's over and normalized page coords.
+    /// (`markup` feature.)
+    #[cfg(feature = "markup")]
+    fn point_to_page(&self, pos: gpui::Point<gpui::Pixels>) -> Option<(usize, NormPoint)> {
+        if self.dims.is_empty() {
+            return None;
+        }
+        let page_width = self.page_width();
+        let b = self.scroll.bounds();
+        let scroll_y = f32::from(-self.scroll.offset().y);
+        // The page column is centered horizontally in the viewport.
+        let col_left =
+            f32::from(b.origin.x) + (f32::from(b.size.width) - page_width).max(0.0) / 2.0;
+        let content_y = scroll_y + (f32::from(pos.y) - f32::from(b.origin.y));
+        let local_x = f32::from(pos.x) - col_left;
+        let mut y = PAGE_PAD_Y;
+        for (i, dim) in self.dims.iter().enumerate() {
+            let h = display_height(*dim, page_width);
+            if content_y >= y && content_y < y + h {
+                return Some((
+                    i,
+                    NormPoint {
+                        x: (local_x / page_width).clamp(0.0, 1.0),
+                        y: ((content_y - y) / h).clamp(0.0, 1.0),
+                    },
+                ));
+            }
+            y += h + PAGE_GAP;
+        }
+        None
     }
 
     /// Extract `page`'s text layer off-thread (cached), so its highlights can be
@@ -775,6 +846,25 @@ impl Render for PdfView {
                         }
                     }
                 }
+                // Live drag-selection feedback (highlight mode).
+                if let Some((pg, a, b)) = self.sel_drag
+                    && pg == i
+                    && let Some(TextSlot::Ready(pt)) = self.page_text.get(&i)
+                    && let Some(sel) = pt.select(a, b)
+                {
+                    for r in sel.rects {
+                        slot = slot.child(
+                            div()
+                                .absolute()
+                                .left(px(r.x * page_width))
+                                .top(px(r.y * disp_h))
+                                .w(px(r.w * page_width))
+                                .h(px(r.h * disp_h))
+                                .rounded(px(1.0))
+                                .bg(hsla(0.58, 0.9, 0.55, 0.3)),
+                        );
+                    }
+                }
                 slot
             };
             col = col.child(slot);
@@ -859,16 +949,53 @@ impl Render for PdfView {
                     .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx))),
             );
 
-        div()
+        // Highlight-mode toggle (markup): a pen button that turns drag-to-select on.
+        #[cfg(feature = "markup")]
+        let header = {
+            let mark_bg = if self.selecting {
+                style.placeholder_bg
+            } else {
+                Hsla { a: 0.0, ..style.bg }
+            };
+            header.child(
+                div()
+                    .id("pdf-mark")
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .min_w(px(20.0))
+                    .px(px(6.0))
+                    .py(px(1.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .text_color(style.header_fg)
+                    .bg(mark_bg)
+                    .hover(|s| s.bg(style.placeholder_bg))
+                    .child("✎")
+                    .on_click(cx.listener(|this, _, _window, cx| this.toggle_select_mode(cx))),
+            )
+        };
+
+        let root = div()
             .track_focus(&self.focus)
             .size_full()
             .flex()
             .flex_col()
             .bg(style.bg)
-            // Click the viewer to focus it, so the keyboard shortcuts below work.
+            // Click the viewer to focus it (so keyboard shortcuts work); in highlight
+            // mode a mouse-down also starts a drag selection.
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _ev, window, cx| window.focus(&this.focus, cx)),
+                cx.listener(|this, _ev: &MouseDownEvent, window, cx| {
+                    window.focus(&this.focus, cx);
+                    #[cfg(feature = "markup")]
+                    if this.selecting
+                        && let Some((pg, n)) = this.point_to_page(_ev.position)
+                    {
+                        this.sel_drag = Some((pg, n, n));
+                        cx.notify();
+                    }
+                }),
             )
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _window, cx| {
                 let key = ev.keystroke.key.as_str();
@@ -924,8 +1051,43 @@ impl Render for PdfView {
                     "0" if secondary => this.reset_zoom(cx),
                     _ => {}
                 }
+            }));
+
+        // Highlight-mode drag handlers (markup): update the selection on move, and on
+        // release resolve it to a quote and hand it to the host to store.
+        #[cfg(feature = "markup")]
+        let root = root
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                let Some((pg, start, _)) = this.sel_drag else {
+                    return;
+                };
+                if let Some((p, n)) = this.point_to_page(ev.position)
+                    && p == pg
+                {
+                    this.sel_drag = Some((pg, start, n));
+                    cx.notify();
+                }
             }))
-            .child(header)
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _ev, window, cx| {
+                    let Some((pg, a, b)) = this.sel_drag.take() else {
+                        return;
+                    };
+                    let sel = match this.page_text.get(&pg) {
+                        Some(TextSlot::Ready(pt)) => pt.select(a, b),
+                        _ => None,
+                    };
+                    if let Some(sel) = sel
+                        && let Some(cb) = this.on_create.clone()
+                    {
+                        cb(pg, sel.quote, sel.occurrence, window, cx);
+                    }
+                    cx.notify();
+                }),
+            );
+
+        root.child(header)
             .child(
                 div()
                     .id("pdf-scroll")

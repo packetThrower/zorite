@@ -42,6 +42,30 @@ impl NormRect {
     }
 }
 
+/// A point in normalized page coordinates (0..1 of width/height, top-left origin).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NormPoint {
+    pub x: f32,
+    pub y: f32,
+}
+
+/// The result of a drag selection: the selected text (as a single-line quote), which
+/// occurrence of that quote on the page it is (so it re-locates unambiguously), and
+/// the rects to draw while selecting.
+#[derive(Clone, Debug)]
+pub struct Selection {
+    pub quote: String,
+    pub occurrence: usize,
+    pub rects: Vec<NormRect>,
+}
+
+/// Squared distance from a normalized point to a rect (0 if inside).
+fn dist2(p: NormPoint, r: NormRect) -> f32 {
+    let dx = (r.x - p.x).max(p.x - r.right()).max(0.0);
+    let dy = (r.y - p.y).max(p.y - r.bottom()).max(0.0);
+    dx * dx + dy * dy
+}
+
 /// One extracted glyph cluster: its text (usually one char; a ligature may be
 /// several) and its bounding rect on the page.
 struct Run {
@@ -162,8 +186,9 @@ pub struct PageText {
     /// Lowercased, whitespace-removed concatenation of every run's text — what
     /// [`locate`](PageText::locate) searches.
     letters: String,
-    /// `owner[i]` is the run index that produced `letters[i]` (byte-aligned: we only
-    /// push ASCII-lowercased letters char-by-char with a parallel run index).
+    /// `owner[b]` is the run index that produced byte `b` of `letters` (byte-aligned,
+    /// so byte offsets from `find` / slicing map straight to runs, even across
+    /// multi-byte chars).
     owner: Vec<usize>,
 }
 
@@ -177,8 +202,14 @@ impl PageText {
                     continue;
                 }
                 for lc in ch.to_lowercase() {
+                    let before = letters.len();
                     letters.push(lc);
-                    owner.push(ri);
+                    // One owner entry per *byte*, so byte indices from `find` /
+                    // slicing line up with `owner` even for multi-byte (non-ASCII)
+                    // chars — otherwise a byte index can land mid-char and panic.
+                    for _ in before..letters.len() {
+                        owner.push(ri);
+                    }
                 }
             }
         }
@@ -287,6 +318,77 @@ impl PageText {
         }
         lines
     }
+
+    /// The index of the run nearest a normalized point (0 distance if inside it).
+    fn nearest_run(&self, p: NormPoint) -> Option<usize> {
+        self.runs
+            .iter()
+            .enumerate()
+            .min_by(|(_, a), (_, b)| {
+                dist2(p, a.rect)
+                    .partial_cmp(&dist2(p, b.rect))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i)
+    }
+
+    /// The text of runs `lo..=hi` joined into one line (gaps and line breaks become
+    /// spaces), suitable for storing as a one-line quote.
+    fn runs_text(&self, lo: usize, hi: usize) -> String {
+        let mut out = String::new();
+        let mut prev: Option<&NormRect> = None;
+        for run in &self.runs[lo..=hi] {
+            if let Some(p) = prev {
+                let line_h = run.rect.h.max(p.h).max(0.001);
+                let new_line = (run.rect.center_y() - p.center_y()).abs() > line_h * 0.6;
+                if new_line || run.rect.x - p.right() > line_h * 0.25 {
+                    out.push(' ');
+                }
+            }
+            out.push_str(&run.text);
+            prev = Some(&run.rect);
+        }
+        out
+    }
+
+    /// Which occurrence (0-based) of `quote` on the page the run at `lo` begins — so
+    /// the stored highlight re-locates to the right match.
+    fn occurrence_at(&self, lo: usize, quote: &str) -> usize {
+        let key: String = quote
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        if key.is_empty() {
+            return 0;
+        }
+        let start = self.owner.iter().position(|&r| r == lo).unwrap_or(0);
+        self.letters
+            .get(..start)
+            .map_or(0, |s| s.matches(&key).count())
+    }
+
+    /// Resolve a drag from `from` to `to` into a [`Selection`]: the run range between
+    /// the nearest glyphs (draw order ≈ reading order), its one-line quote, the
+    /// occurrence index, and the rects to draw. `None` if there's no text or the
+    /// selection is empty.
+    pub fn select(&self, from: NormPoint, to: NormPoint) -> Option<Selection> {
+        let i0 = self.nearest_run(from)?;
+        let i1 = self.nearest_run(to)?;
+        let (lo, hi) = (i0.min(i1), i0.max(i1));
+        let quote = self.runs_text(lo, hi);
+        if quote.trim().is_empty() {
+            return None;
+        }
+        let occurrence = self.occurrence_at(lo, &quote);
+        let ids: Vec<usize> = (lo..=hi).collect();
+        let rects = self.group_lines(&ids);
+        Some(Selection {
+            quote,
+            occurrence,
+            rects,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -349,5 +451,34 @@ mod tests {
     fn text_reconstruction_inserts_space_and_newline() {
         let t = sample().text();
         assert_eq!(t, "Hello World\nsecond");
+    }
+
+    #[test]
+    fn select_spans_runs_into_a_quote() {
+        let pt = sample();
+        // Drag from inside "Hello" to inside "World".
+        let sel = pt
+            .select(
+                NormPoint { x: 0.12, y: 0.11 },
+                NormPoint { x: 0.27, y: 0.11 },
+            )
+            .unwrap();
+        assert_eq!(sel.quote, "Hello World");
+        assert_eq!(sel.occurrence, 0);
+        assert_eq!(sel.rects.len(), 1);
+    }
+
+    #[test]
+    fn select_occurrence_counts_earlier_matches() {
+        let pt = PageText::new(vec![
+            run("cat", 0.1, 0.1, 0.06, 0.02),
+            run("cat", 0.1, 0.2, 0.06, 0.02),
+        ]);
+        // Selecting the second "cat" reports occurrence 1.
+        let sel = pt
+            .select(NormPoint { x: 0.12, y: 0.2 }, NormPoint { x: 0.14, y: 0.2 })
+            .unwrap();
+        assert_eq!(sel.quote, "cat");
+        assert_eq!(sel.occurrence, 1);
     }
 }
