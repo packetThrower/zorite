@@ -439,6 +439,15 @@ pub fn autopair_action(prev: &str, new: &str, cursor: usize) -> Option<AutoPair>
     }
     let inner = &prev[prefix.len()..prev.len() - suffix.len()];
     if !inner.is_empty() {
+        // Guard against a deletion that merely *looks* like an opener typed over a
+        // selection. Backspacing inside a doubled pair (`[[|]]` -> `[|]]`, caret 1)
+        // yields the same before/after shape as typing `[` over a selected `[[` — which
+        // would "wrap" it straight back into `[[[]]]`. The tell: a real wrap types a
+        // *new* opener, so `prev` won't already contain everything up to the caret; a
+        // delete leaves the char in place, so `prev` still starts with `new[..cursor]`.
+        if prev.starts_with(&new[..cursor]) {
+            return None;
+        }
         // An opener typed over a selection wraps it; a non-opener just replaces.
         let close = open_to_close(ch)?;
         return Some(AutoPair::Wrap {
@@ -761,6 +770,19 @@ mod tests {
     #[test]
     fn autopair_non_bracket_over_selection_does_not_wrap() {
         assert_eq!(autopair_action("foo", "x", 1), None);
+    }
+
+    #[test]
+    fn autopair_backspace_in_doubled_pair_is_not_a_wrap() {
+        // Regression: backspacing inside a doubled pair (`[[|]]` -> `[|]]`, caret 1) used
+        // to be misread as typing `[` over a selected `[[`, wrapping it into `[[[]]]`.
+        // It must report no wrap so the backspace path runs instead.
+        assert_eq!(autopair_action("[[]]", "[]]", 1), None);
+        assert_eq!(autopair_action("(())", "())", 1), None);
+        assert_eq!(autopair_action("{{}}", "{}}", 1), None);
+        // ...and the backspace path then deletes the now-adjacent closer (`[[|]]` ->
+        // `[|]`), so the pair collapses cleanly instead of growing.
+        assert_eq!(autopair_backspace("[[]]", "[]]", 1), Some(1));
     }
 
     #[test]
