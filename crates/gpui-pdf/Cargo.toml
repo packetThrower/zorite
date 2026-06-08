@@ -18,3 +18,22 @@ hayro = "0.7"
 image = "0.25"
 
 log = "0.4"
+
+# Geometry for the text-extraction layer (markup feature only). Pin to the kurbo
+# version hayro uses so `Affine`/`BezPath` unify with hayro's `Device` trait.
+kurbo = { version = "0.13", optional = true }
+
+[features]
+default = []
+# Text-anchored markup substrate: extract a page's text + per-glyph rectangles by
+# running a custom hayro `Device` over it (no rasterization), so a host can locate a
+# quote on the page and draw a highlight over it. Coordinates are normalized (0..1)
+# so they're zoom/DPI-independent. Pulls only `kurbo` (already in the tree via
+# hayro) — no heavyweight PDF library. Off by default.
+markup = ["dep:kurbo"]
+
+# Verification helper: `cargo run -p gpui-pdf --example extract_text --features markup
+# -- <file.pdf> [page]` prints a page's extracted text.
+[[example]]
+name = "extract_text"
+required-features = ["markup"]

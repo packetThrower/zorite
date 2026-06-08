@@ -43,6 +43,11 @@ use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use image::{Frame, RgbaImage};
 
+#[cfg(feature = "markup")]
+mod text;
+#[cfg(feature = "markup")]
+pub use text::{NormRect, PageText, extract_page_text};
+
 // ─────────────────────────────── Low-level primitives ───────────────────────────────
 
 /// A parsed PDF. Parse once (not per page) — re-parsing a large file for every page

@@ -2469,6 +2469,7 @@ dependencies = [
  "gpui",
  "hayro",
  "image",
+ "kurbo 0.13.1",
  "log",
 ]
 
