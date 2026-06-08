@@ -1315,6 +1315,13 @@ impl AppView {
             format!("{}\n{}", p.content.trim_end(), line)
         };
         self.save_page_content(p.id, &content, cx);
+        // The highlights page may have just been created. The sidebar's page tree is
+        // filtered to recently-viewed pages, so mark it recent + refresh so it shows up
+        // (and signal other windows to pick up the new page).
+        self.record_recent(p.id);
+        self.refresh_sidebar();
+        self.signal_doc_changed(cx);
+        cx.notify();
         // Refresh the open viewer's highlights — but *deferred*. We're called from
         // inside that viewer's own mouse handler (its entity is leased), so updating
         // it synchronously would be a reentrant entity update and panic. Run it after

@@ -113,9 +113,47 @@ pub const PAGE_WIDTH: f32 = 820.0;
 const PAGE_GAP: f32 = 10.0;
 /// Top/bottom padding of the page column (matches the column `py`).
 const PAGE_PAD_Y: f32 = 16.0;
+/// Width of the custom vertical scrollbar gutter (px). The thumb floats over the
+/// right edge of the viewport (overlay-style), so it doesn't shift the page column.
+const SCROLLBAR_W: f32 = 12.0;
+/// Minimum thumb height (px) so the scrollbar stays grabbable in very long PDFs.
+const MIN_THUMB_H: f32 = 32.0;
 /// Extra pages to keep rasterized above and below the visible range, so scrolling
 /// finds them already rendered (and small wiggles don't thrash render/evict).
 const MARGIN: usize = 3;
+
+/// Geometry for painting + dragging the custom scrollbar, derived each frame from
+/// the content height, the viewport height, and the current scroll offset. `None`
+/// when there's nothing to scroll (everything fits, or the viewport isn't laid out
+/// yet). All values are px in the scroll area's coordinate frame.
+struct ScrollbarMetrics {
+    /// Top of the scroll area (track) in window coordinates.
+    track_top: f32,
+    /// Track height (= viewport height).
+    track_h: f32,
+    /// Thumb height.
+    thumb_h: f32,
+    /// Thumb top, relative to the track top.
+    thumb_top: f32,
+    /// Maximum scrollable distance (content_h − viewport_h).
+    max_scroll: f32,
+    /// Maximum thumb travel within the track (track_h − thumb_h).
+    thumb_max_travel: f32,
+}
+
+/// Drag payload for the scrollbar thumb. gpui's `on_drag`/`on_drag_move` is the only
+/// move tracking that keeps firing once the cursor leaves the element — or the window —
+/// mid-drag (a plain `on_mouse_move` is bounds-gated, which froze the scroll the moment
+/// the pointer left the viewer). A scrollbar has no drag "ghost", so the payload renders
+/// nothing; the grab offset lives on `PdfView::scrollbar_drag`.
+#[derive(Clone)]
+struct ScrollbarDrag;
+
+impl Render for ScrollbarDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
 
 /// A page's on-screen height for a given column width, preserving aspect ratio.
 fn display_height((w, h): (f32, f32), page_width: f32) -> f32 {
@@ -348,6 +386,10 @@ pub struct PdfView {
     /// Per-page render state; only pages near the viewport hold a bitmap.
     pages: Vec<Slot>,
     scroll: ScrollHandle,
+    /// While the scrollbar thumb is being dragged: the pointer's vertical offset (px)
+    /// from the thumb's top at grab time, so the thumb tracks the cursor. `None` when
+    /// not dragging the scrollbar.
+    scrollbar_drag: Option<f32>,
     /// On-screen zoom factor (1.0 = base width). Affects layout and render scale.
     zoom: f32,
     /// The quality multiplier the pages were last rendered at; compared against the
@@ -470,6 +512,7 @@ impl PdfView {
             dims: Vec::new(),
             pages: Vec::new(),
             scroll: ScrollHandle::new(),
+            scrollbar_drag: None,
             zoom: 1.0,
             last_quality,
             generation: 0,
@@ -791,33 +834,33 @@ impl PdfView {
     }
 
     /// Map a window-space point to the page it's over and normalized page coords.
+    ///
+    /// Uses gpui's *actual* per-page laid-out bounds (`bounds_for_item`) rather than
+    /// re-summing `display_height`. That sum drifts from gpui's pixel-snapped layout
+    /// (~0.18px per Letter page), which by ~page 150 of a long PDF lands the highlight a
+    /// couple of text rows off the cursor. `bounds_for_item` is in the scroll element's
+    /// unscrolled frame, so the cursor is shifted by the scroll offset to match.
     /// (`markup` feature.)
     #[cfg(feature = "markup")]
     fn point_to_page(&self, pos: gpui::Point<gpui::Pixels>) -> Option<(usize, NormPoint)> {
-        if self.dims.is_empty() {
-            return None;
-        }
-        let page_width = self.page_width();
-        let b = self.scroll.bounds();
-        let scroll_y = f32::from(-self.scroll.offset().y);
-        // The page column is centered horizontally in the viewport.
-        let col_left =
-            f32::from(b.origin.x) + (f32::from(b.size.width) - page_width).max(0.0) / 2.0;
-        let content_y = scroll_y + (f32::from(pos.y) - f32::from(b.origin.y));
-        let local_x = f32::from(pos.x) - col_left;
-        let mut y = PAGE_PAD_Y;
-        for (i, dim) in self.dims.iter().enumerate() {
-            let h = display_height(*dim, page_width);
-            if content_y >= y && content_y < y + h {
+        let probe = f32::from(pos.y) - f32::from(self.scroll.offset().y);
+        for i in 0..self.dims.len() {
+            let Some(cb) = self.scroll.bounds_for_item(i) else {
+                continue;
+            };
+            let top = f32::from(cb.origin.y);
+            let h = f32::from(cb.size.height);
+            if h > 0.0 && probe >= top && probe < top + h {
+                let left = f32::from(cb.origin.x);
+                let w = f32::from(cb.size.width).max(1.0);
                 return Some((
                     i,
                     NormPoint {
-                        x: (local_x / page_width).clamp(0.0, 1.0),
-                        y: ((content_y - y) / h).clamp(0.0, 1.0),
+                        x: ((f32::from(pos.x) - left) / w).clamp(0.0, 1.0),
+                        y: ((probe - top) / h).clamp(0.0, 1.0),
                     },
                 ));
             }
-            y += h + PAGE_GAP;
         }
         None
     }
@@ -941,6 +984,56 @@ impl PdfView {
     /// On-screen column width at the current zoom.
     fn page_width(&self) -> f32 {
         PAGE_WIDTH * self.zoom
+    }
+
+    /// Scrollbar geometry for the current frame, or `None` when the whole document
+    /// fits the viewport (no scrollbar needed) or the viewport hasn't been laid out
+    /// yet. Shared by `render` (to paint the thumb) and the drag handlers (to map the
+    /// pointer back to a scroll offset), so they can't disagree.
+    fn scrollbar_metrics(&self) -> Option<ScrollbarMetrics> {
+        if self.dims.is_empty() {
+            return None;
+        }
+        let bounds = self.scroll.bounds();
+        let viewport_h = f32::from(bounds.size.height);
+        if viewport_h < 1.0 {
+            return None; // not laid out yet (first frame)
+        }
+        let page_width = self.page_width();
+        // Mirror the page column's layout: `py(PAGE_PAD_Y)` top + bottom, each page's
+        // display height, and `PAGE_GAP` between pages.
+        let content_h = 2.0 * PAGE_PAD_Y
+            + self
+                .dims
+                .iter()
+                .map(|d| display_height(*d, page_width))
+                .sum::<f32>()
+            + (self.dims.len().saturating_sub(1)) as f32 * PAGE_GAP;
+        if content_h <= viewport_h + 1.0 {
+            return None; // everything fits — no scrollbar
+        }
+        let max_scroll = content_h - viewport_h;
+        let scroll_y = f32::from(-self.scroll.offset().y).clamp(0.0, max_scroll);
+        let track_h = viewport_h;
+        // `.max().min()` rather than `.clamp()`: in a viewport shorter than the minimum
+        // thumb, `MIN_THUMB_H > track_h` would make `clamp` panic.
+        let thumb_h = (viewport_h / content_h * track_h)
+            .max(MIN_THUMB_H)
+            .min(track_h);
+        let thumb_max_travel = (track_h - thumb_h).max(0.0);
+        let thumb_top = if max_scroll > 0.0 {
+            scroll_y / max_scroll * thumb_max_travel
+        } else {
+            0.0
+        };
+        Some(ScrollbarMetrics {
+            track_top: f32::from(bounds.origin.y),
+            track_h,
+            thumb_h,
+            thumb_top,
+            max_scroll,
+            thumb_max_travel,
+        })
     }
 
     /// The topmost visible page index for the current scroll position.
@@ -1138,16 +1231,19 @@ impl Render for PdfView {
         let page_width = self.page_width();
         let current = current_page(&self.dims, page_width, f32::from(-self.scroll.offset().y));
 
-        let mut col = div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(PAGE_GAP))
-            .py(px(PAGE_PAD_Y));
+        // Page slots are *direct* children of the scroll container (assembled below), so
+        // `ScrollHandle::bounds_for_item(i)` yields page `i`'s real laid-out bounds —
+        // which `point_to_page` maps the cursor against, instead of re-summing
+        // `display_height`. That sum drifts from gpui's pixel-snapped layout (~0.18px per
+        // Letter page → ~2 text rows off by page 150 of a long PDF).
+        let mut slots: Vec<gpui::AnyElement> = Vec::with_capacity(self.dims.len());
         for (i, dim) in self.dims.iter().enumerate() {
             let disp_h = display_height(*dim, page_width);
             let slot = div()
                 .relative()
+                // The scroll container is now a flex column, so pages must NOT shrink to
+                // fit the viewport — keep their full height and let the column overflow.
+                .flex_shrink_0()
                 .w(px(page_width))
                 .h(px(disp_h))
                 .rounded(px(2.0))
@@ -1254,7 +1350,7 @@ impl Render for PdfView {
                 }
                 slot
             };
-            col = col.child(slot);
+            slots.push(slot.into_any_element());
         }
 
         // Click-to-edit page counter: shows "N / total", or the typed digits while
@@ -1699,20 +1795,110 @@ impl Render for PdfView {
             root
         };
 
+        // Custom overlay scrollbar: a draggable thumb floating over the viewport's
+        // right edge. `None` when the whole document fits (or before first layout), so
+        // it only appears when there's something to scroll. The track is transparent
+        // and event-transparent (no id/handlers) — only the thumb is grabbable.
+        let scrollbar = self.scrollbar_metrics().map(|m| {
+            let thumb_bg = Hsla {
+                a: 0.45,
+                ..style.header_muted
+            };
+            let thumb_hover = Hsla {
+                a: 0.75,
+                ..style.header_muted
+            };
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .w(px(SCROLLBAR_W))
+                .h(px(m.track_h))
+                .child(
+                    div()
+                        .id("pdf-scrollbar-thumb")
+                        .absolute()
+                        .top(px(m.thumb_top))
+                        .right(px(2.0))
+                        .w(px(SCROLLBAR_W - 4.0))
+                        .h(px(m.thumb_h))
+                        .rounded(px((SCROLLBAR_W - 4.0) / 2.0))
+                        .bg(thumb_bg)
+                        .hover(|h| h.bg(thumb_hover))
+                        .cursor_pointer()
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                                // Remember where on the thumb we grabbed so it tracks the
+                                // cursor without jumping; stop propagation so the viewer's
+                                // root mouse-down doesn't also start a highlight selection.
+                                if let Some(m) = this.scrollbar_metrics() {
+                                    window.focus(&this.focus, cx);
+                                    this.scrollbar_drag =
+                                        Some(f32::from(ev.position.y) - m.track_top - m.thumb_top);
+                                }
+                                cx.stop_propagation();
+                            }),
+                        )
+                        // `on_drag` + `on_drag_move` (not a bounds-gated root
+                        // `on_mouse_move`) so the thumb keeps following the cursor even
+                        // when it leaves the element — or the window — mid-drag.
+                        .on_drag(ScrollbarDrag, |_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.new(|_| ScrollbarDrag)
+                        })
+                        .on_drag_move(cx.listener(
+                            |this, e: &gpui::DragMoveEvent<ScrollbarDrag>, _window, cx| {
+                                let Some(grab) = this.scrollbar_drag else {
+                                    return;
+                                };
+                                let Some(m) = this.scrollbar_metrics() else {
+                                    return;
+                                };
+                                if m.thumb_max_travel <= 0.0 {
+                                    return;
+                                }
+                                let pointer = f32::from(e.event.position.y);
+                                let thumb_top =
+                                    (pointer - m.track_top - grab).clamp(0.0, m.thumb_max_travel);
+                                let scroll_y = thumb_top / m.thumb_max_travel * m.max_scroll;
+                                this.scroll.set_offset(point(px(0.0), px(-scroll_y)));
+                                cx.notify();
+                            },
+                        )),
+                )
+        });
+
         root.child(header)
             .child(
+                // A relative wrapper so the scrollbar can float over the scroll area's
+                // right edge without taking layout space (overlay scrollbar).
                 div()
-                    .id("pdf-scroll")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    // Scrolling doesn't re-run render on its own; notify so the next
-                    // frame re-runs `ensure_window` (and updates the page counter).
-                    .on_scroll_wheel(cx.listener(|_this, _ev, _window, cx| {
-                        cx.notify();
-                    }))
-                    .child(col),
+                    .child(
+                        div()
+                            .id("pdf-scroll")
+                            .size_full()
+                            .overflow_y_scroll()
+                            .track_scroll(&self.scroll)
+                            // The page column lives directly on the scroll element (rather
+                            // than a nested child) so each page is a tracked scroll item —
+                            // `point_to_page` reads their real bounds via `bounds_for_item`.
+                            .flex()
+                            .flex_col()
+                            .items_center()
+                            .gap(px(PAGE_GAP))
+                            .py(px(PAGE_PAD_Y))
+                            // Scrolling doesn't re-run render on its own; notify so the
+                            // next frame re-runs `ensure_window` (and the page counter).
+                            .on_scroll_wheel(cx.listener(|_this, _ev, _window, cx| {
+                                cx.notify();
+                            }))
+                            .children(slots),
+                    )
+                    .children(scrollbar),
             )
             .into_any_element()
     }

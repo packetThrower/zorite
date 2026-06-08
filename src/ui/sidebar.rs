@@ -73,6 +73,7 @@ fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 .flex_row()
                                 .items_center()
                                 .gap_1()
+                                .child(new_page_icon(cx))
                                 .child(date_icon(cx))
                                 .child(settings_gear(cx)),
                         ),
@@ -185,6 +186,16 @@ fn date_icon(cx: &mut Context<AppView>) -> impl IntoElement {
     icon_btn("date-icon", IconName::Calendar).on_click(cx.listener(
         |this: &mut AppView, _: &ClickEvent, _window, cx| {
             this.toggle_calendar(cx);
+        },
+    ))
+}
+
+/// The "new page" plus button, next to the calendar. Dispatches `NewPage`, which
+/// prompts for a title (same path as the pages-area right-click "New page" menu).
+fn new_page_icon(cx: &mut Context<AppView>) -> impl IntoElement {
+    icon_btn("new-page", IconName::Plus).on_click(cx.listener(
+        |_this: &mut AppView, _: &ClickEvent, window, cx| {
+            window.dispatch_action(Box::new(NewPage), cx);
         },
     ))
 }
