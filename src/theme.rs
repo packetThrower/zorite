@@ -198,6 +198,8 @@ pub fn markdown_style(indent_spaces: usize) -> gpui_markdown::MarkdownStyle {
         code_bg: p.glass,
         muted_color: p.text_tertiary,
         rule_color: p.border_subtle,
+        // Translucent amber highlight for `<mark>`; blends over any theme's background.
+        mark_bg: gpui::rgba(0xFFD60066).into(),
         list_indent: px(indent_spaces as f32 * 4.5),
         mono_font: mono_font().into(),
     }

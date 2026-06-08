@@ -14,8 +14,9 @@
 //! inline-code, fenced code blocks, ordered/unordered/nested and task lists,
 //! blockquotes, thematic breaks, hard breaks, tables, links (inline and
 //! reference-style), images (rendered by the host via `on_image`), footnotes,
-//! and raw HTML (shown literally, never executed). `[[wiki-links]]` and
-//! `#tags` become clickable via caller callbacks.
+//! and raw HTML (shown literally, never executed — except `<mark>`, which renders
+//! as highlighted text). `[[wiki-links]]` and `#tags` become clickable via caller
+//! callbacks.
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -41,6 +42,9 @@ pub struct MarkdownStyle {
     pub code_bg: Hsla,
     pub muted_color: Hsla,
     pub rule_color: Hsla,
+    /// Background for `<mark>…</mark>` highlighted text. Translucent so the body text
+    /// stays readable over it in any theme.
+    pub mark_bg: Hsla,
     /// Horizontal indent per nested list level. The host sizes this to match its
     /// editor's literal indent (so reading + editing line up).
     pub list_indent: Pixels,
@@ -61,6 +65,7 @@ impl Default for MarkdownStyle {
             code_bg: rgba(0xFFFFFF14).into(),
             muted_color: rgb(0x9AA0A6).into(),
             rule_color: rgba(0xFFFFFF22).into(),
+            mark_bg: rgba(0xFFD60066).into(),
             list_indent: px(18.0),
             mono_font: "monospace".into(),
         }
@@ -609,6 +614,9 @@ fn build_inline(
     defs: &HashMap<String, String>,
     out: &mut Inline,
 ) {
+    // Mutable so `<mark>` / `</mark>` — flat sibling HTML tags, not a wrapping node —
+    // can toggle the highlight on the runs between them.
+    let mut cur = cur;
     for node in nodes {
         match node {
             mdast::Node::Text(t) => push_text(&t.value, cur, style, out),
@@ -707,8 +715,18 @@ fn build_inline(
                         .push((start..end, LinkTarget::Url(url.clone().into())));
                 }
             }
-            // Inline raw HTML: render the literal source, never executed.
-            mdast::Node::Html(h) => push_run(&h.value, cur, out),
+            // Inline raw HTML stays literal (never executed) — except `<mark>`, a
+            // safe highlight tag: toggle a background on the runs it wraps.
+            mdast::Node::Html(h) => {
+                let tag = h.value.trim().to_ascii_lowercase();
+                if tag == "<mark>" || tag.starts_with("<mark ") {
+                    cur.background_color = Some(style.mark_bg);
+                } else if tag == "</mark>" {
+                    cur.background_color = None;
+                } else {
+                    push_run(&h.value, cur, out);
+                }
+            }
             // Recurse into any other container node; ignore leaves we
             // don't special-case.
             other => {
@@ -1153,6 +1171,52 @@ mod tests {
             }
             _ => panic!("expected wiki targets"),
         }
+    }
+
+    #[test]
+    fn mark_tag_highlights_text_other_html_stays_literal() {
+        let html = |v: &str| {
+            mdast::Node::Html(mdast::Html {
+                value: v.into(),
+                position: None,
+            })
+        };
+        let text = |v: &str| {
+            mdast::Node::Text(mdast::Text {
+                value: v.into(),
+                position: None,
+            })
+        };
+        let style = MarkdownStyle::default();
+
+        // `<mark>hi</mark>`: the tags are consumed and `hi` carries the mark background.
+        let mut inl = Inline::default();
+        build_inline(
+            &[html("<mark>"), text("hi"), html("</mark>")],
+            HighlightStyle::default(),
+            &style,
+            &HashMap::new(),
+            &mut inl,
+        );
+        assert_eq!(inl.text, "hi");
+        assert!(
+            inl.highlights
+                .iter()
+                .any(|(r, s)| &inl.text[r.clone()] == "hi"
+                    && s.background_color == Some(style.mark_bg)),
+            "wrapped text should carry the mark background"
+        );
+
+        // Any other inline HTML is still shown literally.
+        let mut inl2 = Inline::default();
+        build_inline(
+            &[html("<br>")],
+            HighlightStyle::default(),
+            &style,
+            &HashMap::new(),
+            &mut inl2,
+        );
+        assert_eq!(inl2.text, "<br>");
     }
 
     #[test]
