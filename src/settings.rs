@@ -10,7 +10,7 @@
 use gpui::{
     AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
-    div, px,
+    div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     IndexPath, TitleBar,
@@ -20,9 +20,6 @@ use gpui_component::{
 
 use crate::app::AppView;
 use crate::theme::{self, Mode};
-
-/// Built-in skin ids (anything else is a user theme).
-const BUILTIN_IDS: [&str; 5] = ["zorite", "nord", "solarized", "gruvbox", "dracula"];
 
 /// One choice in a `Select`: `id` is the stored value, `title` the label.
 #[derive(Clone)]
@@ -75,11 +72,20 @@ fn theme_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt
     }
 }
 
+/// Which settings category the left nav has selected.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Appearance,
+    Pdf,
+}
+
 pub struct SettingsView {
     app: WeakEntity<AppView>,
     theme_select: Entity<SelectState<Vec<Opt>>>,
     appearance_select: Entity<SelectState<Vec<Opt>>>,
     quality_slider: Entity<SliderState>,
+    /// The selected left-nav category.
+    tab: Tab,
     _subs: Vec<Subscription>,
 }
 
@@ -145,6 +151,7 @@ impl SettingsView {
             theme_select,
             appearance_select,
             quality_slider,
+            tab: Tab::Appearance,
             _subs: subs,
         }
     }
@@ -197,7 +204,7 @@ impl SettingsView {
                 a.read(cx)
                     .skins()
                     .iter()
-                    .filter(|s| !BUILTIN_IDS.contains(&s.id.as_str()))
+                    .filter(|s| !s.is_builtin)
                     .map(|s| s.name.clone())
                     .collect()
             })
@@ -302,46 +309,50 @@ impl Render for SettingsView {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .child(nav())
-                    .child(
-                    div()
-                        .id("settings-content")
-                        .flex_1()
-                        .min_w_0()
-                        .overflow_y_scroll()
-                        .px(px(24.0))
-                        .pb(px(24.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(16.0))
-                        .child(card(
-                            "App Theme",
-                            "Pick a built-in theme or one of your own.",
-                            Select::new(&self.theme_select).w_full(),
-                        ))
-                        .child(card(
-                            "Appearance",
-                            "Light or dark variant of the active theme. Auto follows your system.",
-                            Select::new(&self.appearance_select).w_full(),
-                        ))
-                        .child(card(
-                            "PDF render quality",
-                            "Higher is sharper but slower; lower speeds up rendering on slower \
-                                 machines. 100% = your display's native resolution.",
-                            quality_control,
-                        ))
-                        .child(card(
-                            "Installed themes",
-                            "Drop .json theme files in your themes folder, then Reload. Any \
-                                 color you omit falls back to the base palette.",
-                            installed,
-                        )),
-                ),
+                    .child(nav(self.tab, cx))
+                    .child({
+                        let content = div()
+                            .id("settings-content")
+                            .flex_1()
+                            .min_w_0()
+                            .overflow_y_scroll()
+                            .px(px(24.0))
+                            .pb(px(24.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(16.0));
+                        match self.tab {
+                            Tab::Appearance => content
+                                .child(card(
+                                    "App Theme",
+                                    "Pick a built-in theme or one of your own.",
+                                    Select::new(&self.theme_select).w_full(),
+                                ))
+                                .child(card(
+                                    "Appearance",
+                                    "Light or dark variant of the active theme. Auto follows \
+                                         your system.",
+                                    Select::new(&self.appearance_select).w_full(),
+                                ))
+                                .child(card(
+                                    "Installed themes",
+                                    "Drop .json theme files in your themes folder, then Reload. \
+                                         Any color you omit falls back to the base palette.",
+                                    installed,
+                                )),
+                            Tab::Pdf => content.child(card(
+                                "PDF render quality",
+                                "Higher is sharper but slower; lower speeds up rendering on \
+                                     slower machines. 100% = your display's native resolution.",
+                                quality_control,
+                            )),
+                        }
+                    }),
             )
     }
 }
 
-fn nav() -> impl IntoElement {
+fn nav(active: Tab, cx: &mut Context<SettingsView>) -> impl IntoElement {
     div()
         .flex_shrink_0()
         .w(px(184.0))
@@ -350,16 +361,43 @@ fn nav() -> impl IntoElement {
         .flex()
         .flex_col()
         .gap(px(2.0))
-        .child(
-            div()
-                .px(px(12.0))
-                .py(px(8.0))
-                .rounded(px(8.0))
-                .text_size(px(14.0))
-                .bg(theme::accent_tint())
-                .text_color(theme::text_primary())
-                .child("Appearance"),
-        )
+        .child(nav_item(
+            "nav-appearance",
+            "Appearance",
+            Tab::Appearance,
+            active,
+            cx,
+        ))
+        .child(nav_item("nav-pdf", "PDF", Tab::Pdf, active, cx))
+}
+
+/// One left-nav category. Highlights when active; clicking switches the pane.
+fn nav_item(
+    id: &'static str,
+    label: &'static str,
+    tab: Tab,
+    active: Tab,
+    cx: &mut Context<SettingsView>,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .text_size(px(14.0))
+        .cursor_pointer()
+        .when(tab == active, |d| {
+            d.bg(theme::accent_tint()).text_color(theme::text_primary())
+        })
+        .when(tab != active, |d| {
+            d.text_color(theme::text_secondary())
+                .hover(|h| h.bg(theme::hover()))
+        })
+        .child(label)
+        .on_click(cx.listener(move |this, _, _window, cx| {
+            this.tab = tab;
+            cx.notify();
+        }))
 }
 
 fn version_chip() -> impl IntoElement {

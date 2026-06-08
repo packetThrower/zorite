@@ -16,6 +16,9 @@ pub struct Skin {
     /// "Always dark": ignore the Light/Dark/Auto mode and render dark (including
     /// the window chrome / titlebar). For themes that only define a dark look.
     pub dark_only: bool,
+    /// True for the bundled skins, false for user themes loaded from disk. Lets the
+    /// Settings "Installed themes" list show only the user's own (no stale id list).
+    pub is_builtin: bool,
 }
 
 /// Base colors for one mode: `(bg_window, bg_sidebar, bg_content, fg, accent, tag, code)`.
@@ -40,6 +43,7 @@ impl Skin {
                 light.0, light.1, light.2, light.3, light.4, light.5, light.6, false,
             ),
             dark_only: false,
+            is_builtin: true,
         }
     }
 
@@ -54,6 +58,7 @@ impl Skin {
             dark: palette(),
             light: palette(),
             dark_only: true,
+            is_builtin: true,
         }
     }
 }
@@ -227,6 +232,7 @@ pub fn load_user_skins() -> Vec<Skin> {
                     light,
                     dark,
                     dark_only: f.dark_only,
+                    is_builtin: false,
                 });
             }
             Err(e) => log::warn!("theme {}: {e}", path.display()),
