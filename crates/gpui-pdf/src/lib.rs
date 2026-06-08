@@ -651,17 +651,24 @@ impl PdfView {
         let (start, end) = keep_window(&self.dims, page_width, scroll_y, viewport_h);
         let generation = self.generation;
 
-        // Extract the text layer for any visible page that has highlights, so they can
-        // be located and drawn (off-thread, cached). Before the early-out below, so
-        // highlights on an already-rendered page still get their text extracted.
+        // Extract the text layer (off-thread, cached) for visible pages that need it:
+        // pages with highlights, so they can be located + drawn — and, while in
+        // highlight mode, *every* visible page, so a drag can select text even on a
+        // page that has no highlights yet. Before the early-out below, so an
+        // already-rendered page still gets its text extracted.
         #[cfg(feature = "markup")]
         {
-            let pages: Vec<usize> = self
+            let mut pages: Vec<usize> = self
                 .highlights
                 .iter()
                 .map(|h| h.page)
-                .filter(|p| *p >= start && *p <= end)
+                .filter(|p| (start..=end).contains(p))
                 .collect();
+            if self.selecting {
+                pages.extend(start..=end);
+            }
+            pages.sort_unstable();
+            pages.dedup();
             for p in pages {
                 self.ensure_page_text(p, cx);
             }
