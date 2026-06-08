@@ -41,6 +41,12 @@ pub struct MarkdownStyle {
     pub code_bg: Hsla,
     pub muted_color: Hsla,
     pub rule_color: Hsla,
+    /// Horizontal indent per nested list level. The host sizes this to match its
+    /// editor's literal indent (so reading + editing line up).
+    pub list_indent: Pixels,
+    /// Monospace font family for code blocks + inline code. The host picks one that
+    /// exists on the platform; an unknown family just falls back to the default font.
+    pub mono_font: SharedString,
 }
 
 impl Default for MarkdownStyle {
@@ -55,6 +61,8 @@ impl Default for MarkdownStyle {
             code_bg: rgba(0xFFFFFF14).into(),
             muted_color: rgb(0x9AA0A6).into(),
             rule_color: rgba(0xFFFFFF22).into(),
+            list_indent: px(18.0),
+            mono_font: "monospace".into(),
         }
     }
 }
@@ -306,8 +314,17 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             };
             let size = px(f32::from(ctx.style.text_size) * scale);
             let color = ctx.style.heading_color;
+            // Extra room above a heading so a new section separates from the text
+            // before it (on top of the inter-block gap); bigger headings get more.
+            let top = px(match h.depth {
+                1 => 16.0,
+                2 => 12.0,
+                3 => 8.0,
+                _ => 6.0,
+            });
             Some(
                 div()
+                    .mt(top)
                     .text_size(size)
                     .text_color(color)
                     .font_weight(FontWeight::BOLD)
@@ -326,6 +343,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                     .bg(bg)
                     .px(px(12.0))
                     .py(px(8.0))
+                    .font_family(ctx.style.mono_font.clone())
                     .text_color(color)
                     .child(StyledText::new(c.value.clone()))
                     .into_any_element(),
@@ -474,11 +492,17 @@ fn text_node(value: &str) -> mdast::Node {
 }
 
 fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
-    let mut col = div()
-        .flex()
-        .flex_col()
-        .gap(px(4.0))
-        .pl(px(if depth > 0 { 18.0 } else { 2.0 }));
+    let nested = depth > 0;
+    let mut col = div().flex().flex_col().gap(px(4.0)).pl(if nested {
+        ctx.style.list_indent
+    } else {
+        px(2.0)
+    });
+    // A faint vertical guide down each nested level (Logseq-style) makes deep
+    // outlines easy to track; the indent padding sits to its right.
+    if nested {
+        col = col.border_l_1().border_color(ctx.style.rule_color);
+    }
     let start = list.start.unwrap_or(1) as usize;
 
     for (i, item) in list.children.iter().enumerate() {
@@ -601,6 +625,10 @@ fn build_inline(
             mdast::Node::InlineCode(ic) => {
                 let mut c = cur;
                 c.color = Some(style.code_color);
+                // A subtle chip background sets inline code apart from prose. (A
+                // monospace font can't be applied per text-run — `HighlightStyle` has no
+                // font field — so inline code keeps the body font but gets the tint.)
+                c.background_color = Some(style.code_bg);
                 push_run(&ic.value, c, out);
             }
             mdast::Node::Link(l) => {
@@ -924,14 +952,15 @@ fn parse_list_marker(rest: &str) -> Option<(String, &str)> {
     None
 }
 
-/// One indent level for Tab / Shift+Tab on list items — two spaces.
+/// The default indent level (two spaces) for Tab / Shift+Tab on list items. The
+/// host passes its configured indent to [`indent_list_line`] / [`outdent_line`];
+/// this is just the fallback / a convenience for callers without a setting.
 pub const INDENT: &str = "  ";
 
-/// If the caret's line is a list/quote item, indent it one level (insert
-/// [`INDENT`] at the line start), returning the new text and shifted caret.
-/// `None` when the line isn't a list item, so the caller can insert a literal
-/// tab instead.
-pub fn indent_list_line(value: &str, cursor: usize) -> Option<(String, usize)> {
+/// If the caret's line is a list/quote item, indent it one level (insert `indent`
+/// at the line start), returning the new text and shifted caret. `None` when the
+/// line isn't a list item, so the caller can insert a literal tab instead.
+pub fn indent_list_line(value: &str, cursor: usize, indent: &str) -> Option<(String, usize)> {
     let cursor = cursor.min(value.len());
     let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
     let line_end = value[cursor..]
@@ -940,14 +969,14 @@ pub fn indent_list_line(value: &str, cursor: usize) -> Option<(String, usize)> {
     let line = &value[line_start..line_end];
     let indent_len = line.len() - line.trim_start_matches([' ', '\t']).len();
     parse_list_marker(&line[indent_len..])?; // only list / quote lines
-    let new = format!("{}{INDENT}{}", &value[..line_start], &value[line_start..]);
-    Some((new, cursor + INDENT.len()))
+    let new = format!("{}{indent}{}", &value[..line_start], &value[line_start..]);
+    Some((new, cursor + indent.len()))
 }
 
-/// Outdent the caret's line one level: remove up to [`INDENT`] of leading spaces
-/// (or one leading tab). Returns the new text and caret, or `None` if the line
-/// has no leading indent to remove.
-pub fn outdent_line(value: &str, cursor: usize) -> Option<(String, usize)> {
+/// Outdent the caret's line one level: remove up to `indent`'s width of leading
+/// spaces (or one leading tab). Returns the new text and caret, or `None` if the
+/// line has no leading indent to remove.
+pub fn outdent_line(value: &str, cursor: usize, indent: &str) -> Option<(String, usize)> {
     let cursor = cursor.min(value.len());
     let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
     let line = &value[line_start..];
@@ -955,7 +984,7 @@ pub fn outdent_line(value: &str, cursor: usize) -> Option<(String, usize)> {
         1
     } else {
         line.bytes()
-            .take(INDENT.len())
+            .take(indent.len().max(1))
             .take_while(|b| *b == b' ')
             .count()
     };
@@ -1034,26 +1063,36 @@ mod tests {
 
     #[test]
     fn tab_indents_list_lines() {
-        assert_eq!(indent_list_line("- a", 3), Some(("  - a".into(), 5)));
-        assert_eq!(indent_list_line("* x", 1), Some(("  * x".into(), 3)));
-        assert_eq!(indent_list_line("1. y", 4), Some(("  1. y".into(), 6)));
+        assert_eq!(indent_list_line("- a", 3, "  "), Some(("  - a".into(), 5)));
+        assert_eq!(indent_list_line("* x", 1, "  "), Some(("  * x".into(), 3)));
+        assert_eq!(
+            indent_list_line("1. y", 4, "  "),
+            Some(("  1. y".into(), 6))
+        );
+        // The indent unit is the caller's: a 4-space setting inserts four.
+        assert_eq!(
+            indent_list_line("- a", 3, "    "),
+            Some(("    - a".into(), 7))
+        );
         // Only the caret's line is indented.
         assert_eq!(
-            indent_list_line("- a\n- b", 7),
+            indent_list_line("- a\n- b", 7, "  "),
             Some(("- a\n  - b".into(), 9))
         );
     }
 
     #[test]
     fn tab_ignores_non_list_lines() {
-        assert_eq!(indent_list_line("hello", 5), None);
+        assert_eq!(indent_list_line("hello", 5, "  "), None);
     }
 
     #[test]
     fn shift_tab_outdents() {
-        assert_eq!(outdent_line("  - a", 5), Some(("- a".into(), 3)));
-        assert_eq!(outdent_line("    x", 5), Some(("  x".into(), 3)));
-        assert_eq!(outdent_line("- a", 3), None);
+        assert_eq!(outdent_line("  - a", 5, "  "), Some(("- a".into(), 3)));
+        assert_eq!(outdent_line("    x", 5, "  "), Some(("  x".into(), 3)));
+        assert_eq!(outdent_line("- a", 3, "  "), None);
+        // A 4-space unit removes up to four leading spaces in one outdent.
+        assert_eq!(outdent_line("    - a", 7, "    "), Some(("- a".into(), 3)));
     }
 
     fn inline_of(text: &str) -> Inline {

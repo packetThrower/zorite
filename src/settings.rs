@@ -77,6 +77,7 @@ fn theme_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt
 enum Tab {
     Appearance,
     Pdf,
+    Markdown,
 }
 
 pub struct SettingsView {
@@ -84,6 +85,7 @@ pub struct SettingsView {
     theme_select: Entity<SelectState<Vec<Opt>>>,
     appearance_select: Entity<SelectState<Vec<Opt>>>,
     quality_slider: Entity<SliderState>,
+    indent_select: Entity<SelectState<Vec<Opt>>>,
     /// The selected left-nav category.
     tab: Tab,
     _subs: Vec<Subscription>,
@@ -146,11 +148,41 @@ impl SettingsView {
             },
         ));
 
+        // List-indent select (Markdown pane): 2 / 4 / 8 spaces.
+        let cur_indent = app
+            .upgrade()
+            .map(|a| a.read(cx).list_indent().to_string())
+            .unwrap_or_else(|| "4".to_string());
+        let indent_select = make_select(
+            vec![
+                Opt::new("2", "2 spaces"),
+                Opt::new("4", "4 spaces"),
+                Opt::new("8", "8 spaces"),
+            ],
+            &cur_indent,
+            window,
+            cx,
+        );
+        subs.push(cx.subscribe_in(
+            &indent_select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Ok(spaces) = id.parse::<usize>()
+                    && let Some(app) = this.app.upgrade()
+                {
+                    app.update(cx, |a, cx| a.set_list_indent(spaces, cx));
+                    cx.notify();
+                }
+            },
+        ));
+
         Self {
             app,
             theme_select,
             appearance_select,
             quality_slider,
+            indent_select,
             tab: Tab::Appearance,
             _subs: subs,
         }
@@ -346,6 +378,12 @@ impl Render for SettingsView {
                                      slower machines. 100% = your display's native resolution.",
                                 quality_control,
                             )),
+                            Tab::Markdown => content.child(card(
+                                "List indentation",
+                                "Spaces per nesting level for Tab and bullet nesting. Editing \
+                                     and the rendered view use the same width, so they line up.",
+                                Select::new(&self.indent_select).w_full(),
+                            )),
                         }
                     }),
             )
@@ -369,6 +407,13 @@ fn nav(active: Tab, cx: &mut Context<SettingsView>) -> impl IntoElement {
             cx,
         ))
         .child(nav_item("nav-pdf", "PDF", Tab::Pdf, active, cx))
+        .child(nav_item(
+            "nav-markdown",
+            "Markdown",
+            Tab::Markdown,
+            active,
+            cx,
+        ))
 }
 
 /// One left-nav category. Highlights when active; clicking switches the pane.

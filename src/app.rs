@@ -51,6 +51,8 @@ const FEED_MAX_DAYS: usize = 3650;
 /// install. 0.75 trades a little sharpness for noticeably faster rendering,
 /// especially on slower (non-ARM) machines; users can raise it in Settings.
 const DEFAULT_PDF_QUALITY: f32 = 0.75;
+/// Default list-indent width in spaces (Tab / nesting). Configurable in Settings.
+const DEFAULT_LIST_INDENT: usize = 4;
 
 /// What a tab shows. The Journal is the pinned tab 0; the rest are pages or PDFs.
 #[derive(Clone, PartialEq, Eq)]
@@ -177,6 +179,9 @@ pub struct AppView {
     /// PDF render-quality multiplier (1.0 = native DPI), persisted; mirrored into the
     /// `crate::pdf` global that each `PdfView`'s quality closure reads.
     pdf_quality: f32,
+    /// List-indent width in spaces (2 / 4 / 8), persisted. Drives both the editor's
+    /// Tab/nesting unit and the markdown render's per-level indent, so they line up.
+    list_indent: usize,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -302,6 +307,7 @@ impl AppView {
             skins: skins::builtin_skins(),
             skin_id: String::new(),
             pdf_quality: DEFAULT_PDF_QUALITY,
+            list_indent: DEFAULT_LIST_INDENT,
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -354,6 +360,12 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_PDF_QUALITY);
         crate::pdf::set_quality(this.pdf_quality);
+        this.list_indent = this
+            .db
+            .get_setting("list_indent")
+            .and_then(|s| s.parse().ok())
+            .filter(|n| matches!(n, 2 | 4 | 8))
+            .unwrap_or(DEFAULT_LIST_INDENT);
         this.system_dark = matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
@@ -1036,14 +1048,16 @@ impl AppView {
         };
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
-        // On a list/quote line, Tab indents the whole item; elsewhere it inserts
-        // two spaces at the caret.
-        let (new, caret) = gpui_markdown::indent_list_line(&value, cursor).unwrap_or_else(|| {
-            (
-                format!("{}  {}", &value[..cursor], &value[cursor..]),
-                cursor + 2,
-            )
-        });
+        // On a list/quote line, Tab indents the whole item; elsewhere it inserts the
+        // configured indent (default four spaces) at the caret.
+        let indent = self.list_indent_str();
+        let (new, caret) =
+            gpui_markdown::indent_list_line(&value, cursor, &indent).unwrap_or_else(|| {
+                (
+                    format!("{}{indent}{}", &value[..cursor], &value[cursor..]),
+                    cursor + indent.len(),
+                )
+            });
         self.apply_editor_edit(&target, &editor, new, caret, window, cx);
     }
 
@@ -1063,7 +1077,8 @@ impl AppView {
         };
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
-        if let Some((new, caret)) = gpui_markdown::outdent_line(&value, cursor) {
+        let indent = self.list_indent_str();
+        if let Some((new, caret)) = gpui_markdown::outdent_line(&value, cursor, &indent) {
             self.apply_editor_edit(&target, &editor, new, caret, window, cx);
         }
     }
@@ -1820,6 +1835,28 @@ impl AppView {
         for view in self.pdf_views.values() {
             view.update(cx, |_view, cx| cx.notify());
         }
+    }
+
+    /// The list-indent width in spaces (the Tab / nesting unit).
+    pub fn list_indent(&self) -> usize {
+        self.list_indent
+    }
+
+    /// The list-indent as a run of spaces, for inserting in the editor.
+    pub fn list_indent_str(&self) -> String {
+        " ".repeat(self.list_indent)
+    }
+
+    /// Set the list-indent width (2 / 4 / 8 spaces). Persists and re-renders this
+    /// window so the editor's Tab unit and the render indent stay in step. No-op if
+    /// unchanged or invalid.
+    pub fn set_list_indent(&mut self, spaces: usize, cx: &mut Context<Self>) {
+        if !matches!(spaces, 2 | 4 | 8) || spaces == self.list_indent {
+            return;
+        }
+        self.list_indent = spaces;
+        let _ = self.db.set_setting("list_indent", &spaces.to_string());
+        cx.notify();
     }
 
     /// Quick cycle for the title-bar toggle: Light → Dark → Auto → Light.

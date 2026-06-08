@@ -166,7 +166,27 @@ pub fn text_tertiary() -> Hsla {
 
 /// Styling for the markdown reading view (the `gpui-markdown` crate),
 /// mapped from the active palette.
-pub fn markdown_style() -> gpui_markdown::MarkdownStyle {
+/// Per-OS monospace family for code. An unknown name falls back to the default
+/// font, so this is safe everywhere.
+fn mono_font() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Menlo"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Consolas"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "DejaVu Sans Mono"
+    }
+}
+
+/// Build the markdown render style from the active palette. `indent_spaces` is the
+/// user's list-indent setting; the per-level pixel indent is sized to roughly match
+/// that many spaces of the editor font, so reading and editing line up.
+pub fn markdown_style(indent_spaces: usize) -> gpui_markdown::MarkdownStyle {
     let p = get();
     gpui_markdown::MarkdownStyle {
         text_color: p.text_primary,
@@ -178,6 +198,8 @@ pub fn markdown_style() -> gpui_markdown::MarkdownStyle {
         code_bg: p.glass,
         muted_color: p.text_tertiary,
         rule_color: p.border_subtle,
+        list_indent: px(indent_spaces as f32 * 4.5),
+        mono_font: mono_font().into(),
     }
 }
 

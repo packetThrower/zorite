@@ -156,7 +156,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
     } else {
         let weak = cx.entity().downgrade();
         gpui_markdown::MarkdownView::new("page-md", content)
-            .style(theme::markdown_style())
+            .style(theme::markdown_style(app.list_indent()))
             .on_image(crate::ui::image::renderer(
                 app,
                 SlashTarget::Page(pe.id),

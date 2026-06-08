@@ -141,7 +141,7 @@ fn rendered_day(
     } else {
         let weak = cx.entity().downgrade();
         gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
-            .style(theme::markdown_style())
+            .style(theme::markdown_style(app.list_indent()))
             .on_image(crate::ui::image::renderer(
                 app,
                 SlashTarget::Day(d.clone()),
