@@ -144,6 +144,7 @@ fn collapsed_rail(cx: &mut Context<AppView>) -> impl IntoElement {
         .border_r_1()
         .border_color(theme::border_subtle())
         .child(expand_caret(cx))
+        .child(new_page_icon(cx))
         .child(date_icon(cx))
         .child(settings_gear(cx))
 }
