@@ -106,39 +106,45 @@ impl<'a> Device<'a> for Collector {
             Some(BfString::String(s)) => s,
             None => return, // no unicode → can't match against a quote; skip
         };
-        if text.trim().is_empty() {
-            return;
-        }
         // On-page bbox: the glyph outline transformed by `transform * glyph_transform`
         // (mirrors hayro's own renderer). Device space here is page points with a
         // top-left origin (we run at scale 1 with `initial_transform(true)`).
         let m = transform * glyph_transform;
-        let bbox = match glyph {
-            Glyph::Outline(o) => {
-                // Transform the glyph-space bbox corners by `m`, take their extent.
-                let gb = o.outline().bounding_box();
-                let corners = [
-                    m * Point::new(gb.x0, gb.y0),
-                    m * Point::new(gb.x1, gb.y0),
-                    m * Point::new(gb.x1, gb.y1),
-                    m * Point::new(gb.x0, gb.y1),
-                ];
-                let mut min = corners[0];
-                let mut max = corners[0];
-                for c in &corners[1..] {
-                    min.x = min.x.min(c.x);
-                    min.y = min.y.min(c.y);
-                    max.x = max.x.max(c.x);
-                    max.y = max.y.max(c.y);
+        // Keep the PDF's own whitespace glyphs (normalized to one space): they mark
+        // real word boundaries, so words aren't run together and — crucially — a font's
+        // intra-word letter-spacing isn't mistaken for a space. They have no outline,
+        // so use a thin box at the pen origin.
+        let (text, bbox) = if text.chars().all(char::is_whitespace) {
+            let p = m.translation();
+            (" ".to_string(), Rect::new(p.x, p.y, p.x + 1.0, p.y + 1.0))
+        } else {
+            let bbox = match glyph {
+                Glyph::Outline(o) => {
+                    // Transform the glyph-space bbox corners by `m`, take their extent.
+                    let gb = o.outline().bounding_box();
+                    let corners = [
+                        m * Point::new(gb.x0, gb.y0),
+                        m * Point::new(gb.x1, gb.y0),
+                        m * Point::new(gb.x1, gb.y1),
+                        m * Point::new(gb.x0, gb.y1),
+                    ];
+                    let mut min = corners[0];
+                    let mut max = corners[0];
+                    for c in &corners[1..] {
+                        min.x = min.x.min(c.x);
+                        min.y = min.y.min(c.y);
+                        max.x = max.x.max(c.x);
+                        max.y = max.y.max(c.y);
+                    }
+                    Rect::new(min.x, min.y, max.x, max.y)
                 }
-                Rect::new(min.x, min.y, max.x, max.y)
-            }
-            // Type3 glyphs (rare: procedural/bitmap) — approximate with a point box
-            // at the pen origin so the text is still searchable.
-            Glyph::Type3(_) => {
-                let p = m.translation();
-                Rect::new(p.x, p.y - 1.0, p.x + 1.0, p.y)
-            }
+                // Type3 glyphs (rare: procedural/bitmap) — point box at the pen origin.
+                Glyph::Type3(_) => {
+                    let p = m.translation();
+                    Rect::new(p.x, p.y - 1.0, p.x + 1.0, p.y)
+                }
+            };
+            (text, bbox)
         };
         if self.page_w <= 0.0 || self.page_h <= 0.0 {
             return;
@@ -231,18 +237,26 @@ impl PageText {
     /// whitespace-insensitive index instead.
     pub fn text(&self) -> String {
         let mut out = String::new();
-        let mut prev: Option<&NormRect> = None;
+        let mut prev: Option<&Run> = None;
         for run in &self.runs {
-            if let Some(p) = prev {
-                let line_h = run.rect.h.max(p.h).max(0.001);
-                if (run.rect.center_y() - p.center_y()).abs() > line_h * 0.6 {
+            // The PDF's own space glyphs carry the word breaks, so only compare two
+            // *real* glyphs — to detect a line wrap (or a positioning-based gap with no
+            // space glyph). This keeps an unreliable space rect from forcing a break.
+            if let Some(p) = prev
+                && run.text != " "
+                && p.text != " "
+            {
+                let line_h = run.rect.h.max(p.rect.h).max(0.001);
+                if (run.rect.center_y() - p.rect.center_y()).abs() > line_h * 0.6 {
                     out.push('\n');
-                } else if run.rect.x - p.right() > line_h * 0.25 {
+                } else if run.rect.x - p.rect.right() > line_h * 0.6
+                    && !out.ends_with(|c: char| c.is_whitespace())
+                {
                     out.push(' ');
                 }
             }
             out.push_str(&run.text);
-            prev = Some(&run.rect);
+            prev = Some(run);
         }
         out
     }
@@ -336,19 +350,24 @@ impl PageText {
     /// spaces), suitable for storing as a one-line quote.
     fn runs_text(&self, lo: usize, hi: usize) -> String {
         let mut out = String::new();
-        let mut prev: Option<&NormRect> = None;
+        let mut prev: Option<&Run> = None;
         for run in &self.runs[lo..=hi] {
-            if let Some(p) = prev {
-                let line_h = run.rect.h.max(p.h).max(0.001);
-                let new_line = (run.rect.center_y() - p.center_y()).abs() > line_h * 0.6;
-                if new_line || run.rect.x - p.right() > line_h * 0.25 {
+            // Only compare two real glyphs (see `text`); recorded spaces carry breaks.
+            if let Some(p) = prev
+                && run.text != " "
+                && p.text != " "
+            {
+                let line_h = run.rect.h.max(p.rect.h).max(0.001);
+                let new_line = (run.rect.center_y() - p.rect.center_y()).abs() > line_h * 0.6;
+                if new_line || run.rect.x - p.rect.right() > line_h * 0.6 {
                     out.push(' ');
                 }
             }
             out.push_str(&run.text);
-            prev = Some(&run.rect);
+            prev = Some(run);
         }
-        out
+        // Collapse recorded + inserted spaces to single spaces, trim.
+        out.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// Which occurrence (0-based) of `quote` on the page the run at `lo` begins — so
@@ -451,6 +470,45 @@ mod tests {
     fn text_reconstruction_inserts_space_and_newline() {
         let t = sample().text();
         assert_eq!(t, "Hello World\nsecond");
+    }
+
+    #[test]
+    fn letter_spacing_keeps_words_whole_and_recorded_space_breaks_them() {
+        // Tracked "Counters for": the letters have small intra-word gaps that must NOT
+        // split (the old 0.25*line_h gap heuristic mis-read them as spaces — "Co u nte
+        // rs"), and the PDF's own space glyph (text " ", sitting low at the baseline so
+        // its center_y differs from the letters') provides the single word break —
+        // without forcing a line break (it must be excluded from the baseline compare).
+        let mut runs = Vec::new();
+        for (i, c) in "Counters".chars().enumerate() {
+            runs.push(run(
+                &c.to_string(),
+                0.10 + i as f32 * 0.025,
+                0.10,
+                0.02,
+                0.02,
+            ));
+        }
+        runs.push(run(" ", 0.30, 0.125, 0.002, 0.002));
+        for (i, c) in "for".chars().enumerate() {
+            runs.push(run(
+                &c.to_string(),
+                0.31 + i as f32 * 0.025,
+                0.10,
+                0.02,
+                0.02,
+            ));
+        }
+        let pt = PageText::new(runs);
+        assert_eq!(pt.text(), "Counters for");
+        // And a drag across both words yields the same clean, single-spaced quote.
+        let sel = pt
+            .select(
+                NormPoint { x: 0.105, y: 0.11 },
+                NormPoint { x: 0.370, y: 0.11 },
+            )
+            .unwrap();
+        assert_eq!(sel.quote, "Counters for");
     }
 
     #[test]
