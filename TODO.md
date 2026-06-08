@@ -62,9 +62,14 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] **Print / PDF export** — generate a PDF from a note (`oxidize-pdf` can generate; or a typeset path like typst/`printpdf`)
 - [x] In-app **PDF viewer** — `[[file.pdf]]` / `![](file.pdf)` open a dedicated viewer tab (`ui::pdf_view`); pages are sized from `render_dimensions()` for instant layout. Closing the tab frees both the CPU images and their **GPU atlas textures** (`cx.drop_image` — raw `RenderImage`s are never auto-evicted; this was an ~140 MB/open leak). See `src/pdf.rs`
 - [x] PDF: **viewport virtualization** — only the on-screen pages (±2) are rasterized; far ones are evicted (image + GPU texture), so memory is bounded by the viewport, not the page count (`AppView::ensure_pdf_window` + `pdf_view::keep_window`). Verified: scrolling a 32-page PDF end-to-end holds ~178 MB vs 403 MB before
-- [ ] PDF: **DPI-aware render scale** — `pdf::SCALE` is a fixed 1.5×; derive it from the window scale factor (and re-render on change) for crisp pages on HiDPI without over-allocating on standard displays
-- [ ] PDF: **zoom + page navigation** (jump to page N, fit-width/fit-page) in the viewer toolbar
-- [ ] PDF: **Logseq-style markup** — area/text highlights on a page, stored as references (`[[file.pdf#p3]]`) linked from notes; text highlights would add a text-extraction crate (e.g. `oxidize-pdf`)
+- [x] PDF: **DPI-aware render scale** — pages rasterize at display pixel-ratio × zoom × a host **quality** multiplier (no longer a fixed 1.5×); a render-quality slider in Settings trades sharpness for speed (default 75%), read reactively so open viewers re-render live
+- [x] PDF: **zoom + page navigation** — − / + / reset (⌘= / ⌘- / ⌘0) and ‹ / › with a click-to-edit page-number input (+ PageUp / PageDown / Home / End); no blank on zoom/quality change (the old bitmap stays, rescaled, until the crisp one lands)
+- [ ] PDF: **fit-width / fit-page** zoom modes (zoom is free-scale only today)
+- [x] PDF: **extracted to a reusable [`gpui-pdf`](crates/gpui-pdf/README.md) crate** — host-agnostic primitives + a self-contained `PdfView` component; markup is behind an optional `markup` feature
+- [x] PDF: **Logseq-style text markup** — drag-to-highlight in the viewer writes a reference block (`- pN: quote {color} [[file.pdf#pN|↗]]`) on a per-PDF "(highlights)" page; clicking the ↗ opens the PDF and scrolls to + **flashes** the highlight. Done **dep-free** — a custom hayro `Device` extracts text + glyph rects (only `kurbo`, *not* oxidize-pdf). Has a **color picker** (yellow/green/blue/pink/orange) and header **tooltips**
+- [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
+- [ ] PDF: **find-in-PDF** — a search UI over the text layer (`PageText`) already used for highlights
+- [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
 
 ## gpui-markdown crate
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize

@@ -16,7 +16,7 @@ closure you provide. Standard `[text](url)` links open externally.
 - GFM **tables** (with column alignment), **footnotes**, and reference-style
   `[text][id]` links/images
 - Raw HTML shown literally (never executed)
-- `[[wiki-links]]` and `#tags` → clickable, dispatched to your callback
+- `[[wiki-links]]` (and `[[target|label]]` aliases) and `#tags` → clickable, dispatched to your callback
 - **Images** rendered by a host-supplied closure (so the host owns loading and any
   interaction); falls back to a clickable label otherwise
 - `SNIPPETS` — authoring snippets a host can surface in a `/` command palette
@@ -101,6 +101,9 @@ pub type WikiLinkHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 Invoked with the **target name** when the user clicks:
 
 - `[[Some Page]]` → called with `"Some Page"` (trimmed).
+- `[[target|label]]` → displays `label` but is called with `"target"` (e.g.
+  `[[file.pdf#p3|↗]]` shows a `↗` that links to `file.pdf#p3`). An empty label falls
+  back to the target.
 - `#some-tag` → called with `"some-tag"` (the bare name; the displayed `#` is kept).
 
 Standard `[text](url)` and reference-style links open externally via `cx.open_url`

@@ -188,8 +188,10 @@ link to `file.pdf#pN` and call [`reveal_highlight`] to scroll to and flash it.
 Early, but solid for scroll-to-read viewing. Renders via the pure-Rust
 [`hayro`](https://crates.io/crates/hayro) crate. Not yet published to crates.io.
 
-Text extraction, highlight rendering, and drag-to-select creation are all available
-behind `markup` (dep-free). Roadmap: a find-in-PDF UI on top of the text layer.
+Text extraction, highlight rendering, drag-to-select creation (with a color picker),
+and note→PDF reverse links (scroll to + flash a highlight) are all available behind
+`markup` (dep-free). Roadmap: a find-in-PDF UI on top of the text layer; area
+highlights for pages with no text layer.
 
 ## License
 
