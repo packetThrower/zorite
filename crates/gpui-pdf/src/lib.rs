@@ -714,9 +714,29 @@ impl PdfView {
                 .map(|(i, _)| i)
                 .or(Some(0))
         } else {
-            Some(0)
+            // Fresh query: start from the page the user is on, not the document top.
+            self.match_from_viewport()
         };
         cx.notify();
+    }
+
+    /// The index of the first match at or below the current viewport top, so opening
+    /// the find bar (or editing the query) starts from the page being read rather than
+    /// the start of the document. Wraps to the first match if none are below. Matches
+    /// are in reading order, so the first one past the fold is just `position`. (`search`.)
+    #[cfg(feature = "search")]
+    fn match_from_viewport(&self) -> Option<usize> {
+        if self.matches.is_empty() {
+            return None;
+        }
+        let pw = self.page_width();
+        let scroll_y = f32::from(-self.scroll.offset().y).max(0.0);
+        let idx = self.matches.iter().position(|m| {
+            let ry = m.rects.first().map(|r| r.y).unwrap_or(0.0);
+            page_top_y(&self.dims, pw, m.page) + ry * display_height(self.dims[m.page], pw)
+                >= scroll_y
+        });
+        Some(idx.unwrap_or(0))
     }
 
     /// Focus the next match (wrapping) and scroll to it. (`search` feature.)
@@ -743,7 +763,9 @@ impl PdfView {
         self.goto_match(i, cx);
     }
 
-    /// Scroll so match `idx` sits a little below the viewport top. (`search` feature.)
+    /// Bring match `idx` into view — but only scroll if it isn't already comfortably
+    /// visible, so starting a search on the page you're reading doesn't yank it around.
+    /// When it does scroll, the match lands a little below the viewport top. (`search`.)
     #[cfg(feature = "search")]
     fn goto_match(&mut self, idx: usize, cx: &mut Context<Self>) {
         if self.dims.is_empty() {
@@ -754,10 +776,17 @@ impl PdfView {
         };
         let page = m.page.min(self.dims.len() - 1);
         let ry = m.rects.first().map(|r| r.y).unwrap_or(0.0);
+        let rh = m.rects.first().map(|r| r.h).unwrap_or(0.0);
         let pw = self.page_width();
         let disp_h = display_height(self.dims[page], pw);
-        let y = (page_top_y(&self.dims, pw, page) + ry * disp_h - 80.0).max(0.0);
-        self.scroll.set_offset(point(px(0.0), px(-y)));
+        let top = page_top_y(&self.dims, pw, page) + ry * disp_h;
+        let bottom = top + rh * disp_h;
+        let scroll_y = f32::from(-self.scroll.offset().y).max(0.0);
+        let viewport_h = f32::from(self.scroll.bounds().size.height).max(1.0);
+        if top < scroll_y + 8.0 || bottom > scroll_y + viewport_h - 8.0 {
+            let y = (top - 80.0).max(0.0);
+            self.scroll.set_offset(point(px(0.0), px(-y)));
+        }
         cx.notify();
     }
 
@@ -1586,15 +1615,31 @@ impl Render for PdfView {
                 )
             };
             let has_query = !self.search_query.is_empty();
-            let query: SharedString = if has_query {
-                format!("{}▏", self.search_query).into()
-            } else {
-                "Find…".into()
+            // Query field with a caret. It's static: a blinking caret would need either a
+            // focused text widget or a per-frame animation that re-renders the whole
+            // viewer; the viewer captures keystrokes directly instead.
+            let field = div()
+                .min_w(px(120.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(1.0));
+            let caret = || {
+                div()
+                    .w(px(1.5))
+                    .h(px(13.0))
+                    .rounded(px(1.0))
+                    .bg(style.header_fg)
             };
-            let query_color = if has_query {
-                style.header_fg
+            let field = if has_query {
+                field
+                    .text_color(style.header_fg)
+                    .child(SharedString::from(self.search_query.clone()))
+                    .child(caret())
             } else {
-                style.header_muted
+                field
+                    .child(caret())
+                    .child(div().text_color(style.header_muted).child("Find…"))
             };
             root.child(deferred(
                 div()
@@ -1612,7 +1657,7 @@ impl Render for PdfView {
                     .border_color(style.border)
                     .bg(style.bg)
                     .text_size(px(12.0))
-                    .child(div().min_w(px(110.0)).text_color(query_color).child(query))
+                    .child(field)
                     .child(div().text_color(style.header_muted).child(count))
                     .child(
                         self.control("pdf-find-prev", "‹")
@@ -1674,16 +1719,22 @@ struct Tip {
 
 impl Render for Tip {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(6.0))
-            .py(px(2.0))
-            .rounded(px(4.0))
-            .border_1()
-            .border_color(self.border)
-            .bg(self.bg)
-            .text_color(self.fg)
-            .text_size(px(11.0))
-            .child(self.text.clone())
+        // gpui anchors the tooltip's top-left at the mouse position (+1px), i.e. *inside*
+        // the hovered control. A transparent top padding on the root shifts the visible
+        // box down to clear the control + its bar/header padding. (Padding is applied to
+        // a `layout_as_root` element; a top *margin* on the root is ignored.)
+        div().pt(px(22.0)).child(
+            div()
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(self.border)
+                .bg(self.bg)
+                .text_color(self.fg)
+                .text_size(px(11.0))
+                .child(self.text.clone()),
+        )
     }
 }
 
