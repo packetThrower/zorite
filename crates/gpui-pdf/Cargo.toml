@@ -32,6 +32,12 @@ default = []
 # hayro) — no heavyweight PDF library. Off by default.
 markup = ["dep:kurbo"]
 
+# Find-in-PDF: a search box over the text layer with match highlighting and
+# next/prev navigation (scroll-to + emphasis). Builds on `markup` — it shares the
+# text-extraction layer rather than duplicating it — so enabling `search` also
+# enables `markup`. Off by default.
+search = ["markup"]
+
 # Verification helper: `cargo run -p gpui-pdf --example extract_text --features markup
 # -- <file.pdf> [page]` prints a page's extracted text.
 [[example]]

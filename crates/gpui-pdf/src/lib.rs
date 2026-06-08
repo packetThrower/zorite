@@ -311,6 +311,14 @@ enum TextSlot {
     Failed,
 }
 
+/// One find-in-PDF match: the page it's on and one normalized rect per line it spans.
+/// (`search` feature.)
+#[cfg(feature = "search")]
+struct SearchMatch {
+    page: usize,
+    rects: Vec<NormRect>,
+}
+
 /// A page-virtualized PDF viewer: a scrollable column of page slots, each sized from
 /// the PDF's page dimensions up front (so the scrollbar is correct for the whole
 /// document) but only rasterized while near the viewport. Pages scrolled away are
@@ -392,6 +400,18 @@ pub struct PdfView {
     /// A reveal requested before the document finished loading; applied once it does.
     #[cfg(feature = "markup")]
     pending_reveal: Option<usize>,
+    /// Whether the find-in-PDF bar is open. (`search` feature.)
+    #[cfg(feature = "search")]
+    search_open: bool,
+    /// The current search query (edited in the find bar).
+    #[cfg(feature = "search")]
+    search_query: String,
+    /// Matches across the document, in reading order (page, then top-to-bottom).
+    #[cfg(feature = "search")]
+    matches: Vec<SearchMatch>,
+    /// Index into `matches` of the focused match (the one ↑/↓/Enter cycle through).
+    #[cfg(feature = "search")]
+    current_match: Option<usize>,
 }
 
 impl PdfView {
@@ -480,6 +500,14 @@ impl PdfView {
             flash_gen: 0,
             #[cfg(feature = "markup")]
             pending_reveal: None,
+            #[cfg(feature = "search")]
+            search_open: false,
+            #[cfg(feature = "search")]
+            search_query: String::new(),
+            #[cfg(feature = "search")]
+            matches: Vec::new(),
+            #[cfg(feature = "search")]
+            current_match: None,
         }
     }
 
@@ -597,6 +625,142 @@ impl PdfView {
         cx.notify();
     }
 
+    // ───────────────────────────── Find-in-PDF (search) ─────────────────────────────
+
+    /// Toggle the find bar. On open, extract every page's text (off-thread, cached)
+    /// and compute matches; on close, drop them. (`search` feature.)
+    #[cfg(feature = "search")]
+    pub fn toggle_search(&mut self, cx: &mut Context<Self>) {
+        self.search_open = !self.search_open;
+        if self.search_open {
+            self.ensure_all_text(cx);
+            self.recompute_matches(true, cx);
+            if let Some(i) = self.current_match {
+                self.goto_match(i, cx);
+            }
+        } else {
+            self.matches.clear();
+            self.current_match = None;
+        }
+        cx.notify();
+    }
+
+    /// Close the find bar and clear matches. (`search` feature.)
+    #[cfg(feature = "search")]
+    pub fn close_search(&mut self, cx: &mut Context<Self>) {
+        self.search_open = false;
+        self.matches.clear();
+        self.current_match = None;
+        cx.notify();
+    }
+
+    /// Re-run the search after the query changed: recompute matches and jump to the
+    /// first one. (`search` feature.)
+    #[cfg(feature = "search")]
+    fn on_search_query_changed(&mut self, cx: &mut Context<Self>) {
+        self.ensure_all_text(cx);
+        self.recompute_matches(true, cx);
+        if let Some(i) = self.current_match {
+            self.goto_match(i, cx);
+        }
+    }
+
+    /// Kick off text extraction for every page (idempotent, cached), so a search sees
+    /// pages that were never scrolled into view. (`search` feature.)
+    #[cfg(feature = "search")]
+    fn ensure_all_text(&mut self, cx: &mut Context<Self>) {
+        for p in 0..self.dims.len() {
+            self.ensure_page_text(p, cx);
+        }
+    }
+
+    /// Rebuild the match list from every page whose text is ready. With
+    /// `reset_current`, focus the first match; otherwise keep the focused match (by
+    /// page + position) across the rebuild, so a mid-sweep refresh doesn't jump. (`search`.)
+    #[cfg(feature = "search")]
+    fn recompute_matches(&mut self, reset_current: bool, cx: &mut Context<Self>) {
+        let prev = if reset_current {
+            None
+        } else {
+            self.current_match
+                .and_then(|i| self.matches.get(i))
+                .map(|m| (m.page, m.rects.first().map(|r| r.y).unwrap_or(0.0)))
+        };
+        self.matches.clear();
+        let q = self.search_query.trim().to_string();
+        if !q.is_empty() {
+            for page in 0..self.dims.len() {
+                if let Some(TextSlot::Ready(pt)) = self.page_text.get(&page) {
+                    for rects in pt.find_matches(&q) {
+                        if !rects.is_empty() {
+                            self.matches.push(SearchMatch { page, rects });
+                        }
+                    }
+                }
+            }
+        }
+        self.current_match = if self.matches.is_empty() {
+            None
+        } else if let Some((pg, y)) = prev {
+            self.matches
+                .iter()
+                .enumerate()
+                .filter(|(_, m)| m.page == pg)
+                .min_by(|(_, a), (_, b)| {
+                    let da = (a.rects.first().map(|r| r.y).unwrap_or(0.0) - y).abs();
+                    let db = (b.rects.first().map(|r| r.y).unwrap_or(0.0) - y).abs();
+                    da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(i, _)| i)
+                .or(Some(0))
+        } else {
+            Some(0)
+        };
+        cx.notify();
+    }
+
+    /// Focus the next match (wrapping) and scroll to it. (`search` feature.)
+    #[cfg(feature = "search")]
+    pub fn next_match(&mut self, cx: &mut Context<Self>) {
+        if self.matches.is_empty() {
+            return;
+        }
+        let n = self.matches.len();
+        let i = self.current_match.map_or(0, |c| (c + 1) % n);
+        self.current_match = Some(i);
+        self.goto_match(i, cx);
+    }
+
+    /// Focus the previous match (wrapping) and scroll to it. (`search` feature.)
+    #[cfg(feature = "search")]
+    pub fn prev_match(&mut self, cx: &mut Context<Self>) {
+        if self.matches.is_empty() {
+            return;
+        }
+        let n = self.matches.len();
+        let i = self.current_match.map_or(0, |c| (c + n - 1) % n);
+        self.current_match = Some(i);
+        self.goto_match(i, cx);
+    }
+
+    /// Scroll so match `idx` sits a little below the viewport top. (`search` feature.)
+    #[cfg(feature = "search")]
+    fn goto_match(&mut self, idx: usize, cx: &mut Context<Self>) {
+        if self.dims.is_empty() {
+            return;
+        }
+        let Some(m) = self.matches.get(idx) else {
+            return;
+        };
+        let page = m.page.min(self.dims.len() - 1);
+        let ry = m.rects.first().map(|r| r.y).unwrap_or(0.0);
+        let pw = self.page_width();
+        let disp_h = display_height(self.dims[page], pw);
+        let y = (page_top_y(&self.dims, pw, page) + ry * disp_h - 80.0).max(0.0);
+        self.scroll.set_offset(point(px(0.0), px(-y)));
+        cx.notify();
+    }
+
     /// Map a window-space point to the page it's over and normalized page coords.
     /// (`markup` feature.)
     #[cfg(feature = "markup")]
@@ -654,6 +818,19 @@ impl PdfView {
                     },
                 );
                 cx.notify();
+                // If a search is running and this was the last page to extract, fold in
+                // its matches (keeping the focused one). Doing it once at the end keeps
+                // the whole-document sweep from re-searching on every page.
+                #[cfg(feature = "search")]
+                if this.search_open
+                    && !this.search_query.trim().is_empty()
+                    && !this
+                        .page_text
+                        .values()
+                        .any(|s| matches!(s, TextSlot::Loading))
+                {
+                    this.recompute_matches(false, cx);
+                }
             });
         })
         .detach();
@@ -1023,6 +1200,29 @@ impl Render for PdfView {
                         );
                     }
                 }
+                // Find-in-PDF: box every match on this page; emphasize the focused one.
+                #[cfg(feature = "search")]
+                for (mi, m) in self.matches.iter().enumerate() {
+                    if m.page != i {
+                        continue;
+                    }
+                    let current = self.current_match == Some(mi);
+                    let fill = hsla(0.09, 0.95, 0.5, if current { 0.55 } else { 0.3 });
+                    for r in &m.rects {
+                        let mut b = div()
+                            .absolute()
+                            .left(px(r.x * page_width))
+                            .top(px(r.y * disp_h))
+                            .w(px(r.w * page_width))
+                            .h(px(r.h * disp_h))
+                            .rounded(px(1.0))
+                            .bg(fill);
+                        if current {
+                            b = b.border_1().border_color(hsla(0.09, 0.95, 0.4, 0.95));
+                        }
+                        slot = slot.child(b);
+                    }
+                }
                 slot
             };
             col = col.child(slot);
@@ -1191,6 +1391,22 @@ impl Render for PdfView {
             header.child(div().relative().child(pen).children(dropdown))
         };
 
+        // Find toggle (search): a magnifier that opens the find bar.
+        #[cfg(feature = "search")]
+        let header = {
+            let bg = if self.search_open {
+                style.placeholder_bg
+            } else {
+                Hsla { a: 0.0, ..style.bg }
+            };
+            header.child(
+                self.control("pdf-find", "🔍")
+                    .bg(bg)
+                    .on_click(cx.listener(|this, _, _window, cx| this.toggle_search(cx)))
+                    .tooltip(self.tip("Find (⌘F)")),
+            )
+        };
+
         let root = div()
             .track_focus(&self.focus)
             .size_full()
@@ -1253,6 +1469,49 @@ impl Render for PdfView {
                     return;
                 }
                 let secondary = ev.keystroke.modifiers.secondary();
+                #[cfg(feature = "search")]
+                {
+                    // ⌘F / Ctrl-F toggles the find bar.
+                    if secondary && key == "f" {
+                        this.toggle_search(cx);
+                        return;
+                    }
+                    // While the bar is open, type to edit the query and Enter/⇧Enter to
+                    // step matches. Keys we don't consume (arrows, PageUp/Down…) fall
+                    // through, so the page still scrolls with the bar open.
+                    if this.search_open {
+                        match key {
+                            "escape" => {
+                                this.close_search(cx);
+                                return;
+                            }
+                            "enter" => {
+                                if ev.keystroke.modifiers.shift {
+                                    this.prev_match(cx);
+                                } else {
+                                    this.next_match(cx);
+                                }
+                                return;
+                            }
+                            "backspace" => {
+                                this.search_query.pop();
+                                this.on_search_query_changed(cx);
+                                return;
+                            }
+                            _ => {
+                                if let Some(ch) =
+                                    ev.keystroke.key_char.as_ref().filter(|s| {
+                                        !s.is_empty() && !s.chars().any(char::is_control)
+                                    })
+                                {
+                                    this.search_query.push_str(ch);
+                                    this.on_search_query_changed(cx);
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
                 match key {
                     "pagedown" => this.next_page(cx),
                     "pageup" => this.prev_page(cx),
@@ -1302,6 +1561,78 @@ impl Render for PdfView {
                     cx.notify();
                 }),
             );
+
+        // Find bar overlay (search): a floating bar with the query, match count, and
+        // prev/next/close. Deferred so it paints over the page area below the header.
+        #[cfg(feature = "search")]
+        let root = if self.search_open {
+            let count = if self.search_query.trim().is_empty() {
+                // Empty query: the field already shows the "Find…" placeholder, so the
+                // count reads "0 / 0" rather than repeating it.
+                "0 / 0".to_string()
+            } else if self
+                .page_text
+                .values()
+                .any(|s| matches!(s, TextSlot::Loading))
+            {
+                "searching…".to_string()
+            } else if self.matches.is_empty() {
+                "no results".to_string()
+            } else {
+                format!(
+                    "{} / {}",
+                    self.current_match.map_or(0, |i| i + 1),
+                    self.matches.len()
+                )
+            };
+            let has_query = !self.search_query.is_empty();
+            let query: SharedString = if has_query {
+                format!("{}▏", self.search_query).into()
+            } else {
+                "Find…".into()
+            };
+            let query_color = if has_query {
+                style.header_fg
+            } else {
+                style.header_muted
+            };
+            root.child(deferred(
+                div()
+                    .absolute()
+                    .top(px(44.0))
+                    .right(px(12.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(style.border)
+                    .bg(style.bg)
+                    .text_size(px(12.0))
+                    .child(div().min_w(px(110.0)).text_color(query_color).child(query))
+                    .child(div().text_color(style.header_muted).child(count))
+                    .child(
+                        self.control("pdf-find-prev", "‹")
+                            .on_click(cx.listener(|this, _, _w, cx| this.prev_match(cx)))
+                            .tooltip(self.tip("Previous match (⇧⏎)")),
+                    )
+                    .child(
+                        self.control("pdf-find-next", "›")
+                            .on_click(cx.listener(|this, _, _w, cx| this.next_match(cx)))
+                            .tooltip(self.tip("Next match (⏎)")),
+                    )
+                    .child(
+                        self.control("pdf-find-close", "✕")
+                            .on_click(cx.listener(|this, _, _w, cx| this.close_search(cx)))
+                            .tooltip(self.tip("Close (Esc)")),
+                    ),
+            ))
+        } else {
+            root
+        };
 
         root.child(header)
             .child(

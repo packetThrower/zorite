@@ -190,8 +190,9 @@ Early, but solid for scroll-to-read viewing. Renders via the pure-Rust
 
 Text extraction, highlight rendering, drag-to-select creation (with a color picker),
 and note→PDF reverse links (scroll to + flash a highlight) are all available behind
-`markup` (dep-free). Roadmap: a find-in-PDF UI on top of the text layer; area
-highlights for pages with no text layer.
+`markup` (dep-free). A browser-style **find-in-PDF** bar (🔍 / ⌘F) sits on top of the
+same text layer behind the `search` feature (`= ["markup"]`). Roadmap: area highlights
+for pages with no text layer.
 
 ## License
 

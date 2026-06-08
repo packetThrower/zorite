@@ -68,7 +68,7 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [x] PDF: **extracted to a reusable [`gpui-pdf`](crates/gpui-pdf/README.md) crate** — host-agnostic primitives + a self-contained `PdfView` component; markup is behind an optional `markup` feature
 - [x] PDF: **Logseq-style text markup** — drag-to-highlight in the viewer writes a reference block (`- pN: quote {color} [[file.pdf#pN|↗]]`) on a per-PDF "(highlights)" page; clicking the ↗ opens the PDF and scrolls to + **flashes** the highlight. Done **dep-free** — a custom hayro `Device` extracts text + glyph rects (only `kurbo`, *not* oxidize-pdf). Has a **color picker** (yellow/green/blue/pink/orange) and header **tooltips**
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
-- [ ] PDF: **find-in-PDF** — a search UI over the text layer (`PageText`) already used for highlights
+- [x] PDF: **find-in-PDF** — a browser-style find bar (🔍 / ⌘F) over the text layer: type to search the whole document, matches boxed + a focused one outlined, `n / N` count, Enter/⇧Enter to step (scroll-to), Esc to close. Behind a `search` feature (= `["markup"]`, shares the text layer). See `gpui-pdf` `find_matches` + `src/pdf.rs`
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
 
 ## gpui-markdown crate

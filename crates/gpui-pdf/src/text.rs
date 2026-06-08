@@ -299,6 +299,32 @@ impl PageText {
         self.group_lines(&run_ids)
     }
 
+    /// Every (non-overlapping) case- and whitespace-insensitive match of `needle` on
+    /// the page, each as one normalized rect per line it spans (for find-in-PDF).
+    /// Matches are returned in reading order. (`search` feature.)
+    #[cfg(feature = "search")]
+    pub fn find_matches(&self, needle: &str) -> Vec<Vec<NormRect>> {
+        let key: String = needle
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(|c| c.to_lowercase())
+            .collect();
+        if key.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = self.letters[from..].find(&key) {
+            let start = from + rel;
+            let end = start + key.len();
+            let mut run_ids: Vec<usize> = self.owner[start..end].to_vec();
+            run_ids.dedup();
+            out.push(self.group_lines(&run_ids));
+            from = end; // non-overlapping
+        }
+        out
+    }
+
     /// Merge a set of run indices into one rect per text line (runs sharing a
     /// baseline), so a multi-line match yields one box per line.
     fn group_lines(&self, run_ids: &[usize]) -> Vec<NormRect> {
@@ -538,5 +564,20 @@ mod tests {
             .unwrap();
         assert_eq!(sel.quote, "cat");
         assert_eq!(sel.occurrence, 1);
+    }
+
+    #[cfg(feature = "search")]
+    #[test]
+    fn find_matches_returns_all_occurrences_in_reading_order() {
+        let pt = PageText::new(vec![
+            run("cat", 0.1, 0.1, 0.06, 0.02),
+            run("dog", 0.1, 0.2, 0.06, 0.02),
+            run("cat", 0.1, 0.3, 0.06, 0.02),
+        ]);
+        let ms = pt.find_matches("CAT"); // case-insensitive
+        assert_eq!(ms.len(), 2);
+        assert_eq!(ms[0][0].y, 0.1); // first occurrence, top
+        assert_eq!(ms[1][0].y, 0.3); // second, lower
+        assert!(pt.find_matches("zebra").is_empty());
     }
 }
