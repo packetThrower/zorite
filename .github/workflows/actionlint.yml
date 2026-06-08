@@ -1,0 +1,40 @@
+name: Actionlint
+
+# Lints the workflow files themselves — catches `${{ }}` expression
+# typos, invalid `runs-on` labels, shell-quoting bugs in `run:`
+# blocks (via the bundled shellcheck pass), and unpinned actions
+# before they cost a real CI run. Scoped to `.github/workflows/**`
+# so it runs exactly when a workflow changes and never otherwise.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+# Read-only: actionlint just reads the workflow files and reports
+# findings as inline `::error::` annotations through the run's own
+# token — no extra scopes needed.
+permissions:
+  contents: read
+
+# Cancel superseded PR runs; never cancel a push to main.
+concurrency:
+  group: actionlint-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned to a full commit SHA like every other action in this
+      # repo; the `# vX.Y.Z` comment is what Dependabot bumps.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2

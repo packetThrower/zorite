@@ -1,0 +1,187 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+      - "build/appicon.png"
+      - "build/appicon.svg"
+      - "build/make-icon.sh"
+      - "docs-next/**"
+      - ".github/workflows/docs.yml"
+      - ".github/workflows/actionlint.yml"
+      - ".github/FUNDING.yml"
+      - ".github/dependabot.yml"
+      - ".github/ISSUE_TEMPLATE/**"
+  pull_request:
+    branches:
+      - main
+    paths-ignore:
+      - "**/*.md"
+      - "LICENSE"
+      - ".gitignore"
+      - ".editorconfig"
+      - "build/appicon.png"
+      - "build/appicon.svg"
+      - "build/make-icon.sh"
+      - "docs-next/**"
+      - ".github/workflows/docs.yml"
+      - ".github/workflows/actionlint.yml"
+      - ".github/FUNDING.yml"
+      - ".github/dependabot.yml"
+      - ".github/ISSUE_TEMPLATE/**"
+  # Lets release.yml run the same matrix without duplicating the
+  # matrix definition; release.yml gates on a green CI run before
+  # it builds the actual signed/notarized artifacts.
+  workflow_call:
+
+# CI only reads the repo — no releases, no commits, no PR writes.
+# Pin the token to the minimum so a compromised action in the
+# matrix can't do anything with it. release.yml's `ci` job calls
+# this workflow and inherits this same read-only ceiling.
+permissions:
+  contents: read
+
+# Cancel superseded PR runs — a re-push to a PR shouldn't leave the
+# previous run burning all six matrix runners to completion. Keyed
+# on the PR number for `pull_request`, the ref otherwise; cancelling
+# is gated to PRs so pushes to `main` and the release-triggered
+# `workflow_call` run (which arrives as event_name: push) always run
+# to completion.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust:
+    name: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS — Apple Silicon only on Sequoia (macos-26).
+          # x86_64 macOS isn't in the matrix because release.yml
+          # cross-compiles the x86_64 macOS binary from macos-26
+          # since commit e3a4d28 (cargo-packager's create-dmg step
+          # bombed on the Intel image with no recoverable
+          # diagnostic). Testing natively on macos-15-intel while
+          # shipping a cross-compiled binary would test one path
+          # and ship another — keeping CI aligned with what release
+          # actually produces. macos-15-intel can return when
+          # native Intel builds do (unlikely, given the Apple
+          # transition timeline).
+          - runner: macos-26
+            arch: arm64
+          # Windows — x64 + arm64. windows-11-arm landed in 2025 and
+          # gives us a native runner; no Prism cross-compile dance.
+          - runner: windows-latest
+            arch: amd64
+          - runner: windows-11-arm
+            arch: arm64
+          # Linux — amd64 + arm64. ubuntu-24.04-arm uses Cobalt 100
+          # silicon. Both ship Ubuntu 24.04 which has libxkbcommon
+          # 1.6 and libwayland 1.22 — current enough for gpui_linux
+          # to compile from a clean checkout.
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # Third-party actions are pinned to a full commit SHA — a
+      # mutable tag like `@v6` can be repointed at malicious code
+      # by a repo or token compromise. The `# vX.Y.Z` comment is
+      # what Dependabot reads + bumps when a real release ships.
+      # `persist-credentials: false` — this job never `git push`es,
+      # so the token doesn't need to be written into `.git/config`
+      # where a later compromised step could read it.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # `dtolnay/rust-toolchain` selects the channel from the ref
+      # name (`@stable`), so a SHA pin loses that signal — the
+      # `toolchain:` input carries it explicitly instead.
+      - name: Setup Rust (stable + clippy + rustfmt)
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      # Formatting is platform-independent, so the check only needs to
+      # run on one matrix entry. ubuntu-latest is the fastest to boot
+      # and gates the rest of the matrix on fast-fail — placing this
+      # before the platform deps install means a fmt regression
+      # surfaces in seconds rather than after an apt-get pass.
+      #
+      # `cargo fmt` is workspace-aware, so this one invocation covers
+      # the root crate and every `crates/*` member (gpui-markdown,
+      # gpui-pdf).
+      - name: cargo fmt --check
+        if: matrix.runner == 'ubuntu-latest'
+        run: cargo fmt --check
+
+      # cargo-deny reads Cargo.lock + deny.toml only — fully platform-
+      # independent, so the same one-runner gating as the fmt check
+      # applies. taiki-e/install-action fetches a prebuilt binary
+      # rather than building cargo-deny from source (~3 min savings).
+      - name: Install cargo-deny
+        if: matrix.runner == 'ubuntu-latest'
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-deny
+
+      - name: cargo deny check
+        if: matrix.runner == 'ubuntu-latest'
+        run: cargo deny check
+
+      # Linux: xkbcommon / wayland / x11 / xcb are gpui's compile-time
+      # pkg-config deps; fontconfig / freetype back font-kit. No GTK /
+      # WebKit / appindicator — gpui owns the window + renderer end to
+      # end. rusqlite's `bundled` feature compiles SQLite from C source
+      # with the runner's cc, so no libsqlite3-dev. Vulkan loads at
+      # runtime via ash's dlopen, so no SDK install for `cargo test`.
+      - name: Install Linux deps
+        if: startsWith(matrix.runner, 'ubuntu-')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev \
+            libx11-dev libxcb1-dev libxcb-randr0-dev \
+            libxcb-xkb-dev libxcb-cursor-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxcb-render0-dev \
+            libfontconfig1-dev libfreetype-dev \
+            pkg-config
+
+      # macOS: pkg-config for any crate build script that probes via
+      # Homebrew's prefix. gpui uses Metal + CoreText and rusqlite
+      # compiles SQLite via cc, so nothing else is needed here.
+      - name: Install macOS deps
+        if: startsWith(matrix.runner, 'macos-')
+        run: brew install pkg-config
+
+      # Windows: nothing extra. gpui's DirectX backend and rusqlite's
+      # bundled SQLite link against libraries that ship with the
+      # Windows SDK image.
+
+      # `cargo clippy` is a strict superset of `cargo check` — same
+      # compile front-end + the lint pass on top, so a separate
+      # `cargo check` would just compile twice for no extra signal.
+      # `--workspace` covers the root bin and the `crates/*` libs;
+      # `--all-targets` widens the lint pass to tests + examples.
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # `--workspace` runs the root bin's in-module unit tests plus
+      # each `crates/*` library's tests (gpui-markdown, gpui-pdf).
+      - name: cargo test
+        run: cargo test --workspace

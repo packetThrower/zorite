@@ -1,0 +1,93 @@
+# cargo-deny configuration. Runs in CI on every PR; the matching
+# step lives in `.github/workflows/ci.yml`.
+#
+# Four checks, scoped to what we actually care about:
+#   * advisories — RUSTSEC vulnerabilities + unmaintained warnings
+#   * licenses   — allow-list of GPL-3-compatible permissive licenses
+#   * bans       — wildcards warned; duplicate versions warned
+#   * sources    — crates.io only, plus the github orgs we depend on
+
+[advisories]
+# Severity for vulnerability advisories is "deny" by default. Below
+# are explicit upstream-unmaintained advisories we cannot fix
+# without bumping a parent dep that doesn't have a fix yet.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 unmaintained. Transitive via gpui-component, gpui (Zed-git), and image/rav1e. Can't fix without upstream bumps; revisit at each gpui pull." },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile 2.2.0 unmaintained. Transitive via gpui-component-assets -> zed-reqwest. Upstream Zed tracks rustls; clears when their pemfile usage migrates to rustls-pki-types." },
+    { id = "RUSTSEC-2025-0052", reason = "async-std discontinued. Transitive via gpui -> http_client -> async-tar. Upstream Zed will eventually migrate off; revisit at each gpui pull." },
+    { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 unmaintained. Transitive via gpui-component and notify -> notify-types. Both upstream; revisit at each gpui-component rev bump." },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained. Transitive via gpui -> stacksafe -> stacksafe-macro (build-dep). Upstream Zed; revisit at each gpui pull." },
+]
+
+[licenses]
+# Every license below is GPL-3-or-later compatible (Zorite's own
+# license — see ./LICENSE). Updates require a real check that the
+# new license is GPL-3-compatible AND acceptable for redistribution.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0-or-later",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+# Per-crate exceptions for license expressions that are valid for
+# the specific dep but not worth blessing globally.
+[[licenses.exceptions]]
+# libbz2-rs-sys carries the bzip2 library's own BSD-style license.
+# Pulled in transitively via `bzip2` (gpui dep tree); scoped here
+# rather than added project-wide.
+crate = "libbz2-rs-sys"
+allow = ["bzip2-1.0.6"]
+
+[[licenses.exceptions]]
+# libfuzzer-sys is "MIT OR Apache-2.0" AND NCSA. NCSA is OSI-
+# approved BSD-derived; scoped to this one crate (fuzzer harness,
+# transitive via gpui) rather than blanket-allowing NCSA.
+crate = "libfuzzer-sys"
+allow = ["NCSA"]
+
+# `unescaper` ships with the deprecated `GPL-3.0/MIT` SPDX
+# expression in its Cargo.toml. The slash form means "user picks
+# either"; the modern equivalent is `GPL-3.0-or-later OR MIT`.
+# Clarify so the check sees MIT (which we allow above) rather than
+# the unparseable expression.
+[[licenses.clarify]]
+crate = "unescaper"
+expression = "MIT"
+license-files = []
+
+[bans]
+# Duplicate versions are noisy on a Zed-git-based stack (windows-
+# sys major-version churn, etc.). "warn" so CI surfaces the count
+# without failing.
+multiple-versions = "warn"
+# `git = "..."` deps without a version constraint read as wildcards
+# to cargo-deny. The four wildcard hits are exactly the four git
+# deps documented in Cargo.toml (gpui, gpui_platform, gpui-component,
+# gpui-component-assets) — the no-rev-on-gpui choice is load-bearing
+# per the Cargo.toml dep comment. "warn" surfaces drift without
+# blocking the build.
+wildcards = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+# No per-URL allow-list — Zed pulls in transitive git deps from
+# multiple sibling repos under `zed-industries` (font-kit, reqwest,
+# scap, wgpu, xim-rs, zed itself), and pinning the list per-URL
+# would break on every Zed bump. Org-level allow is the right
+# granularity.
+allow-git = []
+
+[sources.allow-org]
+github = ["zed-industries", "longbridge"]

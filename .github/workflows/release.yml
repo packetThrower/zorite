@@ -1,0 +1,685 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # Stable SemVer: v0.4.0, v1.2.3.
+      - "v[0-9]+.[0-9]+.[0-9]+"
+      # Pre-release SemVer: v0.8.0-beta.1, v1.0.0-rc.2, etc. The
+      # release job inspects the tag and flips prerelease=true on
+      # the GitHub Release when a hyphen is present, so these show
+      # up with the "Pre-release" label and don't displace the
+      # "Latest release" pointer.
+      - "v[0-9]+.[0-9]+.[0-9]+-*"
+  # On-demand build for any branch — produces the same per-platform
+  # artifact set as a tag-triggered run, but the `release` job is
+  # gated off (see `if: github.event_name == 'push'` there) so no
+  # GitHub Release lands and the Releases page stays uncluttered.
+  # Artifacts live for 90 days on the workflow-run page; download
+  # via `gh run download <run-id>` or the Actions UI.
+  #
+  # Useful for verifying a PR's binary on real hardware before the
+  # branch lands on main — most importantly the Windows-arm probe
+  # path that needs an actual arm64 sandbox to exercise. GitHub
+  # only shows the "Run workflow" button if the trigger lives on
+  # the default branch (so this needs to ride on main even when
+  # the build you want to test lives on a feature branch).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: >-
+          Version string used for filenames + Cargo.toml /
+          Info.plist patching, with no leading "v"
+          (e.g. "0.12.5-dev1"). A hyphen in the value is treated
+          as a pre-release marker the same way a tag would be,
+          so MSI building is skipped — `ProductVersion` rejects
+          alphanumeric segments and would fail the build.
+        required: true
+        default: '0.0.0-dev'
+
+# No workflow-level `permissions:` — each job declares its own so
+# the `contents: write` needed to publish the release is scoped to
+# the one job that actually creates it. The build jobs and the
+# `ci` call only read the repo.
+
+# Workflow-level effective version. Resolves to the dispatch input
+# when present, otherwise the ref name (tag for push triggers).
+# Steps that need a version (Cargo.toml patching, artifact
+# filenames, pre-release detection) read `$EFFECTIVE_VERSION` /
+# `$env:EFFECTIVE_VERSION` / `env.EFFECTIVE_VERSION` instead of
+# computing from `GITHUB_REF_NAME` so the dispatch path falls
+# through correctly without per-step plumbing.
+env:
+  EFFECTIVE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+
+# Queue, don't cancel: a mid-flight release shouldn't be interrupted
+# by a retag of the same version — risk of half-uploaded artifacts.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    # Reusable workflow; ci.yml declares its own `contents: read`.
+    uses: ./.github/workflows/ci.yml
+
+  # Single macOS build job that cross-compiles BOTH arm64 and
+  # x86_64 binaries on the Apple Silicon runner. v0.12.2's release
+  # run killed the previous matrix split (macos-26 for arm64 +
+  # macos-15-intel for amd64) — cargo-packager's `create-dmg` step
+  # bombed on the Intel image with exit code 1 from hdiutil's
+  # AppleScript Finder-window dance, no recoverable diagnostic.
+  # Cross-compiling x86_64 on macos-26 finishes in ~5–8 min on top
+  # of the native arm64 build, sidesteps the flaky Intel image,
+  # and gpui's native deps (ring, psm, tree-sitter, stacker) plus
+  # rusqlite's bundled SQLite (cc-built) all cross-compile cleanly
+  # between the two Apple targets — cc-rs / cmake-rs read
+  # CARGO_BUILD_TARGET and pick the right cross-compiler from clang's
+  # universal
+  # macOS toolchain.
+  build-macos:
+    needs: [ci]
+    # Build + upload only — the release-publishing `contents: write`
+    # lives on the `release` job alone.
+    permissions:
+      contents: read
+    runs-on: macos-26
+    steps:
+      # `persist-credentials: false` — build jobs never push.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      # Install both targets so we can build both arches from this
+      # one Apple Silicon runner. aarch64 is the host so rustup
+      # would have it implicitly, but listing it for symmetry /
+      # clarity with the cross target.
+      - name: Setup Rust (stable + both Apple targets)
+        # SHA-pinned: the `@stable` branch ref no longer carries the
+        # channel, so `toolchain:` states it explicitly.
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      # `shared-key: release` makes successive release-tag runs
+      # share the release-mode `target/` cache across tags — `v0.0.2`
+      # inherits `v0.0.1`'s compiled object files for the same
+      # Cargo.lock hash, dropping the 10+ min cold compile to
+      # ~minutes. Cross-compile puts each arch's output under its
+      # own `target/<triple>/release` subdir so the single cache
+      # entry covers both. CI uses the default (no shared-key) so
+      # its debug-mode cache stays separate from these release-mode
+      # artifacts.
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: release
+          # Preserve the cache when a later step (build, cargo-
+          # packager, hdiutil DMG mount) fails. Default behaviour
+          # discards on failure, which would force a full 10-min
+          # cold compile on the rerun. Bought us a faster recovery
+          # path for exactly the create-dmg flake that motivated
+          # this whole job rewrite.
+          cache-on-failure: true
+
+      # pkg-config for any crate build script that probes via
+      # Homebrew's prefix; gpui uses Metal + CoreText and rusqlite
+      # compiles SQLite via cc, so nothing else is needed here.
+      - name: Install macOS build deps
+        run: brew install pkg-config
+
+      - name: Install cargo-packager
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-packager
+
+      - name: Patch version from tag
+        run: |
+          VERSION="${EFFECTIVE_VERSION#v}"
+          # Awk over sed: BSD sed's `1,/.../{s/.../}` block syntax
+          # bombs on macOS, while GNU sed accepts it. Awk handles
+          # the in-[package]-section scoping portably, so the same
+          # one-liner ports across BSD/macOS and GNU/Linux without
+          # platform-specific branches.
+          awk -v v="$VERSION" '
+            /^\[/ { in_pkg = ($0 == "[package]") }
+            in_pkg && /^version = / && !done { print "version = \"" v "\""; done=1; next }
+            { print }
+          ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+          # Mirror to the Info.plist so the bundle's
+          # CFBundleShortVersionString + CFBundleVersion match the
+          # tag rather than the static "0.0.1" sitting in the
+          # file. cargo-packager itself reads these from the plist
+          # we hand it via `info-plist-path`.
+          plutil -replace CFBundleShortVersionString -string "$VERSION" resources/Info.plist
+          plutil -replace CFBundleVersion -string "$VERSION" resources/Info.plist
+          echo "Building version: $VERSION"
+
+      # Two cargo-packager invocations, one per target arch.
+      # `CARGO_BUILD_TARGET` is the env-var form of cargo's
+      # `--target` flag; setting it makes the inner `cargo build
+      # --release` from `before-packaging-command` compile for the
+      # cross target, and the `--target` flag on cargo-packager
+      # itself points it at the matching `target/<triple>/release/`
+      # for the resulting binary. Both align under the same triple
+      # so cargo-packager's binary-discovery doesn't disagree with
+      # the inner build's output location.
+      - name: Build arm64 .app + .dmg
+        env:
+          CARGO_BUILD_TARGET: aarch64-apple-darwin
+        run: cargo packager --release -f app -f dmg --target aarch64-apple-darwin
+
+      - name: Build amd64 .app + .dmg (cross-compile)
+        env:
+          CARGO_BUILD_TARGET: x86_64-apple-darwin
+        run: cargo packager --release -f app -f dmg --target x86_64-apple-darwin
+
+      - name: Stage artifacts
+        run: |
+          VERSION="${EFFECTIVE_VERSION#v}"
+          mkdir -p release-artifacts
+
+          # Loop both arches, renaming cargo-packager's outputs
+          # (which use `aarch64` / `x64` arch labels in their
+          # filenames) to our `arm64` / `amd64` convention. One
+          # .dmg per triple so the glob is unambiguous.
+          for pair in "aarch64-apple-darwin:arm64" "x86_64-apple-darwin:amd64"; do
+            triple="${pair%%:*}"
+            arch="${pair##*:}"
+            bundle="target/${triple}/release"
+
+            dmg=$(find "${bundle}" -maxdepth 1 -name 'Zorite_*.dmg' | head -1)
+            if [ -z "$dmg" ]; then
+              echo "no .dmg produced for ${arch} at ${bundle}"
+              ls -la "${bundle}"
+              exit 1
+            fi
+            mv "$dmg" "release-artifacts/Zorite_${VERSION}_${arch}.dmg"
+
+            # Drag-droppable .app zip for users who prefer to skip
+            # the .dmg mount-and-drag dance. `ditto -c -k
+            # --keepParent` preserves resource forks and extended
+            # attributes — matters once Phase 9 #3 (signing) lands;
+            # the .app's code-signing xattrs need to round-trip
+            # through the archive unchanged.
+            ditto -c -k --keepParent \
+              "${bundle}/Zorite.app" \
+              "release-artifacts/Zorite-macOS-${arch}-${VERSION}.zip"
+          done
+
+          echo "--- staged ---"
+          ls -la release-artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: macos-package
+          path: release-artifacts/*
+
+  build-windows:
+    needs: [ci]
+    # Build + upload only — see build-macos.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-latest
+            arch: amd64
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # `persist-credentials: false` — build jobs never push.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust (stable)
+        # SHA-pinned: the `@stable` branch ref no longer carries the
+        # channel, so `toolchain:` states it explicitly.
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      # See the macOS job's note on `shared-key: release`.
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: release
+
+      - name: Install cargo-packager
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-packager
+
+      # cargo-wix replaces cargo-packager's `-f wix` MSI path. It
+      # uses a system-installed WiX (set up in the next step) rather
+      # than cargo-packager's vendored WiX 3.11 — which is what
+      # made arm64 MSI builds impossible on the old setup (candle.exe
+      # 3.11 predates `-arch arm64`, that flag was added in WiX
+      # 3.14). Only needed on stable tags because MSI's
+      # `ProductVersion` field rejects alphanumeric prerelease
+      # identifiers like `0.9.0-alpha.3` — NSIS has no such limit.
+      - name: Install cargo-wix
+        if: ${{ !contains(env.EFFECTIVE_VERSION, '-') }}
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-wix
+
+      # WiX 3.14 (current pre-GA build under chocolatey's `--pre`
+      # gate) is the minimum that carries `-arch arm64`. choco's
+      # package sets the `WIX` env var and adds `<install>\bin` to
+      # the system PATH on install, but the current process's
+      # environment doesn't pick up those changes until we re-read
+      # them — hence the path-write to GITHUB_PATH so the cargo-
+      # wix step below can find candle.exe / light.exe without a
+      # full session reload.
+      - name: Install WiX Toolset 3.14
+        if: ${{ !contains(env.EFFECTIVE_VERSION, '-') }}
+        shell: pwsh
+        run: |
+          choco install wixtoolset --pre -y --no-progress
+          $wixDir = (Get-ChildItem 'C:\Program Files (x86)\WiX Toolset *' -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+          if ($wixDir) {
+            "$wixDir\bin" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+            "WIX=$wixDir\" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+            Write-Host "WiX installed at $wixDir"
+          } else {
+            Write-Error "WiX install directory not found after choco install"
+            exit 1
+          }
+
+      - name: Patch version from tag
+        shell: pwsh
+        run: |
+          $version = "$env:EFFECTIVE_VERSION" -replace '^v', ''
+          (Get-Content Cargo.toml -Raw) -replace '(?m)^version = .*', "version = `"$version`"" |
+            Set-Content -NoNewline Cargo.toml
+          Write-Host "Building version: $version"
+
+      # NSIS ships on every Windows build via cargo-packager. The
+      # MSI path is gated on stable tags only (MSI ProductVersion
+      # rejects alphanumeric prereleases — NSIS doesn't). Both
+      # arm64 and amd64 now produce MSIs since cargo-wix +
+      # system WiX 3.14 supports `-arch arm64` natively.
+      #
+      # No `--target` flag on either tool: the runner is already
+      # native for its arch (windows-latest = x64, windows-11-arm
+      # = arm64), so the default host target matches what we want.
+      # Passing --target would split paths between
+      # `target/<triple>/release/` and `target/release/`,
+      # confusing both tools' binary-discovery.
+      - name: Build .exe (NSIS via cargo-packager)
+        shell: cmd
+        run: cargo packager --release -f nsis
+
+      # `--no-build` reuses cargo-packager's just-built binary at
+      # `target/release/zorite.exe` instead of compiling a second
+      # time. `--nocapture` streams candle/light output so a WiX
+      # failure surfaces in the GH Actions log instead of being
+      # buried in cargo-wix's default-quiet wrapper.
+      - name: Build .msi (cargo-wix, stable tags only)
+        if: ${{ !contains(env.EFFECTIVE_VERSION, '-') }}
+        shell: cmd
+        run: cargo wix --no-build --nocapture
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $version = "$env:EFFECTIVE_VERSION" -replace '^v', ''
+          $arch = "${{ matrix.arch }}"
+          $bundle = "target/release"
+          New-Item -ItemType Directory -Force release-artifacts | Out-Null
+
+          Write-Host "--- contents of $bundle ---"
+          Get-ChildItem -Path $bundle -File -Recurse | ForEach-Object { $_.FullName }
+
+          # NSIS .exe ships from cargo-packager's output dir. The
+          # name is `Zorite_<version>_<arch>-setup.exe`.
+          Get-ChildItem "$bundle/*-setup.exe" -ErrorAction SilentlyContinue |
+            Copy-Item -Destination release-artifacts/
+
+          # MSI ships from cargo-wix's output dir (`target/wix/`).
+          # cargo-wix uses kebab-case `zorite-<version>-<arch>.msi`
+          # by default; rename to the existing
+          # `Zorite_<version>_<arch>_en-US.msi` convention so the
+          # winget manifest URLs stay stable across the cargo-
+          # packager → cargo-wix migration.
+          $wixOut = "target/wix"
+          if (Test-Path $wixOut) {
+            Write-Host "--- contents of $wixOut ---"
+            Get-ChildItem -Path $wixOut -File | ForEach-Object { $_.FullName }
+            Get-ChildItem "$wixOut/*.msi" -ErrorAction SilentlyContinue | ForEach-Object {
+              $dest = "release-artifacts/Zorite_${version}_${arch}_en-US.msi"
+              Copy-Item $_.FullName -Destination $dest
+              Write-Host "renamed $($_.Name) -> $(Split-Path -Leaf $dest)"
+            }
+          }
+
+          # Portable .zip of the bare zorite.exe for users who'd
+          # rather not run an installer.
+          Compress-Archive `
+            -Path "$bundle/zorite.exe" `
+            -DestinationPath "release-artifacts/Zorite-Windows-$arch-$version.zip"
+
+          Write-Host "--- staged ---"
+          Get-ChildItem release-artifacts | ForEach-Object { $_.Name }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-${{ matrix.arch }}-package
+          path: release-artifacts/*
+
+  build-linux:
+    needs: [ci]
+    # Build + upload only — see build-macos.
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+            target: x86_64-unknown-linux-gnu
+            rpm_arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+            rpm_arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      # `persist-credentials: false` — build jobs never push.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust (stable)
+        # SHA-pinned: the `@stable` branch ref no longer carries the
+        # channel, so `toolchain:` states it explicitly.
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+
+      # See the macOS job's note on `shared-key: release`.
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          shared-key: release
+
+      # gpui's pkg-config probes need xkbcommon / wayland / x11 / xcb
+      # headers — same set as CI; fontconfig / freetype back font-kit.
+      # rusqlite's `bundled` SQLite compiles from C source via cc (no
+      # libsqlite3-dev). AppImage tooling needs file + fuse3 + libfuse2
+      # (AppImage runtime check on AppImageTool invocation).
+      # libarchive-tools brings in `bsdtar`, which `fpm -t pacman`
+      # shells out to for the .pkg.tar.zst mtree pass.
+      - name: Install Linux build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev \
+            libx11-dev libxcb1-dev libxcb-randr0-dev \
+            libxcb-xkb-dev libxcb-cursor-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxcb-render0-dev \
+            libfontconfig1-dev libfreetype-dev \
+            pkg-config \
+            file fuse3 libfuse2 ruby-dev \
+            libarchive-tools
+
+      - name: Install cargo-packager
+        uses: taiki-e/install-action@25435dc8dd3baed7417e0c96d3fe89013a5b2e09 # v2.81.3
+        with:
+          tool: cargo-packager
+
+      - name: Install fpm (for .rpm + .pkg.tar.zst)
+        run: sudo gem install --no-document fpm
+
+      - name: Patch version from tag
+        run: |
+          VERSION="${EFFECTIVE_VERSION#v}"
+          # Awk (over sed) for portability with the macOS job —
+          # see the macOS step's note. On Linux GNU sed would also
+          # work but using the same tool everywhere keeps the
+          # workflow auditable.
+          awk -v v="$VERSION" '
+            /^\[/ { in_pkg = ($0 == "[package]") }
+            in_pkg && /^version = / && !done { print "version = \"" v "\""; done=1; next }
+            { print }
+          ' Cargo.toml > Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
+          echo "Building version: $VERSION"
+
+      # cargo-packager covers .deb and .AppImage natively. Its
+      # `pacman` format writes a `.tar.gz` + PKGBUILD intended for
+      # AUR submission, not the directly-installable `.pkg.tar.zst`
+      # users expect from `pacman -U`, so we skip cargo-packager's
+      # pacman target and use fpm for both .rpm and .pkg.tar.zst.
+      # Same `fpm -s dir -t pacman` pattern the old Tauri release.yml
+      # used (Tauri's bundler didn't target pacman either).
+      #
+      # Same `--target` omission as the macOS / Windows jobs: the
+      # runner is native, so the default host target matches and
+      # cargo-packager finds the binary at `target/release/`
+      # alongside the cargo build it invoked.
+      - name: Build .deb + .AppImage
+        run: cargo packager --release -f deb -f appimage
+
+      - name: Build .rpm via fpm
+        run: |
+          VERSION="${EFFECTIVE_VERSION#v}"
+          ARCH="${{ matrix.rpm_arch }}"
+          BIN="target/release/zorite"
+
+          mkdir -p pkg/usr/bin
+          cp "$BIN" pkg/usr/bin/zorite
+          chmod +x pkg/usr/bin/zorite
+
+          mkdir -p pkg/usr/share/applications
+          cp packaging/linux/zorite.desktop pkg/usr/share/applications/
+
+          mkdir -p pkg/usr/share/icons/hicolor/512x512/apps
+          cp resources/icons/icon.png pkg/usr/share/icons/hicolor/512x512/apps/zorite.png
+
+          mkdir -p release-artifacts
+          # Runtime libs matching the wayland+x11+font-kit surface
+          # gpui_linux pulls in. The Cargo.toml deb metadata
+          # carries the equivalent list for apt — keep these two
+          # lists in lockstep when bumping.
+          #
+          # `()(64bit)` arch qualifier on every SONAME: RPM-based
+          # distros (Fedora / openSUSE / RHEL / Mageia / …)
+          # auto-generate library `Provides:` entries as
+          # `libfoo.so.N()(64bit)` on 64-bit arches — both
+          # aarch64 and x86_64 use the same 64bit token. Without
+          # the suffix, dnf / zypper see our bare `libfoo.so.N`
+          # Requires and refuse to match against
+          # `libfoo.so.N()(64bit)` Provides, surfacing as
+          # "nothing provides libX11.so.6" at install time. If
+          # we ever add an i686 arch the suffix becomes
+          # `()(32bit)` — gate per-ARCH then. Until then, both
+          # the architectures we ship are 64-bit.
+          fpm -s dir -t rpm -C pkg \
+            --name zorite --version "$VERSION" --architecture "$ARCH" \
+            --license GPL-3.0-or-later \
+            --description "A local-first outliner and daily-journal note app (Logseq-style)." \
+            --url "https://github.com/packetThrower/zorite" \
+            --vendor "packetThrower" --maintainer "packetThrower" \
+            --depends 'libxkbcommon.so.0()(64bit)' \
+            --depends 'libxkbcommon-x11.so.0()(64bit)' \
+            --depends 'libwayland-client.so.0()(64bit)' \
+            --depends 'libwayland-cursor.so.0()(64bit)' \
+            --depends 'libX11.so.6()(64bit)' \
+            --depends 'libxcb.so.1()(64bit)' \
+            --depends 'libxcb-cursor.so.0()(64bit)' \
+            --depends 'libxcb-randr.so.0()(64bit)' \
+            --depends 'libxcb-render.so.0()(64bit)' \
+            --depends 'libxcb-shape.so.0()(64bit)' \
+            --depends 'libxcb-xfixes.so.0()(64bit)' \
+            --depends 'libxcb-xkb.so.1()(64bit)' \
+            --depends 'libfontconfig.so.1()(64bit)' \
+            --depends 'libfreetype.so.6()(64bit)' \
+            --package "release-artifacts/Zorite-${VERSION}-1.${ARCH}.rpm"
+
+      # Pacman / Arch builds — uses the same staging directory `pkg`
+      # the .rpm step already populated. fpm's pacman target
+      # accepts the same layout and emits a `.pkg.tar.zst` ready
+      # for `pacman -U`. Shipped with no explicit `--depends`: gpui's
+      # runtime libs are near-universal on a desktop Arch install and
+      # their Arch package names vary by repo.
+      - name: Build .pkg.tar.zst via fpm
+        run: |
+          VERSION="${EFFECTIVE_VERSION#v}"
+          ARCH="${{ matrix.rpm_arch }}"
+          fpm -s dir -t pacman -C pkg \
+            --name zorite --version "$VERSION" --architecture "$ARCH" \
+            --license GPL-3.0-or-later \
+            --description "A local-first outliner and daily-journal note app (Logseq-style)." \
+            --url "https://github.com/packetThrower/zorite" \
+            --vendor "packetThrower" --maintainer "packetThrower" \
+            --package "release-artifacts/zorite-${VERSION}-1-${ARCH}.pkg.tar.zst"
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p release-artifacts
+          BUNDLE="target/release"
+
+          echo "--- cargo-packager outputs ---"
+          ls -la "$BUNDLE" 2>/dev/null || true
+
+          # cargo-packager places its outputs at the same level as
+          # the binary. Filenames are
+          # Zorite_<version>_<arch>.<format>.
+          cp "$BUNDLE"/*.deb release-artifacts/ 2>/dev/null || true
+          cp "$BUNDLE"/*.AppImage release-artifacts/ 2>/dev/null || true
+
+          echo "--- staged ---"
+          ls -la release-artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-${{ matrix.arch }}-package
+          path: release-artifacts/*
+
+  release:
+    needs: [build-macos, build-windows, build-linux]
+    # Skip the GitHub Release on workflow_dispatch — the build
+    # jobs above produce the same artifact set either way, but
+    # the dispatch flow is for ad-hoc testing on the workflow-run
+    # page, not for shipping. Only the tag-push path lands a
+    # Release; workflow_dispatch artifacts live on the run page
+    # for 90 days.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # The one job that needs write: it creates the GitHub Release and
+    # uploads the artifacts. Everything upstream is read-only.
+    permissions:
+      contents: write
+    steps:
+      # Full history + tags so the release-notes step below can
+      # resolve the previous tag and list commits between it and
+      # the current tag.
+      # `persist-credentials: false` — the release job only reads
+      # git locally (`git log` / `git describe`); the GitHub Release
+      # is created through the API token, not `git push`.
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: artifacts
+          pattern: "*-package"
+
+      # Hash with bare basenames (not their subdir paths) so SHA256SUMS
+      # lines match the filenames users see on the release page.
+      - name: Generate SHA256SUMS
+        run: |
+          for dir in artifacts/*/; do
+            (cd "$dir" && sha256sum ./*)
+          done | sort > SHA256SUMS
+          cat SHA256SUMS
+
+      # Build a "What's Changed" body from the commit log between the
+      # previous tag and this one. GitHub's generate_release_notes
+      # only lists PR-merged commits, which misses direct-to-main
+      # commits. Previous-tag logic branches on release type:
+      #   - Pre-release (v*.*.*-*): walk to the most recent tag of
+      #     any kind. Beta-to-beta deltas are easy to read.
+      #   - Stable (v*.*.*): --exclude='*-*' skips pre-release tags
+      #     so the final release's log spans the whole stable-to-
+      #     stable window, not just the delta since the last beta.
+      - name: Build release notes
+        run: |
+          CURRENT_TAG="${GITHUB_REF_NAME}"
+          REPO_URL="https://github.com/${GITHUB_REPOSITORY}"
+
+          if [[ "${CURRENT_TAG}" == *-* ]]; then
+            IS_PRERELEASE=1
+            PREV_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" 2>/dev/null || true)
+          else
+            IS_PRERELEASE=0
+            PREV_TAG=$(git describe --tags --abbrev=0 --exclude='*-*' "${CURRENT_TAG}^" 2>/dev/null || true)
+          fi
+
+          {
+            if [ "$IS_PRERELEASE" = "1" ]; then
+              echo "> ⚠️ **Pre-release.** Published for testing. Behaviour and artifacts are not final."
+              echo
+            fi
+
+            # Platform-test disclaimer. Honest framing while macOS
+            # stays the primary daily-driver — Windows + Linux are
+            # kept in mind in code and tested periodically (Linux less
+            # often, since gpui's Linux backend is the least-mature
+            # of the three). Drop the whole block once all three
+            # platforms are routinely exercised.
+            echo "> ℹ️ **Platform support.**"
+            echo ">"
+            echo "> macOS (arm64 + amd64) is the primary dev target, exercised on every release."
+            echo "> Windows builds are verified periodically; Linux less often, as gpui's Linux backend is the least-mature of the three."
+            echo "> Issues on any platform are welcome at <https://github.com/packetThrower/zorite/issues>."
+            echo
+            echo "## What's Changed"
+            echo
+            if [ -n "$PREV_TAG" ]; then
+              git log --no-merges --format='* %s (%h)' "${PREV_TAG}..${CURRENT_TAG}"
+              echo
+              echo "**Full Changelog**: ${REPO_URL}/compare/${PREV_TAG}...${CURRENT_TAG}"
+            else
+              git log --no-merges --format='* %s (%h)' "${CURRENT_TAG}"
+              echo
+              echo "**Full Changelog**: ${REPO_URL}/commits/${CURRENT_TAG}"
+            fi
+          } > release-notes.md
+
+          echo "--- Generated release notes ---"
+          cat release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          files: |
+            artifacts/macos-package/*
+            artifacts/windows-amd64-package/*
+            artifacts/windows-arm64-package/*
+            artifacts/linux-amd64-package/*
+            artifacts/linux-arm64-package/*
+            SHA256SUMS
+          body_path: release-notes.md
+          draft: false
+          # Tags with a hyphen in the SemVer pre-release slot flag
+          # as pre-release so GitHub shows the "Pre-release" badge
+          # and leaves "Latest release" on the most recent stable.
+          prerelease: ${{ contains(env.EFFECTIVE_VERSION, '-') }}
