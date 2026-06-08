@@ -2375,18 +2375,24 @@ impl Render for AppView {
                     }
                 }),
             )
-            .on_action(cx.listener(|this: &mut AppView, _: &SlashCancel, _, cx| {
-                // From a submenu, Esc backs out to the root categories;
-                // from the root it closes the menu.
-                match this.slash.as_ref().map(|s| s.level) {
-                    Some(SlashLevel::Root) => {
-                        this.slash = None;
-                        cx.notify();
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &SlashCancel, window, cx| {
+                    // From a submenu, Esc backs out to the root categories; from the root
+                    // it closes the menu. With no menu open, Esc leaves edit mode: blurring
+                    // the focused editor swaps the page/day back to its rendered view via
+                    // the editor's Blur handler (same path as clicking away). Otherwise it
+                    // propagates (so dialogs etc. still get Esc).
+                    match this.slash.as_ref().map(|s| s.level) {
+                        Some(SlashLevel::Root) => {
+                            this.slash = None;
+                            cx.notify();
+                        }
+                        Some(_) => this.enter_slash_category(SlashLevel::Root, cx),
+                        None if this.page_editing || this.editing_day.is_some() => window.blur(),
+                        None => cx.propagate(),
                     }
-                    Some(_) => this.enter_slash_category(SlashLevel::Root, cx),
-                    None => cx.propagate(),
-                }
-            }))
+                }),
+            )
             // Sidebar right-click menu actions.
             .on_action(cx.listener(Self::on_delete_page))
             .on_action(cx.listener(Self::on_open_in_new_tab))
