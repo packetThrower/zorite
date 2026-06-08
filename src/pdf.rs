@@ -50,9 +50,37 @@ pub fn highlights_title(path: &Path) -> String {
     format!("{name} (highlights)")
 }
 
-/// Fill color for a highlight (the viewer draws it translucent) — a classic yellow.
-fn highlight_color() -> gpui::Hsla {
+/// The highlight colors the picker offers, as `(name, hue, saturation, lightness)`.
+/// The name is what's stored in the markdown (a trailing `{name}`), so it must
+/// round-trip with [`known_color`]. Yellow is first (the default).
+const PALETTE: &[(&str, f32, f32, f32)] = &[
+    ("yellow", 0.14, 0.95, 0.55),
+    ("green", 0.33, 0.60, 0.50),
+    ("blue", 0.58, 0.85, 0.60),
+    ("pink", 0.92, 0.80, 0.66),
+    ("orange", 0.07, 0.90, 0.55),
+];
+
+/// The default highlight fill (yellow) — used for entries with no `{color}` tag.
+fn default_highlight_color() -> gpui::Hsla {
     gpui::hsla(0.14, 0.95, 0.55, 1.0)
+}
+
+/// Resolve a stored color name to its fill, or `None` if it isn't a known palette
+/// name (so a quote that merely ends in `{…}` isn't mistaken for a color tag).
+fn known_color(name: &str) -> Option<gpui::Hsla> {
+    PALETTE
+        .iter()
+        .find(|(n, ..)| n.eq_ignore_ascii_case(name))
+        .map(|(_, h, s, l)| gpui::hsla(*h, *s, *l, 1.0))
+}
+
+/// The palette to hand the viewer's color picker, as `(name, fill)` pairs.
+pub fn highlight_palette() -> Vec<(gpui::SharedString, gpui::Hsla)> {
+    PALETTE
+        .iter()
+        .map(|(n, h, s, l)| ((*n).into(), gpui::hsla(*h, *s, *l, 1.0)))
+        .collect()
 }
 
 /// Parse a highlights page's markdown into viewer highlights. Each line of the form
@@ -82,7 +110,18 @@ pub fn parse_highlights(content: &str) -> Vec<Highlight> {
             continue;
         }
         let mut quote = rest[colon + 1..].trim().to_string();
+        // Strip a trailing reverse-link `[[…]]` (note→PDF navigation).
         if let Some(b) = quote.find("[[") {
+            quote = quote[..b].trim().to_string();
+        }
+        // Strip a trailing `{color}` tag — but only if it names a known color, so a
+        // quote that merely happens to end in braces is left untouched.
+        let mut color = default_highlight_color();
+        if quote.ends_with('}')
+            && let Some(b) = quote.rfind('{')
+            && let Some(c) = known_color(quote[b + 1..quote.len() - 1].trim())
+        {
+            color = c;
             quote = quote[..b].trim().to_string();
         }
         if quote.is_empty() {
@@ -100,7 +139,7 @@ pub fn parse_highlights(content: &str) -> Vec<Highlight> {
             page,
             quote,
             occurrence,
-            color: highlight_color(),
+            color,
         });
     }
     out
@@ -141,5 +180,23 @@ mod tests {
     fn ignores_non_highlight_lines() {
         let hs = parse_highlights("# Heading\n- a normal bullet\n- p0: bad\n- p5:   ");
         assert!(hs.is_empty());
+    }
+
+    #[test]
+    fn parses_color_tag_and_reverse_link() {
+        let hs = parse_highlights(
+            "- p1: Counters for seconds {green} [[pdf/m41t81s-1.pdf#p1|↗]]\n\
+             - p2: plain quote\n\
+             - p3: math set {3}",
+        );
+        assert_eq!(hs.len(), 3);
+        // Both the color tag and the reverse link are stripped from the stored quote.
+        assert_eq!(hs[0].quote, "Counters for seconds");
+        assert_eq!(hs[0].color, known_color("green").unwrap());
+        // No tag → default yellow.
+        assert_eq!(hs[1].quote, "plain quote");
+        assert_eq!(hs[1].color, default_highlight_color());
+        // A trailing `{…}` that isn't a known color stays part of the quote.
+        assert_eq!(hs[2].quote, "math set {3}");
     }
 }

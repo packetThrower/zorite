@@ -572,7 +572,7 @@ impl AppView {
                 && n > 0
                 && let Some(v) = self.pdf_views.get(&path)
             {
-                v.update(cx, |v, cx| v.go_to_page(n - 1, cx));
+                v.update(cx, |v, cx| v.reveal_highlight(n - 1, cx));
             }
             return;
         }
@@ -1252,16 +1252,25 @@ impl AppView {
         let create_path = path.clone();
         view.update(cx, move |v, cx| {
             v.set_highlights(highlights, cx);
+            v.set_highlight_palette(crate::pdf::highlight_palette(), cx);
             v.set_on_highlight(Rc::new(move |_id, window, cx| {
                 if let Some(app) = weak.upgrade() {
                     app.update(cx, |a, cx| a.open_page_title(&notes_title, window, cx));
                 }
             }));
             // Drag-select in the viewer → append a highlight block to the notes page.
-            v.set_on_create_highlight(Rc::new(move |page, quote, occ, window, cx| {
+            v.set_on_create_highlight(Rc::new(move |page, quote, occ, color, window, cx| {
                 if let Some(app) = create_weak.upgrade() {
                     app.update(cx, |a, cx| {
-                        a.add_pdf_highlight(&create_path, page, &quote, occ, window, cx)
+                        a.add_pdf_highlight(
+                            &create_path,
+                            page,
+                            &quote,
+                            occ,
+                            color.as_ref(),
+                            window,
+                            cx,
+                        )
                     });
                 }
             }));
@@ -1271,12 +1280,16 @@ impl AppView {
 
     /// Append a drag-selected highlight to the PDF's per-PDF notes page, then
     /// re-render the open viewer so it shows up immediately.
+    // Args mirror the viewer's create-highlight callback (page, quote, occurrence,
+    // color) plus the PDF path; bundling them wouldn't read more clearly.
+    #[allow(clippy::too_many_arguments)]
     fn add_pdf_highlight(
         &mut self,
         pdf_path: &Path,
         page: usize,
         quote: &str,
         _occurrence: usize,
+        color: &str,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1288,7 +1301,14 @@ impl AppView {
         let Ok(p) = self.db.get_or_create_page(&title) else {
             return;
         };
-        let line = format!("- p{}: {}", page + 1, q);
+        // `- p{N}: {quote}` + an optional `{color}` (omitted for the default yellow, to
+        // keep notes clean) + a reverse link `[[<ref>#pN|↗]]` that opens the PDF and
+        // flashes the highlight. The ref is data-dir-relative so it's portable.
+        let mut line = format!("- p{}: {}", page + 1, q);
+        if !color.is_empty() && !color.eq_ignore_ascii_case("yellow") {
+            line.push_str(&format!(" {{{color}}}"));
+        }
+        line.push_str(&format!(" [[{}#p{}|↗]]", self.pdf_ref(pdf_path), page + 1));
         let content = if p.content.trim().is_empty() {
             line
         } else {
@@ -1309,6 +1329,26 @@ impl AppView {
                 }
             });
         });
+    }
+
+    /// A portable reference string for a PDF, for storing in a `[[…]]` link: relative
+    /// to the data dir when possible (e.g. `pdf/file.pdf`, which survives moving the
+    /// notes between machines), falling back to the managed `pdf/<name>` location.
+    fn pdf_ref(&self, pdf_path: &Path) -> String {
+        let data = crate::paths::data_dir();
+        pdf_path
+            .strip_prefix(&data)
+            .ok()
+            .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|| {
+                format!(
+                    "pdf/{}",
+                    pdf_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                )
+            })
     }
 
     /// Begin resizing an image: capture the start position and its current

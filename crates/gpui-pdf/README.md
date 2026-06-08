@@ -158,10 +158,17 @@ pub struct Highlight { pub id: u64, pub page: usize, pub quote: String,
 impl PdfView {
     pub fn set_highlights(&mut self, highlights: Vec<Highlight>, cx: &mut Context<Self>);
     pub fn set_on_highlight(&mut self, handler: HighlightClickFn);       // click → id
-    // Interactive creation: a ✎ toggle in the header turns on "highlight mode", where
-    // dragging over text resolves a selection and fires the create handler.
-    pub fn set_on_create_highlight(&mut self, handler: CreateHighlightFn); // (page, quote, occurrence)
+    // A color picker: the ✎ toggle pops down a palette of (label, fill) swatches; the
+    // active color tints new highlights and its label is echoed back on create.
+    pub fn set_highlight_palette(&mut self, palette: Vec<(SharedString, Hsla)>,
+                                 cx: &mut Context<Self>);
+    // Interactive creation: ✎ turns on "highlight mode", where dragging over text
+    // resolves a selection and fires the create handler.
+    pub fn set_on_create_highlight(&mut self, handler: CreateHighlightFn);
+    // CreateHighlightFn = Fn(page, quote, occurrence, color_label, &mut Window, &mut App)
     pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>);
+    // Jump from a note: scroll a page in (to its first highlight) and flash them.
+    pub fn reveal_highlight(&mut self, page: usize, cx: &mut Context<Self>);
 }
 impl PageText {              // drag → selection, also usable directly
     pub fn select(&self, from: NormPoint, to: NormPoint) -> Option<Selection>;
@@ -172,8 +179,9 @@ impl PageText {              // drag → selection, also usable directly
 quirks) and returns one normalized rect per line it spans. The viewer extracts a
 page's text lazily — off-thread, cached — when a highlighted page scrolls into view.
 Because coordinates are normalized, highlights track zoom and DPI for free. The host
-owns storage: on create it persists the quote (however it likes) and feeds the
-highlights back via `set_highlights`.
+owns storage: on create it persists the quote and color label (however it likes) and
+feeds the highlights back via `set_highlights`. For the reverse direction, a note can
+link to `file.pdf#pN` and call [`reveal_highlight`] to scroll to and flash it.
 
 ## Status
 

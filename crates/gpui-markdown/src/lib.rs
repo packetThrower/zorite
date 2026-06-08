@@ -703,10 +703,17 @@ fn push_text(value: &str, cur: HighlightStyle, style: &MarkdownStyle, out: &mut 
         // [[wiki-link]]
         if value[i..].starts_with("[[") {
             if let Some(close) = value[i + 2..].find("]]") {
-                let title = value[i + 2..i + 2 + close].trim();
-                if !title.is_empty() {
+                let inner = &value[i + 2..i + 2 + close];
+                // `[[target|label]]` shows `label` but links to `target`; `[[name]]`
+                // uses the name for both. An empty label falls back to the target.
+                let (target, display) = match inner.split_once('|') {
+                    Some((t, l)) if !l.trim().is_empty() => (t.trim(), l.trim()),
+                    Some((t, _)) => (t.trim(), t.trim()),
+                    None => (inner.trim(), inner.trim()),
+                };
+                if !target.is_empty() {
                     push_run(&value[plain_start..i], cur, out);
-                    push_link(title, title, style.link_color, cur, out);
+                    push_link(display, target, style.link_color, cur, out);
                     i += 2 + close + 2;
                     plain_start = i;
                     continue;
@@ -1079,6 +1086,19 @@ mod tests {
             })
             .collect();
         assert_eq!(titles, vec!["Foo", "Bar"]);
+    }
+
+    #[test]
+    fn aliased_wikilink_shows_label_links_target() {
+        let inl = inline_of("jump [[file.pdf#p3|\u{2197}]] here");
+        assert_eq!(inl.text, "jump \u{2197} here");
+        assert_eq!(inl.links.len(), 1);
+        let (range, target) = &inl.links[0];
+        assert_eq!(&inl.text[range.clone()], "\u{2197}"); // displayed label
+        match target {
+            LinkTarget::Wiki(t) => assert_eq!(t.as_ref(), "file.pdf#p3"), // link target
+            _ => panic!("expected wiki link"),
+        }
     }
 
     #[test]

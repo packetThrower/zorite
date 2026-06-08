@@ -35,16 +35,16 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    Context, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement, Render, RenderImage, ScrollHandle, StatefulInteractiveElement,
-    Styled, Window, div, hsla, img, point, px,
+    AnyView, App, AppContext, Context, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, RenderImage, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, img, point, px,
 };
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::Pdf;
 use image::{Frame, RgbaImage};
 
 #[cfg(feature = "markup")]
-use gpui::MouseMoveEvent;
+use gpui::{MouseMoveEvent, deferred};
 
 #[cfg(feature = "markup")]
 mod text;
@@ -296,10 +296,12 @@ pub struct Highlight {
 pub type HighlightClickFn = Rc<dyn Fn(u64, &mut Window, &mut gpui::App)>;
 
 /// Invoked when the user finishes a drag-selection in "highlight mode": the page
-/// (0-based), the selected one-line quote, and which occurrence of it on the page.
-/// The host turns this into a stored note. (`markup` feature.)
+/// (0-based), the selected one-line quote, which occurrence of it on the page, and the
+/// label of the picked color (the opaque tag from [`set_highlight_palette`], for the
+/// host to store). The host turns this into a stored note. (`markup` feature.)
 #[cfg(feature = "markup")]
-pub type CreateHighlightFn = Rc<dyn Fn(usize, String, usize, &mut Window, &mut gpui::App)>;
+pub type CreateHighlightFn =
+    Rc<dyn Fn(usize, String, usize, SharedString, &mut Window, &mut gpui::App)>;
 
 /// Cache state for a page's extracted text layer. (`markup` feature.)
 #[cfg(feature = "markup")]
@@ -371,6 +373,25 @@ pub struct PdfView {
     /// Called when a drag-selection finishes, so the host stores the note (markup).
     #[cfg(feature = "markup")]
     on_create: Option<CreateHighlightFn>,
+    /// Host-supplied highlight colors `(label, fill)`; the picker shows these and the
+    /// label is echoed back on create. Empty → a single default yellow.
+    #[cfg(feature = "markup")]
+    palette: Vec<(SharedString, Hsla)>,
+    /// Index into `palette` for new highlights.
+    #[cfg(feature = "markup")]
+    active_color: usize,
+    /// Whether the color picker dropdown is showing.
+    #[cfg(feature = "markup")]
+    palette_open: bool,
+    /// Page whose highlights are briefly flashing (after a jump from a note), if any.
+    #[cfg(feature = "markup")]
+    flash: Option<usize>,
+    /// Bumped on each reveal; the deferred clear no-ops if a newer flash superseded it.
+    #[cfg(feature = "markup")]
+    flash_gen: u64,
+    /// A reveal requested before the document finished loading; applied once it does.
+    #[cfg(feature = "markup")]
+    pending_reveal: Option<usize>,
 }
 
 impl PdfView {
@@ -411,6 +432,11 @@ impl PdfView {
                 this.dims = dims;
                 this.pages = vec![Slot::default(); n];
                 cx.notify();
+                // A note→PDF jump that arrived before the document loaded: apply it now.
+                #[cfg(feature = "markup")]
+                if let Some(p) = this.pending_reveal.take() {
+                    this.reveal_highlight(p, cx);
+                }
             });
         })
         .detach();
@@ -442,6 +468,18 @@ impl PdfView {
             sel_drag: None,
             #[cfg(feature = "markup")]
             on_create: None,
+            #[cfg(feature = "markup")]
+            palette: Vec::new(),
+            #[cfg(feature = "markup")]
+            active_color: 0,
+            #[cfg(feature = "markup")]
+            palette_open: false,
+            #[cfg(feature = "markup")]
+            flash: None,
+            #[cfg(feature = "markup")]
+            flash_gen: 0,
+            #[cfg(feature = "markup")]
+            pending_reveal: None,
         }
     }
 
@@ -474,6 +512,88 @@ impl PdfView {
     pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>) {
         self.selecting = !self.selecting;
         self.sel_drag = None;
+        // Turning highlight mode on pops the color picker down; off hides it.
+        self.palette_open = self.selecting && !self.palette.is_empty();
+        cx.notify();
+    }
+
+    /// Set the highlight colors the picker offers, as `(label, fill)` pairs. The label
+    /// is opaque to the viewer — it's echoed back via [`CreateHighlightFn`] so the host
+    /// can store it (and map it back to a fill for [`set_highlights`]). (`markup`.)
+    #[cfg(feature = "markup")]
+    pub fn set_highlight_palette(
+        &mut self,
+        palette: Vec<(SharedString, Hsla)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.palette = palette;
+        if self.active_color >= self.palette.len() {
+            self.active_color = 0;
+        }
+        cx.notify();
+    }
+
+    /// The fill of the currently-selected palette color (default yellow if unset).
+    #[cfg(feature = "markup")]
+    fn active_color_hsla(&self) -> Hsla {
+        self.palette
+            .get(self.active_color)
+            .map(|(_, c)| *c)
+            .unwrap_or_else(|| hsla(0.14, 0.95, 0.55, 1.0))
+    }
+
+    /// The label of the currently-selected palette color (empty if unset).
+    #[cfg(feature = "markup")]
+    fn active_color_name(&self) -> SharedString {
+        self.palette
+            .get(self.active_color)
+            .map(|(n, _)| n.clone())
+            .unwrap_or_default()
+    }
+
+    /// Jump to a highlight from its note: scroll `page` into view (bringing its first
+    /// highlight near the top when that page's text is already extracted) and briefly
+    /// flash the page's highlights so the eye finds them. (`markup` feature.)
+    #[cfg(feature = "markup")]
+    pub fn reveal_highlight(&mut self, page: usize, cx: &mut Context<Self>) {
+        if self.dims.is_empty() {
+            // The document is still loading; apply the jump once it's measured.
+            self.pending_reveal = Some(page);
+            return;
+        }
+        let page = page.min(self.dims.len() - 1);
+        let pw = self.page_width();
+        // Default to the page top (like `go_to_page`); if the text is ready, scroll so
+        // the first highlight on the page sits just below the viewport top.
+        let mut y = if page == 0 {
+            0.0
+        } else {
+            page_top_y(&self.dims, pw, page)
+        };
+        if let Some(TextSlot::Ready(pt)) = self.page_text.get(&page)
+            && let Some(h) = self.highlights.iter().find(|h| h.page == page)
+            && let Some(r) = pt.locate(&h.quote, h.occurrence).first()
+        {
+            let disp_h = display_height(self.dims[page], pw);
+            y = (page_top_y(&self.dims, pw, page) + r.y * disp_h - 48.0).max(0.0);
+        }
+        self.scroll.set_offset(point(px(0.0), px(-y)));
+        // Flash, then clear after a beat (unless a newer reveal supersedes this one).
+        self.flash = Some(page);
+        self.flash_gen = self.flash_gen.wrapping_add(1);
+        let token = self.flash_gen;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(1200))
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                if this.flash_gen == token {
+                    this.flash = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 
@@ -768,6 +888,29 @@ impl PdfView {
             .hover(|s| s.bg(style.placeholder_bg))
             .child(label.into())
     }
+
+    /// Build a `.tooltip(..)` closure for a header control. gpui core has the tooltip
+    /// *hook* but no tooltip *view* (those live in higher-level UI crates we don't
+    /// depend on), so we render a small themed one ([`Tip`]), reading colors through
+    /// the same style closure at show time.
+    fn tip(
+        &self,
+        text: impl Into<SharedString>,
+    ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+        let style_fn = self.style.clone();
+        let text = text.into();
+        move |_window, cx| {
+            let s = style_fn();
+            let text = text.clone();
+            cx.new(move |_| Tip {
+                text,
+                fg: s.header_fg,
+                bg: s.placeholder_bg,
+                border: s.border,
+            })
+            .into()
+        }
+    }
 }
 
 impl Render for PdfView {
@@ -826,30 +969,38 @@ impl Render for PdfView {
             let slot = {
                 let mut slot = slot;
                 if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i) {
+                    // Brighten + outline the page's highlights briefly after a jump from
+                    // a note, so the clicked one is easy to spot.
+                    let flashing = self.flash == Some(i);
                     for h in self.highlights.iter().filter(|h| h.page == i) {
-                        let fill = Hsla { a: 0.35, ..h.color };
+                        let fill = Hsla {
+                            a: if flashing { 0.6 } else { 0.35 },
+                            ..h.color
+                        };
                         for (ri, r) in pt.locate(&h.quote, h.occurrence).into_iter().enumerate() {
                             let id = h.id;
-                            slot = slot.child(
-                                div()
-                                    .id(gpui::SharedString::from(format!(
-                                        "pdf-hl-{i}-{}-{ri}",
-                                        h.id
-                                    )))
-                                    .absolute()
-                                    .left(px(r.x * page_width))
-                                    .top(px(r.y * disp_h))
-                                    .w(px(r.w * page_width))
-                                    .h(px(r.h * disp_h))
-                                    .rounded(px(1.0))
-                                    .bg(fill)
-                                    .cursor_pointer()
-                                    .on_click(cx.listener(move |this, _, window, cx| {
-                                        if let Some(cb) = this.on_highlight.clone() {
-                                            cb(id, window, cx);
-                                        }
-                                    })),
-                            );
+                            let mut hl = div()
+                                .id(gpui::SharedString::from(format!(
+                                    "pdf-hl-{i}-{}-{ri}",
+                                    h.id
+                                )))
+                                .absolute()
+                                .left(px(r.x * page_width))
+                                .top(px(r.y * disp_h))
+                                .w(px(r.w * page_width))
+                                .h(px(r.h * disp_h))
+                                .rounded(px(1.0))
+                                .bg(fill)
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    if let Some(cb) = this.on_highlight.clone() {
+                                        cb(id, window, cx);
+                                    }
+                                }));
+                            if flashing {
+                                hl = hl.border_1().border_color(Hsla { a: 0.95, ..h.color });
+                            }
+                            slot = slot.child(hl);
                         }
                     }
                 }
@@ -908,7 +1059,8 @@ impl Render for PdfView {
                 this.page_input.get_or_insert_with(String::new);
                 window.focus(&this.focus, cx);
                 cx.notify();
-            }));
+            }))
+            .tooltip(self.tip("Go to page…"));
 
         // Header: filename · N pages … (spacer) … page nav · zoom.
         let header = div()
@@ -932,31 +1084,37 @@ impl Render for PdfView {
             .child(div().flex_1())
             .child(
                 self.control("pdf-prev", "‹")
-                    .on_click(cx.listener(|this, _, _window, cx| this.prev_page(cx))),
+                    .on_click(cx.listener(|this, _, _window, cx| this.prev_page(cx)))
+                    .tooltip(self.tip("Previous page")),
             )
             .child(counter)
             .child(
                 self.control("pdf-next", "›")
-                    .on_click(cx.listener(|this, _, _window, cx| this.next_page(cx))),
+                    .on_click(cx.listener(|this, _, _window, cx| this.next_page(cx)))
+                    .tooltip(self.tip("Next page")),
             )
             .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
             .child(
                 self.control("pdf-zoom-out", "−")
-                    .on_click(cx.listener(|this, _, _window, cx| this.zoom_out(cx))),
+                    .on_click(cx.listener(|this, _, _window, cx| this.zoom_out(cx)))
+                    .tooltip(self.tip("Zoom out")),
             )
             .child(
                 self.control(
                     "pdf-zoom-reset",
                     format!("{}%", (self.zoom * 100.0).round() as i32),
                 )
-                .on_click(cx.listener(|this, _, _window, cx| this.reset_zoom(cx))),
+                .on_click(cx.listener(|this, _, _window, cx| this.reset_zoom(cx)))
+                .tooltip(self.tip("Reset zoom")),
             )
             .child(
                 self.control("pdf-zoom-in", "+")
-                    .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx))),
+                    .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx)))
+                    .tooltip(self.tip("Zoom in")),
             );
 
-        // Highlight-mode toggle (markup): a pen button that turns drag-to-select on.
+        // Highlight-mode toggle + color picker (markup): the pen turns drag-to-select
+        // on and pops a palette down; the active color shows as a chip beneath it.
         #[cfg(feature = "markup")]
         let header = {
             let mark_bg = if self.selecting {
@@ -964,23 +1122,73 @@ impl Render for PdfView {
             } else {
                 Hsla { a: 0.0, ..style.bg }
             };
-            header.child(
-                div()
-                    .id("pdf-mark")
+            let active = self.active_color_hsla();
+            let pen = div()
+                .id("pdf-mark")
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(1.0))
+                .min_w(px(20.0))
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_color(style.header_fg)
+                .bg(mark_bg)
+                .hover(|s| s.bg(style.placeholder_bg))
+                .child("✎")
+                .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
+                .on_click(cx.listener(|this, _, _window, cx| this.toggle_select_mode(cx)))
+                .tooltip(self.tip("Highlight — pick a color"));
+
+            // Color-picker dropdown, deferred so it paints over the page area below.
+            let dropdown = if self.palette_open && !self.palette.is_empty() {
+                let mut row = div()
+                    .absolute()
+                    .top(px(30.0))
+                    .right(px(0.0))
                     .flex()
-                    .items_center()
-                    .justify_center()
-                    .min_w(px(20.0))
-                    .px(px(6.0))
-                    .py(px(1.0))
-                    .rounded(px(4.0))
-                    .cursor_pointer()
-                    .text_color(style.header_fg)
-                    .bg(mark_bg)
-                    .hover(|s| s.bg(style.placeholder_bg))
-                    .child("✎")
-                    .on_click(cx.listener(|this, _, _window, cx| this.toggle_select_mode(cx))),
-            )
+                    .flex_row()
+                    .gap_1()
+                    .p(px(5.0))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(style.border)
+                    .bg(style.bg);
+                for (i, (name, color)) in self.palette.iter().enumerate() {
+                    let selected = i == self.active_color;
+                    let color = *color;
+                    row = row.child(
+                        div()
+                            .id(SharedString::from(format!("pdf-swatch-{i}")))
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .rounded(px(8.0))
+                            .bg(color)
+                            .border_2()
+                            .border_color(if selected {
+                                style.header_fg
+                            } else {
+                                Hsla { a: 0.0, ..style.bg }
+                            })
+                            .cursor_pointer()
+                            .tooltip(self.tip(name.clone()))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                this.active_color = i;
+                                this.selecting = true;
+                                this.palette_open = false;
+                                cx.notify();
+                            })),
+                    );
+                }
+                Some(deferred(row))
+            } else {
+                None
+            };
+
+            header.child(div().relative().child(pen).children(dropdown))
         };
 
         let root = div()
@@ -1088,7 +1296,8 @@ impl Render for PdfView {
                     if let Some(sel) = sel
                         && let Some(cb) = this.on_create.clone()
                     {
-                        cb(pg, sel.quote, sel.occurrence, window, cx);
+                        let color = this.active_color_name();
+                        cb(pg, sel.quote, sel.occurrence, color, window, cx);
                     }
                     cx.notify();
                 }),
@@ -1121,6 +1330,30 @@ fn loading(style: PdfStyle) -> impl IntoElement {
         .justify_center()
         .bg(style.bg)
         .child(div().text_color(style.placeholder_fg).child("Loading PDF…"))
+}
+
+/// A minimal themed tooltip view — gpui's `.tooltip()` takes any view, and we don't
+/// pull in a UI crate just for one label.
+struct Tip {
+    text: SharedString,
+    fg: Hsla,
+    bg: Hsla,
+    border: Hsla,
+}
+
+impl Render for Tip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .px(px(6.0))
+            .py(px(2.0))
+            .rounded(px(4.0))
+            .border_1()
+            .border_color(self.border)
+            .bg(self.bg)
+            .text_color(self.fg)
+            .text_size(px(11.0))
+            .child(self.text.clone())
+    }
 }
 
 #[cfg(test)]
