@@ -24,8 +24,9 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement,
-    InteractiveText, IntoElement, ParentElement, Pixels, RenderOnce, ScrollHandle, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, Window, div, px, rgb, rgba,
+    InteractiveText, IntoElement, MouseButton, MouseDownEvent, ParentElement, Pixels, RenderOnce,
+    ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText,
+    Window, div, px, rgb, rgba,
 };
 use markdown::mdast;
 
@@ -200,6 +201,11 @@ pub struct ImageInfo {
 /// supply a stateful, draggable image while this crate stays host-agnostic.
 pub type ImageRenderer = Rc<dyn Fn(ImageInfo) -> AnyElement>;
 
+/// Called when the rendered text is clicked (outside a link), with the **source**
+/// byte offset nearest the click — so the host can place its editor's caret there
+/// when switching into edit mode. Set via [`MarkdownView::on_click_source`].
+pub type ClickSourceHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
 /// A rendered markdown document element.
 #[derive(IntoElement)]
 pub struct MarkdownView {
@@ -214,6 +220,8 @@ pub struct MarkdownView {
     /// When set, the block column is `track_scroll`ed with this handle, so the host
     /// can read each block's bounds (`bounds_for_item`) to scroll a match into view.
     block_scroll: Option<ScrollHandle>,
+    /// Click-to-caret: maps a click on the rendered text to its source offset.
+    on_click_source: Option<ClickSourceHandler>,
 }
 
 impl MarkdownView {
@@ -229,6 +237,7 @@ impl MarkdownView {
             query: None,
             current_match: 0,
             block_scroll: None,
+            on_click_source: None,
         }
     }
 
@@ -270,6 +279,14 @@ impl MarkdownView {
         self.block_scroll = Some(handle);
         self
     }
+
+    /// Report the **source** byte offset nearest a click on the rendered text
+    /// (outside a link), so the host can place its editor's caret there. Maps the
+    /// click through gpui's text layout + a source-offset map built while rendering.
+    pub fn on_click_source(mut self, handler: ClickSourceHandler) -> Self {
+        self.on_click_source = Some(handler);
+        self
+    }
 }
 
 impl RenderOnce for MarkdownView {
@@ -287,6 +304,7 @@ impl RenderOnce for MarkdownView {
             query: self.query,
             current_match: self.current_match,
             match_ix: 0,
+            on_click_source: self.on_click_source,
         };
 
         let mut col = div()
@@ -333,6 +351,7 @@ struct Ctx {
     query: Option<SharedString>,
     current_match: usize,
     match_ix: usize,
+    on_click_source: Option<ClickSourceHandler>,
 }
 
 // --- Block rendering ---
@@ -621,6 +640,17 @@ struct Inline {
     text: String,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     links: Vec<(Range<usize>, LinkTarget)>,
+    /// `(rendered byte offset, source byte offset)` checkpoints, in increasing
+    /// rendered order, recorded as text is appended — so a click on the rendered
+    /// text maps back to a source offset (see [`map_to_source`]).
+    source_map: Vec<(usize, usize)>,
+}
+
+impl Inline {
+    /// Record that the text appended next maps to source byte offset `src`.
+    fn map(&mut self, src: usize) {
+        self.source_map.push((self.text.len(), src));
+    }
 }
 
 fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
@@ -656,29 +686,49 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     };
 
     let styled = StyledText::new(inl.text).with_highlights(highlights);
-    if inl.links.is_empty() {
-        return styled.into_any_element();
-    }
+    // Capture the text layout (a shared handle, populated on paint) so a click can
+    // be mapped to a rendered byte index, then to a source offset.
+    let layout = styled.layout().clone();
 
-    ctx.counter += 1;
-    let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
-    let ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
-    let targets: Vec<LinkTarget> = inl.links.into_iter().map(|(_, t)| t).collect();
-    let on_wiki = ctx.on_wiki_link.clone();
-
-    InteractiveText::new(id, styled)
-        .on_click(ranges, move |ix, window, cx| {
-            // The click was on a link range; consume it so it doesn't also reach
-            // a surrounding host handler (e.g. a click-to-edit area).
-            cx.stop_propagation();
-            match targets.get(ix) {
-                Some(LinkTarget::Wiki(title)) => {
-                    if let Some(handler) = &on_wiki {
-                        handler(title.clone(), window, cx);
+    let inner = if inl.links.is_empty() {
+        styled.into_any_element()
+    } else {
+        ctx.counter += 1;
+        let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
+        let ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
+        let targets: Vec<LinkTarget> = inl.links.into_iter().map(|(_, t)| t).collect();
+        let on_wiki = ctx.on_wiki_link.clone();
+        InteractiveText::new(id, styled)
+            .on_click(ranges, move |ix, window, cx| {
+                // The click was on a link range; consume it so it doesn't also reach
+                // a surrounding host handler (e.g. the click-to-caret below).
+                cx.stop_propagation();
+                match targets.get(ix) {
+                    Some(LinkTarget::Wiki(title)) => {
+                        if let Some(handler) = &on_wiki {
+                            handler(title.clone(), window, cx);
+                        }
                     }
+                    Some(LinkTarget::Url(url)) => cx.open_url(url),
+                    None => {}
                 }
-                Some(LinkTarget::Url(url)) => cx.open_url(url),
-                None => {}
+            })
+            .into_any_element()
+    };
+
+    // Click-to-caret: outside a link (link clicks `stop_propagation` above), map the
+    // click to a source offset and report it so the host can place its editor caret
+    // there. No handler (e.g. the journal feed) → just the inner element.
+    let Some(on_click_source) = ctx.on_click_source.clone() else {
+        return inner;
+    };
+    let source_map = inl.source_map;
+    div()
+        .child(inner)
+        .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
+            let rendered = layout.index_for_position(ev.position).unwrap_or_else(|e| e);
+            if let Some(src) = map_to_source(&source_map, rendered) {
+                on_click_source(src, window, cx);
             }
         })
         .into_any_element()
@@ -696,7 +746,7 @@ fn build_inline(
     let mut cur = cur;
     for node in nodes {
         match node {
-            mdast::Node::Text(t) => push_text(&t.value, cur, style, out),
+            mdast::Node::Text(t) => push_text(&t.value, node_src(node), cur, style, out),
             mdast::Node::Strong(s) => {
                 let mut c = cur;
                 c.font_weight = Some(FontWeight::BOLD);
@@ -714,6 +764,7 @@ fn build_inline(
                 // monospace font can't be applied per text-run — `HighlightStyle` has no
                 // font field — so inline code keeps the body font but gets the tint.)
                 c.background_color = Some(style.code_bg);
+                out.map(node_src(node) + 1); // +1 past the opening backtick
                 push_run(&ic.value, c, out);
             }
             mdast::Node::Link(l) => {
@@ -818,7 +869,13 @@ fn build_inline(
 /// Push plain text, splitting out `[[wiki-links]]` and `#tags` into
 /// clickable runs. Both navigate to a page; a tag keeps its `#` in the
 /// display text but targets the bare name.
-fn push_text(value: &str, cur: HighlightStyle, style: &MarkdownStyle, out: &mut Inline) {
+fn push_text(
+    value: &str,
+    src_base: usize,
+    cur: HighlightStyle,
+    style: &MarkdownStyle,
+    out: &mut Inline,
+) {
     let bytes = value.as_bytes();
     let mut plain_start = 0;
     let mut i = 0;
@@ -835,7 +892,9 @@ fn push_text(value: &str, cur: HighlightStyle, style: &MarkdownStyle, out: &mut 
                     None => (inner.trim(), inner.trim()),
                 };
                 if !target.is_empty() {
+                    out.map(src_base + plain_start);
                     push_run(&value[plain_start..i], cur, out);
+                    out.map(src_base + i + 2); // the display text sits just past `[[`
                     push_link(display, target, style.link_color, cur, out);
                     i += 2 + close + 2;
                     plain_start = i;
@@ -853,7 +912,9 @@ fn push_text(value: &str, cur: HighlightStyle, style: &MarkdownStyle, out: &mut 
             }
             if j > i + 1 {
                 let name = &value[i + 1..j];
+                out.map(src_base + plain_start);
                 push_run(&value[plain_start..i], cur, out);
+                out.map(src_base + i); // the tag (with its `#`) is verbatim in the source
                 push_link(&value[i..j], name, style.tag_color, cur, out);
                 i = j;
                 plain_start = i;
@@ -862,7 +923,23 @@ fn push_text(value: &str, cur: HighlightStyle, style: &MarkdownStyle, out: &mut 
         }
         i += value[i..].chars().next().map_or(1, |c| c.len_utf8());
     }
+    out.map(src_base + plain_start);
     push_run(&value[plain_start..], cur, out);
+}
+
+/// Source byte offset where `node` begins (0 if the parser recorded none).
+fn node_src(node: &mdast::Node) -> usize {
+    node.position().map_or(0, |p| p.start.offset)
+}
+
+/// Map a rendered byte index to a source byte offset via the checkpoints recorded
+/// while building the inline text. `None` when there's no checkpoint at/before the
+/// index (the host then falls back to plain enter-edit).
+fn map_to_source(map: &[(usize, usize)], rendered: usize) -> Option<usize> {
+    map.iter()
+        .rev()
+        .find(|(r, _)| *r <= rendered)
+        .map(|(r, s)| s + (rendered - r))
 }
 
 /// Push `display` as a clickable run that navigates to page `target`.
@@ -1193,6 +1270,51 @@ mod search_tests {
             vec![1, 1]
         );
         assert!(find_matches("x", "").is_empty());
+    }
+
+    fn first_paragraph_inline(source: &str) -> Inline {
+        let style = MarkdownStyle::default();
+        let defs = HashMap::new();
+        let mdast::Node::Root(root) =
+            markdown::to_mdast(source, &markdown::ParseOptions::gfm()).unwrap()
+        else {
+            panic!("not a root")
+        };
+        let mdast::Node::Paragraph(p) = &root.children[0] else {
+            panic!("not a paragraph")
+        };
+        let mut inl = Inline::default();
+        build_inline(
+            &p.children,
+            HighlightStyle::default(),
+            &style,
+            &defs,
+            &mut inl,
+        );
+        inl
+    }
+
+    #[test]
+    fn source_map_maps_rendered_clicks_back_to_source() {
+        // "See [[Foo]] now" renders "See Foo now"; clicking past the (stripped) link
+        // must land on the matching source byte.
+        let src = "See [[Foo]] now";
+        let inl = first_paragraph_inline(src);
+        assert_eq!(inl.text, "See Foo now");
+        let rendered_now = inl.text.find("now").unwrap(); // 8
+        let s = map_to_source(&inl.source_map, rendered_now).unwrap();
+        assert_eq!(&src[s..s + 3], "now");
+        // Plain head maps 1:1.
+        assert_eq!(map_to_source(&inl.source_map, 1), Some(1));
+    }
+
+    #[test]
+    fn map_to_source_interpolates_and_handles_empty() {
+        let map = vec![(0, 0), (4, 6), (7, 11)];
+        assert_eq!(map_to_source(&map, 2), Some(2)); // 0 + 2
+        assert_eq!(map_to_source(&map, 5), Some(7)); // 6 + (5-4)
+        assert_eq!(map_to_source(&map, 9), Some(13)); // 11 + (9-7)
+        assert!(map_to_source(&[], 3).is_none());
     }
 
     #[test]

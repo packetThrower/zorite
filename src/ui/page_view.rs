@@ -163,6 +163,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             .into_any_element()
     } else {
         let weak = cx.entity().downgrade();
+        let click_weak = cx.entity().downgrade();
         let mut md = gpui_markdown::MarkdownView::new("page-md", content)
             .style(theme::markdown_style(app.list_indent()))
             // Track block bounds so find can scroll the active match into view.
@@ -174,6 +175,15 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             ))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
+            }))
+            // Click the rendered text → enter edit mode with the caret at the click.
+            // Deferred so we don't swap to the editor mid-click.
+            .on_click_source(std::rc::Rc::new(move |offset, window, cx| {
+                let click_weak = click_weak.clone();
+                window.defer(cx, move |window, cx| {
+                    let _ = click_weak
+                        .update(cx, |this, cx| this.edit_page_at_offset(offset, window, cx));
+                });
             }));
         // Paint in-page find matches (⌘F) when the bar is open.
         if let Some(pf) = app.page_find.as_ref() {

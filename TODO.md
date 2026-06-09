@@ -17,7 +17,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 - [ ] Slash menu: **click-to-insert** a command (keyboard-only today; needs to avoid blurring the editor on click)
-- [ ] Place the caret at the click point when entering edit mode (currently keeps the last position)
+- [ ] Click-to-caret follow-ups: entering edit mode scrolls the page (it jumps up) — preserve the scroll position; then port click-to-caret to the journal feed
 
 ## Notes & navigation
 - [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
@@ -56,6 +56,7 @@ work is collected under [Completed](#completed) at the bottom.
 ## Completed
 
 ### Editor & rendering
+- [x] **Click-to-caret** — clicking the rendered page enters edit mode with the caret on the clicked character (empty space → end of the nearest line). gpui-markdown records a rendered→source byte-offset map while rendering (handling stripped `[[ ]]` / `#` / inline-code markup) and resolves a click via gpui's text layout (`index_for_position`); the host places the editor caret (`set_cursor_position`). Pages only for now. See `crates/gpui-markdown` (`on_click_source`) + `AppView::edit_page_at_offset`
 - [x] **Find in page** (`⌘F`) — a find bar above a named page searches the **rendered** text (not the editor, which clashes with click-to-edit): every match highlights, the active one emphasized, with an *n / m* count; Enter/⇧Enter or ↑/↓ step (scrolling the match into view), Esc closes. `⌘⇧F` focuses the global note search; the journal feed defers to it. The search core lives in **`gpui-markdown`** — a reusable, db-free `find_matches` + `MarkdownView::search` / `track_blocks` (operates only on the source string) — with the find bar, shortcuts, and scroll in the host. See `src/ui/page_view.rs`, `crates/gpui-markdown/src/lib.rs`
 - [x] **Configurable date/time format** — a **Settings → General** pane chooses the date (ISO / US / European / long / day-month-year) and time (24-hour / 12-hour) styles used by `/date`, `/time`, and the `{{date}}` / `{{time}}` placeholders; persisted, ISO + 24-hour by default. Date helpers consolidated into `src/dates.rs`; journal day headers keep their own long format. See `src/dates.rs`, `src/settings.rs`
 - [x] **As-you-type completion** — `[[` (pages, with a "Create" entry), `#` (tags), and `{{` (template placeholders); reuses the slash popup, ranks matches, and caps the list so it stays usable with many pages

@@ -1895,6 +1895,24 @@ impl AppView {
         cx.notify();
     }
 
+    /// Enter edit mode with the caret at source byte `offset` — used when clicking
+    /// the rendered page (gpui-markdown maps the click to a source offset), so the
+    /// cursor lands where you clicked. `set_cursor_position` also focuses the editor.
+    pub fn edit_page_at_offset(
+        &mut self,
+        offset: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.page_editing = true;
+        if let Some(pe) = self.page_editor.as_ref() {
+            let editor = pe.state.clone();
+            let pos = offset_to_position(&editor.read(cx).value(), offset);
+            editor.update(cx, |s, cx| s.set_cursor_position(pos, window, cx));
+        }
+        cx.notify();
+    }
+
     /// Like [`Self::edit_day`], but for clicking the empty area below a day:
     /// drop the caret on a trailing blank line so you can start writing at the
     /// bottom right away.
@@ -2926,6 +2944,20 @@ fn clipboard_ext(format: ImageFormat) -> &'static str {
 /// editor is one line when empty and grows line-by-line with content —
 /// the outer feed scrolls, never the individual day. The high `max_rows`
 /// effectively means "never scroll internally".
+/// Convert a source byte `offset` into the editor's `(line, char-column)` Position
+/// (0-based; column counts characters, per gpui-component). Clamps to the source
+/// length and snaps to a char boundary.
+fn offset_to_position(source: &str, offset: usize) -> gpui_component::input::Position {
+    let mut offset = offset.min(source.len());
+    while offset > 0 && !source.is_char_boundary(offset) {
+        offset -= 1;
+    }
+    let line = source[..offset].bytes().filter(|&b| b == b'\n').count() as u32;
+    let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let column = source[line_start..offset].chars().count() as u32;
+    gpui_component::input::Position::new(line, column)
+}
+
 fn make_editor(
     content: &str,
     window: &mut Window,
