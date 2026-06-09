@@ -2,6 +2,16 @@
 
 Roadmap / known follow-ups. Roughly priority-ordered within each section.
 
+## Contents
+
+- [Editor & rendering](#editor--rendering)
+- [Notes & navigation](#notes--navigation)
+- [Performance](#performance)
+- [Data & migrations](#data--migrations)
+- [App & polish](#app--polish)
+- [Import & export](#import--export)
+- [gpui-markdown crate](#gpui-markdown-crate)
+
 ## Editor & rendering
 - [x] **As-you-type completion** — `[[` (pages, with a "Create" entry), `#` (tags), and `{{` (template placeholders); reuses the slash popup, ranks matches, and caps the list so it stays usable with many pages
 - [x] **Auto-pair brackets/quotes** (`()` `[]` `{}` `<>` `""` `''`) with type-over and prose-safe guards (contraction-aware quotes, `<` only after a word); confirming a `[[`/`{{` completion absorbs the auto-inserted closer
@@ -70,6 +80,9 @@ Roadmap / known follow-ups. Roughly priority-ordered within each section.
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
 - [x] PDF: **find-in-PDF** — a browser-style find bar (🔍 / ⌘F) over the text layer: type to search the whole document, matches boxed + a focused one outlined, `n / N` count, Enter/⇧Enter to step (scroll-to), Esc to close. Behind a `search` feature (= `["markup"]`, shares the text layer). See `gpui-pdf` `find_matches` + `src/pdf.rs`
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
+- [ ] PDF: **graceful fallback for unsupported files** — hayro can't open encrypted / password-protected PDFs (a stated limitation) and may stumble on exotic transparency / blend modes; on a load/parse failure, show an "Open in default app" affordance (hand off to the OS viewer) instead of a blank pane
+- [ ] PDF: **outline / table-of-contents detection** — read the document outline (`/Catalog /Outlines` bookmarks) via `hayro-syntax` (or `lopdf`) and show a navigable TOC panel that jumps to each destination's page; hide it when the PDF has no outline
+- [ ] PDF: **AcroForm + annotations** — no pure-Rust crate does a full interactive forms/annotation engine. Heavy options reintroduce a native dep: `pdfium-render` (PDFium — full forms/annotations/render, permissive license) or `mupdf-rs` (full, but AGPL + native). Pure-Rust path: a targeted subset on `lopdf` — read `/AcroForm /Fields`, fill text fields/checkboxes via `/V` (+ `/NeedAppearances`), and render existing annotation appearance streams (`/AP /N`, which are XObjects hayro may already rasterize). First check whether hayro already composites `/AP` streams
 
 ## gpui-markdown crate
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize
