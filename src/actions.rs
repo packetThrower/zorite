@@ -40,7 +40,9 @@ actions!(
         Quit,
         // Find: in the current page's rendered text, or the global note search.
         FindInPage,
-        GlobalSearch
+        GlobalSearch,
+        // File menu: import a Logseq graph folder (no keybinding).
+        ImportLogseq
     ]
 );
 
@@ -108,6 +110,8 @@ pub fn set_app_menu(cx: &mut App) {
             items: vec![
                 MenuItem::action("New Tab", NewPage),
                 MenuItem::action("New Window", NewWindow),
+                MenuItem::separator(),
+                MenuItem::action("Import from Logseq…", ImportLogseq),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", CloseTab),
             ],

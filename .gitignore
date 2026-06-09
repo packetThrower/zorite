@@ -10,3 +10,6 @@
 *.db-wal
 *.db-shm
 *.db-journal
+# A local Logseq graph used to exercise the importer (real notes — never commit).
+/Logseq/
+/logseq/

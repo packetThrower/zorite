@@ -1,0 +1,1310 @@
+//! The Logseq reader: turns a graph folder (`pages/`, `journals/`,
+//! `assets/`) into an [`ImportBundle`] for [`super::write_bundle`]. Pure
+//! filesystem + string work — no database access. The interesting part is
+//! translating Logseq's conventions into zorite's:
+//!
+//! - **Namespaces** — `Budget___2024.md` files and `[[Budget/2024]]` links
+//!   both become zorite's `Budget::2024`.
+//! - **Outliner** — Logseq makes every line a bullet. `Options::flatten`
+//!   turns top-level blocks into paragraphs/headings (children stay nested
+//!   lists); otherwise every block stays a list item.
+//! - **Tasks** — `TODO`/`DOING`/… → `- [ ]`, `DONE` → `- [x]`,
+//!   `CANCELED` → struck-through `- [x]`.
+//! - **Properties** — Logseq-internal metadata (`id::`, `collapsed::`,
+//!   `query-table::`, …) is dropped; `title::`/`alias::` feed the page title
+//!   and zorite's alias table; anything else (`subject::`, `attendees::`, …)
+//!   is kept as plain text.
+//! - **Macros** — `{{video url}}` → the url, `{{embed [[X]]}}` → `[[X]]`,
+//!   `((block-ref))` → the referenced block's text; queries and unknown
+//!   macros are kept visible as inline code.
+//! - **Assets** — image links are rewritten to `images/<name>` and PDFs to
+//!   `[[pdf/<name>]]` chips, with the files queued for copying.
+//! - **PDF highlights** — Logseq's `hls__*` pages become zorite's
+//!   `<name>.pdf (highlights)` pages (`- p<N>: quote [[pdf/…#pN|↗]]`).
+//!
+//! Whiteboards, draws, `logseq/` config, and `bak`/`.recycle` folders are
+//! skipped.
+
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+
+use super::{AssetCopy, ImportBundle, ImportDay, ImportPage};
+
+/// Importer choices the user makes up front.
+pub struct Options {
+    /// Convert top-level blocks to paragraphs/headings (children become
+    /// markdown lists). `false` keeps every block a list item, Logseq-style.
+    pub flatten: bool,
+}
+
+// --- Scanning ---
+
+/// What a source file becomes in zorite.
+enum Kind {
+    Page(String),
+    Journal(String),
+    /// A Logseq `hls__*` PDF-highlight page.
+    Highlights,
+}
+
+struct SourceFile {
+    path: PathBuf,
+    kind: Kind,
+}
+
+/// Find the importable markdown files. Only `pages/` and `journals/` matter —
+/// config, whiteboards, draws, and Logseq's `bak`/`.recycle` are skipped.
+fn scan(root: &Path) -> Result<Vec<SourceFile>, String> {
+    let pages_dir = root.join("pages");
+    let journals_dir = root.join("journals");
+    if !pages_dir.is_dir() && !journals_dir.is_dir() {
+        return Err(format!(
+            "{} doesn't look like a Logseq graph (no pages/ or journals/ folder)",
+            root.display()
+        ));
+    }
+    let mut files = Vec::new();
+    for dir in [&journals_dir, &pages_dir] {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        let mut paths: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "md"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            let stem = match path.file_stem() {
+                Some(s) => s.to_string_lossy().into_owned(),
+                None => continue,
+            };
+            let kind = if *dir == journals_dir {
+                match journal_date(&stem) {
+                    Some(date) => Kind::Journal(date),
+                    // An oddly-named journal file still imports, as a page.
+                    None => Kind::Page(title_from_stem(&stem)),
+                }
+            } else if stem.starts_with("hls__") {
+                Kind::Highlights
+            } else {
+                Kind::Page(title_from_stem(&stem))
+            };
+            files.push(SourceFile { path, kind });
+        }
+    }
+    Ok(files)
+}
+
+/// `2024_02_07` → `2024-02-07`, or `None` if it isn't a Logseq journal name.
+fn journal_date(stem: &str) -> Option<String> {
+    let parts: Vec<&str> = stem.split('_').collect();
+    let [y, m, d] = parts.as_slice() else {
+        return None;
+    };
+    if y.len() != 4 || m.len() != 2 || d.len() != 2 {
+        return None;
+    }
+    if !parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    let (month, day) = (m.parse::<u32>().ok()?, d.parse::<u32>().ok()?);
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    Some(format!("{y}-{m}-{d}"))
+}
+
+/// File stem → zorite page title: percent-decode (Logseq encodes special
+/// characters, sometimes repeatedly) and turn `___` namespaces into `::`.
+fn title_from_stem(stem: &str) -> String {
+    let decoded = percent_decode_repeated(stem);
+    decoded
+        .split("___")
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Decode `%XX` escapes, repeating while it keeps changing (Logseq filenames
+/// in the wild are sometimes encoded more than once), capped to stay sane.
+fn percent_decode_repeated(s: &str) -> String {
+    let mut cur = s.to_string();
+    for _ in 0..3 {
+        let next = percent_decode(&cur);
+        if next == cur {
+            break;
+        }
+        cur = next;
+    }
+    cur
+}
+
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &s[i + 1..i + 3];
+            if let Ok(b) = u8::from_str_radix(hex, 16) {
+                out.push(b);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// --- Outline parsing ---
+
+/// One Logseq block: its indent depth and raw lines (first line is the bullet
+/// text, the rest are its continuation lines, prefix-stripped).
+struct Block {
+    depth: usize,
+    lines: Vec<String>,
+}
+
+/// Parse Logseq's bullet outline. Lines before any bullet (the page-property
+/// preamble some files have) become a depth-0 block.
+fn parse_outline(text: &str) -> Vec<Block> {
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut in_preamble = false;
+    for raw in text.lines() {
+        let stripped = raw.trim_start_matches(['\t', ' ']);
+        if stripped == "-" || stripped.starts_with("- ") {
+            let prefix = &raw[..raw.len() - stripped.len()];
+            let content = stripped.strip_prefix("- ").unwrap_or("").to_string();
+            blocks.push(Block {
+                depth: depth_of(prefix),
+                lines: vec![content],
+            });
+            in_preamble = false;
+        } else if let Some(last) = blocks.last_mut().filter(|_| !in_preamble) {
+            last.lines.push(strip_continuation(raw, last.depth));
+        } else if let Some(last) = blocks.last_mut() {
+            last.lines.push(raw.to_string());
+        } else {
+            in_preamble = true;
+            blocks.push(Block {
+                depth: 0,
+                lines: vec![raw.to_string()],
+            });
+        }
+    }
+    blocks
+}
+
+/// Indent depth of a bullet's whitespace prefix: a tab is one level, as is
+/// each pair of spaces.
+fn depth_of(prefix: &str) -> usize {
+    let mut depth = 0;
+    let mut spaces = 0;
+    for c in prefix.chars() {
+        match c {
+            '\t' => {
+                depth += 1;
+                spaces = 0;
+            }
+            ' ' => {
+                spaces += 1;
+                if spaces == 2 {
+                    depth += 1;
+                    spaces = 0;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth
+}
+
+/// Strip a continuation line's prefix: the block's indent, then the two
+/// spaces Logseq aligns continuations with. Anything beyond that (e.g. code
+/// indentation inside a fence) is content and stays.
+fn strip_continuation(raw: &str, depth: usize) -> String {
+    let mut rest = raw;
+    let mut stripped = 0;
+    while stripped < depth {
+        if let Some(r) = rest.strip_prefix('\t') {
+            rest = r;
+        } else if let Some(r) = rest.strip_prefix("  ") {
+            rest = r;
+        } else {
+            break;
+        }
+        stripped += 1;
+    }
+    let rest = rest
+        .strip_prefix("  ")
+        .or_else(|| rest.strip_prefix('\t'))
+        .unwrap_or(rest);
+    rest.to_string()
+}
+
+// --- Block conversion ---
+
+/// A block after conversion: zorite-markdown lines plus rendering flags.
+struct ConvBlock {
+    depth: usize,
+    lines: Vec<String>,
+    /// Logseq `logseq.order-list-type:: number` → render as `1.`-style item.
+    numbered: bool,
+    /// Starts with a task checkbox (`[ ] …`) — always rendered as a list item.
+    task: bool,
+}
+
+/// Properties Logseq manages internally — dropped on import. Anything not
+/// listed here is user data and is kept as a plain `key:: value` text line.
+fn is_internal_prop(key: &str) -> bool {
+    matches!(
+        key,
+        "id" | "collapsed"
+            | "heading"
+            | "icon"
+            | "file"
+            | "file-path"
+            | "ls-type"
+            | "hl-page"
+            | "hl-color"
+            | "hl-type"
+            | "hl-stamp"
+            | "background-color"
+            | "background-image"
+            | "created-at"
+            | "updated-at"
+            | "exclude-from-graph-view"
+    )
+}
+
+/// Split a `key:: value` property line. The key must look like an identifier
+/// so prose containing `::` (e.g. zorite links!) isn't mistaken for one.
+fn parse_prop(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim_start();
+    let idx = rest.find("::")?;
+    let key = &rest[..idx];
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        || !key.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    Some((key, rest[idx + 2..].trim()))
+}
+
+/// Per-import conversion state: the block-ref map and pending asset copies.
+struct Converter {
+    /// `id:: <uuid>` → that block's first content line, for `((ref))`s.
+    id_map: HashMap<String, String>,
+    /// Asset files to copy: (source path, managed ref like `images/x.png`).
+    copies: Vec<(PathBuf, String)>,
+    assets_dir: PathBuf,
+    warnings: Vec<String>,
+}
+
+/// Page-level properties pulled out of a page's first block.
+#[derive(Default)]
+struct PageProps {
+    title: Option<String>,
+    aliases: Vec<String>,
+}
+
+impl Converter {
+    fn new(root: &Path) -> Self {
+        Self {
+            id_map: HashMap::new(),
+            copies: Vec::new(),
+            assets_dir: root.join("assets"),
+            warnings: Vec::new(),
+        }
+    }
+
+    /// Pass 1: collect `id::` properties so `((block-ref))`s can resolve.
+    fn collect_ids(&mut self, blocks: &[Block]) {
+        for b in blocks {
+            let Some(id) = b
+                .lines
+                .iter()
+                .find_map(|l| parse_prop(l).and_then(|(k, v)| (k == "id").then(|| v.to_string())))
+            else {
+                continue;
+            };
+            let text = b
+                .lines
+                .iter()
+                .find(|l| !l.trim().is_empty() && parse_prop(l).is_none())
+                .map(|l| l.trim().to_string())
+                .unwrap_or_default();
+            self.id_map.insert(id, text);
+        }
+    }
+
+    /// Convert one block's lines. `page_props` is `Some` for a page's first
+    /// block, where Logseq keeps page-level properties.
+    fn convert_block(
+        &mut self,
+        block: &Block,
+        mut page_props: Option<&mut PageProps>,
+    ) -> Option<ConvBlock> {
+        let mut lines: Vec<String> = Vec::new();
+        let mut numbered = false;
+        let mut in_logbook = false;
+        let mut in_fence = false;
+        for raw in &block.lines {
+            let t = raw.trim();
+            if !in_fence {
+                if t == ":LOGBOOK:" {
+                    in_logbook = true;
+                    continue;
+                }
+                if in_logbook {
+                    if t == ":END:" {
+                        in_logbook = false;
+                    }
+                    continue;
+                }
+                if let Some((key, value)) = parse_prop(raw) {
+                    if key == "logseq.order-list-type" {
+                        numbered = value == "number";
+                        continue;
+                    }
+                    if is_internal_prop(key)
+                        || key.starts_with("logseq.")
+                        || key.starts_with("query-")
+                        || key.starts_with("card-")
+                    {
+                        continue;
+                    }
+                    if let Some(props) = page_props.as_deref_mut() {
+                        match key {
+                            "title" => {
+                                props.title = Some(
+                                    value
+                                        .split('/')
+                                        .map(str::trim)
+                                        .collect::<Vec<_>>()
+                                        .join("::"),
+                                );
+                                continue;
+                            }
+                            "alias" => {
+                                props.aliases.extend(
+                                    value
+                                        .split(',')
+                                        .map(|a| {
+                                            a.trim().trim_matches(['[', ']']).trim().to_string()
+                                        })
+                                        .filter(|a| !a.is_empty()),
+                                );
+                                continue;
+                            }
+                            _ => {}
+                        }
+                    }
+                    lines.push(format!("{key}:: {}", self.convert_inline(value)));
+                    continue;
+                }
+            }
+            // Logseq glues fences onto content (`- ```interface 2/1/44` to
+            // open, `…3600``` ` to close), which markdown reads as an info
+            // string / an unterminated fence. Normalize both onto their own
+            // lines so the fence opens and closes cleanly.
+            if !in_fence {
+                if let Some(info) = t.strip_prefix("```") {
+                    in_fence = !info.contains("```"); // ```x``` inline stays closed
+                    if in_fence && info.contains(char::is_whitespace) {
+                        lines.push("```".to_string());
+                        lines.push(info.to_string());
+                    } else {
+                        lines.push(raw.clone());
+                    }
+                    continue;
+                }
+                lines.push(self.convert_inline(raw));
+                continue;
+            }
+            if let Some(body) = t.strip_suffix("```").filter(|b| !b.is_empty()) {
+                let indent = &raw[..raw.len() - raw.trim_start().len()];
+                lines.push(format!("{indent}{body}"));
+                lines.push("```".to_string());
+                in_fence = false;
+                continue;
+            }
+            if t.starts_with("```") {
+                in_fence = false;
+            }
+            lines.push(raw.clone());
+        }
+        // Trim blank edges; a block with nothing left disappears.
+        while lines.last().is_some_and(|l| l.trim().is_empty()) {
+            lines.pop();
+        }
+        while lines.first().is_some_and(|l| l.trim().is_empty()) {
+            lines.remove(0);
+        }
+        if lines.is_empty() {
+            return None;
+        }
+        let task = convert_task(&mut lines[0]);
+        Some(ConvBlock {
+            depth: block.depth,
+            lines,
+            numbered,
+            task,
+        })
+    }
+
+    /// All inline conversions for one line of prose (not inside a code fence).
+    fn convert_inline(&mut self, line: &str) -> String {
+        let line = convert_macros(line, &self.id_map);
+        let line = convert_block_refs(&line, &self.id_map);
+        let line = convert_wiki_links(&line);
+        self.convert_assets(&line)
+    }
+
+    /// Rewrite `../assets/…` links: images → `images/<name>`, PDFs → a
+    /// `[[pdf/<name>]]` chip, anything else a plain link into `images/`.
+    /// Queues the copy for each referenced file.
+    fn convert_assets(&mut self, line: &str) -> String {
+        let mut out = String::new();
+        let mut rest = line;
+        loop {
+            // Find the next markdown link destination that points into assets/.
+            let Some((before, alt, path, after, bang)) = next_md_link(rest) else {
+                out.push_str(rest);
+                break;
+            };
+            let rel = path
+                .strip_prefix("../assets/")
+                .or_else(|| path.strip_prefix("assets/"));
+            let Some(rel) = rel else {
+                // Not an asset link — keep verbatim and continue after it.
+                out.push_str(before);
+                if bang {
+                    out.push('!');
+                }
+                out.push_str(&format!("[{alt}]({path})"));
+                rest = after;
+                continue;
+            };
+            out.push_str(before);
+            let decoded = percent_decode_repeated(rel);
+            let name = sanitize_name(decoded.rsplit('/').next().unwrap_or(&decoded));
+            let src = self.find_asset(rel, &decoded);
+            let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+            let is_image = matches!(
+                ext.as_str(),
+                "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tiff" | "tif" | "svg"
+            );
+            let managed = if ext == "pdf" {
+                format!("pdf/{name}")
+            } else {
+                format!("images/{name}")
+            };
+            match src {
+                Some(src) => self.copies.push((src, managed.clone())),
+                None => self.warnings.push(format!("asset not found: {rel}")),
+            }
+            if ext == "pdf" {
+                out.push_str(&format!("[[{managed}]]"));
+            } else if is_image {
+                out.push_str(&format!("![{alt}]({managed})"));
+            } else {
+                let label = if alt.is_empty() { &name } else { &alt };
+                out.push_str(&format!("[{label}]({managed})"));
+            }
+            rest = after;
+        }
+        out
+    }
+
+    /// Locate an asset on disk, trying the raw reference and progressively
+    /// percent-decoded forms (Logseq stores some names encoded).
+    fn find_asset(&self, raw: &str, decoded: &str) -> Option<PathBuf> {
+        let mut candidates = vec![raw.to_string(), decoded.to_string()];
+        candidates.push(percent_decode(raw));
+        candidates.push(percent_decode(&percent_decode(raw)));
+        for c in candidates {
+            let p = self.assets_dir.join(&c);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        None
+    }
+}
+
+/// `TODO …` → `[ ] …` etc. on a block's first line. Returns whether the
+/// block is a task (so rendering makes it a list item).
+fn convert_task(first: &mut String) -> bool {
+    let (marker, rest) = match first.split_once(' ') {
+        Some((m, r)) => (m, r),
+        None => (first.as_str(), ""),
+    };
+    let checked = match marker {
+        "TODO" | "LATER" | "NOW" | "DOING" | "WAITING" | "IN-PROGRESS" => false,
+        "DONE" => true,
+        "CANCELED" | "CANCELLED" => {
+            *first = format!("[x] ~~{}~~", strip_priority(rest));
+            return true;
+        }
+        _ => return false,
+    };
+    let rest = strip_priority(rest);
+    *first = format!("[{}] {rest}", if checked { "x" } else { " " });
+    true
+}
+
+/// Drop a Logseq priority cookie (`[#A] `) from a task's text.
+fn strip_priority(text: &str) -> &str {
+    let t = text.trim_start();
+    if t.len() >= 4 && t.starts_with("[#") && t.as_bytes()[3] == b']' {
+        t[4..].trim_start()
+    } else {
+        text
+    }
+}
+
+/// `{{video url}}` → url, `{{embed [[X]]}}` → `[[X]]`, `{{embed ((id))}}` →
+/// the block's text; queries and anything unrecognized stay visible as
+/// inline code so nothing is silently lost.
+fn convert_macros(line: &str, id_map: &HashMap<String, String>) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("{{") {
+        let Some(end) = rest[start..].find("}}") else {
+            break;
+        };
+        let inner = rest[start + 2..start + end].trim();
+        out.push_str(&rest[..start]);
+        if let Some(url) = inner.strip_prefix("video ") {
+            out.push_str(url.trim());
+        } else if let Some(target) = inner.strip_prefix("embed ") {
+            let target = target.trim();
+            if let Some(id) = target.strip_prefix("((").and_then(|t| t.strip_suffix("))")) {
+                match id_map.get(id.trim()) {
+                    Some(text) => out.push_str(text),
+                    None => out.push_str(target),
+                }
+            } else {
+                out.push_str(target);
+            }
+        } else {
+            out.push_str(&format!("`{{{{{inner}}}}}`"));
+        }
+        rest = &rest[start + end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `((uuid))` → the referenced block's text (left as-is when unknown).
+fn convert_block_refs(line: &str, id_map: &HashMap<String, String>) -> String {
+    let mut out = String::new();
+    let mut rest = line;
+    while let Some(start) = rest.find("((") {
+        let Some(end) = rest[start..].find("))") else {
+            break;
+        };
+        let inner = rest[start + 2..start + end].trim();
+        out.push_str(&rest[..start]);
+        match id_map.get(inner) {
+            Some(text) => out.push_str(text),
+            None => out.push_str(&rest[start..start + end + 2]),
+        }
+        rest = &rest[start + end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `[[A/B]]` → `[[A::B]]` (segments trimmed) and `#[[multi word]]` →
+/// `[[multi word]]`. URLs inside `[[…]]` are left alone.
+fn convert_wiki_links(line: &str) -> String {
+    let line = line.replace("#[[", "[[");
+    let mut out = String::new();
+    let mut rest = line.as_str();
+    while let Some(start) = rest.find("[[") {
+        let Some(end) = rest[start..].find("]]") else {
+            break;
+        };
+        let inner = &rest[start + 2..start + end];
+        out.push_str(&rest[..start]);
+        if inner.contains("://") || inner.starts_with("pdf/") || inner.starts_with("images/") {
+            out.push_str(&format!("[[{inner}]]"));
+        } else {
+            let converted = inner
+                .split('/')
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join("::");
+            out.push_str(&format!("[[{}]]", converted.trim()));
+        }
+        rest = &rest[start + end + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Find the next markdown link in `s`: returns
+/// `(text-before, alt, destination, text-after, was-image)`. Destinations may
+/// contain balanced parentheses (Logseq writes them unescaped).
+fn next_md_link(s: &str) -> Option<(&str, String, String, &str, bool)> {
+    let mut search_from = 0;
+    loop {
+        let open = s[search_from..].find("](")? + search_from;
+        // Walk back to the matching `[`.
+        let mut depth = 0;
+        let mut label_start = None;
+        for (i, c) in s[..open].char_indices().rev() {
+            match c {
+                ']' => depth += 1,
+                '[' => {
+                    if depth == 0 {
+                        label_start = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        let Some(label_start) = label_start else {
+            search_from = open + 2;
+            continue;
+        };
+        // Walk forward to the matching `)`, balancing parens.
+        let dest_start = open + 2;
+        let mut depth = 0;
+        let mut dest_end = None;
+        for (i, c) in s[dest_start..].char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    if depth == 0 {
+                        dest_end = Some(dest_start + i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                _ => {}
+            }
+        }
+        let Some(dest_end) = dest_end else {
+            search_from = open + 2;
+            continue;
+        };
+        let bang = label_start > 0 && s.as_bytes()[label_start - 1] == b'!';
+        let before_end = if bang { label_start - 1 } else { label_start };
+        return Some((
+            &s[..before_end],
+            s[label_start + 1..open].to_string(),
+            s[dest_start..dest_end].to_string(),
+            &s[dest_end + 1..],
+            bang,
+        ));
+    }
+}
+
+/// Make an asset filename safe inside a markdown destination (spaces and
+/// parentheses break `(…)` targets).
+fn sanitize_name(name: &str) -> String {
+    name.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+// --- Rendering ---
+
+/// Render converted blocks as zorite markdown. With `flatten`, top-level
+/// blocks become paragraphs/headings and only nested blocks stay list items;
+/// otherwise everything is a list item at its depth. List indentation is two
+/// spaces per level; multi-line blocks keep their extra lines aligned under
+/// the item text.
+fn render(blocks: &[ConvBlock], flatten: bool) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut counters: HashMap<usize, usize> = HashMap::new();
+    // Whether the current top-level subtree's root rendered as a list item
+    // (then children indent one level deeper than under a paragraph root).
+    let mut root_is_item = !flatten;
+    for b in blocks {
+        // Numbering survives a detour into deeper children, but resets when a
+        // non-numbered sibling (or anything shallower) interrupts the run.
+        counters.retain(|&d, _| d <= b.depth);
+        let as_item = !flatten || b.depth > 0 || b.task || b.numbered;
+        if b.depth == 0 {
+            root_is_item = as_item;
+        }
+        if !as_item {
+            counters.clear();
+            // Paragraph/heading: blank line before when following other text.
+            if !out.is_empty() {
+                out.push(String::new());
+            }
+            out.extend(b.lines.iter().cloned());
+            out.push(String::new());
+            continue;
+        }
+        let units = if flatten && !root_is_item {
+            b.depth.saturating_sub(1)
+        } else {
+            b.depth
+        };
+        let indent = "  ".repeat(units);
+        let marker = if b.numbered {
+            let n = counters.entry(b.depth).or_insert(0);
+            *n += 1;
+            format!("{n}. ")
+        } else {
+            counters.remove(&b.depth);
+            "- ".to_string()
+        };
+        out.push(format!("{indent}{marker}{}", b.lines[0]));
+        let cont = " ".repeat(indent.len() + marker.len());
+        for line in &b.lines[1..] {
+            if line.is_empty() {
+                out.push(String::new());
+            } else {
+                out.push(format!("{cont}{line}"));
+            }
+        }
+    }
+    while out.last().is_some_and(|l| l.is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+// --- PDF-highlight pages ---
+
+/// Convert a Logseq `hls__*` page into zorite's `<name>.pdf (highlights)`
+/// page. Returns `(title, content, pdf-copy)` or `None` when the source PDF
+/// can't be determined.
+fn convert_highlights(conv: &mut Converter, blocks: &[Block]) -> Option<(String, String)> {
+    // The PDF lives in the page properties: `file-path:: ../assets/X.pdf`.
+    let mut pdf_rel: Option<String> = None;
+    for b in blocks {
+        for line in &b.lines {
+            if let Some(("file-path", v)) = parse_prop(line) {
+                pdf_rel = Some(
+                    v.trim_start_matches("../assets/")
+                        .trim_start_matches("assets/")
+                        .to_string(),
+                );
+            }
+        }
+        if pdf_rel.is_some() {
+            break;
+        }
+    }
+    let rel = pdf_rel?;
+    let decoded = percent_decode_repeated(&rel);
+    let name = sanitize_name(decoded.rsplit('/').next().unwrap_or(&decoded));
+    match conv.find_asset(&rel, &decoded) {
+        Some(src) => conv.copies.push((src, format!("pdf/{name}"))),
+        None => conv.warnings.push(format!("asset not found: {rel}")),
+    }
+    let title = crate::pdf::highlights_title(Path::new(&name));
+    let mut lines = Vec::new();
+    for b in blocks {
+        let mut page: Option<u32> = None;
+        let mut color = String::new();
+        let mut quote = String::new();
+        for line in &b.lines {
+            if let Some((k, v)) = parse_prop(line) {
+                match k {
+                    "hl-page" => page = v.parse().ok(),
+                    "hl-color" => color = map_color(v),
+                    _ => {}
+                }
+            } else if quote.is_empty() {
+                let t = line.trim();
+                if !t.is_empty() && t != "[:span]" {
+                    quote = t.to_string();
+                }
+            }
+        }
+        let Some(page) = page else { continue };
+        let quote = if quote.is_empty() {
+            "(area highlight)".to_string()
+        } else {
+            quote
+        };
+        let mut meta = String::new();
+        if !color.is_empty() && color != "yellow" {
+            meta.push_str(&format!(" {{{color}}}"));
+        }
+        meta.push_str(&format!(" [[pdf/{name}#p{page}|↗]]"));
+        lines.push(format!("- p{page}: {quote}{meta}"));
+    }
+    Some((title, lines.join("\n")))
+}
+
+/// Map a Logseq highlight color onto zorite's palette (yellow is the default
+/// and is omitted from the stored line).
+fn map_color(logseq: &str) -> String {
+    match logseq.to_ascii_lowercase().as_str() {
+        "green" => "green",
+        "blue" => "blue",
+        "orange" => "orange",
+        "red" | "purple" | "pink" => "pink",
+        _ => "",
+    }
+    .to_string()
+}
+
+// --- Driving the read ---
+
+/// Read a Logseq graph into an [`ImportBundle`] (write it with
+/// [`super::write_bundle`]).
+pub fn read_graph(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
+    let files = scan(root)?;
+    let mut bundle = ImportBundle::default();
+    let mut conv = Converter::new(root);
+
+    // Pass 1: parse everything and collect block ids for `((ref))`s.
+    let mut parsed: Vec<(Kind, Vec<Block>)> = Vec::new();
+    for file in files {
+        let text = match std::fs::read_to_string(&file.path) {
+            Ok(t) => t,
+            Err(e) => {
+                bundle
+                    .warnings
+                    .push(format!("{}: {e}", file.path.display()));
+                continue;
+            }
+        };
+        let blocks = parse_outline(&text);
+        conv.collect_ids(&blocks);
+        parsed.push((file.kind, blocks));
+    }
+
+    // Pass 2: convert. Empty results (a graph has plenty of stub files)
+    // simply don't land in the bundle.
+    for (kind, blocks) in parsed {
+        match kind {
+            Kind::Highlights => {
+                let Some((title, content)) = convert_highlights(&mut conv, &blocks) else {
+                    bundle
+                        .warnings
+                        .push("hls page without a file-path:: — skipped".to_string());
+                    continue;
+                };
+                if content.is_empty() {
+                    continue;
+                }
+                bundle.pages.push(ImportPage {
+                    title,
+                    content,
+                    aliases: Vec::new(),
+                    is_highlights: true,
+                });
+            }
+            Kind::Page(title_guess) => {
+                let mut props = PageProps::default();
+                let mut conv_blocks = Vec::new();
+                for (bi, b) in blocks.iter().enumerate() {
+                    let props_slot = (bi == 0).then_some(&mut props);
+                    if let Some(cb) = conv.convert_block(b, props_slot) {
+                        conv_blocks.push(cb);
+                    }
+                }
+                let content = render(&conv_blocks, opts.flatten);
+                if content.trim().is_empty() && props.aliases.is_empty() {
+                    continue;
+                }
+                bundle.pages.push(ImportPage {
+                    title: props.title.unwrap_or(title_guess),
+                    content,
+                    aliases: props.aliases,
+                    is_highlights: false,
+                });
+            }
+            Kind::Journal(date) => {
+                let mut conv_blocks = Vec::new();
+                for b in &blocks {
+                    if let Some(cb) = conv.convert_block(b, None) {
+                        conv_blocks.push(cb);
+                    }
+                }
+                let content = render(&conv_blocks, opts.flatten);
+                if content.trim().is_empty() {
+                    continue;
+                }
+                bundle.days.push(ImportDay { date, content });
+            }
+        }
+    }
+
+    bundle.assets = conv
+        .copies
+        .into_iter()
+        .map(|(src, managed)| AssetCopy { src, managed })
+        .collect();
+    bundle.warnings.extend(conv.warnings);
+    Ok(bundle)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- filenames --
+
+    #[test]
+    fn journal_dates_parse_and_reject() {
+        assert_eq!(journal_date("2024_02_07"), Some("2024-02-07".into()));
+        assert_eq!(journal_date("2024_2_7"), None);
+        assert_eq!(journal_date("2024_13_07"), None);
+        assert_eq!(journal_date("notes"), None);
+    }
+
+    #[test]
+    fn stems_become_namespaced_titles() {
+        assert_eq!(title_from_stem("Budget___2024"), "Budget::2024");
+        assert_eq!(
+            title_from_stem("Alan Humphrey___Alan's list"),
+            "Alan Humphrey::Alan's list"
+        );
+        // Percent-encoding decodes, repeatedly when double-encoded.
+        assert_eq!(title_from_stem("A%2FB"), "A/B");
+        assert_eq!(title_from_stem("A%2520B"), "A B");
+    }
+
+    // -- outline parsing --
+
+    #[test]
+    fn outline_parses_depths_and_continuations() {
+        let text = "- top\n\t- child\n\t  cont line\n\t\t- grandchild\n- top2";
+        let blocks = parse_outline(text);
+        assert_eq!(blocks.len(), 4);
+        assert_eq!((blocks[0].depth, blocks[0].lines[0].as_str()), (0, "top"));
+        assert_eq!(blocks[1].depth, 1);
+        assert_eq!(blocks[1].lines, vec!["child", "cont line"]);
+        assert_eq!(blocks[2].depth, 2);
+        assert_eq!(blocks[3].depth, 0);
+    }
+
+    #[test]
+    fn outline_preamble_becomes_first_block() {
+        let text = "title:: Real Title\nalias:: a, b\n- first bullet";
+        let blocks = parse_outline(text);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].lines, vec!["title:: Real Title", "alias:: a, b"]);
+        assert_eq!(blocks[1].lines[0], "first bullet");
+    }
+
+    // -- inline conversions --
+
+    #[test]
+    fn wiki_links_convert_namespaces() {
+        assert_eq!(
+            convert_wiki_links("see [[Jose Professional/2024]] ok"),
+            "see [[Jose Professional::2024]] ok"
+        );
+        // Segments are trimmed (Logseq tolerates sloppy links).
+        assert_eq!(
+            convert_wiki_links("[[ Will Professional/2024]]"),
+            "[[Will Professional::2024]]"
+        );
+        // Tag-links lose the hash, URLs stay put.
+        assert_eq!(convert_wiki_links("#[[multi word]]"), "[[multi word]]");
+        assert_eq!(convert_wiki_links("[[https://a.b/c]]"), "[[https://a.b/c]]");
+    }
+
+    #[test]
+    fn macros_convert_or_stay_visible() {
+        let ids = HashMap::new();
+        assert_eq!(
+            convert_macros("{{video https://yt/x}} end", &ids),
+            "https://yt/x end"
+        );
+        assert_eq!(convert_macros("{{embed [[Page]]}}", &ids), "[[Page]]");
+        assert_eq!(
+            convert_macros("{{query (task TODO)}}", &ids),
+            "`{{query (task TODO)}}`"
+        );
+        let mut ids = HashMap::new();
+        ids.insert("abc".to_string(), "the block text".to_string());
+        assert_eq!(convert_macros("{{embed ((abc))}}", &ids), "the block text");
+        assert_eq!(
+            convert_block_refs("see ((abc)) here", &ids),
+            "see the block text here"
+        );
+        assert_eq!(convert_block_refs("((missing))", &ids), "((missing))");
+    }
+
+    #[test]
+    fn tasks_become_checkboxes() {
+        let mut l = "TODO call Bob".to_string();
+        assert!(convert_task(&mut l));
+        assert_eq!(l, "[ ] call Bob");
+        let mut l = "DONE [#A] ship it".to_string();
+        assert!(convert_task(&mut l));
+        assert_eq!(l, "[x] ship it");
+        let mut l = "CANCELED bad idea".to_string();
+        assert!(convert_task(&mut l));
+        assert_eq!(l, "[x] ~~bad idea~~");
+        let mut l = "plain text".to_string();
+        assert!(!convert_task(&mut l));
+        assert_eq!(l, "plain text");
+    }
+
+    // -- block conversion --
+
+    fn conv() -> Converter {
+        Converter::new(Path::new("/nonexistent"))
+    }
+
+    fn block(depth: usize, lines: &[&str]) -> Block {
+        Block {
+            depth,
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn internal_props_drop_user_props_stay() {
+        let b = block(
+            0,
+            &[
+                "Meeting notes",
+                "id:: 64b5a4b8-6242-4063-859d-e694b14f2e62",
+                "collapsed:: true",
+                "subject:: Budget review",
+                "attendees:: [[Alan]], [[Eric/2024]]",
+            ],
+        );
+        let cb = conv().convert_block(&b, None).unwrap();
+        assert_eq!(
+            cb.lines,
+            vec![
+                "Meeting notes",
+                "subject:: Budget review",
+                "attendees:: [[Alan]], [[Eric::2024]]",
+            ]
+        );
+    }
+
+    #[test]
+    fn logbook_drawers_strip() {
+        let b = block(
+            0,
+            &[
+                "TODO thing",
+                ":LOGBOOK:",
+                "CLOCK: [2023-07-17 Mon 14:05:03]",
+                ":END:",
+                "after",
+            ],
+        );
+        let cb = conv().convert_block(&b, None).unwrap();
+        assert_eq!(cb.lines, vec!["[ ] thing", "after"]);
+        assert!(cb.task);
+    }
+
+    #[test]
+    fn page_props_extract_title_and_alias() {
+        let b = block(
+            0,
+            &["title:: Budget/2024", "alias:: [[B24]], budget 24", "body"],
+        );
+        let mut props = PageProps::default();
+        let cb = conv().convert_block(&b, Some(&mut props)).unwrap();
+        assert_eq!(props.title.as_deref(), Some("Budget::2024"));
+        assert_eq!(props.aliases, vec!["B24", "budget 24"]);
+        assert_eq!(cb.lines, vec!["body"]);
+    }
+
+    #[test]
+    fn numbered_marker_consumed() {
+        let b = block(0, &["step one", "logseq.order-list-type:: number"]);
+        let cb = conv().convert_block(&b, None).unwrap();
+        assert!(cb.numbered);
+        assert_eq!(cb.lines, vec!["step one"]);
+    }
+
+    #[test]
+    fn code_fences_keep_content_verbatim() {
+        let b = block(
+            0,
+            &[
+                "```cfg",
+                "vlan access 180",
+                "key:: not-a-prop [[a/b]] ((x))",
+                "```",
+            ],
+        );
+        let cb = conv().convert_block(&b, None).unwrap();
+        assert_eq!(cb.lines[2], "key:: not-a-prop [[a/b]] ((x))");
+    }
+
+    #[test]
+    fn glued_fences_normalize_onto_own_lines() {
+        // Logseq writes `- ```interface 2/1/44` and closes with `…3600``` `.
+        let b = block(
+            0,
+            &[
+                "```interface 2/1/44",
+                "    no shutdown",
+                "    reauth-period 3600```",
+                "after the fence [[a/b]]",
+            ],
+        );
+        let cb = conv().convert_block(&b, None).unwrap();
+        assert_eq!(
+            cb.lines,
+            vec![
+                "```",
+                "interface 2/1/44",
+                "    no shutdown",
+                "    reauth-period 3600",
+                "```",
+                "after the fence [[a::b]]",
+            ]
+        );
+        // A single-token info string stays an info string.
+        let b = block(0, &["```rust", "fn main() {}", "```"]);
+        let cb = conv().convert_block(&b, None).unwrap();
+        assert_eq!(cb.lines[0], "```rust");
+    }
+
+    #[test]
+    fn empty_blocks_disappear() {
+        assert!(conv().convert_block(&block(0, &[""]), None).is_none());
+        assert!(conv().convert_block(&block(1, &["-"]), None).is_some()); // "-" is content
+        assert!(
+            conv()
+                .convert_block(&block(0, &["id:: x", "collapsed:: true"]), None)
+                .is_none()
+        );
+    }
+
+    // -- rendering --
+
+    fn cb(depth: usize, lines: &[&str], numbered: bool, task: bool) -> ConvBlock {
+        ConvBlock {
+            depth,
+            lines: lines.iter().map(|s| s.to_string()).collect(),
+            numbered,
+            task,
+        }
+    }
+
+    #[test]
+    fn flatten_makes_paragraphs_and_nested_lists() {
+        let blocks = vec![
+            cb(0, &["# Capital"], false, false),
+            cb(1, &["switches - $40,000"], false, false),
+            cb(2, &["spare"], false, false),
+            cb(0, &["A paragraph", "second line"], false, false),
+        ];
+        let md = render(&blocks, true);
+        assert_eq!(
+            md,
+            "# Capital\n\n- switches - $40,000\n  - spare\n\nA paragraph\nsecond line"
+        );
+    }
+
+    #[test]
+    fn flatten_keeps_tasks_and_numbers_as_items() {
+        let blocks = vec![
+            cb(0, &["[ ] call Bob"], false, true),
+            cb(0, &["step one"], true, false),
+            cb(0, &["step two"], true, false),
+            cb(1, &["detail"], false, false),
+            cb(0, &["step three"], true, false),
+        ];
+        let md = render(&blocks, true);
+        assert_eq!(
+            md,
+            "- [ ] call Bob\n1. step one\n2. step two\n  - detail\n3. step three"
+        );
+    }
+
+    #[test]
+    fn keep_bullets_mode_keeps_everything_listed() {
+        let blocks = vec![
+            cb(0, &["top"], false, false),
+            cb(1, &["child", "continuation"], false, false),
+        ];
+        let md = render(&blocks, false);
+        assert_eq!(md, "- top\n  - child\n    continuation");
+    }
+
+    // -- highlights --
+
+    #[test]
+    fn hls_pages_convert_to_zorite_highlights() {
+        let text = "file:: [x.pdf](../assets/x.pdf)\nfile-path:: ../assets/x.pdf\n- quoted text\n  hl-page:: 3\n  id:: aaa\n- area\n  hl-page:: 9\n  hl-color:: green\n  [:span]";
+        let blocks = parse_outline(text);
+        let mut c = conv();
+        let (title, content) = convert_highlights(&mut c, &blocks).unwrap();
+        assert_eq!(title, "x.pdf (highlights)");
+        assert_eq!(
+            content,
+            "- p3: quoted text [[pdf/x.pdf#p3|↗]]\n- p9: area {green} [[pdf/x.pdf#p9|↗]]"
+        );
+    }
+
+    // -- end to end --
+
+    #[test]
+    fn read_graph_end_to_end() {
+        let root = std::env::temp_dir().join("zorite-test-logseq-graph");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("pages")).unwrap();
+        std::fs::create_dir_all(root.join("journals")).unwrap();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("assets/pic 1.png"), b"png").unwrap();
+        std::fs::write(
+            root.join("pages/Budget___2024.md"),
+            "- # Capital\n\t- TODO get quotes for [[Vendors/Arista]]\n- ![shot](../assets/pic 1.png)\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("pages/Other.md"),
+            "alias:: O2\n- see [[Budget/2024]]\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("journals/2024_02_07.md"), "- met [[Alan]]\n").unwrap();
+        std::fs::write(root.join("pages/Empty.md"), "-\n- id:: abc\n").unwrap();
+
+        let bundle = read_graph(&root, &Options { flatten: true }).unwrap();
+
+        // Journals first (scan order), then pages; empty stubs don't land.
+        assert_eq!(bundle.days.len(), 1);
+        assert_eq!(bundle.days[0].date, "2024-02-07");
+        assert_eq!(bundle.days[0].content, "met [[Alan]]");
+        let titles: Vec<&str> = bundle.pages.iter().map(|p| p.title.as_str()).collect();
+        assert_eq!(titles, vec!["Budget::2024", "Other"]);
+
+        let budget = &bundle.pages[0];
+        assert_eq!(
+            budget.content,
+            "# Capital\n\n- [ ] get quotes for [[Vendors::Arista]]\n\n![shot](images/pic_1.png)"
+        );
+        assert!(!budget.is_highlights);
+        assert_eq!(bundle.pages[1].content, "see [[Budget::2024]]");
+        assert_eq!(bundle.pages[1].aliases, vec!["O2"]);
+
+        // The referenced asset is queued with its sanitized managed name.
+        assert_eq!(bundle.assets.len(), 1);
+        assert_eq!(bundle.assets[0].managed, "images/pic_1.png");
+        assert!(bundle.assets[0].src.ends_with("pic 1.png"));
+        assert!(bundle.warnings.is_empty());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

@@ -10,9 +10,16 @@ use url::Url;
 /// - Windows: `%APPDATA%\zorite`
 /// - Linux:   `$XDG_DATA_HOME/zorite` or `~/.local/share/zorite`
 ///
+/// `ZORITE_DATA` overrides the whole directory — handy for running against a
+/// throwaway data set (the managed `images/`, `pdf/`, and the default DB
+/// location all follow it) without touching the real one.
+///
 /// Falls back to the current directory only if the relevant home /
 /// env var is somehow unset — enough to keep a dev run working.
 pub fn data_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("ZORITE_DATA") {
+        return PathBuf::from(dir);
+    }
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME")

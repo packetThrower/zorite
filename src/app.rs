@@ -32,9 +32,9 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    CloseTab, DeletePage, FindInPage, GlobalSearch, InsertTab, NewPage, NextTab, OpenInNewTab,
-    OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel,
-    SlashConfirm, SlashDown, SlashUp,
+    CloseTab, DeletePage, FindInPage, GlobalSearch, ImportLogseq, InsertTab, NewPage, NextTab,
+    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
+    SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
@@ -2581,6 +2581,188 @@ impl AppView {
         self.new_page_input.update(cx, |s, cx| s.focus(window, cx));
     }
 
+    /// `ImportLogseq` handler: pick a Logseq graph folder, then choose how
+    /// the outline converts before importing.
+    fn on_import_logseq(&mut self, _: &ImportLogseq, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(root) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.show_logseq_options(root, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Ask how Logseq's all-bullets outline should convert, then run the import.
+    fn show_logseq_options(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let (root_flat, root_list) = (root.clone(), root.clone());
+            let (weak_flat, weak_list) = (weak.clone(), weak.clone());
+            dialog
+                .title("Import from Logseq")
+                .w(px(500.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .child(
+                            div()
+                                .text_color(theme::text_secondary())
+                                .child(format!("Importing “{}”.", root.display())),
+                        )
+                        .child(div().text_color(theme::text_secondary()).child(
+                            "Logseq makes every line a bullet. “Flatten outline” turns each \
+                             top-level bullet into a paragraph or heading (nested bullets stay \
+                             lists) so pages read like zorite pages; “Keep bullets” preserves \
+                             the outline exactly. Existing pages keep their content — imported \
+                             text is appended below it.",
+                        )),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("ls-import-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("ls-import-bullets")
+                                .label("Keep bullets")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let root = root_list.clone();
+                                    let _ = weak_list.update(cx, |this, cx| {
+                                        this.run_logseq_import(root, false, window, cx)
+                                    });
+                                }),
+                        )
+                        .child(
+                            Button::new("ls-import-flatten")
+                                .primary()
+                                .label("Flatten outline")
+                                .on_click(move |_, window, cx| {
+                                    window.close_dialog(cx);
+                                    let root = root_flat.clone();
+                                    let _ = weak_flat.update(cx, |this, cx| {
+                                        this.run_logseq_import(root, true, window, cx)
+                                    });
+                                }),
+                        ),
+                )
+                .on_cancel(|_, _window, _cx| true)
+        });
+    }
+
+    /// Import `root` on a background thread (its own DB connection — WAL keeps
+    /// it concurrent with this one), then show the summary and refresh.
+    fn run_logseq_import(
+        &mut self,
+        root: PathBuf,
+        flatten: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.open_dialog(cx, |dialog, _window, _cx| {
+            dialog
+                .title("Importing from Logseq…")
+                .w(px(400.0))
+                .child(
+                    div()
+                        .text_color(theme::text_secondary())
+                        .child("Copying notes and assets — this may take a minute."),
+                )
+                .on_cancel(|_, _window, _cx| true)
+        });
+        let data_dir = crate::paths::data_dir();
+        let task = cx.background_executor().spawn(async move {
+            let db = Db::open().map_err(|e| format!("open database: {}", e.source))?;
+            let opts = crate::import::logseq::Options { flatten };
+            let bundle = crate::import::logseq::read_graph(&root, &opts)?;
+            crate::import::write_bundle(&db, &data_dir, bundle, |_, _| {})
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                window.close_dialog(cx);
+                this.refresh_sidebar();
+                // Reload journal days / the open page from the DB everywhere.
+                this.signal_doc_changed(cx);
+                this.show_logseq_summary(result, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Post-import summary (or failure) dialog.
+    fn show_logseq_summary(
+        &mut self,
+        result: Result<crate::import::Summary, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        /// At most `n` names, with a `+ N more` tail when the list is long.
+        fn sample(list: &[String], n: usize) -> String {
+            let mut s = list.iter().take(n).cloned().collect::<Vec<_>>().join(", ");
+            if list.len() > n {
+                s.push_str(&format!(" — and {} more", list.len() - n));
+            }
+            s
+        }
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let (title, lines) = match &result {
+                Ok(s) => {
+                    let mut lines = vec![format!(
+                        "{} pages, {} journal days, {} PDF-highlight pages; {} assets copied.",
+                        s.pages, s.journals, s.highlight_pages, s.assets_copied
+                    )];
+                    if !s.appended.is_empty() {
+                        lines.push(format!(
+                            "Appended below existing content: {}.",
+                            sample(&s.appended, 6)
+                        ));
+                    }
+                    if !s.warnings.is_empty() {
+                        lines.push(format!("Warnings: {}", sample(&s.warnings, 6)));
+                    }
+                    ("Logseq import complete", lines)
+                }
+                Err(e) => ("Logseq import failed", vec![e.clone()]),
+            };
+            dialog
+                .title(title)
+                .w(px(520.0))
+                .child(
+                    div().flex().flex_col().gap(px(8.0)).children(
+                        lines
+                            .into_iter()
+                            .map(|l| div().text_color(theme::text_secondary()).child(l)),
+                    ),
+                )
+                .footer(
+                    DialogFooter::new().child(
+                        Button::new("ls-import-done")
+                            .primary()
+                            .label("Done")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    ),
+                )
+                .on_cancel(|_, _window, _cx| true)
+        });
+    }
+
     /// `RenamePage` handler: open a dialog with a text field, pre-filled
     /// with the current title, to rename the right-clicked page.
     fn on_rename_page(&mut self, _: &RenamePage, window: &mut Window, cx: &mut Context<Self>) {
@@ -2858,6 +3040,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_new_page))
+            .on_action(cx.listener(Self::on_import_logseq))
             .on_action(cx.listener(Self::on_insert_tab))
             .on_action(cx.listener(Self::on_outdent))
             .on_action(cx.listener(Self::on_paste_image))
