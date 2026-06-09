@@ -51,6 +51,10 @@ mod text;
 #[cfg(feature = "markup")]
 pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 
+/// PDF outline / table-of-contents extraction (always available — no extra deps).
+mod outline;
+pub use outline::{OutlineItem, outline};
+
 // ─────────────────────────────── Low-level primitives ───────────────────────────────
 
 /// A parsed PDF. Parse once (not per page) — re-parsing a large file for every page
