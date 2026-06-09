@@ -10,7 +10,8 @@
 use std::collections::{HashMap, HashSet};
 
 use hayro::hayro_syntax::Pdf;
-use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, ObjRef, String as PdfString};
+use hayro::hayro_syntax::object::{Array, Dict, MaybeRef, Name, ObjRef, Rect, String as PdfString};
+use hayro::hayro_syntax::page::Rotation;
 
 /// One entry in a PDF's outline, flattened depth-first.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,10 +90,99 @@ fn resolve_dest_page(item: &Dict, page_index: &HashMap<ObjRef, usize>) -> Option
     let dest = item
         .get::<Array>("Dest")
         .or_else(|| item.get::<Dict>("A").and_then(|a| a.get::<Array>("D")))?;
-    // The first array element is an indirect reference to the page object.
+    dest_array_page(&dest, page_index)
+}
+
+/// The page index an explicit destination array (`[pageRef /XYZ …]`) points to —
+/// its first element is an indirect reference to the page object.
+fn dest_array_page(dest: &Array, page_index: &HashMap<ObjRef, usize>) -> Option<usize> {
     match dest.raw_iter().next()? {
         MaybeRef::Ref(page_ref) => page_index.get(&page_ref).copied(),
         MaybeRef::NotRef(_) => None,
+    }
+}
+
+/// Where a clickable PDF link points.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// A 0-based page index within this document.
+    Page(usize),
+    /// An external URI.
+    Uri(String),
+}
+
+/// A clickable `/Link` annotation: its rectangle in normalized page coordinates
+/// (0..1 of the crop box, top-left origin, matching the rendered image) and target.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PdfLink {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub target: LinkTarget,
+}
+
+/// Extract the clickable `/Link` annotations for every page, indexed by page;
+/// pages with none get an empty vec. Rotated pages are skipped for now (their
+/// annotation rectangles would need rotating to line up with the render).
+pub fn page_links(doc: &Pdf) -> Vec<Vec<PdfLink>> {
+    let page_index = build_page_index(doc);
+    let mut out = Vec::with_capacity(doc.pages().len());
+    for page in doc.pages().iter() {
+        let mut links = Vec::new();
+        let cb = page.crop_box();
+        let (pw, ph) = (cb.width(), cb.height());
+        if !matches!(page.rotation(), Rotation::None) || pw <= 0.0 || ph <= 0.0 {
+            out.push(links);
+            continue;
+        }
+        if let Some(annots) = page.raw().get::<Array>("Annots") {
+            for annot in annots.iter::<Dict>() {
+                if annot
+                    .get::<Name>("Subtype")
+                    .is_none_or(|n| n.as_str() != "Link")
+                {
+                    continue;
+                }
+                let (Some(target), Some(r)) =
+                    (link_target(&annot, &page_index), annot.get::<Rect>("Rect"))
+                else {
+                    continue;
+                };
+                // `/Rect` is in PDF user space (bottom-left origin); normalize to the
+                // crop box with a top-left origin so it overlays the rendered page.
+                let (ax0, ax1) = (r.x0.min(r.x1), r.x0.max(r.x1));
+                let (ay0, ay1) = (r.y0.min(r.y1), r.y0.max(r.y1));
+                links.push(PdfLink {
+                    x: (((ax0 - cb.x0) / pw) as f32).clamp(0.0, 1.0),
+                    y: (((cb.y1 - ay1) / ph) as f32).clamp(0.0, 1.0),
+                    w: (((ax1 - ax0) / pw) as f32).clamp(0.0, 1.0),
+                    h: (((ay1 - ay0) / ph) as f32).clamp(0.0, 1.0),
+                    target,
+                });
+            }
+        }
+        out.push(links);
+    }
+    out
+}
+
+/// Resolve a `/Link` annotation's target: `/Dest`, or an `/A` action (`/URI` for
+/// external links, `/GoTo` for internal jumps).
+fn link_target(annot: &Dict, page_index: &HashMap<ObjRef, usize>) -> Option<LinkTarget> {
+    if let Some(dest) = annot.get::<Array>("Dest") {
+        return dest_array_page(&dest, page_index).map(LinkTarget::Page);
+    }
+    let action = annot.get::<Dict>("A")?;
+    match action.get::<Name>("S").as_ref().map(|n| n.as_str()) {
+        Some("URI") => {
+            let uri = decode_pdf_string(action.get::<PdfString>("URI")?.as_bytes());
+            (!uri.is_empty()).then_some(LinkTarget::Uri(uri))
+        }
+        Some("GoTo") => {
+            dest_array_page(&action.get::<Array>("D")?, page_index).map(LinkTarget::Page)
+        }
+        _ => None,
     }
 }
 

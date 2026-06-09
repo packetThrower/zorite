@@ -25,4 +25,19 @@ fn main() {
         println!("{}{}  [{page}]", "    ".repeat(it.level), it.title);
     }
     println!("== {resolved} resolved to a page, {unresolved} unresolved ==");
+
+    let links = gpui_pdf::page_links(&doc);
+    let total: usize = links.iter().map(Vec::len).sum();
+    let (mut internal, mut external) = (0, 0);
+    for l in links.iter().flatten() {
+        match l.target {
+            gpui_pdf::LinkTarget::Page(_) => internal += 1,
+            gpui_pdf::LinkTarget::Uri(_) => external += 1,
+        }
+    }
+    let pages_with_links = links.iter().filter(|p| !p.is_empty()).count();
+    println!(
+        "== {total} link annotations ({internal} internal, {external} external) on \
+         {pages_with_links} pages =="
+    );
 }

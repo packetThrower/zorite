@@ -51,9 +51,9 @@ mod text;
 #[cfg(feature = "markup")]
 pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 
-/// PDF outline / table-of-contents extraction (always available — no extra deps).
+/// PDF outline / table-of-contents + link extraction (always available — no deps).
 mod outline;
-pub use outline::{OutlineItem, outline};
+pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
 
 // ─────────────────────────────── Low-level primitives ───────────────────────────────
 
@@ -409,6 +409,14 @@ pub struct PdfView {
     /// `Some` while the page-number field is being edited (the typed digits).
     page_input: Option<String>,
     focus: FocusHandle,
+    /// The document outline (bookmarks), extracted once on load; empty if the PDF
+    /// has none. Drives the optional table-of-contents panel.
+    outline: Vec<OutlineItem>,
+    /// Whether the table-of-contents panel is open.
+    toc_open: bool,
+    /// Per-page clickable link annotations (internal page jumps + external URIs),
+    /// extracted once on load. Overlaid as transparent click targets on each page.
+    links: Vec<Vec<PdfLink>>,
     /// Highlights to draw (markup), provided by the host.
     #[cfg(feature = "markup")]
     highlights: Vec<Highlight>,
@@ -480,10 +488,12 @@ impl PdfView {
                     let bytes = Arc::new(std::fs::read(&load_path).map_err(|e| e.to_string())?);
                     let doc = parse(bytes)?;
                     let dims = page_dims(&doc);
-                    Ok::<_, String>((doc, dims))
+                    let toc = crate::outline::outline(&doc);
+                    let links = crate::outline::page_links(&doc);
+                    Ok::<_, String>((doc, dims, toc, links))
                 })
                 .await;
-            let (doc, dims) = match prepared {
+            let (doc, dims, toc, links) = match prepared {
                 Ok(x) => x,
                 Err(e) => {
                     log::error!("load pdf: {e}");
@@ -496,6 +506,8 @@ impl PdfView {
             let _ = this.update(cx, |this, cx| {
                 this.pdf = Some(doc);
                 this.dims = dims;
+                this.outline = toc;
+                this.links = links;
                 this.pages = vec![Slot::default(); n];
                 cx.notify();
                 // A note→PDF jump that arrived before the document loaded: apply it now.
@@ -523,6 +535,9 @@ impl PdfView {
             pending_drops: Vec::new(),
             page_input: None,
             focus: cx.focus_handle(),
+            outline: Vec::new(),
+            toc_open: false,
+            links: Vec::new(),
             #[cfg(feature = "markup")]
             highlights: Vec::new(),
             #[cfg(feature = "markup")]
@@ -975,6 +990,17 @@ impl PdfView {
         cx.notify();
     }
 
+    /// Toggle the table-of-contents (outline) panel.
+    pub fn toggle_toc(&mut self, cx: &mut Context<Self>) {
+        self.toc_open = !self.toc_open;
+        cx.notify();
+    }
+
+    /// Whether the document has an outline (bookmarks) to show.
+    pub fn has_outline(&self) -> bool {
+        !self.outline.is_empty()
+    }
+
     /// Go to the next page.
     pub fn next_page(&mut self, cx: &mut Context<Self>) {
         self.go_to_page(self.current_page_index() + 1, cx);
@@ -1354,6 +1380,31 @@ impl Render for PdfView {
                 }
                 slot
             };
+            // Clickable link annotations: transparent overlays that navigate on click
+            // (internal page jump or external URL), with a faint hover so they read as
+            // links. Coordinates are normalized to the page, like highlights.
+            let mut slot = slot;
+            if let Some(links) = self.links.get(i) {
+                for (li, link) in links.iter().enumerate() {
+                    let target = link.target.clone();
+                    slot = slot.child(
+                        div()
+                            .id(SharedString::from(format!("pdf-link-{i}-{li}")))
+                            .absolute()
+                            .left(px(link.x * page_width))
+                            .top(px(link.y * disp_h))
+                            .w(px(link.w * page_width))
+                            .h(px(link.h * disp_h))
+                            .rounded(px(2.0))
+                            .cursor_pointer()
+                            .hover(|h| h.bg(hsla(0.58, 0.9, 0.55, 0.12)))
+                            .on_click(cx.listener(move |this, _, _window, cx| match &target {
+                                LinkTarget::Page(p) => this.go_to_page(*p, cx),
+                                LinkTarget::Uri(u) => cx.open_url(u),
+                            })),
+                    );
+                }
+            }
             slots.push(slot.into_any_element());
         }
 
@@ -1391,7 +1442,21 @@ impl Render for PdfView {
             }))
             .tooltip(self.tip("Go to page (⌘⌥G)"));
 
-        // Header: filename · N pages … (spacer) … page nav · zoom.
+        // The table-of-contents toggle sits at the left, next to the title, since the
+        // panel opens on that side. Only shown when the PDF has an outline.
+        let toc_toggle = self.has_outline().then(|| {
+            let toc_bg = if self.toc_open {
+                style.placeholder_bg
+            } else {
+                Hsla { a: 0.0, ..style.bg }
+            };
+            self.control("pdf-toc", "≡")
+                .bg(toc_bg)
+                .on_click(cx.listener(|this, _, _window, cx| this.toggle_toc(cx)))
+                .tooltip(self.tip("Table of contents"))
+        });
+
+        // Header: [☰] filename · N pages … (spacer) … page nav · zoom.
         let header = div()
             .flex_shrink_0()
             .px(px(16.0))
@@ -1404,6 +1469,7 @@ impl Render for PdfView {
             .gap_2()
             .text_size(px(12.0))
             .text_color(style.header_fg)
+            .children(toc_toggle)
             .child(format!("📄 {name}"))
             .child(
                 div()
@@ -1873,36 +1939,91 @@ impl Render for PdfView {
                 )
         });
 
+        // Table-of-contents panel: a scrollable, indented outline; click an entry to
+        // jump to its page. Built only when toggled open + the PDF has an outline.
+        let toc_panel = (self.toc_open && self.has_outline()).then(|| {
+            let mut col = div()
+                .id("pdf-toc")
+                .flex_shrink_0()
+                .w(px(280.0))
+                .h_full()
+                .overflow_y_scroll()
+                .border_r_1()
+                .border_color(style.border)
+                .bg(style.bg)
+                .py(px(6.0));
+            for (i, item) in self.outline.iter().enumerate() {
+                let page = item.page;
+                let muted = page.is_none();
+                let mut row = div()
+                    .id(SharedString::from(format!("pdf-toc-{i}")))
+                    .pl(px(10.0 + item.level as f32 * 14.0))
+                    .pr(px(10.0))
+                    .py(px(3.0))
+                    .text_size(px(12.0))
+                    .text_color(if muted {
+                        style.header_muted
+                    } else {
+                        style.header_fg
+                    })
+                    .child(item.title.clone());
+                // Resolvable entries are clickable (jump to the page); unresolved ones
+                // (named destinations) are shown muted and inert.
+                if !muted {
+                    row = row
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|h| h.bg(style.placeholder_bg))
+                        .on_click(cx.listener(move |this, _, _window, cx| {
+                            if let Some(p) = page {
+                                this.go_to_page(p, cx);
+                            }
+                        }));
+                }
+                col = col.child(row);
+            }
+            col
+        });
+
         root.child(header)
             .child(
-                // A relative wrapper so the scrollbar can float over the scroll area's
-                // right edge without taking layout space (overlay scrollbar).
+                // Content row: the optional TOC panel beside the scrollable page column.
                 div()
-                    .relative()
                     .flex_1()
                     .min_h_0()
+                    .flex()
+                    .flex_row()
+                    .children(toc_panel)
                     .child(
+                        // A relative wrapper so the scrollbar can float over the scroll
+                        // area's right edge without taking layout space (overlay scrollbar).
                         div()
-                            .id("pdf-scroll")
-                            .size_full()
-                            .overflow_y_scroll()
-                            .track_scroll(&self.scroll)
-                            // The page column lives directly on the scroll element (rather
-                            // than a nested child) so each page is a tracked scroll item —
-                            // `point_to_page` reads their real bounds via `bounds_for_item`.
-                            .flex()
-                            .flex_col()
-                            .items_center()
-                            .gap(px(PAGE_GAP))
-                            .py(px(PAGE_PAD_Y))
-                            // Scrolling doesn't re-run render on its own; notify so the
-                            // next frame re-runs `ensure_window` (and the page counter).
-                            .on_scroll_wheel(cx.listener(|_this, _ev, _window, cx| {
-                                cx.notify();
-                            }))
-                            .children(slots),
-                    )
-                    .children(scrollbar),
+                            .relative()
+                            .flex_1()
+                            .min_h_0()
+                            .child(
+                                div()
+                                    .id("pdf-scroll")
+                                    .size_full()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.scroll)
+                                    // The page column lives directly on the scroll element
+                                    // (not nested) so each page is a tracked scroll item —
+                                    // `point_to_page` reads real bounds via `bounds_for_item`.
+                                    .flex()
+                                    .flex_col()
+                                    .items_center()
+                                    .gap(px(PAGE_GAP))
+                                    .py(px(PAGE_PAD_Y))
+                                    // Scrolling doesn't re-run render on its own; notify so
+                                    // the next frame re-runs `ensure_window` + page counter.
+                                    .on_scroll_wheel(cx.listener(|_this, _ev, _window, cx| {
+                                        cx.notify();
+                                    }))
+                                    .children(slots),
+                            )
+                            .children(scrollbar),
+                    ),
             )
             .into_any_element()
     }
