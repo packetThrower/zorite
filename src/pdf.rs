@@ -6,6 +6,7 @@
 //! a note is imported; either opens it in a dedicated [`PdfView`] tab.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 pub use gpui_pdf::{Highlight, PdfStyle, PdfView, is_pdf};
@@ -83,64 +84,126 @@ pub fn highlight_palette() -> Vec<(gpui::SharedString, gpui::Hsla)> {
         .collect()
 }
 
-/// Parse a highlights page's markdown into viewer highlights. Each line of the form
-/// `- p{N}: {quote}` (1-based page; an optional trailing `[[link]]` is ignored)
-/// becomes one highlight; repeated quote+page pairs get successive occurrence
-/// indices so duplicates on a page each land on their own match.
+/// Split a highlighted quote on PDF bullet glyphs (●, •, ▪, …) into one item per
+/// bullet, so a multi-bullet selection becomes a markdown list (one `- pN:` line
+/// each) rather than a run-on with literal bullet characters. The glyphs are
+/// dropped; each item's text stays a substring of the page text, so it still
+/// re-locates. Returns the whole quote as a single item when there are no bullets.
+pub fn split_bullets(quote: &str) -> Vec<String> {
+    const BULLETS: &[char] = &['●', '•', '▪', '◦', '‣', '○', '◆', '■', '∙', '·'];
+    if !quote.contains(|c| BULLETS.contains(&c)) {
+        return vec![quote.to_string()];
+    }
+    let items: Vec<String> = quote
+        .split(|c| BULLETS.contains(&c))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if items.is_empty() {
+        vec![quote.to_string()]
+    } else {
+        items
+    }
+}
+
+/// Strip a trailing reverse-link `[[…]]` and a trailing `{color}` tag from a quote,
+/// returning the cleaned text and its color (the default fill when there's no known
+/// `{color}` tag — so a quote that merely ends in `{…}` is left untouched).
+fn strip_quote_meta(s: &str) -> (String, gpui::Hsla) {
+    let mut quote = s.to_string();
+    if let Some(b) = quote.find("[[") {
+        quote = quote[..b].trim().to_string();
+    }
+    let mut color = default_highlight_color();
+    if quote.ends_with('}')
+        && let Some(b) = quote.rfind('{')
+        && let Some(c) = known_color(quote[b + 1..quote.len() - 1].trim())
+    {
+        color = c;
+        quote = quote[..b].trim().to_string();
+    }
+    (quote, color)
+}
+
+/// Record a highlight, assigning the next occurrence index for its `(page, quote)`.
+fn push_highlight(
+    out: &mut Vec<Highlight>,
+    seen: &mut HashMap<(usize, String), usize>,
+    id: usize,
+    page: usize,
+    quote: String,
+    color: gpui::Hsla,
+) {
+    let occurrence = {
+        let c = seen.entry((page, quote.clone())).or_insert(0);
+        let v = *c;
+        *c += 1;
+        v
+    };
+    out.push(Highlight {
+        id: id as u64,
+        page,
+        quote,
+        occurrence,
+        color,
+    });
+}
+
+/// Parse a highlights page's markdown into viewer highlights.
+///
+/// A `- p{N}: {quote}` line (1-based page; trailing `{color}` + `[[link]]` stripped)
+/// is one highlight. A `- p{N}:` line with **no** quote (just `{color}`/link) is a
+/// *group header*: the indented `- quote` items beneath it are highlights on that
+/// page + color — so a bulleted PDF selection reads as a markdown list. Repeated
+/// `(page, quote)` pairs get successive occurrence indices.
 pub fn parse_highlights(content: &str) -> Vec<Highlight> {
-    use std::collections::HashMap;
     let mut out = Vec::new();
     let mut seen: HashMap<(usize, String), usize> = HashMap::new();
-    for (i, line) in content.lines().enumerate() {
-        let line = line.trim_start();
-        let rest = line
+    // The current group header's (page, color), set by a quote-less `- pN:` line and
+    // applied to the indented items that follow.
+    let mut group: Option<(usize, gpui::Hsla)> = None;
+    for (i, raw) in content.lines().enumerate() {
+        let trimmed = raw.trim_start();
+        let indented = raw.len() != trimmed.len();
+        let Some(body) = trimmed
             .strip_prefix("- ")
-            .or_else(|| line.strip_prefix("* "))
-            .unwrap_or(line);
-        let Some(rest) = rest.strip_prefix('p').or_else(|| rest.strip_prefix('P')) else {
+            .or_else(|| trimmed.strip_prefix("* "))
+        else {
+            group = None;
             continue;
         };
-        let Some(colon) = rest.find(':') else {
-            continue;
-        };
-        let Ok(n) = rest[..colon].trim().parse::<usize>() else {
-            continue;
-        };
-        if n == 0 {
-            continue;
-        }
-        let mut quote = rest[colon + 1..].trim().to_string();
-        // Strip a trailing reverse-link `[[…]]` (note→PDF navigation).
-        if let Some(b) = quote.find("[[") {
-            quote = quote[..b].trim().to_string();
-        }
-        // Strip a trailing `{color}` tag — but only if it names a known color, so a
-        // quote that merely happens to end in braces is left untouched.
-        let mut color = default_highlight_color();
-        if quote.ends_with('}')
-            && let Some(b) = quote.rfind('{')
-            && let Some(c) = known_color(quote[b + 1..quote.len() - 1].trim())
-        {
-            color = c;
-            quote = quote[..b].trim().to_string();
-        }
-        if quote.is_empty() {
+        // A `p{N}: …` line: a group header (empty quote) or a standalone highlight.
+        let pn = body
+            .strip_prefix(['p', 'P'])
+            .and_then(|r| r.find(':').map(|c| (r, c)))
+            .and_then(|(r, c)| {
+                r[..c]
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| *n >= 1)
+                    .map(|n| (n - 1, r[c + 1..].trim()))
+            });
+        if let Some((page, rest)) = pn {
+            let (quote, color) = strip_quote_meta(rest);
+            if quote.is_empty() {
+                group = Some((page, color));
+            } else {
+                group = None;
+                push_highlight(&mut out, &mut seen, i, page, quote, color);
+            }
             continue;
         }
-        let page = n - 1;
-        let occurrence = {
-            let c = seen.entry((page, quote.clone())).or_insert(0);
-            let v = *c;
-            *c += 1;
-            v
-        };
-        out.push(Highlight {
-            id: i as u64,
-            page,
-            quote,
-            occurrence,
-            color,
-        });
+        // An indented item beneath a header is one of its quotes.
+        if indented && let Some((page, color)) = group {
+            let (quote, _) = strip_quote_meta(body.trim());
+            if !quote.is_empty() {
+                push_highlight(&mut out, &mut seen, i, page, quote, color);
+            }
+            continue;
+        }
+        group = None;
     }
     out
 }
@@ -155,6 +218,19 @@ mod tests {
             highlights_title(Path::new("images/Manual.pdf")),
             "Manual.pdf (highlights)"
         );
+    }
+
+    #[test]
+    fn split_bullets_makes_one_item_per_bullet() {
+        // A multi-bullet selection → one item each, glyphs + surrounding space stripped.
+        assert_eq!(
+            split_bullets("● First item. ● Second item."),
+            vec!["First item.", "Second item."]
+        );
+        // Leading non-bullet text before the first bullet is kept as its own item.
+        assert_eq!(split_bullets("Causes: • a • b"), vec!["Causes:", "a", "b"]);
+        // No bullets → the whole quote, unchanged, as a single item.
+        assert_eq!(split_bullets("just a sentence"), vec!["just a sentence"]);
     }
 
     #[test]
@@ -180,6 +256,21 @@ mod tests {
     fn ignores_non_highlight_lines() {
         let hs = parse_highlights("# Heading\n- a normal bullet\n- p0: bad\n- p5:   ");
         assert!(hs.is_empty());
+    }
+
+    #[test]
+    fn grouped_header_with_indented_items() {
+        // A quote-less `- pN:` header + indented items → one highlight per item, all on
+        // the header's page, all inheriting its color.
+        let hs = parse_highlights(
+            "- p21: {pink} [[m41t81s.pdf#p21|↗]]\n    - First item.\n    - Second item.",
+        );
+        assert_eq!(hs.len(), 2);
+        assert_eq!(hs[0].page, 20);
+        assert_eq!(hs[0].quote, "First item.");
+        assert_eq!(hs[1].quote, "Second item.");
+        assert_eq!(hs[0].color, known_color("pink").unwrap());
+        assert_eq!(hs[0].color, hs[1].color);
     }
 
     #[test]

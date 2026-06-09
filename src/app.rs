@@ -1319,15 +1319,31 @@ impl AppView {
         // `- p{N}: {quote}` + an optional `{color}` (omitted for the default yellow, to
         // keep notes clean) + a reverse link `[[<ref>#pN|↗]]` that opens the PDF and
         // flashes the highlight. The ref is data-dir-relative so it's portable.
-        let mut line = format!("- p{}: {}", page + 1, q);
+        //
+        // A selection spanning PDF bullets becomes a *group*: a `- pN:` header (page +
+        // color + jump link) with the bullet items as an indented markdown sub-list, so
+        // it reads as a list rather than a run-on of `●` glyphs. Each item still
+        // re-locates (its text stays a substring of the page line, sans bullet). A
+        // single (non-bulleted) selection stays a flat one-line highlight.
+        let mut meta = String::new();
         if !color.is_empty() && !color.eq_ignore_ascii_case("yellow") {
-            line.push_str(&format!(" {{{color}}}"));
+            meta.push_str(&format!(" {{{color}}}"));
         }
-        line.push_str(&format!(" [[{}#p{}|↗]]", self.pdf_ref(pdf_path), page + 1));
-        let content = if p.content.trim().is_empty() {
-            line
+        meta.push_str(&format!(" [[{}#p{}|↗]]", self.pdf_ref(pdf_path), page + 1));
+        let items = crate::pdf::split_bullets(&q);
+        let block = if items.len() > 1 {
+            let mut b = format!("- p{}:{}", page + 1, meta);
+            for item in &items {
+                b.push_str(&format!("\n    - {item}"));
+            }
+            b
         } else {
-            format!("{}\n{}", p.content.trim_end(), line)
+            format!("- p{}: {}{}", page + 1, items[0], meta)
+        };
+        let content = if p.content.trim().is_empty() {
+            block
+        } else {
+            format!("{}\n{}", p.content.trim_end(), block)
         };
         self.save_page_content(p.id, &content, cx);
         // The highlights page may have just been created. The sidebar's page tree is
