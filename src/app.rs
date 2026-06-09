@@ -2057,18 +2057,28 @@ impl AppView {
         }
     }
 
-    /// `OpenInNewWindow` handler (sidebar page or tab right-click): open the
-    /// remembered target in a fresh window. Deferred to the App level because
-    /// `open_window` must not run while this `AppView` is mid-update.
+    /// `OpenInNewWindow` handler (sidebar page or tab right-click): the remembered
+    /// target *moves* to a fresh window rather than duplicating — if it's already open
+    /// as a (non-Journal) tab here, tear it off (close here + open there); otherwise
+    /// just open it there. Deferred to the App level because `open_window` must not run
+    /// while this `AppView` is mid-update.
     fn on_open_in_new_window(
         &mut self,
         _: &OpenInNewWindow,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(target) = self.context_target.take() {
-            window.defer(cx, move |_, cx| AppView::open_in_new_window(target, cx));
+        let Some(target) = self.context_target.take() else {
+            return;
+        };
+        let open_ix = self.tabs.iter().position(|t| t.kind == target);
+        if let Some(ix) = open_ix
+            && ix != 0
+        {
+            self.tear_off_tab(ix, window, cx);
+            return;
         }
+        window.defer(cx, move |_, cx| AppView::open_in_new_window(target, cx));
     }
 
     /// Delete a named page and refresh the UI. Journals are never deleted
