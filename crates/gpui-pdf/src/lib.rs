@@ -1763,6 +1763,13 @@ impl Render for PdfView {
                     let Some((pg, a, b)) = this.sel_drag.take() else {
                         return;
                     };
+                    // Require a real drag: a bare click (or tiny jitter) must not create a
+                    // highlight. Threshold is in normalized page coords (~a few pixels).
+                    const MIN_DRAG: f32 = 0.005;
+                    if (a.x - b.x).abs() < MIN_DRAG && (a.y - b.y).abs() < MIN_DRAG {
+                        cx.notify();
+                        return;
+                    }
                     let sel = match this.page_text.get(&pg) {
                         Some(TextSlot::Ready(pt)) => pt.select(a, b),
                         _ => None,
