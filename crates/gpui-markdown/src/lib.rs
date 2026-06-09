@@ -202,9 +202,10 @@ pub struct ImageInfo {
 pub type ImageRenderer = Rc<dyn Fn(ImageInfo) -> AnyElement>;
 
 /// Called when the rendered text is clicked (outside a link), with the **source**
-/// byte offset nearest the click — so the host can place its editor's caret there
-/// when switching into edit mode. Set via [`MarkdownView::on_click_source`].
-pub type ClickSourceHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// byte offset nearest the click and the click's window **y** — so the host can
+/// place its editor caret there and keep it under the cursor when switching into
+/// edit mode. Set via [`MarkdownView::on_click_source`].
+pub type ClickSourceHandler = Rc<dyn Fn(usize, Pixels, &mut Window, &mut App)>;
 
 /// A rendered markdown document element.
 #[derive(IntoElement)]
@@ -728,7 +729,10 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
             let rendered = layout.index_for_position(ev.position).unwrap_or_else(|e| e);
             if let Some(src) = map_to_source(&source_map, rendered) {
-                on_click_source(src, window, cx);
+                // Consume so the host's surrounding click-to-edit doesn't also fire;
+                // pass the click's y so the host can keep the caret under the cursor.
+                cx.stop_propagation();
+                on_click_source(src, ev.position.y, window, cx);
             }
         })
         .into_any_element()

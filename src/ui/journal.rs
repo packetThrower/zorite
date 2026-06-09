@@ -140,7 +140,9 @@ fn rendered_day(
             .into_any_element()
     } else {
         let weak = cx.entity().downgrade();
-        gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
+        let click_weak = cx.entity().downgrade();
+        let click_date = d.clone();
+        let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
             .style(theme::markdown_style(app.list_indent()))
             .on_image(crate::ui::image::renderer(
                 app,
@@ -150,7 +152,22 @@ fn rendered_day(
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))
-            .into_any_element()
+            // Click the rendered text → enter edit mode with the caret at the click.
+            // Deferred so we don't swap to the editor mid-click.
+            .on_click_source(std::rc::Rc::new(move |offset, click_y, window, cx| {
+                let click_weak = click_weak.clone();
+                let date = click_date.clone();
+                window.defer(cx, move |window, cx| {
+                    let _ = click_weak.update(cx, |this, cx| {
+                        this.edit_day_at_offset(&date, offset, click_y, window, cx)
+                    });
+                });
+            }));
+        // Track the markdown root's bounds — click-to-caret's scroll anchor.
+        if let Some(de) = app.day_editors.get(date) {
+            md = md.track_blocks(de.md_scroll.clone());
+        }
+        md.into_any_element()
     };
     div()
         .id(("day-body", i))

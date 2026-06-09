@@ -114,6 +114,9 @@ impl Render for TabDrag {
 /// A journal day's editor + the subscription saving its edits.
 pub struct DayEditor {
     pub state: Entity<InputState>,
+    /// Tracks the day's rendered-markdown root bounds (the slot the editor
+    /// takes over in edit mode) — the anchor for click-to-caret's scroll math.
+    pub md_scroll: ScrollHandle,
     /// The editor's text as of the last change, used to detect single-char
     /// bracket/quote insertions for auto-pairing.
     prev: String,
@@ -506,6 +509,7 @@ impl AppView {
             DayEditor {
                 prev: content,
                 state,
+                md_scroll: ScrollHandle::new(),
                 _sub: sub,
             },
         );
@@ -1886,8 +1890,60 @@ impl AppView {
         cx.notify();
     }
 
+    /// [`Self::edit_day`] variant for clicking a day's rendered text: enter edit mode
+    /// with the caret at source byte `offset` and keep the clicked line under the cursor
+    /// (gpui-markdown maps the click to a source offset and reports the click's `click_y`).
+    pub fn edit_day_at_offset(
+        &mut self,
+        date: &str,
+        offset: usize,
+        click_y: Pixels,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.editing_day = Some(date.to_string());
+        let Some(de) = self.day_editors.get(date) else {
+            cx.notify();
+            return;
+        };
+        let editor = de.state.clone();
+        let source = editor.read(cx).value().to_string();
+        let off = clamp_to_boundary(&source, offset);
+        let pos = offset_to_position(&source, off);
+        editor.update(cx, |s, cx| s.set_cursor_position(pos, window, cx));
+        // Same predict-then-jump as `edit_page_at_offset`, anchored on this day's
+        // markdown root (the editor takes over its slot in the day section).
+        let slot = de.md_scroll.bounds();
+        if slot.size.width > px(0.0) {
+            let (rows, line_height) = predict_caret_row(&source, off, slot.size.width, window, cx);
+            let caret_y = slot.origin.y + INPUT_PY + line_height * rows as f32;
+            let new_y = (self.feed_scroll.offset().y + (click_y - caret_y)).min(px(0.0));
+            self.feed_scroll.set_offset(gpui::point(px(0.0), new_y));
+        }
+        align_caret_to_click(
+            CaretAlign::new(editor, self.feed_scroll.clone(), cx.entity(), off, click_y),
+            window,
+        );
+        cx.notify();
+    }
+
+    /// Entering edit mode focuses the full-height editor, which makes gpui autoscroll
+    /// the page to the editor's top. Capture the current scroll offset and restore it
+    /// after the next frame (once that autoscroll has run), so the view stays where it
+    /// was instead of jumping to the top.
+    fn keep_page_scroll(&self, window: &mut Window, cx: &mut Context<Self>) {
+        let handle = self.page_scroll.clone();
+        let saved = handle.offset();
+        let entity = cx.entity();
+        window.on_next_frame(move |_window, cx| {
+            handle.set_offset(saved);
+            entity.update(cx, |_, cx| cx.notify());
+        });
+    }
+
     /// Enter edit mode for the open page (same not-yet-rendered caveat).
     pub fn edit_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.keep_page_scroll(window, cx);
         self.page_editing = true;
         if let Some(pe) = self.page_editor.as_ref() {
             pe.state.clone().update(cx, |s, cx| s.focus(window, cx));
@@ -1896,20 +1952,44 @@ impl AppView {
     }
 
     /// Enter edit mode with the caret at source byte `offset` — used when clicking
-    /// the rendered page (gpui-markdown maps the click to a source offset), so the
-    /// cursor lands where you clicked. `set_cursor_position` also focuses the editor.
+    /// the rendered page (gpui-markdown maps the click to a source offset and reports
+    /// the click's window `click_y`), so the cursor lands where you clicked.
+    /// `set_cursor_position` also focuses the editor.
     pub fn edit_page_at_offset(
         &mut self,
         offset: usize,
+        click_y: Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.page_editing = true;
-        if let Some(pe) = self.page_editor.as_ref() {
-            let editor = pe.state.clone();
-            let pos = offset_to_position(&editor.read(cx).value(), offset);
-            editor.update(cx, |s, cx| s.set_cursor_position(pos, window, cx));
+        let Some(pe) = self.page_editor.as_ref() else {
+            cx.notify();
+            return;
+        };
+        let editor = pe.state.clone();
+        let source = editor.read(cx).value().to_string();
+        let off = clamp_to_boundary(&source, offset);
+        let pos = offset_to_position(&source, off);
+        editor.update(cx, |s, cx| s.set_cursor_position(pos, window, cx));
+        // The source layout is more compact than the rendered one, so keeping the
+        // scroll offset would let the clicked line slide away from the cursor.
+        // Predict the caret's position from the still-painted rendered frame (the
+        // editor takes over the markdown root's slot) and jump the scroll *now*,
+        // so the editor's first paint already has the line under the cursor.
+        // Clamping at the top keeps near-top lines put instead of force-centering.
+        let slot = self.md_block_scroll.bounds();
+        if slot.size.width > px(0.0) {
+            let (rows, line_height) = predict_caret_row(&source, off, slot.size.width, window, cx);
+            let caret_y = slot.origin.y + INPUT_PY + line_height * rows as f32;
+            let new_y = (self.page_scroll.offset().y + (click_y - caret_y)).min(px(0.0));
+            self.page_scroll.set_offset(gpui::point(px(0.0), new_y));
         }
+        // Mop up any prediction drift once the editor reports real caret bounds.
+        align_caret_to_click(
+            CaretAlign::new(editor, self.page_scroll.clone(), cx.entity(), off, click_y),
+            window,
+        );
         cx.notify();
     }
 
@@ -2939,25 +3019,164 @@ fn clipboard_ext(format: ImageFormat) -> &'static str {
     }
 }
 
-/// A soft-wrapping, chrome-less editor seeded with `content`. Uses
-/// `auto_grow` (not plain `multi_line`, which fills its container) so the
-/// editor is one line when empty and grows line-by-line with content —
-/// the outer feed scrolls, never the individual day. The high `max_rows`
-/// effectively means "never scroll internally".
-/// Convert a source byte `offset` into the editor's `(line, char-column)` Position
-/// (0-based; column counts characters, per gpui-component). Clamps to the source
-/// length and snaps to a char boundary.
-fn offset_to_position(source: &str, offset: usize) -> gpui_component::input::Position {
+/// Clamp `offset` to `source`'s length and snap it down to a char boundary.
+fn clamp_to_boundary(source: &str, offset: usize) -> usize {
     let mut offset = offset.min(source.len());
     while offset > 0 && !source.is_char_boundary(offset) {
         offset -= 1;
     }
+    offset
+}
+
+/// Convert a source byte `offset` into the editor's `(line, char-column)` Position
+/// (0-based; column counts characters, per gpui-component). Clamps to the source
+/// length and snaps to a char boundary.
+fn offset_to_position(source: &str, offset: usize) -> gpui_component::input::Position {
+    let offset = clamp_to_boundary(source, offset);
     let line = source[..offset].bytes().filter(|&b| b == b'\n').count() as u32;
     let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
     let column = source[line_start..offset].chars().count() as u32;
     gpui_component::input::Position::new(line, column)
 }
 
+/// Layout constants of gpui-component's `Input` for our chrome-less editors
+/// (`appearance(false)`, default `Medium` size, no line numbers): the inner
+/// padding, the soft-wrap right margin, and the text size the hosts set.
+/// Mirrored here so [`predict_caret_row`] can predict the caret's position
+/// *before* the editor first paints.
+const INPUT_PY: Pixels = px(8.0);
+const INPUT_PX: Pixels = px(12.0);
+const INPUT_WRAP_RIGHT_MARGIN: Pixels = px(10.0);
+const EDITOR_TEXT_SIZE: Pixels = px(16.0);
+
+/// Predict where the caret at byte `off` will land inside one of our editors:
+/// `(wrap rows above the caret, line height)`. `slot_width` is the width of the
+/// element the editor will occupy. Counts soft-wrap rows with the same
+/// `LineWrapper` machinery (same font, size, and wrap width) gpui-component
+/// wraps with, so the prediction matches the editor's own layout.
+fn predict_caret_row(
+    source: &str,
+    off: usize,
+    slot_width: Pixels,
+    window: &Window,
+    cx: &App,
+) -> (usize, Pixels) {
+    use gpui_component::ActiveTheme as _;
+    // The editor inherits the root text style with the theme font family
+    // (applied by gpui-component's Root) and the host's text size, while the
+    // Input element pins line height to 1.25 rems (its `LINE_HEIGHT`). The
+    // inheritance stack isn't populated during event dispatch, so mirror it.
+    let mut style = window.text_style();
+    style.font_size = EDITOR_TEXT_SIZE.into();
+    style.font_family = cx.theme().font_family.clone();
+    style.line_height = gpui::rems(1.25).into();
+    let line_height = style.line_height_in_pixels(window.rem_size());
+    let wrap_width = slot_width - INPUT_PX * 2.0 - INPUT_WRAP_RIGHT_MARGIN;
+    let mut wrapper = cx
+        .text_system()
+        .line_wrapper(style.font(), EDITOR_TEXT_SIZE);
+    let off = clamp_to_boundary(source, off);
+    let mut rows = 0usize;
+    let mut line_start = 0usize;
+    for line in source.split('\n') {
+        let line_end = line_start + line.len();
+        let fragments = [gpui::LineFragment::text(line)];
+        let boundaries = wrapper.wrap_line(&fragments, wrap_width);
+        if off <= line_end {
+            // The caret's line: wraps at or before the caret's column push it down.
+            let col = off - line_start;
+            rows += boundaries.filter(|b| b.ix <= col).count();
+            break;
+        }
+        rows += 1 + boundaries.count();
+        line_start = line_end + 1;
+    }
+    (rows, line_height)
+}
+
+/// Frame-loop state for [`align_caret_to_click`].
+struct CaretAlign {
+    editor: Entity<InputState>,
+    scroll: ScrollHandle,
+    view: Entity<AppView>,
+    /// Caret byte offset and the window y it should sit at.
+    off: usize,
+    click_y: Pixels,
+    /// Last frame's `(caret y, scroll offset)` — a correction only applies once
+    /// two consecutive frames agree, because the editor's reported caret bounds
+    /// can be stale right after the mode switch (layout from a previous paint).
+    last: Option<(Pixels, Pixels)>,
+    tries: u32,
+    applies: u32,
+}
+
+impl CaretAlign {
+    fn new(
+        editor: Entity<InputState>,
+        scroll: ScrollHandle,
+        view: Entity<AppView>,
+        off: usize,
+        click_y: Pixels,
+    ) -> Self {
+        Self {
+            editor,
+            scroll,
+            view,
+            off,
+            click_y,
+            last: None,
+            tries: 20,
+            applies: 2,
+        }
+    }
+}
+
+/// After entering edit mode, fine-tune the scroll so the caret sits at the
+/// click's y — a mop-up pass for any drift in [`predict_caret_row`]'s estimate.
+/// Samples are gated on two-frame agreement (see [`CaretAlign::last`]); the
+/// correction is skipped inside a small epsilon and capped to a couple of
+/// nudges so it can never fight the user.
+fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
+    window.on_next_frame(move |window, cx| {
+        if state.tries == 0 || state.applies == 0 {
+            return;
+        }
+        state.tries -= 1;
+        // Keep frames coming while we sample: layout only refreshes on paint.
+        state.view.update(cx, |_, cx| cx.notify());
+        let caret = state
+            .editor
+            .read(cx)
+            .range_to_bounds(&(state.off..state.off))
+            .map(|b| b.origin.y);
+        let offset = state.scroll.offset().y;
+        let Some(caret_y) = caret else {
+            state.last = None;
+            align_caret_to_click(state, window);
+            return;
+        };
+        let sample = (caret_y, offset);
+        if state.last != Some(sample) {
+            state.last = Some(sample);
+            align_caret_to_click(state, window);
+            return;
+        }
+        let new_y = (offset + (state.click_y - caret_y)).min(px(0.0));
+        if (new_y - offset).abs() <= px(2.0) {
+            return;
+        }
+        state.scroll.set_offset(gpui::point(px(0.0), new_y));
+        state.last = None;
+        state.applies -= 1;
+        align_caret_to_click(state, window);
+    });
+}
+
+/// A soft-wrapping, chrome-less editor seeded with `content`. Uses
+/// `auto_grow` (not plain `multi_line`, which fills its container) so the
+/// editor is one line when empty and grows line-by-line with content —
+/// the outer feed scrolls, never the individual day. The high `max_rows`
+/// effectively means "never scroll internally".
 fn make_editor(
     content: &str,
     window: &mut Window,

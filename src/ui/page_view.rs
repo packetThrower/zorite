@@ -178,11 +178,12 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             }))
             // Click the rendered text → enter edit mode with the caret at the click.
             // Deferred so we don't swap to the editor mid-click.
-            .on_click_source(std::rc::Rc::new(move |offset, window, cx| {
+            .on_click_source(std::rc::Rc::new(move |offset, click_y, window, cx| {
                 let click_weak = click_weak.clone();
                 window.defer(cx, move |window, cx| {
-                    let _ = click_weak
-                        .update(cx, |this, cx| this.edit_page_at_offset(offset, window, cx));
+                    let _ = click_weak.update(cx, |this, cx| {
+                        this.edit_page_at_offset(offset, click_y, window, cx)
+                    });
                 });
             }));
         // Paint in-page find matches (⌘F) when the bar is open.
