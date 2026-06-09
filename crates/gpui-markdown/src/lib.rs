@@ -23,9 +23,9 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, App, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveText,
-    IntoElement, ParentElement, Pixels, RenderOnce, SharedString, StrikethroughStyle, Styled,
-    StyledText, Window, div, px, rgb, rgba,
+    AnyElement, App, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla, InteractiveElement,
+    InteractiveText, IntoElement, ParentElement, Pixels, RenderOnce, ScrollHandle, SharedString,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, Window, div, px, rgb, rgba,
 };
 use markdown::mdast;
 
@@ -45,6 +45,12 @@ pub struct MarkdownStyle {
     /// Background for `<mark>…</mark>` highlighted text. Translucent so the body text
     /// stays readable over it in any theme.
     pub mark_bg: Hsla,
+    /// Backgrounds for in-page search: every match (`search_bg`) and the current /
+    /// active one (`search_current_bg`). Painted only when a query is set via
+    /// [`MarkdownView::search`]; the host owns the find UI. Translucent so text
+    /// stays readable.
+    pub search_bg: Hsla,
+    pub search_current_bg: Hsla,
     /// Horizontal indent per nested list level. The host sizes this to match its
     /// editor's literal indent (so reading + editing line up).
     pub list_indent: Pixels,
@@ -66,6 +72,8 @@ impl Default for MarkdownStyle {
             muted_color: rgb(0x9AA0A6).into(),
             rule_color: rgba(0xFFFFFF22).into(),
             mark_bg: rgba(0xFFD60066).into(),
+            search_bg: rgba(0xFFD60055).into(),
+            search_current_bg: rgba(0xFF9500DD).into(),
             list_indent: px(18.0),
             mono_font: "monospace".into(),
         }
@@ -200,6 +208,12 @@ pub struct MarkdownView {
     style: MarkdownStyle,
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
+    /// In-page search query (non-empty when `Some`) + the active match index.
+    query: Option<SharedString>,
+    current_match: usize,
+    /// When set, the block column is `track_scroll`ed with this handle, so the host
+    /// can read each block's bounds (`bounds_for_item`) to scroll a match into view.
+    block_scroll: Option<ScrollHandle>,
 }
 
 impl MarkdownView {
@@ -212,6 +226,9 @@ impl MarkdownView {
             style: MarkdownStyle::default(),
             on_wiki_link: None,
             on_image: None,
+            query: None,
+            current_match: 0,
+            block_scroll: None,
         }
     }
 
@@ -231,11 +248,35 @@ impl MarkdownView {
         self.on_image = Some(handler);
         self
     }
+
+    /// Highlight case-insensitive occurrences of `query` in the rendered (visible)
+    /// text, emphasizing the `current`-th match (0-based, document order). An empty
+    /// query highlights nothing. The host owns the find bar and the match index +
+    /// total — pair this with [`match_count`] to size "n of m" and bound `current`.
+    /// gpui-markdown only paints: no I/O, no storage, just the source string.
+    pub fn search(mut self, query: impl Into<SharedString>, current: usize) -> Self {
+        let q = query.into();
+        self.query = (!q.is_empty()).then_some(q);
+        self.current_match = current;
+        self
+    }
+
+    /// Track-scroll the block column with `handle` so the host can read each block's
+    /// laid-out bounds via [`ScrollHandle::bounds_for_item`] — indexed exactly as
+    /// [`find_matches`] reports — and scroll a match into view. Pair with [`search`].
+    ///
+    /// [`search`]: MarkdownView::search
+    pub fn track_blocks(mut self, handle: ScrollHandle) -> Self {
+        self.block_scroll = Some(handle);
+        self
+    }
 }
 
 impl RenderOnce for MarkdownView {
     fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let source = self.source;
+        let block_scroll = self.block_scroll;
+        let root_id: SharedString = format!("{}-md-root", self.id_base).into();
         let mut ctx = Ctx {
             style: self.style,
             on_wiki_link: self.on_wiki_link,
@@ -243,9 +284,13 @@ impl RenderOnce for MarkdownView {
             id_base: self.id_base,
             counter: 0,
             definitions: HashMap::new(),
+            query: self.query,
+            current_match: self.current_match,
+            match_ix: 0,
         };
 
         let mut col = div()
+            .id(root_id)
             .flex()
             .flex_col()
             .gap(px(10.0))
@@ -265,6 +310,10 @@ impl RenderOnce for MarkdownView {
             }
             _ => col = col.child(StyledText::new(source)),
         }
+        // Track each block's bounds so the host can scroll a search match into view.
+        if let Some(handle) = &block_scroll {
+            col = col.track_scroll(handle);
+        }
         col
     }
 }
@@ -278,6 +327,12 @@ struct Ctx {
     /// `[id] -> url` from reference definitions (`[id]: url`), collected up
     /// front so `[text][id]` references resolve regardless of definition order.
     definitions: HashMap<String, String>,
+    /// In-page search: the active query (non-empty when `Some`), the current/active
+    /// match index, and a running counter that assigns each match its document-order
+    /// index as blocks render — so it stays in step with [`match_count`].
+    query: Option<SharedString>,
+    current_match: usize,
+    match_ix: usize,
 }
 
 // --- Block rendering ---
@@ -578,7 +633,29 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         &mut inl,
     );
 
-    let styled = StyledText::new(inl.text).with_highlights(inl.highlights);
+    // In-page search: overlay a background on each match in this block's visible
+    // text (document order, a stronger colour for the active match), merged into
+    // the existing formatting runs so the result stays sorted + non-overlapping
+    // (which `with_highlights` / `compute_runs` requires).
+    let highlights = if let Some(query) = ctx.query.clone() {
+        let search: Vec<(Range<usize>, Hsla)> = scan_matches(&inl.text, &query)
+            .into_iter()
+            .map(|r| {
+                let bg = if ctx.match_ix == ctx.current_match {
+                    ctx.style.search_current_bg
+                } else {
+                    ctx.style.search_bg
+                };
+                ctx.match_ix += 1;
+                (r, bg)
+            })
+            .collect();
+        overlay_search(inl.highlights, &search)
+    } else {
+        inl.highlights
+    };
+
+    let styled = StyledText::new(inl.text).with_highlights(highlights);
     if inl.links.is_empty() {
         return styled.into_any_element();
     }
@@ -883,6 +960,262 @@ fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
         grid = grid.child(row_el);
     }
     grid.into_any_element()
+}
+
+// --- In-page search ---
+//
+// Pure, host-agnostic search over the *rendered* (visible) text — markup already
+// stripped, the same text the reader sees. `match_count` sizes a host find bar's
+// "n of m"; `MarkdownView::search` paints the matches. Both walk the inline blocks
+// in the same document order, so the running match index lines up. No I/O, no
+// storage — only the source string, so any app can reuse it (db or not).
+
+/// Case-insensitive (ASCII-folded), non-overlapping byte ranges of `query` in
+/// `text`. Ranges land on char boundaries, so they're safe for `StyledText`.
+/// Non-ASCII is matched exactly (no Unicode case-folding — a rare nicety).
+fn scan_matches(text: &str, query: &str) -> Vec<Range<usize>> {
+    let (t, q) = (text.as_bytes(), query.as_bytes());
+    let mut out = Vec::new();
+    if q.is_empty() || q.len() > t.len() {
+        return out;
+    }
+    let mut i = 0;
+    while i + q.len() <= t.len() {
+        if t[i..i + q.len()].eq_ignore_ascii_case(q)
+            && text.is_char_boundary(i)
+            && text.is_char_boundary(i + q.len())
+        {
+            out.push(i..i + q.len());
+            i += q.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Merge `search` backgrounds into a block's existing (sorted, non-overlapping)
+/// `formatting` runs, producing a sorted, non-overlapping set — splitting at every
+/// boundary and OR-ing the search background onto any overlapping formatting run.
+/// `with_highlights` / `compute_runs` require that ordering, so a match landing on
+/// a bold/italic/link span can't just be appended.
+fn overlay_search(
+    formatting: Vec<(Range<usize>, HighlightStyle)>,
+    search: &[(Range<usize>, Hsla)],
+) -> Vec<(Range<usize>, HighlightStyle)> {
+    if search.is_empty() {
+        return formatting;
+    }
+    let mut points: Vec<usize> = Vec::with_capacity((formatting.len() + search.len()) * 2);
+    for (r, _) in &formatting {
+        points.push(r.start);
+        points.push(r.end);
+    }
+    for (r, _) in search {
+        points.push(r.start);
+        points.push(r.end);
+    }
+    points.sort_unstable();
+    points.dedup();
+
+    let mut out = Vec::new();
+    for w in points.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        // Boundaries split at every range edge, so each segment is fully inside or
+        // fully outside every range — containment is a simple test.
+        let fmt = formatting
+            .iter()
+            .find(|(r, _)| r.start <= a && b <= r.end)
+            .map(|(_, s)| *s);
+        let bg = search
+            .iter()
+            .find(|(r, _)| r.start <= a && b <= r.end)
+            .map(|(_, c)| *c);
+        match (fmt, bg) {
+            (None, None) => {} // plain run — compute_runs fills the gap with the default
+            (Some(s), None) => out.push((a..b, s)),
+            (None, Some(c)) => out.push((
+                a..b,
+                HighlightStyle {
+                    background_color: Some(c),
+                    ..Default::default()
+                },
+            )),
+            (Some(mut s), Some(c)) => {
+                s.background_color = Some(c);
+                out.push((a..b, s));
+            }
+        }
+    }
+    out
+}
+
+/// The visible text of an inline run (markup stripped), exactly as `inline_element`
+/// renders it. Style/definitions don't affect the *text*, so defaults are fine.
+fn inline_text(
+    nodes: &[mdast::Node],
+    style: &MarkdownStyle,
+    defs: &HashMap<String, String>,
+) -> String {
+    let mut inl = Inline::default();
+    build_inline(nodes, HighlightStyle::default(), style, defs, &mut inl);
+    inl.text
+}
+
+/// Visit each block's visible inline text in document order, mirroring exactly the
+/// nodes `render_block` sends through `inline_element` — so search counts and
+/// indices match what's painted. Code blocks / raw HTML render text directly and
+/// aren't searched.
+fn for_each_inline_text(
+    nodes: &[mdast::Node],
+    style: &MarkdownStyle,
+    defs: &HashMap<String, String>,
+    f: &mut impl FnMut(&str),
+) {
+    for node in nodes {
+        match node {
+            mdast::Node::Paragraph(p) => f(&inline_text(&p.children, style, defs)),
+            mdast::Node::Heading(h) => f(&inline_text(&h.children, style, defs)),
+            mdast::Node::TableCell(c) => f(&inline_text(&c.children, style, defs)),
+            mdast::Node::List(l) => for_each_inline_text(&l.children, style, defs, f),
+            mdast::Node::ListItem(li) => for_each_inline_text(&li.children, style, defs, f),
+            mdast::Node::Blockquote(b) => for_each_inline_text(&b.children, style, defs, f),
+            mdast::Node::Table(t) => for_each_inline_text(&t.children, style, defs, f),
+            mdast::Node::TableRow(r) => for_each_inline_text(&r.children, style, defs, f),
+            mdast::Node::FootnoteDefinition(fd) => {
+                for_each_inline_text(&fd.children, style, defs, f)
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Count case-insensitive matches of `query` in the rendered (visible) text of
+/// `source` — the same matches [`MarkdownView::search`] highlights, in the same
+/// order. Pure: parses the markdown, no I/O or storage. Empty query → 0. Use it to
+/// size a host find bar's "n of m" and to bound the active-match index.
+pub fn match_count(source: &str, query: &str) -> usize {
+    find_matches(source, query).len()
+}
+
+/// The **block index** (top-level column-child index, as rendered) of each match of
+/// `query` in `source`, in document order. Pair with [`MarkdownView::track_blocks`]:
+/// the host reads `bounds_for_item(find_matches(..)[current])` to scroll the active
+/// match's block into view. Pure — parses the markdown, no I/O or storage.
+pub fn find_matches(source: &str, query: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    if query.is_empty() {
+        return out;
+    }
+    let style = MarkdownStyle::default();
+    let defs = HashMap::new();
+    if let Ok(mdast::Node::Root(root)) = markdown::to_mdast(source, &markdown::ParseOptions::gfm())
+    {
+        // Walk top-level blocks in render order, assigning each a column-child index
+        // (only blocks that render to a child get one — same as `render`), and push
+        // that index once per match found inside it (recursing through inline text).
+        let mut block_ix = 0usize;
+        for node in &root.children {
+            if !renders_to_block(node) {
+                continue;
+            }
+            let mut n = 0;
+            for_each_inline_text(std::slice::from_ref(node), &style, &defs, &mut |t| {
+                n += scan_matches(t, query).len();
+            });
+            out.extend(std::iter::repeat_n(block_ix, n));
+            block_ix += 1;
+        }
+    }
+    out
+}
+
+/// Whether a top-level node renders to a column child (mirrors `render_block`
+/// returning `Some`). Kept in sync with `render_block` so `find_matches`' block
+/// indices line up with the `track_blocks` handle's `bounds_for_item`.
+fn renders_to_block(node: &mdast::Node) -> bool {
+    matches!(
+        node,
+        mdast::Node::Paragraph(_)
+            | mdast::Node::Heading(_)
+            | mdast::Node::List(_)
+            | mdast::Node::Code(_)
+            | mdast::Node::Blockquote(_)
+            | mdast::Node::ThematicBreak(_)
+            | mdast::Node::Table(_)
+            | mdast::Node::FootnoteDefinition(_)
+            | mdast::Node::Html(_)
+            | mdast::Node::Text(_)
+    )
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn scan_is_ascii_case_insensitive_and_nonoverlapping() {
+        assert_eq!(
+            scan_matches("Hello hello HELLO", "hello"),
+            vec![0..5, 6..11, 12..17]
+        );
+        assert_eq!(scan_matches("aaaa", "aa"), vec![0..2, 2..4]); // non-overlapping
+        assert!(scan_matches("abc", "").is_empty());
+        assert!(scan_matches("abc", "xyz").is_empty());
+    }
+
+    #[test]
+    fn match_count_searches_visible_text_not_markup() {
+        // Markup is stripped: the word is found, the syntax isn't.
+        assert_eq!(match_count("**bold** and _italic_", "bold"), 1);
+        assert_eq!(match_count("**bold**", "*"), 0);
+        // Across blocks, case-insensitive (heading + paragraph).
+        assert_eq!(match_count("# Title\n\nthe title here", "title"), 2);
+        // List items + table cells are searched; nested too.
+        assert_eq!(match_count("- one\n- two one", "one"), 2);
+        assert_eq!(match_count("| a | one |\n|---|---|\n| one | b |", "one"), 2);
+        assert_eq!(match_count("", "x"), 0);
+        // A fenced code block is NOT searched (renders text directly).
+        assert_eq!(match_count("```\nsecret\n```", "secret"), 0);
+    }
+
+    #[test]
+    fn find_matches_reports_block_indices() {
+        // Heading is block 0 (1 match), paragraph is block 1 (2 matches).
+        assert_eq!(
+            find_matches("# title here\n\nthe title and a title", "title"),
+            vec![0, 1, 1]
+        );
+        // A code block holds block index 0 (no inline text), shifting the paragraph
+        // with the matches to block 1 — so the host scrolls to the right child.
+        assert_eq!(
+            find_matches("```\ncode\n```\n\nfind me, find", "find"),
+            vec![1, 1]
+        );
+        assert!(find_matches("x", "").is_empty());
+    }
+
+    #[test]
+    fn overlay_splits_and_merges_overlap() {
+        // A match (2..6) overlapping a bold run (0..4) → three sorted, non-overlapping
+        // segments: bold-only, bold+bg, bg-only.
+        let fmt = vec![(
+            0..4,
+            HighlightStyle {
+                font_weight: Some(FontWeight::BOLD),
+                ..Default::default()
+            },
+        )];
+        let search = vec![(2..6, rgba(0xFF0000FF).into())];
+        let out = overlay_search(fmt, &search);
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[0].0, 0..2);
+        assert!(out[0].1.background_color.is_none() && out[0].1.font_weight.is_some());
+        assert_eq!(out[1].0, 2..4);
+        assert!(out[1].1.background_color.is_some() && out[1].1.font_weight.is_some());
+        assert_eq!(out[2].0, 4..6);
+        assert!(out[2].1.background_color.is_some() && out[2].1.font_weight.is_none());
+    }
 }
 
 // --- Editor helpers: markdown list / quote continuation + indent ---

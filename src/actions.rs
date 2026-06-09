@@ -37,7 +37,10 @@ actions!(
         NextTab,
         PrevTab,
         OpenSettings,
-        Quit
+        Quit,
+        // Find: in the current page's rendered text, or the global note search.
+        FindInPage,
+        GlobalSearch
     ]
 );
 
@@ -76,6 +79,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+        // Find-in-page (a Page tab's rendered text) vs the global note search.
+        // PDFs keep their own ⌘F (handled in the viewer); FindInPage no-ops there.
+        KeyBinding::new("secondary-f", FindInPage, None),
+        KeyBinding::new("secondary-shift-f", GlobalSearch, None),
     ]);
 }
 
@@ -115,9 +122,10 @@ pub fn set_app_menu(cx: &mut App) {
                 MenuItem::action("Cut", input::Cut),
                 MenuItem::action("Copy", input::Copy),
                 MenuItem::action("Paste", input::Paste),
-                MenuItem::separator(),
-                MenuItem::action("Find in Note", input::Search),
                 MenuItem::action("Select All", input::SelectAll),
+                MenuItem::separator(),
+                MenuItem::action("Find in Page", FindInPage),
+                MenuItem::action("Search All Notes", GlobalSearch),
             ],
             disabled: false,
         },

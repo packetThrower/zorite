@@ -7,7 +7,7 @@ use gpui::{
 };
 use gpui_component::input::Input;
 
-use crate::app::{AppView, PageEditor};
+use crate::app::{AppView, PageEditor, PageFind};
 use crate::hierarchy;
 use crate::models::{Backlink, Page};
 use crate::slash::SlashTarget;
@@ -30,12 +30,20 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .flex_1()
         .min_w_0()
         .h_full()
+        .flex()
+        .flex_col()
         .bg(theme::bg_content())
+        // The find bar (⌘F) sits above the scrollable content so it stays put
+        // while you step through matches.
+        .children(app.page_find.as_ref().map(|pf| find_bar(pf, cx)))
         .child(
             div()
                 .id("page-scroll")
-                .size_full()
+                .flex_1()
+                .min_h_0()
+                .w_full()
                 .overflow_y_scroll()
+                .track_scroll(&app.page_scroll)
                 // Drop image files onto the page to add them.
                 .on_drop(cx.listener(
                     move |this: &mut AppView, paths: &ExternalPaths, window, cx| {
@@ -155,8 +163,10 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             .into_any_element()
     } else {
         let weak = cx.entity().downgrade();
-        gpui_markdown::MarkdownView::new("page-md", content)
+        let mut md = gpui_markdown::MarkdownView::new("page-md", content)
             .style(theme::markdown_style(app.list_indent()))
+            // Track block bounds so find can scroll the active match into view.
+            .track_blocks(app.md_block_scroll.clone())
             .on_image(crate::ui::image::renderer(
                 app,
                 SlashTarget::Page(pe.id),
@@ -164,8 +174,12 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             ))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
-            }))
-            .into_any_element()
+            }));
+        // Paint in-page find matches (⌘F) when the bar is open.
+        if let Some(pf) = app.page_find.as_ref() {
+            md = md.search(pf.query.clone(), pf.current);
+        }
+        md.into_any_element()
     };
     div()
         .id("page-body")
@@ -178,6 +192,72 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
                 this.edit_page(window, cx);
             }),
         )
+}
+
+/// The in-page find bar (⌘F), shown above a named page. Reads the `PageFind`
+/// state; its query field recomputes the match count on change, and the buttons
+/// step / close. Lives above the scroll area so it persists while stepping.
+fn find_bar(pf: &PageFind, cx: &mut Context<AppView>) -> impl IntoElement {
+    let status = if pf.query.is_empty() {
+        String::new()
+    } else if pf.count == 0 {
+        "No matches".to_string()
+    } else {
+        format!("{} / {}", pf.current + 1, pf.count)
+    };
+    div()
+        .flex_shrink_0()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(8.0))
+        .bg(theme::elevated())
+        .border_b_1()
+        .border_color(theme::border_subtle())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .child(Input::new(&pf.input).text_size(px(13.0))),
+        )
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(12.0))
+                .text_color(theme::text_secondary())
+                .child(status),
+        )
+        .child(
+            find_btn("find-prev", "↑")
+                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| this.page_find_step(-1, cx))),
+        )
+        .child(
+            find_btn("find-next", "↓")
+                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| this.page_find_step(1, cx))),
+        )
+        .child(
+            find_btn("find-close", "✕")
+                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| this.close_page_find(cx))),
+        )
+}
+
+/// A small clickable glyph button for the find bar (caller attaches `on_click`).
+fn find_btn(id: &'static str, glyph: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(22.0))
+        .h(px(22.0))
+        .rounded(px(4.0))
+        .text_size(px(13.0))
+        .text_color(theme::text_secondary())
+        .cursor_pointer()
+        .hover(|h| h.bg(theme::hover()))
+        .child(glyph)
 }
 
 /// The large editable surface directly below the page content (and above the

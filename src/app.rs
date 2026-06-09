@@ -32,8 +32,9 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    CloseTab, DeletePage, InsertTab, NewPage, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings,
-    Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
+    CloseTab, DeletePage, FindInPage, GlobalSearch, InsertTab, NewPage, NextTab, OpenInNewTab,
+    OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel,
+    SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
@@ -245,9 +246,30 @@ pub struct AppView {
     /// data is preserved in the pre-migration backup.
     db_error: Option<DbError>,
     db_error_shown: bool,
+    /// In-page find bar (⌘F) shown above a named page; `None` = closed.
+    pub page_find: Option<PageFind>,
+    /// Find's scroll-to-match handles: `page_scroll` drives the page's scroll
+    /// offset; `md_block_scroll` tracks the rendered markdown blocks' bounds (via
+    /// `MarkdownView::track_blocks`) so the active match's block can be located.
+    pub page_scroll: ScrollHandle,
+    pub md_block_scroll: ScrollHandle,
 
     _subs: Vec<Subscription>,
     pub focus_handle: FocusHandle,
+}
+
+/// In-page find state. The query field's Change events recompute `count` against
+/// the active page; `current` + `count` size the bar's "n of m" and pick which
+/// match [`gpui_markdown::MarkdownView::search`] emphasizes.
+pub struct PageFind {
+    pub input: Entity<InputState>,
+    pub query: String,
+    pub current: usize,
+    pub count: usize,
+    /// Block index (per `gpui_markdown::find_matches`) of each match, used to scroll
+    /// the active match's block into view.
+    match_blocks: Vec<usize>,
+    _sub: Subscription,
 }
 
 /// Details of a failed on-disk database open, surfaced once at startup.
@@ -369,6 +391,9 @@ impl AppView {
             rename_target: None,
             db_error,
             db_error_shown: false,
+            page_find: None,
+            page_scroll: ScrollHandle::new(),
+            md_block_scroll: ScrollHandle::new(),
             _subs: vec![search_sub, calendar_sub, doc_sub],
             focus_handle: cx.focus_handle(),
         };
@@ -779,10 +804,13 @@ impl AppView {
     pub fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
         // Save the page we're leaving before its editor is dropped/replaced.
         self.flush_page_editor(cx);
+        // The find bar is per-page; drop it when switching tabs.
+        self.page_find = None;
         let Some(tab) = self.tabs.get(ix) else { return };
         let kind = tab.kind.clone();
         self.active = ix;
         self.searching = false;
+        let is_pdf = matches!(kind, TabKind::Pdf(_));
         match kind {
             TabKind::Journal => {
                 self.page_editor = None;
@@ -792,6 +820,12 @@ impl AppView {
             }
             TabKind::Page(id) => self.load_page_editor(id, window, cx),
             TabKind::Pdf(_) => self.page_editor = None,
+        }
+        // Focus the AppView so the window's key dispatch reaches its global shortcuts
+        // (⌘F, ⌘W, …) right after a tab click — without having to click into the
+        // content first. PDFs manage their own focus (the viewer grabs it on click).
+        if !is_pdf {
+            window.focus(&self.focus_handle, cx);
         }
         cx.notify();
     }
@@ -835,6 +869,130 @@ impl AppView {
         self.activate_tab(next, window, cx);
     }
 
+    // --- In-page find (⌘F) ---
+
+    /// Open (or refocus) the in-page find bar for the active named page. No-op
+    /// unless a Page tab is showing — PDFs have their own find, and the journal
+    /// feed uses the global search (⌘⇧F).
+    pub fn open_page_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(
+            self.tabs.get(self.active).map(|t| &t.kind),
+            Some(TabKind::Page(_))
+        ) {
+            return;
+        }
+        if let Some(pf) = self.page_find.as_ref() {
+            pf.input.update(cx, |s, cx| s.focus(window, cx));
+            return;
+        }
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in page…"));
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |this: &mut AppView, _st, ev: &InputEvent, _window, cx| match ev {
+                InputEvent::Change => this.recompute_page_find(cx),
+                // Enter steps to the next match, Shift+Enter to the previous.
+                InputEvent::PressEnter { secondary } => {
+                    this.page_find_step(if *secondary { -1 } else { 1 }, cx)
+                }
+                _ => {}
+            },
+        );
+        input.update(cx, |s, cx| s.focus(window, cx));
+        self.page_find = Some(PageFind {
+            input,
+            query: String::new(),
+            current: 0,
+            count: 0,
+            match_blocks: Vec::new(),
+            _sub: sub,
+        });
+        cx.notify();
+    }
+
+    /// Recompute the match count against the active page after the query changed,
+    /// resetting to the first match.
+    fn recompute_page_find(&mut self, cx: &mut Context<Self>) {
+        let Some(input) = self.page_find.as_ref().map(|pf| pf.input.clone()) else {
+            return;
+        };
+        let query = input.read(cx).value().to_string();
+        let content = self
+            .page_editor
+            .as_ref()
+            .map(|pe| pe.state.read(cx).value().to_string())
+            .unwrap_or_default();
+        let blocks = gpui_markdown::find_matches(&content, &query);
+        if let Some(pf) = self.page_find.as_mut() {
+            pf.query = query;
+            pf.count = blocks.len();
+            pf.current = 0;
+            pf.match_blocks = blocks;
+        }
+        self.scroll_to_current_match();
+        cx.notify();
+    }
+
+    /// Step the active find match (`delta`: +1 next, -1 prev), wrapping.
+    pub fn page_find_step(&mut self, delta: isize, cx: &mut Context<Self>) {
+        if let Some(pf) = self.page_find.as_mut()
+            && pf.count > 0
+        {
+            let n = pf.count as isize;
+            pf.current = (pf.current as isize + delta).rem_euclid(n) as usize;
+        }
+        self.scroll_to_current_match();
+        cx.notify();
+    }
+
+    /// Scroll the page so the active find match's block is comfortably visible (a
+    /// little below the viewport top). No-op if the block isn't laid out yet or is
+    /// already in view, so starting a find on text you're reading doesn't yank it.
+    fn scroll_to_current_match(&self) {
+        let Some(pf) = self.page_find.as_ref() else {
+            return;
+        };
+        let Some(&block) = pf.match_blocks.get(pf.current) else {
+            return;
+        };
+        let Some(b) = self.md_block_scroll.bounds_for_item(block) else {
+            return;
+        };
+        let viewport = self.page_scroll.bounds();
+        if viewport.size.height <= px(0.0) {
+            return;
+        }
+        let margin = px(48.0);
+        let (block_top, block_bottom) = (b.origin.y, b.origin.y + b.size.height);
+        let (v_top, v_bottom) = (viewport.origin.y, viewport.origin.y + viewport.size.height);
+        // Already comfortably visible — leave the view put.
+        if block_top >= v_top + margin && block_bottom <= v_bottom - margin {
+            return;
+        }
+        // Bring the block to `margin` below the viewport top. Clamp only at the top
+        // (offset 0); the target is always a real, laid-out block, so it can't
+        // over-scroll past the content. (Not clamping at `max_offset`, which this
+        // plain scroll element doesn't populate — clamping there pinned the offset
+        // to 0 and blocked all downward scrolling.)
+        let new_y = (self.page_scroll.offset().y - (block_top - (v_top + margin))).min(px(0.0));
+        self.page_scroll.set_offset(gpui::point(px(0.0), new_y));
+    }
+
+    /// Close the in-page find bar.
+    pub fn close_page_find(&mut self, cx: &mut Context<Self>) {
+        if self.page_find.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Focus the sidebar's global search field (expanding the rail if collapsed).
+    /// Drives ⌘⇧F — the journal feed's "find", and a quick jump from anywhere.
+    pub fn focus_global_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sidebar_collapsed = false;
+        self.search_input.update(cx, |s, cx| s.focus(window, cx));
+        cx.notify();
+    }
+
     /// Build the single page editor for page `id` (the active Page tab).
     fn load_page_editor(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         let page = match self.db.get_page(id) {
@@ -866,6 +1024,9 @@ impl AppView {
                 }
                 InputEvent::Focus => {
                     this.page_editing = true;
+                    // Editing replaces the rendered view (where matches highlight),
+                    // so the find bar no longer applies.
+                    this.page_find = None;
                     cx.notify();
                 }
                 InputEvent::Blur => {
@@ -2586,6 +2747,8 @@ impl Render for AppView {
                             cx.notify();
                         }
                         Some(_) => this.enter_slash_category(SlashLevel::Root, cx),
+                        // An open find bar takes Esc first (closes it).
+                        None if this.page_find.is_some() => this.close_page_find(cx),
                         None if this.page_editing || this.editing_day.is_some() => window.blur(),
                         None => cx.propagate(),
                     }
@@ -2618,6 +2781,25 @@ impl Render for AppView {
                     // must not be mid-update (same reason the gear defers).
                     let view = cx.entity();
                     window.defer(cx, move |_, cx| AppView::open_settings(view, cx));
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &FindInPage, window, cx| {
+                    // ⌘F: find in the active page's rendered text. Only on a Page tab —
+                    // PDFs handle ⌘F in the viewer; the journal feed uses ⌘⇧F.
+                    if matches!(
+                        this.tabs.get(this.active).map(|t| &t.kind),
+                        Some(TabKind::Page(_))
+                    ) {
+                        this.open_page_find(window, cx);
+                    } else {
+                        cx.propagate();
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &GlobalSearch, window, cx| {
+                    this.focus_global_search(window, cx)
                 }),
             )
             .child(

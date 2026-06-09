@@ -200,6 +200,10 @@ pub fn markdown_style(indent_spaces: usize) -> gpui_markdown::MarkdownStyle {
         rule_color: p.border_subtle,
         // Translucent amber highlight for `<mark>`; blends over any theme's background.
         mark_bg: gpui::rgba(0xFFD60066).into(),
+        // In-page find: a soft yellow on every match, a stronger orange on the
+        // active one (browser-style, theme-independent so matches always pop).
+        search_bg: gpui::rgba(0xFFD60055).into(),
+        search_current_bg: gpui::rgba(0xFF9500DD).into(),
         list_indent: px(indent_spaces as f32 * 4.5),
         mono_font: mono_font().into(),
     }
