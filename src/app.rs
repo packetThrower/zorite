@@ -403,6 +403,23 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .filter(|n| matches!(n, 2 | 4 | 8))
             .unwrap_or(DEFAULT_LIST_INDENT);
+        // Date/time display formats for /date, /time, and {{date}}/{{time}} —
+        // applied to the thread-local in `crate::dates`; validated against the
+        // known ids so a stale persisted value can't stick.
+        if let Some(id) = this
+            .db
+            .get_setting("date_format")
+            .filter(|s| crate::dates::DATE_FORMATS.contains(&s.as_str()))
+        {
+            crate::dates::set_date_format(&id);
+        }
+        if let Some(id) = this
+            .db
+            .get_setting("time_format")
+            .filter(|s| crate::dates::TIME_FORMATS.contains(&s.as_str()))
+        {
+            crate::dates::set_time_format(&id);
+        }
         this.system_dark = matches!(
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
@@ -1999,6 +2016,27 @@ impl AppView {
         cx.notify();
     }
 
+    /// Set the date format used by `/date` and `{{date}}` (a [`crate::dates`] id):
+    /// applies it to the shared thread-local and persists. Only affects future
+    /// insertions (existing content + journal headers are untouched), so there's
+    /// nothing to re-render. No-op for an unknown id.
+    pub fn set_date_format(&mut self, id: &str) {
+        if !crate::dates::DATE_FORMATS.contains(&id) {
+            return;
+        }
+        crate::dates::set_date_format(id);
+        let _ = self.db.set_setting("date_format", id);
+    }
+
+    /// Set the time format used by `/time` and `{{time}}` (a [`crate::dates`] id).
+    pub fn set_time_format(&mut self, id: &str) {
+        if !crate::dates::TIME_FORMATS.contains(&id) {
+            return;
+        }
+        crate::dates::set_time_format(id);
+        let _ = self.db.set_setting("time_format", id);
+    }
+
     /// Quick cycle for the title-bar toggle: Light → Dark → Auto → Light.
     fn cycle_theme_mode(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let next = match self.mode {
@@ -2722,9 +2760,11 @@ fn make_editor(
     })
 }
 
-/// ISO `YYYY-MM-DD` for the day `i` days before today (local time).
+/// ISO `YYYY-MM-DD` for the day `i` days before today (local time). This is the
+/// stable storage key for a journal day, so it stays ISO regardless of the
+/// user's display date-format preference.
 pub(crate) fn date_for_offset(i: usize) -> String {
-    let dt = now_local() - time::Duration::days(i as i64);
+    let dt = crate::dates::now_local() - time::Duration::days(i as i64);
     format!(
         "{:04}-{:02}-{:02}",
         dt.year(),
@@ -2736,11 +2776,11 @@ pub(crate) fn date_for_offset(i: usize) -> String {
 /// Human-friendly header for the day `i` days back, e.g.
 /// "Today · Thursday, June 4, 2026".
 pub(crate) fn date_label(i: usize) -> String {
-    let dt = now_local() - time::Duration::days(i as i64);
+    let dt = crate::dates::now_local() - time::Duration::days(i as i64);
     let label = format!(
         "{}, {} {}, {}",
-        weekday_name(dt.weekday()),
-        month_name(dt.month()),
+        crate::dates::weekday_name(dt.weekday()),
+        crate::dates::month_name(dt.month()),
         dt.day(),
         dt.year()
     );
@@ -2748,40 +2788,5 @@ pub(crate) fn date_label(i: usize) -> String {
         0 => format!("Today · {label}"),
         1 => format!("Yesterday · {label}"),
         _ => label,
-    }
-}
-
-fn now_local() -> time::OffsetDateTime {
-    time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc())
-}
-
-fn weekday_name(w: time::Weekday) -> &'static str {
-    use time::Weekday::*;
-    match w {
-        Monday => "Monday",
-        Tuesday => "Tuesday",
-        Wednesday => "Wednesday",
-        Thursday => "Thursday",
-        Friday => "Friday",
-        Saturday => "Saturday",
-        Sunday => "Sunday",
-    }
-}
-
-fn month_name(m: time::Month) -> &'static str {
-    use time::Month::*;
-    match m {
-        January => "January",
-        February => "February",
-        March => "March",
-        April => "April",
-        May => "May",
-        June => "June",
-        July => "July",
-        August => "August",
-        September => "September",
-        October => "October",
-        November => "November",
-        December => "December",
     }
 }

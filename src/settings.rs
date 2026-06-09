@@ -75,6 +75,7 @@ fn theme_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt
 /// Which settings category the left nav has selected.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
+    General,
     Appearance,
     Pdf,
     Markdown,
@@ -87,6 +88,8 @@ pub struct SettingsView {
     appearance_select: Entity<SelectState<Vec<Opt>>>,
     quality_slider: Entity<SliderState>,
     indent_select: Entity<SelectState<Vec<Opt>>>,
+    date_format_select: Entity<SelectState<Vec<Opt>>>,
+    time_format_select: Entity<SelectState<Vec<Opt>>>,
     /// The selected left-nav category.
     tab: Tab,
     _subs: Vec<Subscription>,
@@ -178,12 +181,54 @@ impl SettingsView {
             },
         ));
 
+        // Date / time formats (General pane): the styles used by /date, /time,
+        // and the {{date}} / {{time}} template placeholders.
+        let date_opts: Vec<Opt> = crate::dates::DATE_FORMATS
+            .iter()
+            .map(|&id| Opt::new(id, crate::dates::date_format_label(id)))
+            .collect();
+        let date_format_select = make_select(date_opts, &crate::dates::date_format(), window, cx);
+        subs.push(cx.subscribe_in(
+            &date_format_select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Some(app) = this.app.upgrade()
+                {
+                    let id = id.clone();
+                    app.update(cx, |a, _cx| a.set_date_format(&id));
+                    cx.notify();
+                }
+            },
+        ));
+
+        let time_opts: Vec<Opt> = crate::dates::TIME_FORMATS
+            .iter()
+            .map(|&id| Opt::new(id, crate::dates::time_format_label(id)))
+            .collect();
+        let time_format_select = make_select(time_opts, &crate::dates::time_format(), window, cx);
+        subs.push(cx.subscribe_in(
+            &time_format_select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Some(app) = this.app.upgrade()
+                {
+                    let id = id.clone();
+                    app.update(cx, |a, _cx| a.set_time_format(&id));
+                    cx.notify();
+                }
+            },
+        ));
+
         Self {
             app,
             theme_select,
             appearance_select,
             quality_slider,
             indent_select,
+            date_format_select,
+            time_format_select,
             tab: Tab::Appearance,
             _subs: subs,
         }
@@ -355,6 +400,19 @@ impl Render for SettingsView {
                             .flex_col()
                             .gap(px(16.0));
                         match self.tab {
+                            Tab::General => content
+                                .child(card(
+                                    "Date format",
+                                    "How /date and the {{date}} template placeholder are \
+                                         inserted. Journal day headers are unaffected.",
+                                    Select::new(&self.date_format_select).w_full(),
+                                ))
+                                .child(card(
+                                    "Time format",
+                                    "How /time and the {{time}} template placeholder are \
+                                         inserted.",
+                                    Select::new(&self.time_format_select).w_full(),
+                                )),
                             Tab::Appearance => content
                                 .child(card(
                                     "App Theme",
@@ -435,6 +493,7 @@ fn nav(active: Tab, cx: &mut Context<SettingsView>) -> impl IntoElement {
         .flex()
         .flex_col()
         .gap(px(2.0))
+        .child(nav_item("nav-general", "General", Tab::General, active, cx))
         .child(nav_item(
             "nav-appearance",
             "Appearance",

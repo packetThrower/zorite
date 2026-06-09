@@ -203,7 +203,10 @@ fn template_items(q: &str, templates: &[Template], title: &str, out: &mut Vec<Pa
 /// from the `{{date}}` / `{{time}}` template placeholders, which only expand
 /// inside a template body. The value to be inserted is shown in the label.
 fn datetime_items(q: &str, out: &mut Vec<PaletteItem>) {
-    for (label, value) in [("Date", current_date()), ("Time", current_time())] {
+    for (label, value) in [
+        ("Date", crate::dates::current_date()),
+        ("Time", crate::dates::current_time()),
+    ] {
         if q.is_empty() || label.to_lowercase().contains(q) {
             out.push(insert_item(format!("{label} ({value})"), value));
         }
@@ -362,32 +365,10 @@ fn template_header(line: &str) -> Option<&str> {
 
 /// Expand a template body: substitute `{{date}}`/`{{time}}`/`{{title}}`,
 /// and use `{{cursor}}` (removed) for the caret — else caret at the end.
-/// Local now, falling back to UTC when the offset can't be determined.
-fn local_now() -> time::OffsetDateTime {
-    time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc())
-}
-
-/// Current date as `YYYY-MM-DD`.
-fn current_date() -> String {
-    let now = local_now();
-    format!(
-        "{:04}-{:02}-{:02}",
-        now.year(),
-        u8::from(now.month()),
-        now.day()
-    )
-}
-
-/// Current time as `HH:MM` (24-hour).
-fn current_time() -> String {
-    let now = local_now();
-    format!("{:02}:{:02}", now.hour(), now.minute())
-}
-
 fn expand_template(body: &str, title: &str) -> (String, usize) {
     let mut s = body
-        .replace("{{date}}", &current_date())
-        .replace("{{time}}", &current_time())
+        .replace("{{date}}", &crate::dates::current_date())
+        .replace("{{time}}", &crate::dates::current_time())
         .replace("{{title}}", title);
     match s.find("{{cursor}}") {
         Some(pos) => {

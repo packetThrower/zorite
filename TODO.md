@@ -18,7 +18,6 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 - [ ] Slash menu: **click-to-insert** a command (keyboard-only today; needs to avoid blurring the editor on click)
 - [ ] Place the caret at the click point when entering edit mode (currently keeps the last position)
-- [ ] **Setting: configurable date format** — let the user choose the date (and time) format used by `/date` / `/time` and the `{{date}}` / `{{time}}` placeholders (currently hardcoded to `YYYY-MM-DD` / `HH:MM` in `slash::current_date`/`current_time`)
 
 ## Notes & navigation
 - [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
@@ -57,6 +56,7 @@ work is collected under [Completed](#completed) at the bottom.
 ## Completed
 
 ### Editor & rendering
+- [x] **Configurable date/time format** — a **Settings → General** pane chooses the date (ISO / US / European / long / day-month-year) and time (24-hour / 12-hour) styles used by `/date`, `/time`, and the `{{date}}` / `{{time}}` placeholders; persisted, ISO + 24-hour by default. Date helpers consolidated into `src/dates.rs`; journal day headers keep their own long format. See `src/dates.rs`, `src/settings.rs`
 - [x] **As-you-type completion** — `[[` (pages, with a "Create" entry), `#` (tags), and `{{` (template placeholders); reuses the slash popup, ranks matches, and caps the list so it stays usable with many pages
 - [x] **Auto-pair brackets/quotes** (`()` `[]` `{}` `<>` `""` `''`) with type-over and prose-safe guards (contraction-aware quotes, `<` only after a word); confirming a `[[`/`{{` completion absorbs the auto-inserted closer
 - [x] Auto-pair: **wrap the selection** — typing an opener with text selected wraps it (`foo` → `(foo)`); done in the change handler by diffing against the prior text, no key-level interception needed
