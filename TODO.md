@@ -31,7 +31,6 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 
 ## Performance
-- [ ] **Full-text search index** — search is a `LIKE` scan (~23 ms/keystroke at 50k pages); an FTS5 index would scale it
 - [ ] True **list virtualization** in the journal feed (v1 keeps all loaded days mounted)
 - [ ] Move SQLite writes off the UI thread (background executor)
 
@@ -84,6 +83,7 @@ work is collected under [Completed](#completed) at the bottom.
 
 ### Performance
 - [x] **Lighter `list_pages`** — the page list loads `id`/`title` only (not content): ~4× faster and memory-flat at scale (50k pages: 103 ms → 28 ms; RAM ~flat 10k→50k). See the [Performance](README.md#performance) section
+- [x] **Full-text search index** — a trigram FTS5 index over page title + content (external-content, kept in sync by triggers) replaces the old `LIKE` table scan: same case-insensitive *substring* matching, now indexed so it scales. Migration `v4→v5` populates existing pages; queries < 3 chars (trigram's minimum) fall back to LIKE. See `src/db.rs`
 
 ### App & polish
 - [x] **Collapsible sidebar** — a `<` caret collapses it to a thin icon rail (`>` to expand, plus the calendar/settings icons); the content area reclaims the space

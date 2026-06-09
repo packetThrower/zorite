@@ -100,6 +100,37 @@ impl Db {
                  PRAGMA user_version = 4;",
             )?;
         }
+        if version < 5 {
+            // Full-text search: a **trigram** FTS5 index over page title + content keeps
+            // the same case-insensitive *substring* matching the old `LIKE` scan did, but
+            // indexed so it scales to many pages. External-content (`content='pages'`) — no
+            // duplicate storage — kept in sync by triggers. Wrapped in a transaction so a
+            // partial build can't wedge the DB.
+            let tx = conn.transaction()?;
+            tx.execute_batch(
+                "CREATE VIRTUAL TABLE pages_fts USING fts5(\
+                    title, content, content='pages', content_rowid='id', tokenize='trigram'\
+                 );\
+                 INSERT INTO pages_fts(rowid, title, content) \
+                    SELECT id, title, content FROM pages;\
+                 CREATE TRIGGER pages_fts_ai AFTER INSERT ON pages BEGIN \
+                    INSERT INTO pages_fts(rowid, title, content) \
+                       VALUES (new.id, new.title, new.content); \
+                 END;\
+                 CREATE TRIGGER pages_fts_ad AFTER DELETE ON pages BEGIN \
+                    INSERT INTO pages_fts(pages_fts, rowid, title, content) \
+                       VALUES ('delete', old.id, old.title, old.content); \
+                 END;\
+                 CREATE TRIGGER pages_fts_au AFTER UPDATE ON pages BEGIN \
+                    INSERT INTO pages_fts(pages_fts, rowid, title, content) \
+                       VALUES ('delete', old.id, old.title, old.content); \
+                    INSERT INTO pages_fts(rowid, title, content) \
+                       VALUES (new.id, new.title, new.content); \
+                 END;\
+                 PRAGMA user_version = 5;",
+            )?;
+            tx.commit()?;
+        }
         // Key/value app settings (theme mode, etc.). Idempotent, so no
         // `user_version` bump is needed.
         conn.execute_batch(
@@ -436,30 +467,54 @@ impl Db {
             return Ok(Vec::new());
         }
         let like = format!("%{}%", escape_like(q));
-        let mut stmt = self.conn.prepare(
-            "SELECT id, title, content FROM pages \
-             WHERE title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\' \
-             ORDER BY (CASE WHEN title LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END), \
-                      is_journal DESC, journal_date DESC, title COLLATE NOCASE \
-             LIMIT ?2",
-        )?;
-        let rows = stmt.query_map(params![like, limit], |row| {
-            Ok((
-                row.get::<_, i64>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-            ))
-        })?;
-        let mut out = Vec::new();
-        for r in rows {
-            let (id, title, content) = r?;
-            out.push(SearchHit {
+        // The trigram index needs ≥3 chars; 1–2 char queries fall back to the (rare,
+        // small) LIKE scan. Either way: title matches first, then journals by date,
+        // capped to `limit`, each with a snippet around the match.
+        let rows: Vec<(i64, String, String)> = if q.chars().count() >= 3 {
+            // Case-insensitive substring via the trigram FTS index. The query is a
+            // quoted phrase (inner quotes doubled) so punctuation can't break MATCH.
+            let fts = format!("\"{}\"", q.replace('"', "\"\""));
+            let mut stmt = self.conn.prepare(
+                "SELECT p.id, p.title, p.content \
+                 FROM pages_fts f JOIN pages p ON p.id = f.rowid \
+                 WHERE pages_fts MATCH ?1 \
+                 ORDER BY (CASE WHEN p.title LIKE ?2 ESCAPE '\\' THEN 0 ELSE 1 END), \
+                          p.is_journal DESC, p.journal_date DESC, p.title COLLATE NOCASE \
+                 LIMIT ?3",
+            )?;
+            stmt.query_map(params![fts, like, limit], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        } else {
+            let mut stmt = self.conn.prepare(
+                "SELECT id, title, content FROM pages \
+                 WHERE title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\' \
+                 ORDER BY (CASE WHEN title LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END), \
+                          is_journal DESC, journal_date DESC, title COLLATE NOCASE \
+                 LIMIT ?2",
+            )?;
+            stmt.query_map(params![like, limit], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?
+        };
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, content)| SearchHit {
                 page_id: id,
                 title,
                 snippet: snippet_for_query(&content, q),
-            });
-        }
-        Ok(out)
+            })
+            .collect())
     }
 }
 
@@ -632,6 +687,89 @@ fn blocks_to_markdown(blocks: &[V1Block]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fts5_trigram_available_and_substring_case_insensitive() {
+        // Gate: the bundled SQLite must ship FTS5 + the trigram tokenizer, which is
+        // what the search index relies on for case-insensitive *substring* matching.
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE VIRTUAL TABLE t USING fts5(body, tokenize='trigram');\
+             INSERT INTO t(rowid, body) VALUES (1, 'The oscillation circuit');",
+        )
+        .expect("bundled SQLite should have FTS5 + trigram");
+        // Mid-word substring (LIKE-equivalent) matches.
+        let n: i64 = c
+            .query_row(
+                "SELECT count(*) FROM t WHERE t MATCH '\"scill\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "trigram matches a mid-word substring");
+        // ...and case-insensitively.
+        let n2: i64 = c
+            .query_row(
+                "SELECT count(*) FROM t WHERE t MATCH '\"OSCILL\"'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n2, 1, "trigram is case-insensitive");
+    }
+
+    #[test]
+    fn search_substring_case_insensitive_and_stays_synced() {
+        let db = Db::open_in_memory().unwrap();
+        let p = db.get_or_create_page("Datasheet").unwrap();
+        db.set_page_content(p.id, "The voltage on VCC is insufficient for oscillation")
+            .unwrap();
+
+        // Trigram FTS (≥3 chars): mid-word + case-insensitive substring, and title.
+        let has = |q: &str| db.search(q, 10).unwrap().iter().any(|h| h.page_id == p.id);
+        assert!(has("scill"), "mid-word substring");
+        assert!(has("vcc"), "case-insensitive");
+        assert!(has("datash"), "title match");
+
+        // Editing the page re-syncs the index (UPDATE trigger).
+        db.set_page_content(p.id, "now about resistors").unwrap();
+        assert!(db.search("oscillation", 10).unwrap().is_empty());
+        assert!(has("resistor"));
+        // 1–2 char queries fall back to LIKE (below the trigram minimum).
+        assert!(has("re"));
+
+        // Deleting the page drops it from the index (DELETE trigger).
+        assert!(db.delete_page(p.id).unwrap());
+        assert!(db.search("resistor", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn v5_migration_indexes_preexisting_pages() {
+        // The upgrade path: a pre-FTS (v4) DB with existing pages should get them
+        // indexed when the v5 migration runs (not just fresh installs).
+        let mut conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;").unwrap();
+        conn.execute_batch(SCHEMA_V2).unwrap();
+        conn.execute_batch("PRAGMA user_version = 4;").unwrap();
+        conn.execute(
+            "INSERT INTO pages (title, content) VALUES ('Old Page', 'pre-existing oscillation text')",
+            [],
+        )
+        .unwrap();
+        Db::migrate(&mut conn).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, 5);
+        let db = Db { conn };
+        assert!(
+            db.search("oscillation", 10)
+                .unwrap()
+                .iter()
+                .any(|h| h.title == "Old Page"),
+            "existing pages should be searchable after the FTS migration"
+        );
+    }
 
     #[test]
     fn rename_rewrites_links_and_guards() {
