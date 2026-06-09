@@ -239,18 +239,53 @@ pub struct AppView {
     rename_input: Entity<InputState>,
     rename_target: Option<i64>,
 
+    /// Set when the on-disk database couldn't be opened/migrated and we fell back
+    /// to an empty in-memory store. Drives a one-time startup dialog (see
+    /// `show_db_error_dialog`) so the user isn't silently shown blank notes — their
+    /// data is preserved in the pre-migration backup.
+    db_error: Option<DbError>,
+    db_error_shown: bool,
+
     _subs: Vec<Subscription>,
     pub focus_handle: FocusHandle,
 }
 
+/// Details of a failed on-disk database open, surfaced once at startup.
+struct DbError {
+    /// The underlying error text.
+    message: String,
+    /// The pre-migration backup (`<db>.bak-v<N>`), if one was taken.
+    backup: Option<PathBuf>,
+    /// The folder holding the database + its backups (for the "Reveal" button).
+    folder: PathBuf,
+}
+
 impl AppView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let db = Db::open()
-            .or_else(|e| {
-                log::error!("open database on disk failed ({e}); using in-memory store");
-                Db::open_in_memory()
-            })
-            .expect("initialize database");
+        let (db, db_error) = match Db::open() {
+            Ok(db) => (db, None),
+            Err(e) => {
+                log::error!(
+                    "open database on disk failed: {}; using a temporary in-memory store",
+                    e.source
+                );
+                // Where the user's data (and any pre-migration backup) lives.
+                let folder = e
+                    .backup
+                    .as_deref()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+                    .or_else(|| crate::paths::db_path().parent().map(Path::to_path_buf))
+                    .unwrap_or_default();
+                let db = Db::open_in_memory().expect("initialize in-memory database");
+                let err = DbError {
+                    message: e.source.to_string(),
+                    backup: e.backup,
+                    folder,
+                };
+                (db, Some(err))
+            }
+        };
 
         // The page-name field shown in the "New page" dialog (opened from the
         // pages-area right-click menu).
@@ -332,6 +367,8 @@ impl AppView {
             doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
+            db_error,
+            db_error_shown: false,
             _subs: vec![search_sub, calendar_sub, doc_sub],
             focus_handle: cx.focus_handle(),
         };
@@ -1808,6 +1845,82 @@ impl AppView {
         let _ = std::process::Command::new(cmd).arg(&dir).spawn();
     }
 
+    /// Open a folder in the OS file manager (Finder / Explorer / file manager).
+    fn reveal_folder(folder: &Path) {
+        #[cfg(target_os = "macos")]
+        let cmd = "open";
+        #[cfg(target_os = "windows")]
+        let cmd = "explorer";
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        let cmd = "xdg-open";
+        let _ = std::process::Command::new(cmd).arg(folder).spawn();
+    }
+
+    /// Surface a failed database open as a one-time modal, so the user learns why
+    /// their notes look empty and where the pre-migration backup is — rather than
+    /// silently landing in a blank workspace. Changes made here aren't persisted.
+    fn show_db_error_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(err) = self.db_error.as_ref() else {
+            return;
+        };
+        let folder = err.folder.clone();
+        // SQLite reports batch failures as "<reason> in <whole SQL> at offset N";
+        // keep just the reason (the full text is in the log) so the dialog stays
+        // readable, and cap length defensively.
+        let detail: String = err
+            .message
+            .split(" in ")
+            .next()
+            .unwrap_or(&err.message)
+            .chars()
+            .take(200)
+            .collect();
+        let recovery = match &err.backup {
+            Some(b) => format!(
+                "Your notes were backed up before the update and are safe — restore them from {}",
+                b.display()
+            ),
+            None => format!("Your notes on disk are unchanged, in {}", folder.display()),
+        };
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let folder = folder.clone();
+            dialog
+                .title("Couldn't open your notes database")
+                .w(px(480.0))
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(10.0))
+                        .child(div().text_color(theme::text_secondary()).child(
+                            "zorite opened a temporary, empty workspace because the database \
+                                 couldn't be opened or upgraded. Changes here won't be saved.",
+                        ))
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(theme::text_secondary())
+                                .child(detail.clone()),
+                        )
+                        .child(div().child(recovery.clone())),
+                )
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("db-error-reveal")
+                                .label("Reveal Backup")
+                                .on_click(move |_, _window, _cx| AppView::reveal_folder(&folder)),
+                        )
+                        .child(
+                            Button::new("db-error-quit")
+                                .primary()
+                                .label("Quit")
+                                .on_click(|_, _window, cx| cx.quit()),
+                        ),
+                )
+        });
+    }
+
     /// Watch OS appearance so `Auto` mode tracks light/dark. Called once
     /// after the view entity exists (from `main`).
     pub fn attach_appearance_observer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2298,6 +2411,16 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // First paint after a failed DB open: surface it once (deferred so we
+        // don't open a dialog mid-layout).
+        if self.db_error.is_some() && !self.db_error_shown {
+            self.db_error_shown = true;
+            let this = cx.entity();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, move |this, cx| this.show_db_error_dialog(window, cx));
+            });
+        }
+
         let overlay = self.slash.as_ref().map(|s| {
             gpui::deferred(
                 gpui::anchored()

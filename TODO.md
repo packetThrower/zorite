@@ -8,7 +8,6 @@ work is collected under [Completed](#completed) at the bottom.
 - [Editor & rendering](#editor--rendering)
 - [Notes & navigation](#notes--navigation)
 - [Performance](#performance)
-- [Data & migrations](#data--migrations)
 - [App & polish](#app--polish)
 - [Import & export](#import--export)
 - [gpui-markdown crate](#gpui-markdown-crate)
@@ -33,11 +32,6 @@ work is collected under [Completed](#completed) at the bottom.
 ## Performance
 - [ ] True **list virtualization** in the journal feed (v1 keeps all loaded days mounted)
 - [ ] Move SQLite writes off the UI thread (background executor) — **fsync stall handled** for now via WAL + `synchronous = NORMAL` in `Db::open` (per-keystroke autosave no longer fsyncs on the UI thread; measured worst case ~1.2 ms at a 50k-char page, well within a frame). The full off-thread refactor is now a lower-priority fast-follow (pathological pages / slow or contended disks)
-
-## Data & migrations
-- [ ] **Back up before migrating** — copy the DB to `zorite.db.bak-v<N>` before applying schema migrations on launch, so a bad migration is recoverable
-- [ ] **Transactional migrations** — wrap each migration step (especially any data transform) in a transaction; today only `v1→v2` is, so a mid-way failure can leave a half-migrated DB
-- [ ] **Friendlier migration failure** — a failed migration currently falls back to an empty in-memory DB (the user opens to blank notes); surface the error and offer to restore the backup instead of silently showing emptiness
 
 ## App & polish
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
@@ -84,6 +78,11 @@ work is collected under [Completed](#completed) at the bottom.
 ### Performance
 - [x] **Lighter `list_pages`** — the page list loads `id`/`title` only (not content): ~4× faster and memory-flat at scale (50k pages: 103 ms → 28 ms; RAM ~flat 10k→50k). See the [Performance](README.md#performance) section
 - [x] **Full-text search index** — a trigram FTS5 index over page title + content (external-content, kept in sync by triggers) replaces the old `LIKE` table scan: same case-insensitive *substring* matching, now indexed so it scales. Migration `v4→v5` populates existing pages; queries < 3 chars (trigram's minimum) fall back to LIKE. See `src/db.rs`
+
+### Data & migrations
+- [x] **Back up before migrating** — `Db::open` snapshots the database to `zorite.db.bak-v<N>` (WAL-checkpointed first, so the copy is complete) before any schema upgrade, so a buggy migration is recoverable. One snapshot per source version. See `Db::backup_before_migration`
+- [x] **Transactional migrations** — every step (`v0→2`, `v2→3`, `v3→4`, `v4→5`) now runs inside a transaction, so a mid-migration failure rolls back cleanly instead of leaving a half-migrated DB
+- [x] **Friendlier migration failure** — a failed open no longer silently drops the user into blank notes: it falls back to a temporary in-memory store and shows a one-time dialog explaining what happened, with **Reveal Backup** (points at the `.bak-v<N>` snapshot) and **Quit**. See `AppView::show_db_error_dialog`
 
 ### App & polish
 - [x] **Collapsible sidebar** — a `<` caret collapses it to a thin icon rail (`>` to expand, plus the calendar/settings icons); the content area reclaims the space

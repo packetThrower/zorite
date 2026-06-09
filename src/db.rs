@@ -9,6 +9,7 @@
 //! runs synchronously on the UI thread (tiny working set).
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -41,13 +42,37 @@ pub struct Db {
     conn: Connection,
 }
 
+/// The newest schema version [`Db::migrate`] upgrades to. Bump this with each new
+/// migration step so [`Db::open`] knows when a pre-migration backup is warranted.
+const SCHEMA_VERSION: i64 = 5;
+
+/// A failed on-disk database open. Carries the pre-migration backup path (when one
+/// was taken) so the caller can point the user at their recoverable data instead
+/// of silently dropping them into an empty workspace.
+#[derive(Debug)]
+pub struct OpenError {
+    pub source: rusqlite::Error,
+    /// The `<db>.bak-v<N>` snapshot taken before the migration that failed, if any.
+    pub backup: Option<PathBuf>,
+}
+
+impl OpenError {
+    /// A failure with no associated backup (couldn't even open / configure the file).
+    fn bare(source: rusqlite::Error) -> Self {
+        Self {
+            source,
+            backup: None,
+        }
+    }
+}
+
 impl Db {
-    pub fn open() -> rusqlite::Result<Self> {
+    pub fn open() -> Result<Self, OpenError> {
         let path = paths::db_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut conn = Connection::open(&path)?;
+        let mut conn = Connection::open(&path).map_err(OpenError::bare)?;
         // WAL keeps the per-keystroke autosave write off the fsync-per-commit path
         // (rollback journal + synchronous=FULL fsyncs twice per write); in WAL,
         // synchronous=NORMAL fsyncs only at checkpoint and is still durable across an
@@ -59,9 +84,45 @@ impl Db {
              PRAGMA journal_mode = WAL;\
              PRAGMA synchronous = NORMAL;\
              PRAGMA busy_timeout = 5000;",
-        )?;
-        Self::migrate(&mut conn)?;
+        )
+        .map_err(OpenError::bare)?;
+        // Snapshot the DB before any schema upgrade so a buggy migration is
+        // recoverable; carry the snapshot path in the error if migration fails.
+        let backup = Self::backup_before_migration(&conn, &path);
+        Self::migrate(&mut conn).map_err(|source| OpenError { source, backup })?;
         Ok(Db { conn })
+    }
+
+    /// If an on-disk schema upgrade is pending, copy the database to
+    /// `<db>.bak-v<from>` first so a bad migration is recoverable. Best-effort:
+    /// returns the backup path, or `None` for a fresh / already-current database
+    /// or if the copy failed (logged — the transactional migrations are the
+    /// primary safety; this guards against a migration that *succeeds* but mangles
+    /// data). One snapshot per source version; re-running an upgrade just rewrites it.
+    fn backup_before_migration(conn: &Connection, path: &Path) -> Option<PathBuf> {
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .ok()?;
+        if version == 0 || version >= SCHEMA_VERSION {
+            return None; // fresh install or already current — nothing to lose
+        }
+        // Fold the WAL into the main file so the plain-file copy is complete.
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        let name = path.file_name()?.to_string_lossy();
+        let bak = path.with_file_name(format!("{name}.bak-v{version}"));
+        match std::fs::copy(path, &bak) {
+            Ok(_) => {
+                log::info!(
+                    "backed up database to {} before migrating from v{version}",
+                    bak.display()
+                );
+                Some(bak)
+            }
+            Err(e) => {
+                log::warn!("pre-migration backup to {} failed: {e}", bak.display());
+                None
+            }
+        }
     }
 
     /// In-memory fallback so the app still runs if the on-disk file can't
@@ -76,7 +137,9 @@ impl Db {
     fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
         let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         if version == 0 {
-            conn.execute_batch(SCHEMA_V2)?;
+            let tx = conn.transaction()?;
+            tx.execute_batch(SCHEMA_V2)?;
+            tx.commit()?;
             version = 2;
         } else if version < 2 {
             // Atomic: a half-applied upgrade would otherwise wedge the DB
@@ -91,16 +154,19 @@ impl Db {
             // keystroke, creating a page for every prefix of a typed
             // `#tag`. Drop empty, unreferenced named pages — journals and
             // any page that's actually linked are kept.
-            conn.execute_batch(
+            let tx = conn.transaction()?;
+            tx.execute_batch(
                 "DELETE FROM pages WHERE is_journal = 0 AND content = '' \
                    AND id NOT IN (SELECT target_page_id FROM page_links);\
                  PRAGMA user_version = 3;",
             )?;
+            tx.commit()?;
         }
         if version < 4 {
             // Page aliases (Logseq-style `alias::` property): alternate names
             // that resolve to a page.
-            conn.execute_batch(
+            let tx = conn.transaction()?;
+            tx.execute_batch(
                 "CREATE TABLE IF NOT EXISTS page_aliases (\
                     page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,\
                     alias   TEXT NOT NULL,\
@@ -110,6 +176,7 @@ impl Db {
                     ON page_aliases(alias COLLATE NOCASE);\
                  PRAGMA user_version = 4;",
             )?;
+            tx.commit()?;
         }
         if version < 5 {
             // Full-text search: a **trigram** FTS5 index over page title + content keeps
@@ -780,6 +847,106 @@ mod tests {
                 .any(|h| h.title == "Old Page"),
             "existing pages should be searchable after the FTS migration"
         );
+    }
+
+    #[test]
+    fn backup_before_migration_snapshots_pending_upgrade() {
+        // A pre-v5 on-disk DB gets a `.bak-v<N>` snapshot before it's migrated.
+        let dir = std::env::temp_dir().join("zorite-test-bak-pending");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("zorite.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute(
+                "INSERT INTO pages (title, content) VALUES ('Keep', 'precious')",
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA user_version = 4;").unwrap();
+        }
+        let conn = Connection::open(&path).unwrap();
+        let bak =
+            Db::backup_before_migration(&conn, &path).expect("a backup for a pending upgrade");
+        assert!(bak.exists());
+        assert!(bak.to_string_lossy().ends_with(".bak-v4"));
+        // The snapshot is a usable copy with the page intact.
+        let bconn = Connection::open(&bak).unwrap();
+        let n: i64 = bconn
+            .query_row("SELECT COUNT(*) FROM pages WHERE title = 'Keep'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(n, 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_skipped_when_fresh_or_current() {
+        let dir = std::env::temp_dir().join("zorite-test-bak-skip");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("zorite.db");
+        // Fresh file (user_version 0) — nothing to lose yet.
+        {
+            let conn = Connection::open(&path).unwrap();
+            assert!(Db::backup_before_migration(&conn, &path).is_none());
+        }
+        // Already at the current version — no upgrade pending.
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+                .unwrap();
+            assert!(Db::backup_before_migration(&conn, &path).is_none());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn open_sequence_backs_up_then_migrates_wal_db() {
+        // Mirror Db::open's real sequence on a WAL database: a v4 file with a page
+        // gets snapshotted and then migrated to the current version, data intact.
+        let dir = std::env::temp_dir().join("zorite-test-open-seq");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("zorite.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;")
+                .unwrap();
+            conn.execute_batch(SCHEMA_V2).unwrap();
+            conn.execute(
+                "INSERT INTO pages (title, content) VALUES ('Note', 'resonant cavity')",
+                [],
+            )
+            .unwrap();
+            conn.execute_batch("PRAGMA user_version = 4;").unwrap();
+        }
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute_batch("PRAGMA journal_mode = WAL;").unwrap();
+        let bak = Db::backup_before_migration(&conn, &path).expect("snapshot before upgrade");
+        assert!(bak.exists() && bak.to_string_lossy().ends_with(".bak-v4"));
+        Db::migrate(&mut conn).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // Migrated DB is usable; the backup retains the pre-upgrade copy.
+        let db = Db { conn };
+        assert!(
+            db.search("resonant", 10)
+                .unwrap()
+                .iter()
+                .any(|h| h.title == "Note")
+        );
+        let bconn = Connection::open(&bak).unwrap();
+        let bver: i64 = bconn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(bver, 4, "backup retains the pre-migration schema version");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
