@@ -46,9 +46,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Multi-window: **drag a tab between existing windows** — gpui's drag-and-drop is per-window (the OS captures the mouse to the source window), so a tab can't be dragged from one window's strip into another's. Cross-window *moves* already work via the right-click "Open in new window" menu; true cross-window dragging is possible but clunky (done in Baudrun) — revisit
 - [ ] Multi-window: same-page **concurrent edits** are last-write-wins — editing the *same* page/day in two windows at once can drop one side's changes. True resolution needs a CRDT/OT layer (out of scope for a single-user app); revisit only if real-time collaboration is ever wanted
 - [ ] Window-bounds persistence (reopen where you left off)
-- [ ] App icon + packaging (cargo-packager: `.dmg` / `.msi` / `.deb`)
 - [ ] Add a `LICENSE` file (Cargo.toml already declares `GPL-3.0-or-later`)
-- [ ] CI (build + `cargo test --workspace`)
 
 ## Import & export
 - [ ] **Logseq import** — bring in existing Logseq pages/journals (markdown)
@@ -92,6 +90,8 @@ work is collected under [Completed](#completed) at the bottom.
 - [x] **Multi-window** — right-click a sidebar page or a tab → "Open in new window" opens a full, independent second window focused on that page (`AppView::open_in_new_window`). Each window is its own `AppView` with its own SQLite connection to the same file. See `src/app.rs`, `src/ui/tab_bar.rs`
 - [x] Multi-window: **drag a tab out to tear off a new window** + reorder within the strip — both work (`tear_off_tab` on a drop in the content area, `reorder_tab` on a drop over a tab). Right-click "Open in new window" *moves* the tab (tears it off) rather than duplicating. Wayland: the compositor controls new-window placement
 - [x] Multi-window: **live cross-window sync** — a shared `DocSignal` (gpui global, one per process) is emitted on content saves (`save_page_content`) AND structural changes (create / rename / delete + the blur link re-index); other windows run `apply_external_edit`, reloading changed journal days, the active page (content + backlinks), and the sidebar page-list (via value-comparison, so only stale data is touched and the editing window never clobbers itself)
+- [x] **App icon + packaging** — cargo-packager builds `.app`/`.dmg`, NSIS `.exe`, `.deb`/`.AppImage`, `.rpm`, etc.; a custom app icon ships (Windows PE icon embedded via `build.rs`; `.icns`/`.ico`/`.png`). See `Cargo.toml` `[package.metadata.packager]`
+- [x] **CI** — GitHub Actions builds + `cargo test --workspace` across macOS / Windows / Linux (5 runners) and publishes a prerelease on `vX.Y.Z-beta.N` tags. See `.github/workflows/`
 
 ### Import & export
 - [x] In-app **PDF viewer** — `[[file.pdf]]` / `![](file.pdf)` open a dedicated viewer tab (`ui::pdf_view`); pages are sized from `render_dimensions()` for instant layout. Closing the tab frees both the CPU images and their **GPU atlas textures** (`cx.drop_image` — raw `RenderImage`s are never auto-evicted; this was an ~140 MB/open leak). See `src/pdf.rs`
