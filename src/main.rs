@@ -30,7 +30,7 @@ use gpui::{
 };
 use gpui_component::{Root, TitleBar};
 
-use app::{AppView, DocSignal, GlobalDocSignal};
+use app::{AppView, DocSignal, GlobalDocSignal, TabKind};
 
 fn main() {
     env_logger::init();
@@ -38,8 +38,18 @@ fn main() {
     let application = gpui_platform::application().with_assets(gpui_component_assets::Assets);
     application.run(|cx: &mut App| {
         gpui_component::init(cx);
-        // Slash-menu keys (up/down/enter/escape, gated on the menu being open).
+        // Slash-menu keys (up/down/enter/escape, gated on the menu being open)
+        // plus the app-wide shortcuts (new tab/window, close tab, quit, …).
         actions::bind_keys(cx);
+        // View-independent commands, handled at the App level so they work from
+        // any focused window. Tab/settings commands are handled per-window on
+        // `AppView`.
+        cx.on_action(|_: &actions::Quit, cx: &mut App| cx.quit());
+        cx.on_action(|_: &actions::NewWindow, cx: &mut App| {
+            AppView::open_in_new_window(TabKind::Journal, cx);
+        });
+        // Native menu bar (macOS); shortcuts above also work on Windows/Linux.
+        actions::set_app_menu(cx);
         // Shared cross-window save signal — every window's AppView subscribes for
         // live multi-window sync.
         let doc_signal = cx.new(|_| DocSignal);

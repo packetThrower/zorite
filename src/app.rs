@@ -32,8 +32,8 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    DeletePage, InsertTab, NewPage, OpenInNewTab, OpenInNewWindow, Outdent, PasteImage, RenamePage,
-    SlashCancel, SlashConfirm, SlashDown, SlashUp,
+    CloseTab, DeletePage, InsertTab, NewPage, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings,
+    Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page, SearchHit};
@@ -768,6 +768,17 @@ impl AppView {
             self.active = self.active.min(self.tabs.len() - 1);
         }
         self.activate_tab(self.active, window, cx);
+    }
+
+    /// Switch to the next (`delta = 1`) or previous (`delta = -1`) tab, wrapping
+    /// around the ends. No-op with a single tab. Drives Ctrl+Tab / Ctrl+Shift+Tab.
+    fn cycle_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
+        let n = self.tabs.len() as isize;
+        if n <= 1 {
+            return;
+        }
+        let next = (self.active as isize + delta).rem_euclid(n) as usize;
+        self.activate_tab(next, window, cx);
     }
 
     /// Build the single page editor for page `id` (the active Page tab).
@@ -2428,6 +2439,26 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_insert_tab))
             .on_action(cx.listener(Self::on_outdent))
             .on_action(cx.listener(Self::on_paste_image))
+            // App-wide shortcuts (Cmd/Ctrl): tab + settings commands handled here
+            // per-window; NewWindow / Quit are global App actions (see `main`).
+            .on_action(cx.listener(|this: &mut AppView, _: &CloseTab, window, cx| {
+                let ix = this.active;
+                this.close_tab(ix, window, cx);
+            }))
+            .on_action(cx.listener(|this: &mut AppView, _: &NextTab, window, cx| {
+                this.cycle_tab(1, window, cx)
+            }))
+            .on_action(cx.listener(|this: &mut AppView, _: &PrevTab, window, cx| {
+                this.cycle_tab(-1, window, cx)
+            }))
+            .on_action(
+                cx.listener(|_this: &mut AppView, _: &OpenSettings, window, cx| {
+                    // Defer: `open_settings` opens a window and reads `AppView`, which
+                    // must not be mid-update (same reason the gear defers).
+                    let view = cx.entity();
+                    window.defer(cx, move |_, cx| AppView::open_settings(view, cx));
+                }),
+            )
             .child(
                 TitleBar::new().child(
                     div()

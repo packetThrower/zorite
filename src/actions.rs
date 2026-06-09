@@ -13,7 +13,7 @@
 //! keybinding — they're dispatched by right-click context menus (sidebar pages
 //! and tabs) and handled on `AppView`.
 
-use gpui::{App, KeyBinding, actions};
+use gpui::{App, KeyBinding, Menu, MenuItem, actions};
 
 actions!(
     zorite,
@@ -29,7 +29,15 @@ actions!(
         NewPage,
         InsertTab,
         Outdent,
-        PasteImage
+        PasteImage,
+        // App-wide shortcuts / menu commands (bound in `bind_keys`, surfaced in
+        // `set_app_menu`). `NewPage` doubles as "New Tab".
+        NewWindow,
+        CloseTab,
+        NextTab,
+        PrevTab,
+        OpenSettings,
+        Quit
     ]
 );
 
@@ -54,4 +62,72 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([KeyBinding::new("cmd-v", PasteImage, Some(INPUT_CONTEXT))]);
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([KeyBinding::new("ctrl-v", PasteImage, Some(INPUT_CONTEXT))]);
+
+    // App-wide shortcuts. `secondary-` resolves to Cmd on macOS and Ctrl on
+    // Windows/Linux, so one binding is correct on every OS. No key context →
+    // they fire whether or not an editor is focused; every chord uses a modifier
+    // so none collide with text input. Handlers: tab/settings actions on
+    // `AppView`; `NewWindow` / `Quit` as global App actions (see `main`).
+    cx.bind_keys([
+        KeyBinding::new("secondary-t", NewPage, None), // New Tab == new page
+        KeyBinding::new("secondary-n", NewWindow, None),
+        KeyBinding::new("secondary-w", CloseTab, None),
+        KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("ctrl-tab", NextTab, None),
+        KeyBinding::new("ctrl-shift-tab", PrevTab, None),
+    ]);
+}
+
+/// Install the application menu bar. Native on macOS; on Windows/Linux the menus
+/// are stored (no native bar yet) but the same `bind_keys` chords drive every
+/// command, so shortcuts work regardless. Each item's accelerator is read from
+/// the keymap, so this must run *after* [`bind_keys`]. The Edit items reuse
+/// gpui-component's input actions, which it already binds in focused editors.
+pub fn set_app_menu(cx: &mut App) {
+    use gpui_component::input;
+    cx.set_menus([
+        Menu {
+            name: "zorite".into(),
+            items: vec![
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Quit zorite", Quit),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("New Tab", NewPage),
+                MenuItem::action("New Window", NewWindow),
+                MenuItem::separator(),
+                MenuItem::action("Close Tab", CloseTab),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Edit".into(),
+            items: vec![
+                MenuItem::action("Undo", input::Undo),
+                MenuItem::action("Redo", input::Redo),
+                MenuItem::separator(),
+                MenuItem::action("Cut", input::Cut),
+                MenuItem::action("Copy", input::Copy),
+                MenuItem::action("Paste", input::Paste),
+                MenuItem::separator(),
+                MenuItem::action("Find in Note", input::Search),
+                MenuItem::action("Select All", input::SelectAll),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "View".into(),
+            items: vec![
+                MenuItem::action("Next Tab", NextTab),
+                MenuItem::action("Previous Tab", PrevTab),
+            ],
+            disabled: false,
+        },
+    ]);
 }

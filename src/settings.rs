@@ -78,6 +78,7 @@ enum Tab {
     Appearance,
     Pdf,
     Markdown,
+    Keyboard,
 }
 
 pub struct SettingsView {
@@ -384,6 +385,41 @@ impl Render for SettingsView {
                                      and the rendered view use the same width, so they line up.",
                                 Select::new(&self.indent_select).w_full(),
                             )),
+                            Tab::Keyboard => {
+                                let app_rows: Vec<(&str, Vec<&str>)> = vec![
+                                    ("New tab (new page)", vec![keys::MOD, "T"]),
+                                    ("New window", vec![keys::MOD, "N"]),
+                                    ("Close tab", vec![keys::MOD, "W"]),
+                                    ("Next tab", vec![keys::CTRL, "Tab"]),
+                                    ("Previous tab", vec![keys::CTRL, keys::SHIFT, "Tab"]),
+                                    ("Open settings", vec![keys::MOD, ","]),
+                                    ("Quit", vec![keys::MOD, "Q"]),
+                                ];
+                                let edit_rows: Vec<(&str, Vec<&str>)> = vec![
+                                    ("Indent / nest list item", vec!["Tab"]),
+                                    ("Outdent", vec![keys::SHIFT, "Tab"]),
+                                    ("Find in note", vec![keys::MOD, "F"]),
+                                    ("Copy", vec![keys::MOD, "C"]),
+                                    ("Cut", vec![keys::MOD, "X"]),
+                                    ("Paste", vec![keys::MOD, "V"]),
+                                    ("Undo", vec![keys::MOD, "Z"]),
+                                    ("Redo", keys::redo()),
+                                    ("Select all", vec![keys::MOD, "A"]),
+                                ];
+                                content
+                                    .child(card_list(
+                                        "Application",
+                                        "Window and tab commands. ⌘ on macOS, Ctrl on \
+                                             Windows and Linux.",
+                                        app_rows,
+                                    ))
+                                    .child(card_list(
+                                        "Editing",
+                                        "Standard text shortcuts, available while a note is \
+                                             focused.",
+                                        edit_rows,
+                                    ))
+                            }
                         }
                     }),
             )
@@ -411,6 +447,13 @@ fn nav(active: Tab, cx: &mut Context<SettingsView>) -> impl IntoElement {
             "nav-markdown",
             "Markdown",
             Tab::Markdown,
+            active,
+            cx,
+        ))
+        .child(nav_item(
+            "nav-keyboard",
+            "Keyboard",
+            Tab::Keyboard,
             active,
             cx,
         ))
@@ -482,6 +525,76 @@ fn card(title: &str, desc: &str, control: impl IntoElement) -> impl IntoElement 
                 .child(desc.to_string()),
         )
         .child(control)
+}
+
+/// Modifier glyphs for the read-only shortcut list. `MOD` is the platform's
+/// primary modifier (Cmd on macOS, Ctrl elsewhere) — matching `secondary-` in
+/// the keymap; `CTRL` is the literal Control key (for Ctrl+Tab).
+#[cfg(target_os = "macos")]
+mod keys {
+    pub const MOD: &str = "⌘";
+    pub const CTRL: &str = "⌃";
+    pub const SHIFT: &str = "⇧";
+    pub fn redo() -> Vec<&'static str> {
+        vec![MOD, SHIFT, "Z"]
+    }
+}
+#[cfg(not(target_os = "macos"))]
+mod keys {
+    pub const MOD: &str = "Ctrl";
+    pub const CTRL: &str = "Ctrl";
+    pub const SHIFT: &str = "Shift";
+    pub fn redo() -> Vec<&'static str> {
+        vec!["Ctrl", "Y"]
+    }
+}
+
+/// A settings card whose body is a list of `(label, key combo)` shortcut rows.
+fn card_list(title: &str, desc: &str, rows: Vec<(&str, Vec<&str>)>) -> impl IntoElement {
+    let mut list = div().flex().flex_col().gap(px(2.0));
+    for (label, combo) in rows {
+        list = list.child(shortcut_row(label, &combo));
+    }
+    card(title, desc, list)
+}
+
+/// One shortcut row: description on the left, key caps on the right.
+fn shortcut_row(label: &str, combo: &[&str]) -> impl IntoElement {
+    let mut caps = div().flex().flex_row().gap(px(4.0));
+    for key in combo {
+        caps = caps.child(kbd(key));
+    }
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .py(px(5.0))
+        .child(
+            div()
+                .text_size(px(13.0))
+                .text_color(theme::text_secondary())
+                .child(label.to_string()),
+        )
+        .child(caps)
+}
+
+/// A single key cap.
+fn kbd(key: &str) -> impl IntoElement {
+    div()
+        .flex()
+        .items_center()
+        .justify_center()
+        .min_w(px(22.0))
+        .h(px(20.0))
+        .px(px(6.0))
+        .rounded(px(6.0))
+        .bg(theme::glass())
+        .border_1()
+        .border_color(theme::border_subtle())
+        .text_size(px(12.0))
+        .text_color(theme::text_primary())
+        .child(key.to_string())
 }
 
 fn text_button(
