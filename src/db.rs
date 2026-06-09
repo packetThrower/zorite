@@ -48,7 +48,18 @@ impl Db {
             let _ = std::fs::create_dir_all(parent);
         }
         let mut conn = Connection::open(&path)?;
-        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        // WAL keeps the per-keystroke autosave write off the fsync-per-commit path
+        // (rollback journal + synchronous=FULL fsyncs twice per write); in WAL,
+        // synchronous=NORMAL fsyncs only at checkpoint and is still durable across an
+        // app crash (only a power loss can drop the last txn — fine for autosave). It
+        // also lets a second window read while this one writes (no reader/writer block),
+        // and busy_timeout makes a rare concurrent-write retry instead of erroring.
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;\
+             PRAGMA journal_mode = WAL;\
+             PRAGMA synchronous = NORMAL;\
+             PRAGMA busy_timeout = 5000;",
+        )?;
         Self::migrate(&mut conn)?;
         Ok(Db { conn })
     }

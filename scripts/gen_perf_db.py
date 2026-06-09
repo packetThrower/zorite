@@ -9,11 +9,11 @@ image references. Deterministic (fixed seed) so runs are reproducible.
 Usage:
     python3 scripts/gen_perf_db.py [COUNT] [OUTPUT]
         COUNT   number of named pages to generate (default 10000)
-        OUTPUT  database path (default /tmp/zorite-perf.db)
+        OUTPUT  database path (default <repo>/db/zorite-perf.db)
 
-Point the app at it without touching your real notes:
-    launchctl setenv ZORITE_DB /tmp/zorite-perf.db && open <zorite.app>   # macOS GUI
-    ZORITE_DB=/tmp/zorite-perf.db cargo run                               # CLI
+Point the app at it without touching your real notes (run from the repo root):
+    launchctl setenv ZORITE_DB "$PWD/db/zorite-perf.db" && open <zorite.app>   # macOS GUI
+    ZORITE_DB=db/zorite-perf.db cargo run                                      # CLI
 
 Image references only render if files with these names exist in the data dir's
 `images/` folder (the data dir is NOT affected by ZORITE_DB) — edit IMAGES to
@@ -22,7 +22,10 @@ match yours, or ignore (missing images simply don't render).
 import sqlite3, random, os, sys, datetime, time
 
 COUNT = int(sys.argv[1]) if len(sys.argv) > 1 else 10000
-PATH = sys.argv[2] if len(sys.argv) > 2 else "/tmp/zorite-perf.db"
+# Default into the repo's gitignored db/ folder (alongside the active test DB),
+# robust to the caller's CWD; an explicit OUTPUT arg still wins.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PATH = sys.argv[2] if len(sys.argv) > 2 else os.path.join(_REPO, "db", "zorite-perf.db")
 IMAGES = [
     # Image filenames present in <data_dir>/images/ to see them render. Override
     # without editing this file via ZORITE_PERF_IMAGES="a.jpg,b.jpg".
@@ -33,6 +36,7 @@ if os.environ.get("ZORITE_PERF_IMAGES"):
     IMAGES = [s.strip() for s in os.environ["ZORITE_PERF_IMAGES"].split(",") if s.strip()]
 random.seed(42)
 
+os.makedirs(os.path.dirname(PATH) or ".", exist_ok=True)  # db/ is gitignored, may not exist yet
 if os.path.exists(PATH):
     os.remove(PATH)
 

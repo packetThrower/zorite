@@ -2,7 +2,10 @@
 .DS_Store
 # Scratch image files used while testing; real images live in the app data dir.
 /images
-# Throwaway performance-test databases (see scripts/gen_perf_db.py).
+# Local dev/test databases live here: the active test DB, the perf DB
+# (scripts/gen_perf_db.py), and their WAL -wal/-shm sidecars — all contained.
+/db/
+# Catch-all for any stray db file elsewhere in the tree, too.
 *.db
 *.db-wal
 *.db-shm

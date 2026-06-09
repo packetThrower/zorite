@@ -32,7 +32,7 @@ work is collected under [Completed](#completed) at the bottom.
 
 ## Performance
 - [ ] True **list virtualization** in the journal feed (v1 keeps all loaded days mounted)
-- [ ] Move SQLite writes off the UI thread (background executor)
+- [ ] Move SQLite writes off the UI thread (background executor) — **fsync stall handled** for now via WAL + `synchronous = NORMAL` in `Db::open` (per-keystroke autosave no longer fsyncs on the UI thread; measured worst case ~1.2 ms at a 50k-char page, well within a frame). The full off-thread refactor is now a lower-priority fast-follow (pathological pages / slow or contended disks)
 
 ## Data & migrations
 - [ ] **Back up before migrating** — copy the DB to `zorite.db.bak-v<N>` before applying schema migrations on launch, so a bad migration is recoverable
