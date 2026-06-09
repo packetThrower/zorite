@@ -1,0 +1,34 @@
+version: 2
+
+# Dependency-update schedule for the two ecosystems zorite uses: the Cargo
+# workspace at the repo root (the app crate plus crates/gpui-markdown and
+# crates/gpui-pdf, all resolved through the root Cargo.lock) and the GitHub
+# Actions in the workflows. Paths are explicit so renaming a directory surfaces
+# as a Dependabot error instead of silently dropping coverage.
+
+updates:
+  # The app + its workspace crates. The root Cargo.toml / Cargo.lock are the
+  # source of truth for every native dep (gpui, gpui-component, rusqlite, hayro,
+  # …); Dependabot updates every workspace member from here.
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      # One PR for the routine patch/minor sweep instead of a dozen; majors
+      # still come through individually so they get a proper look.
+      cargo-minor:
+        update-types: ["minor", "patch"]
+
+  # GitHub Actions in .github/workflows/. The workflows pin every action to a
+  # full commit SHA; Dependabot understands SHA pins (it bumps the SHA and the
+  # trailing `# vX.Y.Z` comment together), so this is what keeps the pins from
+  # going stale.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      actions-all:
+        patterns: ["*"]
