@@ -37,7 +37,7 @@ use crate::actions::{
     SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
-use crate::models::{Backlink, Page, SearchHit};
+use crate::models::{Backlink, Page};
 use crate::settings::SettingsView;
 use crate::skins::{self, Skin};
 use crate::slash::{self, ItemKind, Slash, SlashLevel, SlashTarget, Template, Trigger};
@@ -236,7 +236,9 @@ pub struct AppView {
     /// Ids of recently-viewed named pages, most-recent first (capped). The
     /// sidebar page tree is filtered to these; persisted across launches.
     pub recent_pages: Vec<i64>,
-    pub search_results: Vec<SearchHit>,
+    /// The current global-search results (pages + referenced PDF/image files),
+    /// kind-filtered, with per-kind counts for the results-pane chips.
+    pub search: crate::search::Results,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
     /// Templates parsed from the reserved `Templates` page.
@@ -416,7 +418,7 @@ impl AppView {
             show_calendar: false,
             sidebar_collapsed: false,
             recent_pages: Vec::new(),
-            search_results: Vec::new(),
+            search: crate::search::Results::default(),
             slash: None,
             templates: Vec::new(),
             context_page: None,
@@ -1168,17 +1170,50 @@ impl AppView {
             .unwrap_or_default();
     }
 
-    /// Run the sidebar search box live. Empty query returns to the feed.
+    /// Run the sidebar search box live. A `pdf:` / `img:` / `page:` prefix filters
+    /// by kind. An empty query (no prefix) returns to the feed.
     fn run_search(&mut self, cx: &mut Context<Self>) {
-        let q = self.search_input.read(cx).value().trim().to_string();
-        if q.is_empty() {
-            self.search_results.clear();
-            self.searching = false;
-        } else {
-            self.search_results = self.db.search(&q, 50).unwrap_or_default();
-            self.searching = true;
-        }
+        let q = self.search_input.read(cx).value().to_string();
+        self.search = crate::search::run(&self.db, &q);
+        // Searching whenever the box has any prefix or term to act on.
+        self.searching = !q.trim().is_empty();
         cx.notify();
+    }
+
+    /// Apply a results-pane chip: rewrite the search box to that filter's prefix
+    /// (keeping the current term) and re-run, so the box and chips stay in sync.
+    pub fn set_search_filter(
+        &mut self,
+        filter: crate::search::Filter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let term = self.search.term.clone();
+        let value = format!("{}{}", filter.prefix(), term);
+        self.search_input
+            .update(cx, |s, cx| s.set_value(value, window, cx));
+        self.run_search(cx);
+        self.search_input.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    /// Open a clicked search hit: a page, the PDF viewer, or the page showing an
+    /// image (looked up by reference when not already known).
+    pub fn open_search_hit(
+        &mut self,
+        target: crate::search::Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            crate::search::Target::Page(id) => self.open_page_id(id, window, cx),
+            crate::search::Target::Pdf(path) => self.open_pdf(path, window, cx),
+            crate::search::Target::Image { src, in_page } => {
+                let page = in_page.or_else(|| self.db.page_referencing(&src).ok().flatten());
+                if let Some(id) = page {
+                    self.open_page_id(id, window, cx);
+                }
+            }
+        }
     }
 
     // --- Slash-command menu ---

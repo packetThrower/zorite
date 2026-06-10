@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::models::{Backlink, Page, SearchHit};
+use crate::models::{Backlink, Page};
 use crate::paths;
 
 /// Fresh-install schema (applied when `user_version` is 0).
@@ -539,7 +539,15 @@ impl Db {
     /// Full-text-ish search over page titles and content (substring,
     /// case-insensitive). Title matches sort first, then journals by
     /// date. Returns up to `limit` hits with a snippet around the match.
-    pub fn search(&self, query: &str, limit: i64) -> rusqlite::Result<Vec<SearchHit>> {
+    /// The raw `(id, title, content)` of pages matching `query`, ordered title
+    /// matches first, then journals newest-first. Exposes the content so the
+    /// type-aware [`search`](crate::search) layer can extract the PDF / image
+    /// files referenced on each matched page (and build page snippets).
+    pub fn search_rows(
+        &self,
+        query: &str,
+        limit: i64,
+    ) -> rusqlite::Result<Vec<(i64, String, String)>> {
         let q = query.trim();
         if q.is_empty() {
             return Ok(Vec::new());
@@ -547,7 +555,7 @@ impl Db {
         let like = format!("%{}%", escape_like(q));
         // The trigram index needs ≥3 chars; 1–2 char queries fall back to the (rare,
         // small) LIKE scan. Either way: title matches first, then journals by date,
-        // capped to `limit`, each with a snippet around the match.
+        // capped to `limit`.
         let rows: Vec<(i64, String, String)> = if q.chars().count() >= 3 {
             // Case-insensitive substring via the trigram FTS index. The query is a
             // quoted phrase (inner quotes doubled) so punctuation can't break MATCH.
@@ -585,14 +593,22 @@ impl Db {
             })?
             .collect::<rusqlite::Result<_>>()?
         };
-        Ok(rows
-            .into_iter()
-            .map(|(id, title, content)| SearchHit {
-                page_id: id,
-                title,
-                snippet: snippet_for_query(&content, q),
-            })
-            .collect())
+        Ok(rows)
+    }
+
+    /// The id of a page whose content references `needle` (e.g. an image path) —
+    /// used to jump to the page that shows a file found in search. First match by
+    /// the usual ordering (journals newest-first, then title).
+    pub fn page_referencing(&self, needle: &str) -> rusqlite::Result<Option<i64>> {
+        let like = format!("%{}%", escape_like(needle));
+        self.conn
+            .query_row(
+                "SELECT id FROM pages WHERE content LIKE ?1 ESCAPE '\\' \
+                 ORDER BY is_journal DESC, journal_date DESC, title COLLATE NOCASE LIMIT 1",
+                params![like],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()
     }
 }
 
@@ -605,7 +621,7 @@ fn escape_like(s: &str) -> String {
 
 /// The first content line containing `query` (case-insensitive), else
 /// the first non-empty line, trimmed and length-capped.
-fn snippet_for_query(content: &str, query: &str) -> String {
+pub(crate) fn snippet_for_query(content: &str, query: &str) -> String {
     let needle = query.to_lowercase();
     let line = content
         .lines()
@@ -804,21 +820,26 @@ mod tests {
             .unwrap();
 
         // Trigram FTS (≥3 chars): mid-word + case-insensitive substring, and title.
-        let has = |q: &str| db.search(q, 10).unwrap().iter().any(|h| h.page_id == p.id);
+        let has = |q: &str| {
+            db.search_rows(q, 10)
+                .unwrap()
+                .iter()
+                .any(|(id, _, _)| *id == p.id)
+        };
         assert!(has("scill"), "mid-word substring");
         assert!(has("vcc"), "case-insensitive");
         assert!(has("datash"), "title match");
 
         // Editing the page re-syncs the index (UPDATE trigger).
         db.set_page_content(p.id, "now about resistors").unwrap();
-        assert!(db.search("oscillation", 10).unwrap().is_empty());
+        assert!(db.search_rows("oscillation", 10).unwrap().is_empty());
         assert!(has("resistor"));
         // 1–2 char queries fall back to LIKE (below the trigram minimum).
         assert!(has("re"));
 
         // Deleting the page drops it from the index (DELETE trigger).
         assert!(db.delete_page(p.id).unwrap());
-        assert!(db.search("resistor", 10).unwrap().is_empty());
+        assert!(db.search_rows("resistor", 10).unwrap().is_empty());
     }
 
     #[test]
@@ -841,10 +862,10 @@ mod tests {
         assert_eq!(version, 5);
         let db = Db { conn };
         assert!(
-            db.search("oscillation", 10)
+            db.search_rows("oscillation", 10)
                 .unwrap()
                 .iter()
-                .any(|h| h.title == "Old Page"),
+                .any(|(_, title, _)| title == "Old Page"),
             "existing pages should be searchable after the FTS migration"
         );
     }
@@ -936,10 +957,10 @@ mod tests {
         // Migrated DB is usable; the backup retains the pre-upgrade copy.
         let db = Db { conn };
         assert!(
-            db.search("resonant", 10)
+            db.search_rows("resonant", 10)
                 .unwrap()
                 .iter()
-                .any(|h| h.title == "Note")
+                .any(|(_, title, _)| title == "Note")
         );
         let bconn = Connection::open(&bak).unwrap();
         let bver: i64 = bconn

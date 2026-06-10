@@ -20,6 +20,7 @@ mod import;
 mod models;
 mod paths;
 mod pdf;
+mod search;
 mod settings;
 mod skins;
 mod slash;

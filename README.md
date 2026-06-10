@@ -34,7 +34,11 @@ and a SQLite backend.
   steps over it. Prose-aware, so it won't mangle contractions like `don't`.
 - **Templates** — reusable snippets defined on a `Templates` page, inserted from
   `/` with `{{date}}` / `{{time}}` / `{{title}}` / `{{cursor}}` placeholders.
-- **Full-text search** across all notes.
+- **Full-text search** across all notes, **type-aware**: results include the PDF
+  and image *files* referenced in your notes, not just pages. Filter by typing a
+  `pdf:` / `img:` / `page:` prefix or clicking the matching chip in the results
+  pane (each with a live count); `pdf:` / `img:` with no term browses every file
+  of that kind. A PDF result opens the viewer, an image opens the page showing it.
 - **Sidebar** — collapses to a slim icon rail; a calendar icon jumps to any date
   (creating the day if needed); the page list shows your recently-viewed pages
   (the rest are a search away).
@@ -54,7 +58,8 @@ and a SQLite backend.
   slider in Settings (lower for speed on slower machines). Zooming never blanks the
   page. It also supports **text highlights** — drag to highlight (with a color
   picker); each becomes a reference on a per-PDF notes page that links back to — and
-  **flashes** — the spot in the PDF. Dropped PDFs are copied into the data dir's
+  **flashes** — the spot in the PDF. **Password-protected** PDFs open behind a
+  prompt (RC4 / AES-128 / AES-256). Dropped PDFs are copied into the data dir's
   `pdf/` folder; the viewer is the reusable
   [`gpui-pdf`](crates/gpui-pdf/README.md) crate.
 - **Markdown rendering** — headings, bold/italic/code, lists, quotes, GFM tables,

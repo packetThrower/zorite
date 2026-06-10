@@ -1,4 +1,6 @@
-//! Search results in the main pane, driven by the sidebar search box.
+//! Search results in the main pane, driven by the sidebar search box. A row of
+//! type-filter chips (mirroring the `pdf:` / `img:` / `page:` prefixes) sits above
+//! the results; each hit is a page, a PDF file, or an image file.
 
 use gpui::{
     ClickEvent, Context, FontWeight, InteractiveElement, IntoElement, ParentElement,
@@ -6,11 +8,11 @@ use gpui::{
 };
 
 use crate::app::AppView;
-use crate::models::SearchHit;
+use crate::search::{Filter, Hit, Kind};
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
-    let hits = &app.search_results;
+    let hits = &app.search.hits;
     let rows: Vec<_> = hits
         .iter()
         .enumerate()
@@ -36,27 +38,88 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .flex()
                         .flex_col()
                         .gap(px(8.0))
-                        .child(
-                            div()
-                                .pb_2()
-                                .text_size(px(13.0))
-                                .text_color(theme::text_tertiary())
-                                .child(format!(
-                                    "{} result{}",
-                                    hits.len(),
-                                    if hits.len() == 1 { "" } else { "s" }
-                                )),
-                        )
+                        .child(filter_chips(app, cx))
                         .when(hits.is_empty(), |d| {
-                            d.child(div().text_color(theme::text_tertiary()).child("No matches"))
+                            d.child(
+                                div()
+                                    .pt_2()
+                                    .text_color(theme::text_tertiary())
+                                    .child("No matches"),
+                            )
                         })
                         .children(rows),
                 ),
         )
 }
 
-fn hit_row(i: usize, hit: &SearchHit, cx: &mut Context<AppView>) -> impl IntoElement {
-    let id = hit.page_id;
+/// The type-filter chip row: All · Pages · PDFs · Images, each with a live count,
+/// the active one highlighted. Clicking a chip sets the search box's prefix.
+fn filter_chips(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+    let c = &app.search.counts;
+    let active = app.search.filter;
+    div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap_2()
+        .pb_2()
+        .child(chip("All", Filter::All, c.total(), active, cx))
+        .child(chip("Pages", Filter::Page, c.page, active, cx))
+        .child(chip("📄 PDFs", Filter::Pdf, c.pdf, active, cx))
+        .child(chip("🖼 Images", Filter::Image, c.image, active, cx))
+}
+
+fn chip(
+    label: &str,
+    filter: Filter,
+    count: usize,
+    active: Filter,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let is_active = filter == active;
+    div()
+        .id(chip_id(filter))
+        .px_3()
+        .py_1()
+        .rounded_full()
+        .cursor_pointer()
+        .text_size(px(13.0))
+        .bg(if is_active {
+            theme::accent_tint()
+        } else {
+            theme::glass()
+        })
+        .text_color(if is_active {
+            theme::accent()
+        } else {
+            theme::text_secondary()
+        })
+        .hover(|h| h.bg(theme::glass_strong()))
+        .child(format!("{label} · {count}"))
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.set_search_filter(filter, window, cx);
+            }),
+        )
+}
+
+/// A stable element id per filter chip.
+fn chip_id(filter: Filter) -> &'static str {
+    match filter {
+        Filter::All => "chip-all",
+        Filter::Page => "chip-page",
+        Filter::Pdf => "chip-pdf",
+        Filter::Image => "chip-image",
+    }
+}
+
+fn hit_row(i: usize, hit: &Hit, cx: &mut Context<AppView>) -> impl IntoElement {
+    let target = hit.target.clone();
+    let icon = match hit.kind {
+        Kind::Page => "",
+        Kind::Pdf => "📄",
+        Kind::Image => "🖼",
+    };
     div()
         .id(("hit", i))
         .px_3()
@@ -70,22 +133,30 @@ fn hit_row(i: usize, hit: &SearchHit, cx: &mut Context<AppView>) -> impl IntoEle
         .gap_1()
         .child(
             div()
-                .text_size(px(14.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(theme::text_primary())
-                .child(hit.title.clone()),
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap_2()
+                .when(!icon.is_empty(), |d| d.child(div().child(icon)))
+                .child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::text_primary())
+                        .child(hit.title.clone()),
+                ),
         )
-        .when(!hit.snippet.trim().is_empty(), |d| {
+        .when(!hit.subtitle.trim().is_empty(), |d| {
             d.child(
                 div()
                     .text_size(px(13.0))
                     .text_color(theme::text_secondary())
-                    .child(hit.snippet.clone()),
+                    .child(hit.subtitle.clone()),
             )
         })
         .on_click(
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-                this.open_page_id(id, window, cx);
+                this.open_search_hit(target.clone(), window, cx);
             }),
         )
 }
