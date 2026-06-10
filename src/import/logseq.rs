@@ -725,6 +725,52 @@ fn sanitize_name(name: &str) -> String {
         .collect()
 }
 
+/// Whether a line is, on its own, a single markdown image (`![alt](src)`).
+/// Logseq writes one image per line; this doesn't try to handle several images
+/// (or trailing text) on one line.
+fn is_standalone_image(line: &str) -> bool {
+    let t = line.trim();
+    t.starts_with("![") && t.ends_with(')') && t.contains("](")
+}
+
+/// Logseq glues several images onto one bullet's continuation lines, so a single
+/// block can hold a run of standalone `![](…)` lines. Rendered together only the
+/// first becomes a real (block) image and the rest collapse to inline — so split
+/// each standalone image onto its own block. The original block's list semantics
+/// (numbered / task) stay on its first piece.
+fn split_standalone_images(block: ConvBlock) -> Vec<ConvBlock> {
+    if block.lines.len() < 2 || !block.lines.iter().any(|l| is_standalone_image(l)) {
+        return vec![block];
+    }
+    let (depth, numbered, task) = (block.depth, block.numbered, block.task);
+    let plain = |lines: Vec<String>| ConvBlock {
+        depth,
+        lines,
+        numbered: false,
+        task: false,
+    };
+    let mut out: Vec<ConvBlock> = Vec::new();
+    let mut text: Vec<String> = Vec::new();
+    for line in block.lines {
+        if is_standalone_image(&line) {
+            if !text.is_empty() {
+                out.push(plain(std::mem::take(&mut text)));
+            }
+            out.push(plain(vec![line]));
+        } else {
+            text.push(line);
+        }
+    }
+    if !text.is_empty() {
+        out.push(plain(text));
+    }
+    if let Some(first) = out.first_mut() {
+        first.numbered = numbered;
+        first.task = task;
+    }
+    out
+}
+
 // --- Rendering ---
 
 /// Render converted blocks as zorite markdown. With `flatten`, top-level
@@ -917,7 +963,7 @@ pub fn read_graph(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
                 for (bi, b) in blocks.iter().enumerate() {
                     let props_slot = (bi == 0).then_some(&mut props);
                     if let Some(cb) = conv.convert_block(b, props_slot) {
-                        conv_blocks.push(cb);
+                        conv_blocks.extend(split_standalone_images(cb));
                     }
                 }
                 let content = render(&conv_blocks, opts.flatten);
@@ -935,7 +981,7 @@ pub fn read_graph(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
                 let mut conv_blocks = Vec::new();
                 for b in &blocks {
                     if let Some(cb) = conv.convert_block(b, None) {
-                        conv_blocks.push(cb);
+                        conv_blocks.extend(split_standalone_images(cb));
                     }
                 }
                 let content = render(&conv_blocks, opts.flatten);
@@ -1241,6 +1287,41 @@ mod tests {
         ];
         let md = render(&blocks, false);
         assert_eq!(md, "- top\n  - child\n    continuation");
+    }
+
+    #[test]
+    fn glued_images_split_so_each_renders_as_a_block() {
+        // Logseq's "several images on one bullet's continuation lines" → one
+        // block per image, so each renders as a real (block) image.
+        let block = cb(
+            1,
+            &[
+                "![a](images/a.jpg)",
+                "![b](images/b.jpg)",
+                "![c](images/c.jpg)",
+            ],
+            false,
+            false,
+        );
+        let split = split_standalone_images(block);
+        assert_eq!(split.len(), 3);
+        assert!(split.iter().all(|b| b.lines.len() == 1 && b.depth == 1));
+        let md = render(&split, true);
+        assert_eq!(
+            md,
+            "- ![a](images/a.jpg)\n- ![b](images/b.jpg)\n- ![c](images/c.jpg)"
+        );
+
+        // A leading text line stays its own block; its list semantics carry over.
+        let mixed = cb(0, &["intro text", "![a](images/a.jpg)"], false, true);
+        let split = split_standalone_images(mixed);
+        assert_eq!(split.len(), 2);
+        assert_eq!(split[0].lines, vec!["intro text"]);
+        assert!(split[0].task && !split[1].task);
+
+        // A block with no images is untouched.
+        let plain = cb(0, &["just text", "more text"], false, false);
+        assert_eq!(split_standalone_images(plain).len(), 1);
     }
 
     // -- highlights --
