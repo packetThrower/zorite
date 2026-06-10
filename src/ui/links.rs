@@ -7,13 +7,16 @@
 pub fn parse_links(content: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
 
-    // [[wiki-links]]
+    // [[wiki-links]] — `[[target|alias]]` links to `target` (the alias is just
+    // display text), so index the target, mirroring how the renderer resolves it.
     let mut rest = content;
     while let Some(open) = rest.find("[[") {
         let Some(close_rel) = rest[open + 2..].find("]]") else {
             break;
         };
-        push_unique(&mut out, &rest[open + 2..open + 2 + close_rel]);
+        let inner = &rest[open + 2..open + 2 + close_rel];
+        let target = inner.split_once('|').map_or(inner, |(t, _)| t);
+        push_unique(&mut out, target);
         rest = &rest[open + 2 + close_rel + 2..];
     }
 
@@ -89,6 +92,17 @@ mod tests {
         assert_eq!(
             parse_links("[[  Spaced Name  ]]"),
             vec!["Spaced Name".to_string()]
+        );
+    }
+
+    #[test]
+    fn aliased_link_indexes_the_target_not_the_alias() {
+        // `[[target|alias]]` links to `target`; the alias is display-only. The PDF
+        // jump-link `[[pdf/x.pdf#p6|↗]]` must index `pdf/x.pdf#p6`, not the arrow.
+        assert_eq!(parse_links("[[Foo|bar]]"), vec!["Foo".to_string()]);
+        assert_eq!(
+            parse_links("see [[pdf/x.pdf#p6|↗]] end"),
+            vec!["pdf/x.pdf#p6".to_string()]
         );
     }
 

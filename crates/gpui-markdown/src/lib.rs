@@ -720,17 +720,21 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     // Capture the text layout (a shared handle, populated on paint) so a click can
     // be mapped to a rendered byte index, then to a source offset.
     let layout = styled.layout().clone();
+    // Rendered-text ranges of this block's links, so the click-to-caret handler
+    // below can ignore a click that lands on a link. A link's own `on_click`
+    // fires on mouse-*up*; the caret handler fires on mouse-*down*, so without
+    // this it would enter the editor first and swallow the link click.
+    let link_ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
 
     let inner = if inl.links.is_empty() {
         styled.into_any_element()
     } else {
         ctx.counter += 1;
         let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
-        let ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
         let targets: Vec<LinkTarget> = inl.links.into_iter().map(|(_, t)| t).collect();
         let on_wiki = ctx.on_wiki_link.clone();
         InteractiveText::new(id, styled)
-            .on_click(ranges, move |ix, window, cx| {
+            .on_click(link_ranges.clone(), move |ix, window, cx| {
                 // The click was on a link range; consume it so it doesn't also reach
                 // a surrounding host handler (e.g. the click-to-caret below).
                 cx.stop_propagation();
@@ -758,6 +762,11 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         .child(inner)
         .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
             let rendered = layout.index_for_position(ev.position).unwrap_or_else(|e| e);
+            // A click on a link belongs to the link (its on_click fires on
+            // mouse-up) — don't hijack it for the caret.
+            if link_ranges.iter().any(|r| r.contains(&rendered)) {
+                return;
+            }
             if let Some(src) = map_to_source(&source_map, rendered) {
                 // Consume so the host's surrounding click-to-edit doesn't also fire;
                 // pass the click's y so the host can keep the caret under the cursor.
