@@ -51,6 +51,7 @@ work is collected under [Completed](#completed) at the bottom.
 ## gpui-markdown crate
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize
 - [ ] Publish to crates.io once the API is stable
+- [ ] **Split the reusable crates (`gpui-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of zorite to contribute — **defer until the first stable release**. Gotcha to plan for: both pin `gpui = { git = ".../zed" }` with no rev and rely on the *workspace's single lockfile* to unify everything to one gpui; in separate repos each gets its own lockfile, and a gpui-rev mismatch puts two gpui versions in one build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
 
 ## Completed
 
