@@ -28,6 +28,10 @@ scrolling, rendering, and memory on its own.
 - **Off-thread rendering.** The file is read, parsed *once*, and measured on a
   background thread; pages rasterize on the background executor and paint as they
   land. The UI never blocks.
+- **Password-protected PDFs.** An encrypted file doesn't fail to load — `PdfView`
+  enters a *locked* state and emits an event so the host can render its own password
+  prompt; `unlock(password)` retries (RC4 / AES-128 / AES-256, via hayro's standard
+  security handler). See [Password-protected PDFs](#password-protected-pdfs).
 - **Self-contained.** `PdfView` is a gpui entity that owns its document, scroll
   position, zoom, render/evict loop, and styling. Drop the `Entity<PdfView>` into
   your element tree — no per-frame plumbing from the host.
@@ -122,8 +126,11 @@ softer, higher supersamples (clamped internally).
 
 ```rust
 pub type Document;                                      // a parsed PDF (hayro)
+pub enum LoadError { Locked, Other(String) }            // Locked = encrypted, needs a password
 
-pub fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, String>;
+pub fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, LoadError>;
+pub fn parse_with_password(bytes: Arc<Vec<u8>>, password: &str)
+    -> Result<Arc<Document>, LoadError>;                // Err(Locked) on a wrong/missing password
 pub fn page_dims(doc: &Document) -> Vec<(f32, f32)>;    // (w, h) points per page
 pub fn render_page(doc: &Document, idx: usize, scale: f32)
     -> Result<Arc<gpui::RenderImage>, String>;          // BGRA over white
@@ -136,6 +143,51 @@ pub fn keep_window(dims: &[(f32, f32)], page_width: f32, scroll_y: f32, viewport
 
 Parse once, then rasterize pages on demand — `hayro::Pdf` is `Send + Sync` and caches
 pages internally, so share it via `Arc` across background tasks.
+
+## Password-protected PDFs
+
+Encrypted PDFs are unlocked by the host, so the prompt matches your app's UI rather than
+a baked-in dialog. `PdfView::new` loads as usual; if the file is encrypted it doesn't
+error — it enters a *locked* state and emits `PdfEvent::LockChanged`. While `is_locked()`,
+render your own password prompt; call `unlock(password)` to retry. On success the viewer
+renders; on a wrong password `unlock_failed()` flips true and it stays locked. The file
+bytes are kept, so retries don't re-read the disk. Subscribe to `PdfEvent` to re-render
+the prompt ↔ viewer on each transition.
+
+```rust
+pub enum PdfEvent { LockChanged }                 // impl EventEmitter<PdfEvent> for PdfView
+impl PdfView {
+    pub fn is_locked(&self) -> bool;              // encrypted + not yet unlocked
+    pub fn unlock_failed(&self) -> bool;          // the last unlock used a wrong password
+    pub fn unlock(&mut self, password: String, cx: &mut Context<Self>); // retry (async)
+}
+```
+
+Building a custom viewer instead of using `PdfView`? Use the primitive directly:
+
+```rust
+match gpui_pdf::parse_with_password(bytes, password) {
+    Ok(doc) => { /* render */ }
+    Err(gpui_pdf::LoadError::Locked) => { /* prompt for a password and retry */ }
+    Err(gpui_pdf::LoadError::Other(e)) => { /* malformed / unsupported encryption */ }
+}
+```
+
+### Supported encryption
+
+Decryption is hayro's, via the PDF **standard security handler** (the password-based
+scheme — supply the password that opens the document):
+
+| Algorithm | PDF `/V` | Notes |
+| --- | --- | --- |
+| RC4, 40-bit | 1 | legacy |
+| RC4, 40–128-bit | 2 | key length from `/Length` |
+| AES-128 | 4 | `AESV2` crypt filter (RC4 via a `V2` filter also works) |
+| AES-256 | 5 / 6 | `AESV3` crypt filter; PDF 2.0 (revision 6) |
+
+Anything else surfaces as `LoadError::Other` — a logged error and a blank viewer, *not*
+the prompt: public-key / certificate security handlers (`/Filter` ≠ `/Standard`) and any
+non-standard crypt filter.
 
 ## Markup (`markup` feature)
 
@@ -189,7 +241,8 @@ link to `file.pdf#pN` and call [`reveal_highlight`] to scroll to and flash it.
 ## Status
 
 Early, but solid for scroll-to-read viewing. Renders via the pure-Rust
-[`hayro`](https://crates.io/crates/hayro) crate. Not yet published to crates.io.
+[`hayro`](https://crates.io/crates/hayro) crate. Password-protected PDFs (RC4 /
+AES-128 / AES-256) open behind a host-rendered prompt. Not yet published to crates.io.
 
 Text extraction, highlight rendering, drag-to-select creation (with a color picker),
 and note→PDF reverse links (scroll to + flash a highlight) are all available behind

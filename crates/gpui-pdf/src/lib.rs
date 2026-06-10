@@ -35,12 +35,13 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Context, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, RenderImage, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, img, point, px,
+    AnyView, App, AppContext, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, RenderImage,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, img, point,
+    px,
 };
 use hayro::hayro_interpret::InterpreterSettings;
-use hayro::hayro_syntax::Pdf;
+use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
 use image::{Frame, RgbaImage};
 
 #[cfg(feature = "markup")]
@@ -63,11 +64,54 @@ pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
 /// background render tasks.
 pub type Document = Pdf;
 
+/// Why loading a PDF failed.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The PDF is encrypted and the supplied password was missing or wrong — the
+    /// caller can prompt for a password and retry via [`parse_with_password`].
+    Locked,
+    /// Any other failure (malformed file, unsupported encryption, …).
+    Other(String),
+}
+
 /// Parse a PDF's bytes into a reusable [`Document`]. The `Document` owns the bytes,
-/// so the caller can drop its own copy.
-pub fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, String> {
-    let pdf = Pdf::new(bytes).map_err(|e| format!("parse PDF: {e:?}"))?;
-    Ok(Arc::new(pdf))
+/// so the caller can drop its own copy. Returns [`LoadError::Locked`] for a
+/// password-protected file (retry with [`parse_with_password`]).
+pub fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, LoadError> {
+    parse_with_password(bytes, "")
+}
+
+/// Like [`parse`], but supplies a decryption `password` for an encrypted PDF.
+/// Returns [`LoadError::Locked`] if the file is password-protected and `password`
+/// is missing or incorrect.
+pub fn parse_with_password(
+    bytes: Arc<Vec<u8>>,
+    password: &str,
+) -> Result<Arc<Document>, LoadError> {
+    match Pdf::new_with_password(bytes, password) {
+        Ok(pdf) => Ok(Arc::new(pdf)),
+        Err(LoadPdfError::Decryption(DecryptionError::PasswordProtected)) => Err(LoadError::Locked),
+        Err(e) => Err(LoadError::Other(format!("parse PDF: {e:?}"))),
+    }
+}
+
+/// Everything [`PdfView`] needs to display a document: the parsed doc, per-page
+/// sizes, the outline, and per-page links.
+type Prepared = (
+    Arc<Document>,
+    Vec<(f32, f32)>,
+    Vec<OutlineItem>,
+    Vec<Vec<PdfLink>>,
+);
+
+/// Parse `bytes` with `password` and measure it — the off-thread half of a load,
+/// shared by the initial open and a password [`PdfView::unlock`].
+fn prepare(bytes: Arc<Vec<u8>>, password: &str) -> Result<Prepared, LoadError> {
+    let doc = parse_with_password(bytes, password)?;
+    let dims = page_dims(&doc);
+    let toc = crate::outline::outline(&doc);
+    let links = crate::outline::page_links(&doc);
+    Ok((doc, dims, toc, links))
 }
 
 /// Each page's `(width, height)` in points — cheap to read (no rasterization), so a
@@ -374,6 +418,13 @@ struct SearchMatch {
 /// the host's [quality](PdfQualityFn) multiplier; and no blanking on zoom/quality
 /// changes (the old bitmap is shown, rescaled, until the crisp one lands).
 ///
+/// Emitted when the view's lock state changes — encrypted-and-locked, unlocked, or a
+/// failed unlock — so a host rendering a password prompt around the viewer knows to
+/// re-render. (Fired only on these transitions, not on every redraw.)
+pub enum PdfEvent {
+    LockChanged,
+}
+
 /// Construct with [`PdfView::new`] inside `cx.new`; it loads and measures the file
 /// off-thread. Render the resulting `Entity<PdfView>` like any child view. Call
 /// [`release`](PdfView::release) before dropping it (e.g. when its tab closes) to
@@ -385,6 +436,15 @@ pub struct PdfView {
     /// The parsed PDF (shared with the background render tasks); `None` until the
     /// off-thread load finishes.
     pdf: Option<Arc<Document>>,
+    /// The raw file bytes, kept so an encrypted PDF can be retried with a password
+    /// without re-reading the file. `None` until the load reads them.
+    bytes: Option<Arc<Vec<u8>>>,
+    /// The PDF is encrypted and not yet unlocked — the host shows a password prompt
+    /// and calls [`PdfView::unlock`] instead of rendering the viewer.
+    locked: bool,
+    /// The most recent [`PdfView::unlock`] used a wrong password — drives the
+    /// prompt's "incorrect password" message; cleared on the next attempt.
+    unlock_failed: bool,
     /// `(width, height)` in points per page — drives page-slot sizing.
     dims: Vec<(f32, f32)>,
     /// Per-page render state; only pages near the viewport hold a bitmap.
@@ -481,39 +541,33 @@ impl PdfView {
     ) -> Self {
         let load_path = path.clone();
         cx.spawn(async move |this, cx| {
-            // Read + parse (once) + measure off-thread.
-            let prepared = cx
+            // Read the file off-thread, keep the bytes (so an encrypted PDF can be
+            // retried with a password without re-reading), then parse + measure.
+            let loaded = cx
                 .background_executor()
                 .spawn(async move {
                     let bytes = Arc::new(std::fs::read(&load_path).map_err(|e| e.to_string())?);
-                    let doc = parse(bytes)?;
-                    let dims = page_dims(&doc);
-                    let toc = crate::outline::outline(&doc);
-                    let links = crate::outline::page_links(&doc);
-                    Ok::<_, String>((doc, dims, toc, links))
+                    Ok::<_, String>((bytes.clone(), prepare(bytes, "")))
                 })
                 .await;
-            let (doc, dims, toc, links) = match prepared {
+            let (bytes, prepared) = match loaded {
                 Ok(x) => x,
                 Err(e) => {
-                    log::error!("load pdf: {e}");
+                    log::error!("read pdf: {e}");
                     return;
                 }
             };
-            let n = dims.len();
-            // Store the parsed doc + sizes and give every page an empty slot; the next
-            // render runs `ensure_window`, which rasterizes the visible window.
             let _ = this.update(cx, |this, cx| {
-                this.pdf = Some(doc);
-                this.dims = dims;
-                this.outline = toc;
-                this.links = links;
-                this.pages = vec![Slot::default(); n];
-                cx.notify();
-                // A note→PDF jump that arrived before the document loaded: apply it now.
-                #[cfg(feature = "markup")]
-                if let Some(p) = this.pending_reveal.take() {
-                    this.reveal_highlight(p, cx);
+                this.bytes = Some(bytes);
+                match prepared {
+                    Ok((doc, dims, toc, links)) => this.install_document(doc, dims, toc, links, cx),
+                    // Encrypted: hold for the host to prompt + call `unlock`.
+                    Err(LoadError::Locked) => {
+                        this.locked = true;
+                        cx.emit(PdfEvent::LockChanged);
+                        cx.notify();
+                    }
+                    Err(LoadError::Other(e)) => log::error!("parse pdf: {e}"),
                 }
             });
         })
@@ -525,6 +579,9 @@ impl PdfView {
             style,
             quality,
             pdf: None,
+            bytes: None,
+            locked: false,
+            unlock_failed: false,
             dims: Vec::new(),
             pages: Vec::new(),
             scroll: ScrollHandle::new(),
@@ -571,6 +628,73 @@ impl PdfView {
             #[cfg(feature = "search")]
             current_match: None,
         }
+    }
+
+    /// Store a freshly parsed document + its measurements and clear the lock — the
+    /// shared tail of the initial load and a successful [`PdfView::unlock`].
+    fn install_document(
+        &mut self,
+        doc: Arc<Document>,
+        dims: Vec<(f32, f32)>,
+        toc: Vec<OutlineItem>,
+        links: Vec<Vec<PdfLink>>,
+        cx: &mut Context<Self>,
+    ) {
+        let n = dims.len();
+        self.pdf = Some(doc);
+        self.dims = dims;
+        self.outline = toc;
+        self.links = links;
+        // Every page gets an empty slot; the next render's `ensure_window`
+        // rasterizes the visible window.
+        self.pages = vec![Slot::default(); n];
+        self.locked = false;
+        self.unlock_failed = false;
+        cx.emit(PdfEvent::LockChanged);
+        cx.notify();
+        // A note→PDF jump that arrived before the document loaded: apply it now.
+        #[cfg(feature = "markup")]
+        if let Some(p) = self.pending_reveal.take() {
+            self.reveal_highlight(p, cx);
+        }
+    }
+
+    /// Whether the PDF is encrypted and awaiting a password — the host should show a
+    /// prompt and call [`PdfView::unlock`] rather than rendering the viewer.
+    pub fn is_locked(&self) -> bool {
+        self.locked
+    }
+
+    /// Whether the most recent [`PdfView::unlock`] used a wrong password.
+    pub fn unlock_failed(&self) -> bool {
+        self.unlock_failed
+    }
+
+    /// Retry an encrypted PDF (see [`PdfView::is_locked`]) with `password`, reusing
+    /// the bytes already read. Success renders the viewer; a wrong password sets
+    /// [`PdfView::unlock_failed`] and leaves it locked. Emits [`PdfEvent::LockChanged`]
+    /// either way so a host's password prompt can react.
+    pub fn unlock(&mut self, password: String, cx: &mut Context<Self>) {
+        let Some(bytes) = self.bytes.clone() else {
+            return;
+        };
+        self.unlock_failed = false;
+        cx.spawn(async move |this, cx| {
+            let prepared = cx
+                .background_executor()
+                .spawn(async move { prepare(bytes, &password) })
+                .await;
+            let _ = this.update(cx, |this, cx| match prepared {
+                Ok((doc, dims, toc, links)) => this.install_document(doc, dims, toc, links, cx),
+                Err(LoadError::Locked) => {
+                    this.unlock_failed = true;
+                    cx.emit(PdfEvent::LockChanged);
+                    cx.notify();
+                }
+                Err(LoadError::Other(e)) => log::error!("unlock pdf: {e}"),
+            });
+        })
+        .detach();
     }
 
     /// Set the highlights to draw — the host derives these from its own store (e.g.
@@ -1241,6 +1365,8 @@ impl PdfView {
         }
     }
 }
+
+impl EventEmitter<PdfEvent> for PdfView {}
 
 impl Render for PdfView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

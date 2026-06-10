@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub use gpui_pdf::{Highlight, PdfStyle, PdfView, is_pdf};
+pub use gpui_pdf::{Highlight, PdfEvent, PdfStyle, PdfView, is_pdf};
 
 use crate::paths;
 

@@ -253,6 +253,9 @@ pub struct AppView {
     /// The rename dialog's text field, and the page being renamed.
     rename_input: Entity<InputState>,
     rename_target: Option<i64>,
+    /// The text field for the password prompt shown when an encrypted PDF tab is
+    /// locked (one field shared across PDF tabs — only the active one prompts).
+    pdf_password_input: Entity<InputState>,
 
     /// Set when the on-disk database couldn't be opened/migrated and we fell back
     /// to an empty in-memory store. Drives a one-time startup dialog (see
@@ -363,6 +366,21 @@ impl AppView {
             },
         );
 
+        // The encrypted-PDF password field; Enter submits like the Unlock button.
+        let pdf_password_input = cx.new(|cx| InputState::new(window, cx));
+        let pdf_password_sub = cx.subscribe_in(
+            &pdf_password_input,
+            window,
+            |this: &mut AppView, _st, ev: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { .. } = ev
+                    && let Some(TabKind::Pdf(path)) =
+                        this.tabs.get(this.active).map(|t| t.kind.clone())
+                {
+                    this.unlock_pdf(&path, window, cx);
+                }
+            },
+        );
+
         let mut this = Self {
             db,
             tabs: vec![OpenTab {
@@ -406,12 +424,13 @@ impl AppView {
             doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
+            pdf_password_input,
             db_error,
             db_error_shown: false,
             page_find: None,
             page_scroll: ScrollHandle::new(),
             md_block_scroll: ScrollHandle::new(),
-            _subs: vec![search_sub, calendar_sub, doc_sub],
+            _subs: vec![search_sub, calendar_sub, doc_sub, pdf_password_sub],
             focus_handle: cx.focus_handle(),
         };
 
@@ -1601,7 +1620,90 @@ impl AppView {
                 }
             }));
         });
+        // Re-render the surrounding UI on lock/unlock, so the password prompt
+        // appears when an encrypted PDF loads and is replaced by the viewer once
+        // it's unlocked; clear the password field once it's no longer needed.
+        cx.subscribe_in(
+            &view,
+            window,
+            |this, view, _ev: &crate::pdf::PdfEvent, window, cx| {
+                if view.read(cx).is_locked() {
+                    // Prompt just appeared (or a wrong password) — focus the field.
+                    this.pdf_password_input
+                        .update(cx, |s, cx| s.focus(window, cx));
+                } else {
+                    // Unlocked — clear the field so the secret isn't kept around.
+                    this.pdf_password_input
+                        .update(cx, |s, cx| s.set_value("", window, cx));
+                }
+                cx.notify();
+            },
+        )
+        .detach();
         self.pdf_views.insert(path, view);
+    }
+
+    /// Read the password field and try to unlock the encrypted PDF at `path`.
+    fn unlock_pdf(&mut self, path: &Path, window: &mut Window, cx: &mut Context<Self>) {
+        let password = self.pdf_password_input.read(cx).value().to_string();
+        if let Some(view) = self.pdf_views.get(path).cloned() {
+            view.update(cx, |v, cx| v.unlock(password, cx));
+        }
+        // Keep focus in the field so a wrong password can be retyped immediately.
+        self.pdf_password_input
+            .update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    /// The card shown in place of an encrypted PDF's viewer until it's unlocked: a
+    /// masked password field + Unlock button. `failed` adds an error line after a
+    /// wrong attempt. Replaced by the viewer once [`PdfView::unlock`] succeeds.
+    fn pdf_password_prompt(
+        &self,
+        path: PathBuf,
+        failed: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(theme::bg_content())
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .w(px(360.0))
+                    .p_5()
+                    .rounded(px(10.0))
+                    .border_1()
+                    .border_color(theme::border_subtle())
+                    .bg(theme::glass())
+                    .child(
+                        div()
+                            .text_size(px(15.0))
+                            .text_color(theme::text_primary())
+                            .child("🔒 This PDF is password protected"),
+                    )
+                    .child(Input::new(&self.pdf_password_input).mask_toggle())
+                    .children(failed.then(|| {
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(gpui::rgb(0xE5484D))
+                            .child("Incorrect password — try again.")
+                    }))
+                    .child(
+                        div().flex().justify_end().child(
+                            Button::new("pdf-unlock")
+                                .label("Unlock")
+                                .primary()
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.unlock_pdf(&path, window, cx);
+                                })),
+                        ),
+                    ),
+            )
     }
 
     /// Append a drag-selected highlight to the PDF's per-PDF notes page, then
@@ -3317,11 +3419,22 @@ impl Render for AppView {
                                             TabKind::Page(_) => {
                                                 ui::page_view::render(self, cx).into_any_element()
                                             }
-                                            TabKind::Pdf(path) => self
-                                                .pdf_views
-                                                .get(&path)
-                                                .map(|v| v.clone().into_any_element())
-                                                .unwrap_or_else(|| gpui::div().into_any_element()),
+                                            TabKind::Pdf(path) => {
+                                                match self.pdf_views.get(&path).cloned() {
+                                                    // Encrypted + not yet unlocked:
+                                                    // show the password prompt instead
+                                                    // of the (blank) viewer.
+                                                    Some(v) if v.read(cx).is_locked() => self
+                                                        .pdf_password_prompt(
+                                                            path.clone(),
+                                                            v.read(cx).unlock_failed(),
+                                                            cx,
+                                                        )
+                                                        .into_any_element(),
+                                                    Some(v) => v.into_any_element(),
+                                                    None => gpui::div().into_any_element(),
+                                                }
+                                            }
                                         }
                                     }),
                             ),
