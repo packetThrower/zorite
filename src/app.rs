@@ -210,6 +210,10 @@ pub struct AppView {
     // so the renderer (no `cx`) can read it during paint while methods here drive
     // loads and eviction. See `images::ImageStore`.
     image_store: Rc<RefCell<crate::images::ImageStore>>,
+    // Rendered `mermaid` diagrams, cached by source text. Shared into the markdown
+    // mermaid renderer (no `cx`) so it can read a ready diagram during paint while
+    // `ensure_mermaid_loaded` drives the off-thread render. See `mermaid::MermaidStore`.
+    mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     // Pending image decodes, run one at a time (`image_decoding` gates) so only a
     // single full-resolution buffer is ever allocated — decoding a 12 MP photo
     // briefly needs tens of MB, which would otherwise multiply across a photo-heavy
@@ -406,6 +410,7 @@ impl AppView {
             image_drag: None,
             image_widths: Rc::new(RefCell::new(HashMap::new())),
             image_store: Rc::new(RefCell::new(crate::images::ImageStore::default())),
+            mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
             image_queue: std::collections::VecDeque::new(),
             image_decoding: false,
             pdf_views: HashMap::new(),
@@ -1507,6 +1512,40 @@ impl AppView {
         self.image_store.clone()
     }
 
+    /// The rendered-diagram cache, shared into the markdown mermaid renderer.
+    pub fn mermaid_store(&self) -> Rc<RefCell<crate::mermaid::MermaidStore>> {
+        self.mermaid_store.clone()
+    }
+
+    /// Ensure the ```mermaid block `source` is rendering/rendered (idempotent).
+    /// Called from a not-yet-rendered diagram's placeholder the first time it
+    /// paints: claims the slot, then renders mermaid → SVG → bitmap off-thread
+    /// (it's a layout-heavy parse) and repaints when it lands.
+    pub fn ensure_mermaid_loaded(&mut self, source: SharedString, cx: &mut Context<Self>) {
+        {
+            let mut store = self.mermaid_store.borrow_mut();
+            if store.started(&source) {
+                return; // already rendering / ready / failed
+            }
+            store.begin(source.clone());
+        }
+        // Build the diagram theme from zorite's current palette now (it's a
+        // thread-local read on this main thread); the result is `Send`.
+        let theme = crate::mermaid::current_theme();
+        let svg = cx.svg_renderer();
+        let store = self.mermaid_store.clone();
+        cx.spawn(async move |this, cx| {
+            let src = source.to_string();
+            let result = cx
+                .background_executor()
+                .spawn(async move { crate::mermaid::render_to_image(&src, theme, &svg, 1.0) })
+                .await;
+            store.borrow_mut().finish(source, result);
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
     /// Ensure the image at `src` is decoding/decoded (idempotent). Called from a
     /// not-yet-loaded image's placeholder the first time it paints: claims the
     /// slot and queues a downscaled decode (run one at a time by
@@ -2308,6 +2347,9 @@ impl AppView {
             };
         let palette = if is_dark { skin.dark } else { skin.light };
         theme::apply(palette, is_dark, window, cx);
+        // Diagrams are themed at render time — drop the cache so they re-render
+        // with the new palette (Rc<RefCell>, so this is fine from `&self`).
+        self.mermaid_store.borrow_mut().clear();
     }
 
     /// Switch to theme `id`, apply it live, and persist.

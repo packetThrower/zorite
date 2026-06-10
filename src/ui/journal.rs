@@ -149,6 +149,7 @@ fn rendered_day(
                 SlashTarget::Day(d.clone()),
                 cx,
             ))
+            .on_mermaid(crate::ui::mermaid::renderer(app, cx))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))

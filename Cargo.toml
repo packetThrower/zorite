@@ -23,6 +23,12 @@ gpui-markdown = { path = "crates/gpui-markdown" }
 # `markup` adds the text-extraction layer + highlight rendering (Logseq-style).
 gpui-pdf = { path = "crates/gpui-pdf", features = ["markup", "search"] }
 
+# Mermaid diagrams: a pure-Rust mermaid → SVG renderer (zed-industries — the
+# same crate Zed's markdown preview uses; no JS/Node). We rasterize its SVG to a
+# `gpui::RenderImage` via `cx.svg_renderer()` and cache it like a note image. Git
+# dep (not on crates.io); pinned to Zed's known-good rev.
+mermaid-rs-renderer = { git = "https://github.com/zed-industries/mermaid-rs-renderer", rev = "782b89a7da3f0e91e51f98d00a93acba679be6fb", default-features = false }
+
 # SQLite backend. `bundled` compiles SQLite from source and links it
 # statically into the binary — no system libsqlite3 dependency on any
 # target, and no version skew between dev machines.

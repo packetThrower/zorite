@@ -201,6 +201,12 @@ pub struct ImageInfo {
 /// supply a stateful, draggable image while this crate stays host-agnostic.
 pub type ImageRenderer = Rc<dyn Fn(ImageInfo) -> AnyElement>;
 
+/// Renders a ` ```mermaid ` code block as a diagram, given the block's source. The
+/// host owns the (expensive, async) render — this crate just detects the fence and
+/// hands the source over, staying renderer-agnostic. Set via
+/// [`MarkdownView::on_mermaid`].
+pub type MermaidRenderer = Rc<dyn Fn(SharedString) -> AnyElement>;
+
 /// Called when the rendered text is clicked (outside a link), with the **source**
 /// byte offset nearest the click and the click's window **y** — so the host can
 /// place its editor caret there and keep it under the cursor when switching into
@@ -215,6 +221,7 @@ pub struct MarkdownView {
     style: MarkdownStyle,
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
+    on_mermaid: Option<MermaidRenderer>,
     /// In-page search query (non-empty when `Some`) + the active match index.
     query: Option<SharedString>,
     current_match: usize,
@@ -235,6 +242,7 @@ impl MarkdownView {
             style: MarkdownStyle::default(),
             on_wiki_link: None,
             on_image: None,
+            on_mermaid: None,
             query: None,
             current_match: 0,
             block_scroll: None,
@@ -256,6 +264,13 @@ impl MarkdownView {
     /// to a clickable "🖼 alt" text label.
     pub fn on_image(mut self, handler: ImageRenderer) -> Self {
         self.on_image = Some(handler);
+        self
+    }
+
+    /// Supply a renderer for ` ```mermaid ` code blocks. Without one, a mermaid
+    /// block renders as a plain code block.
+    pub fn on_mermaid(mut self, handler: MermaidRenderer) -> Self {
+        self.on_mermaid = Some(handler);
         self
     }
 
@@ -299,6 +314,7 @@ impl RenderOnce for MarkdownView {
             style: self.style,
             on_wiki_link: self.on_wiki_link,
             on_image: self.on_image,
+            on_mermaid: self.on_mermaid,
             id_base: self.id_base,
             counter: 0,
             definitions: HashMap::new(),
@@ -341,6 +357,7 @@ struct Ctx {
     style: MarkdownStyle,
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
+    on_mermaid: Option<MermaidRenderer>,
     id_base: SharedString,
     counter: usize,
     /// `[id] -> url` from reference definitions (`[id]: url`), collected up
@@ -414,6 +431,13 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
         }
         mdast::Node::List(list) => Some(render_list(list, ctx, 0)),
         mdast::Node::Code(c) => {
+            // A ```mermaid fence renders as a diagram when the host supplies a
+            // renderer; otherwise it falls through to a normal code block.
+            if c.lang.as_deref() == Some("mermaid")
+                && let Some(renderer) = ctx.on_mermaid.clone()
+            {
+                return Some(renderer(c.value.clone().into()));
+            }
             let bg = ctx.style.code_bg;
             let color = ctx.style.code_color;
             Some(

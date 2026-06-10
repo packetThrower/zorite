@@ -17,6 +17,7 @@ mod db;
 mod hierarchy;
 mod images;
 mod import;
+mod mermaid;
 mod models;
 mod paths;
 mod pdf;
