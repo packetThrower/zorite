@@ -32,7 +32,7 @@ mermaid-rs-renderer = { git = "https://github.com/zed-industries/mermaid-rs-rend
 # SQLite backend. `bundled` compiles SQLite from source and links it
 # statically into the binary — no system libsqlite3 dependency on any
 # target, and no version skew between dev machines.
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
 
 # Local date for the daily-journal title (YYYY-MM-DD). `local-offset`
 # enables `OffsetDateTime::now_local()` so "today" follows the user's
