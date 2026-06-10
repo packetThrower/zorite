@@ -8,7 +8,7 @@
 use gpui::{
     AnyElement, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, div,
-    prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt};
 
@@ -91,7 +91,12 @@ fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .id("sidebar-scroll")
                 .flex_1()
                 .min_h_0()
-                .overflow_y_scroll()
+                // Scroll both ways: down through many pages, and right when a page
+                // title is wider than the rail. `items_start` lets the list size to
+                // its widest (non-wrapping) row instead of being clamped to the
+                // rail width — that overflow is what the horizontal scroll reveals.
+                .overflow_scroll()
+                .items_start()
                 .flex()
                 .flex_col()
                 .px_2()
@@ -116,10 +121,13 @@ fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 )
                 .child(
                     // The empty area below the list is right-clickable for
-                    // "New page", extending the menu past the last row.
+                    // "New page", extending the menu past the last row. Pinned to
+                    // the rail width (the scroll container is `items_start`, so it
+                    // wouldn't stretch on its own).
                     div()
                         .id("sidebar-empty")
                         .flex_1()
+                        .w(relative(1.0))
                         .min_h(px(48.0))
                         .context_menu(|menu, _window, _cx| {
                             menu.menu("New page", Box::new(NewPage))
@@ -272,7 +280,9 @@ fn tree_row(node: &PageNode, depth: usize, active: bool, cx: &mut Context<AppVie
         .rounded(px(6.0))
         .text_size(px(13.0))
         .cursor_pointer()
-        .truncate()
+        // Keep each title on one line; over-long ones overflow and the sidebar
+        // scrolls horizontally to reveal them rather than clipping with an ellipsis.
+        .whitespace_nowrap()
         .when(active, |d| {
             d.bg(theme::accent_tint()).text_color(theme::text_primary())
         })
