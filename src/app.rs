@@ -2844,10 +2844,12 @@ impl AppView {
         });
     }
 
-    /// `FitImages` (`⌘⇧I`) handler: shrink any image in the active view that's
-    /// wider than the content column back to fit it (drops its `{width=N}`), so a
-    /// resize that ran off the page is recovered in one keystroke. Acts on the open
-    /// page, or every loaded day on the journal.
+    /// `FitImages` (`⌘⇧I`) handler: shrink *every* image in the active view that
+    /// renders wider than ~half the content column down to that comfortable size,
+    /// so over-wide images (dragged, pasted, or imported with no `{width}`) stop
+    /// dominating the page. Works on a page or the whole journal feed; images
+    /// already at or under the target are untouched, so it's a no-op the second
+    /// time. No image to select first — one keystroke fits them all.
     fn on_fit_images(&mut self, _: &FitImages, window: &mut Window, cx: &mut Context<Self>) {
         // Collect (target, editor, max-width) up front so the write loop doesn't
         // borrow `self` while it also mutates it.
@@ -2868,17 +2870,34 @@ impl AppView {
             _ => {} // PDF tab: no markdown images
         }
         let mut fitted = false;
-        for (target, editor, max_w) in targets {
+        for (slash_target, editor, max_w) in targets {
             // Skip a viewport that hasn't been measured yet (width ~0).
             if max_w < 80 {
                 continue;
             }
+            // Shrink anything rendered wider than ~half the column down to it.
+            let comfortable = max_w / 2;
             let value = editor.read(cx).value().to_string();
-            let Some(new) = fit_oversized(&value, max_w) else {
+            // Pair each image with its rendered width: an explicit `{width=N}`,
+            // else the width measured during paint. Images never measured (e.g.
+            // still off-screen and unpainted) are skipped — size unknown.
+            let imgs: Vec<(Range<usize>, f32)> = {
+                let widths = self.image_widths.borrow();
+                gpui_markdown::images(&value)
+                    .into_iter()
+                    .filter_map(|img| {
+                        let w = img
+                            .width
+                            .or_else(|| widths.get(&img.attr_target.start).copied())?;
+                        Some((img.attr_target, w))
+                    })
+                    .collect()
+            };
+            let Some(new) = apply_fit(&value, &imgs, comfortable) else {
                 continue;
             };
             editor.update(cx, |st, cx| st.set_value(new.clone(), window, cx));
-            match &target {
+            match &slash_target {
                 SlashTarget::Day(d) => self.save_journal(d, &new, cx),
                 SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
             }
@@ -2886,6 +2905,9 @@ impl AppView {
         }
         if fitted {
             cx.notify();
+            // Force a full redraw: `cx.notify()` alone can reuse cached child
+            // elements, leaving the resized image painted at its old width.
+            window.refresh();
         }
     }
 
@@ -3335,30 +3357,32 @@ fn content_width(bounds: Bounds<Pixels>) -> i64 {
     (f32::from(bounds.size.width) - 56.0) as i64
 }
 
-/// Drop the `{width=N}` sizing suffix from any image wider than `max_w` px, so it
-/// falls back to fitting the content column. (`{width=N}` is only ever an image
-/// attribute in zorite.) Returns the new content if anything changed.
-fn fit_oversized(content: &str, max_w: i64) -> Option<String> {
-    const TAG: &str = "{width=";
-    let mut out = String::with_capacity(content.len());
-    let mut rest = content;
-    let mut changed = false;
-    while let Some(i) = rest.find(TAG) {
-        let after = &rest[i + TAG.len()..];
-        let Some(close) = after.find('}') else {
-            break; // malformed; the trailing push keeps the remainder verbatim
-        };
-        match after[..close].parse::<i64>() {
-            Ok(n) if n > max_w => {
-                out.push_str(&rest[..i]); // keep text before the tag, drop the tag
-                changed = true;
-            }
-            _ => out.push_str(&rest[..i + TAG.len() + close + 1]), // keep tag verbatim
-        }
-        rest = &after[close + 1..];
+/// Shrink every image rendered wider than `target` px down to `target` — a
+/// comfortable size (about half the column) so images dragged or imported wider
+/// than that don't dominate the page. `images` pairs each image's `attr_target`
+/// byte range with its current rendered width (an explicit `{width=N}`, else the
+/// width measured during paint); the range is overwritten with `{width=target}`
+/// (an empty range inserts on a width-less image, a `{width=N}` range replaces).
+/// Edits apply right-to-left so byte offsets stay valid. Idempotent: an image
+/// already at or under `target` is left alone. Returns new content if anything
+/// changed.
+fn apply_fit(content: &str, images: &[(Range<usize>, f32)], target: i64) -> Option<String> {
+    let mut edits: Vec<&Range<usize>> = images
+        .iter()
+        .filter(|(_, w)| *w as i64 > target)
+        .map(|(r, _)| r)
+        .collect();
+    if edits.is_empty() {
+        return None;
     }
-    out.push_str(rest);
-    changed.then_some(out)
+    // Apply later (higher-offset) edits first so earlier offsets don't shift.
+    edits.sort_by_key(|r| std::cmp::Reverse(r.start));
+    let repl = format!("{{width={target}}}");
+    let mut out = content.to_string();
+    for range in edits {
+        out.replace_range(range.clone(), &repl);
+    }
+    Some(out)
 }
 
 /// Clamp `offset` to `source`'s length and snap it down to a char boundary.
@@ -3568,30 +3592,33 @@ pub(crate) fn date_label(i: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::fit_oversized;
+    use super::apply_fit;
 
     #[test]
-    fn fit_oversized_drops_only_too_wide_widths() {
-        // Over the cap → the {width=N} is dropped (image falls back to fitting).
+    fn apply_fit_shrinks_only_wide_images() {
+        // `a` has an explicit {width=2000} at bytes 6..18; `b` is width-less, so
+        // its attr_target is the empty insertion point 25..25 (measured at 900).
+        let src = "![](a){width=2000} ![](b)";
+        let imgs = vec![(6..18, 2000.0), (25..25, 900.0)];
         assert_eq!(
-            fit_oversized("![](images/a.jpg){width=2000}", 800).as_deref(),
-            Some("![](images/a.jpg)")
+            apply_fit(src, &imgs, 400).as_deref(),
+            Some("![](a){width=400} ![](b){width=400}")
         );
-        // At or under the cap → untouched (returns None = no change).
-        assert_eq!(fit_oversized("![](images/a.jpg){width=600}", 800), None);
-        assert_eq!(fit_oversized("![](images/a.jpg){width=800}", 800), None);
-        // No width attribute at all → no change.
-        assert_eq!(fit_oversized("![](images/a.jpg)", 800), None);
     }
 
     #[test]
-    fn fit_oversized_handles_mixed_and_surrounding_text() {
-        let src = "a ![](x){width=1500} b ![](y){width=300} c ![](z){width=2200} d";
-        assert_eq!(
-            fit_oversized(src, 800).as_deref(),
-            Some("a ![](x) b ![](y){width=300} c ![](z) d")
-        );
-        // A malformed (unclosed) tag is left verbatim and stops processing safely.
-        assert_eq!(fit_oversized("![](x){width=1500", 800), None);
+    fn apply_fit_leaves_images_at_or_under_target() {
+        // A width-less image measured under the target stays untouched.
+        assert_eq!(apply_fit("![](a)", &[(6..6, 300.0)], 400), None);
+        // An explicit width already at the target is a no-op (idempotent).
+        assert_eq!(apply_fit("![](a){width=400}", &[(6..17, 400.0)], 400), None);
+    }
+
+    #[test]
+    fn apply_fit_is_idempotent() {
+        let once = apply_fit("![](a){width=2000}", &[(6..18, 2000.0)], 400).unwrap();
+        assert_eq!(once, "![](a){width=400}");
+        // Re-running with the now-comfortable width changes nothing.
+        assert_eq!(apply_fit(&once, &[(6..17, 400.0)], 400), None);
     }
 }

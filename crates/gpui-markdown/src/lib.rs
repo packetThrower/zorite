@@ -554,6 +554,36 @@ fn leading_image(children: &[mdast::Node]) -> Option<(ImageInfo, Vec<mdast::Node
     ))
 }
 
+/// Every standalone image in `source` (a paragraph or list item that begins with
+/// `![alt](src)`), in document order — each with its parsed `{width=N}` (if any)
+/// and the `attr_target` byte range to overwrite to set or replace that width.
+/// Mirrors how the renderer detects block images, so the offsets line up with
+/// what's on screen. Pure: parses the markdown, no I/O or storage.
+pub fn images(source: &str) -> Vec<ImageInfo> {
+    let mut out = Vec::new();
+    if let Ok(mdast::Node::Root(root)) = markdown::to_mdast(source, &markdown::ParseOptions::gfm())
+    {
+        collect_images(&root.children, &mut out);
+    }
+    out
+}
+
+/// Recurse paragraphs and list items, pushing each leading-image's [`ImageInfo`].
+fn collect_images(nodes: &[mdast::Node], out: &mut Vec<ImageInfo>) {
+    for node in nodes {
+        match node {
+            mdast::Node::Paragraph(p) => {
+                if let Some((info, _rest)) = leading_image(&p.children) {
+                    out.push(info);
+                }
+            }
+            mdast::Node::List(l) => collect_images(&l.children, out),
+            mdast::Node::ListItem(li) => collect_images(&li.children, out),
+            _ => {}
+        }
+    }
+}
+
 /// Parse a leading `{width=320}` / `{width=320px}` from `s`, returning the width
 /// and the text after the closing `}`.
 fn parse_leading_width(s: &str) -> Option<(f32, &str)> {
@@ -1742,6 +1772,25 @@ mod tests {
 
         // Text before the image isn't a leading-image block.
         assert!(leading_image(&para_children("see ![](/x.png) here")).is_none());
+    }
+
+    #[test]
+    fn images_enumerates_list_items() {
+        // The real journal/page format: images live in bullet list items.
+        let src = "- ![](a.jpg){width=2000}\n- ![](b.jpg)\n- text only\n- ![](c.jpg)";
+        let imgs = images(src);
+        assert_eq!(imgs.len(), 3); // the text-only item is skipped
+        // The explicit width is parsed; its attr_target spans the {width=N}.
+        assert_eq!(imgs[0].width, Some(2000.0));
+        assert!(imgs[0].attr_target.start < imgs[0].attr_target.end);
+        // A width-less image reports None and an empty (insertion-point) range
+        // that sits right after its `)` — so inserting `{width=N}` there is valid.
+        assert_eq!(imgs[1].width, None);
+        assert_eq!(imgs[1].attr_target.start, imgs[1].attr_target.end);
+        assert_eq!(
+            &src[imgs[1].attr_target.start..imgs[1].attr_target.start + 1],
+            "\n"
+        );
     }
 
     fn first_para(md: &str) -> Vec<mdast::Node> {
