@@ -205,6 +205,17 @@ pub struct AppView {
     // starting size. The map is shared into the renderer's measure callbacks.
     image_drag: Option<ImageDrag>,
     image_widths: Rc<RefCell<HashMap<usize, f32>>>,
+    // Decodes note images at display resolution and holds the GPU-ready bitmaps,
+    // freed on view change. Shared into the markdown image renderer. `Rc<RefCell>`
+    // so the renderer (no `cx`) can read it during paint while methods here drive
+    // loads and eviction. See `images::ImageStore`.
+    image_store: Rc<RefCell<crate::images::ImageStore>>,
+    // Pending image decodes, run one at a time (`image_decoding` gates) so only a
+    // single full-resolution buffer is ever allocated — decoding a 12 MP photo
+    // briefly needs tens of MB, which would otherwise multiply across a photo-heavy
+    // page and spike RSS.
+    image_queue: std::collections::VecDeque<(SharedString, PathBuf)>,
+    image_decoding: bool,
 
     // Open PDF viewers, keyed by resolved path. Each is an independent,
     // page-virtualized `gpui_pdf::PdfView` (own scroll handle + bounded memory),
@@ -374,6 +385,9 @@ impl AppView {
             day_editors: HashMap::new(),
             image_drag: None,
             image_widths: Rc::new(RefCell::new(HashMap::new())),
+            image_store: Rc::new(RefCell::new(crate::images::ImageStore::default())),
+            image_queue: std::collections::VecDeque::new(),
+            image_decoding: false,
             pdf_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
             page_editor: None,
@@ -812,6 +826,12 @@ impl AppView {
         self.page_find = None;
         let Some(tab) = self.tabs.get(ix) else { return };
         let kind = tab.kind.clone();
+        // Leaving a view: free its decoded note images (CPU + GPU); they re-decode,
+        // downscaled and cheap, when painted again. Only on a real switch, so a
+        // same-tab re-activation (e.g. a settings re-render) doesn't churn them.
+        if self.active != ix {
+            self.release_images(window, cx);
+        }
         self.active = ix;
         self.searching = false;
         let is_pdf = matches!(kind, TabKind::Pdf(_));
@@ -1425,6 +1445,67 @@ impl AppView {
     /// handed to the renderer so its measure callbacks can record sizes.
     pub fn image_widths(&self) -> Rc<RefCell<HashMap<usize, f32>>> {
         self.image_widths.clone()
+    }
+
+    /// The downscaling image cache, shared into the markdown image renderer so it
+    /// can read ready bitmaps during paint.
+    pub fn image_store(&self) -> Rc<RefCell<crate::images::ImageStore>> {
+        self.image_store.clone()
+    }
+
+    /// Ensure the image at `src` is decoding/decoded (idempotent). Called from a
+    /// not-yet-loaded image's placeholder the first time it paints: claims the
+    /// slot and queues a downscaled decode (run one at a time by
+    /// [`Self::pump_image_decodes`]).
+    pub fn ensure_image_loaded(&mut self, src: SharedString, cx: &mut Context<Self>) {
+        if !self.image_store.borrow_mut().begin(src.clone()) {
+            return; // already loading / ready / failed
+        }
+        match crate::paths::resolve_local(&src).filter(|p| p.exists()) {
+            Some(path) => self.image_queue.push_back((src, path)),
+            None => {
+                self.image_store.borrow_mut().finish(src, None);
+                cx.notify();
+                return;
+            }
+        }
+        self.pump_image_decodes(cx);
+    }
+
+    /// Decode the next queued image off-thread, one at a time, then store the
+    /// bitmap, repaint, and pump the next. Serializing keeps at most one
+    /// full-resolution decode buffer alive at once.
+    fn pump_image_decodes(&mut self, cx: &mut Context<Self>) {
+        if self.image_decoding {
+            return;
+        }
+        let Some((src, path)) = self.image_queue.pop_front() else {
+            return;
+        };
+        self.image_decoding = true;
+        let store = self.image_store.clone();
+        cx.spawn(async move |this, cx| {
+            let decoded = cx
+                .background_executor()
+                .spawn(async move { crate::images::decode_scaled(&path) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                store.borrow_mut().finish(src, decoded);
+                this.image_decoding = false;
+                this.pump_image_decodes(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Free every decoded note image (CPU + GPU) and drop any pending decodes.
+    /// Called when the visible view changes — switching tabs or closing one — so
+    /// images don't accumulate for the life of the window; they re-decode
+    /// (downscaled, cheap) on return.
+    fn release_images(&mut self, window: &mut Window, cx: &mut App) {
+        self.image_queue.clear();
+        self.image_store.borrow_mut().release(window, cx);
     }
 
     /// The image currently being resized, as `(attr offset, live width)`, so

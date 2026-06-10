@@ -15,12 +15,14 @@ use gpui::{
 use gpui_markdown::{ImageInfo, ImageRenderer};
 
 use crate::app::AppView;
+use crate::images::ImageStore;
 use crate::slash::SlashTarget;
 use crate::theme;
 
 /// Build the image renderer handed to `MarkdownView::on_image` for `target`'s
 /// editor. Captures the live drag (for width preview), the shared width map
-/// (measure callbacks write into it), and a weak `AppView` (handle drag start).
+/// (measure callbacks write into it), the downscaling image cache, and a weak
+/// `AppView` (handle drag start / drive image loads).
 pub fn renderer(
     app: &AppView,
     target: SlashTarget,
@@ -28,8 +30,18 @@ pub fn renderer(
 ) -> ImageRenderer {
     let drag = app.image_drag_snapshot();
     let widths = app.image_widths();
+    let store = app.image_store();
     let weak = cx.entity().downgrade();
-    Rc::new(move |info: ImageInfo| build(info, target.clone(), drag, widths.clone(), weak.clone()))
+    Rc::new(move |info: ImageInfo| {
+        build(
+            info,
+            target.clone(),
+            drag,
+            widths.clone(),
+            store.clone(),
+            weak.clone(),
+        )
+    })
 }
 
 fn build(
@@ -37,14 +49,23 @@ fn build(
     target: SlashTarget,
     drag: Option<(usize, f32)>,
     widths: Rc<RefCell<HashMap<usize, f32>>>,
+    store: Rc<RefCell<ImageStore>>,
     weak: WeakEntity<AppView>,
 ) -> AnyElement {
     // A `![](file.pdf)` reference is a chip that opens the PDF viewer tab.
     if crate::pdf::is_pdf(&info.src) {
         return pdf_chip(&info, weak);
     }
-    let Some(source) = image_source(&info.src) else {
-        return fallback(&info);
+    // Local files render through the downscaling store (decoded at display size,
+    // freed on view change); remote URLs use gpui's loader as-is.
+    let source = if info.src.starts_with("http://") || info.src.starts_with("https://") {
+        ImageSource::from(SharedUri::from(info.src.to_string()))
+    } else {
+        match local_source(&info, &store, &weak) {
+            LocalImage::Ready(source) => source,
+            LocalImage::Placeholder(el) => return el,
+            LocalImage::Missing => return fallback(&info),
+        }
     };
     let attr_start = info.attr_target.start;
     // Live drag width for this image wins; otherwise the saved `{width=N}`.
@@ -137,15 +158,63 @@ fn pdf_chip(info: &ImageInfo, weak: WeakEntity<AppView>) -> AnyElement {
         .into_any_element()
 }
 
-/// Resolve a markdown image `src` to a gpui image source: http(s) URLs load
-/// remotely; local refs (`file://`, absolute, or data-dir-relative) are resolved
-/// cross-platform by [`crate::paths::resolve_local`] and load if the file exists.
-fn image_source(src: &str) -> Option<ImageSource> {
-    if src.starts_with("http://") || src.starts_with("https://") {
-        return Some(SharedUri::from(src.to_string()).into());
+/// Outcome of resolving a local image through the downscaling store.
+enum LocalImage {
+    /// Decoded and ready — render this source.
+    Ready(ImageSource),
+    /// Still decoding — render this placeholder (which triggers the decode).
+    Placeholder(AnyElement),
+    /// The file is missing or failed to decode.
+    Missing,
+}
+
+/// Resolve a local image `src` (a `file://`, absolute, or data-dir-relative
+/// ref) against the [`ImageStore`]: a decoded bitmap renders directly; an
+/// unknown one becomes a placeholder that kicks off a downscaled decode the
+/// first time it paints; a failed/missing one falls back.
+fn local_source(
+    info: &ImageInfo,
+    store: &Rc<RefCell<ImageStore>>,
+    weak: &WeakEntity<AppView>,
+) -> LocalImage {
+    match crate::paths::resolve_local(&info.src) {
+        Some(p) if p.exists() => {}
+        _ => return LocalImage::Missing,
     }
-    let path = crate::paths::resolve_local(src)?;
-    path.exists().then(|| path.into())
+    let store_ref = store.borrow();
+    if let Some(arc) = store_ref.get(&info.src) {
+        LocalImage::Ready(ImageSource::from(arc))
+    } else if store_ref.failed(&info.src) {
+        LocalImage::Missing
+    } else {
+        LocalImage::Placeholder(loading_placeholder(info, weak))
+    }
+}
+
+/// A sized box shown while an image decodes. Its `canvas` triggers the decode
+/// the first time it paints (the renderer closure has no `cx`); once the bitmap
+/// lands, the store reports it ready and this is replaced by the real image.
+fn loading_placeholder(info: &ImageInfo, weak: &WeakEntity<AppView>) -> AnyElement {
+    let src = info.src.clone();
+    let weak = weak.clone();
+    let trigger = canvas(
+        move |_bounds: Bounds<Pixels>, _window, cx| {
+            let src = src.clone();
+            let _ = weak.update(cx, |this, cx| this.ensure_image_loaded(src, cx));
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .inset_0();
+    let mut box_ = div().rounded(px(4.0)).bg(theme::glass()).h(px(160.0));
+    box_ = match info.width {
+        Some(w) => box_.w(px(w)),
+        None => box_.w(px(260.0)),
+    };
+    div()
+        .py(px(4.0))
+        .child(div().relative().child(box_).child(trigger))
+        .into_any_element()
 }
 
 fn fallback(info: &ImageInfo) -> AnyElement {

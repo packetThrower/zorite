@@ -73,6 +73,12 @@ gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", 
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.
 url = "2"
 
+# Decode + downscale note images to display resolution before handing gpui a
+# GPU-ready `RenderImage` (see `images::ImageStore`). Pinned to gpui's `image`
+# minor (0.25) so the `Frame` type unifies with `RenderImage::new`, matching the
+# gpui-pdf crate.
+image = "0.25"
+
 # Embeds the Windows .exe icon (resources/icon.rc -> resources/icons/icon.ico)
 # into the PE resource section via build.rs. `embed_resource::compile` is a
 # no-op on macOS / Linux, so this build-dep is harmless off-Windows.

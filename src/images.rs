@@ -1,10 +1,20 @@
-//! Importing images and PDFs that are pasted or dropped into notes. Files are
-//! copied into a managed data-dir folder ([`paths::images_dir`] / [`paths::pdf_dir`])
-//! and referenced from markdown relatively (`images/<name>` / `pdf/<name>`,
-//! resolved against the data dir), so notes stay portable.
+//! Note images: importing (copy pasted/dropped files into the managed data-dir
+//! folders) and rendering (decode at display resolution into GPU-ready bitmaps,
+//! cached and explicitly freed).
+//!
+//! Imported files are copied into [`paths::images_dir`] / [`paths::pdf_dir`] and
+//! referenced from markdown relatively (`images/<name>` / `pdf/<name>`, resolved
+//! against the data dir), so notes stay portable. For rendering, [`ImageStore`]
+//! decodes each image **downscaled to display size** and holds the bitmap until
+//! the view changes — see its docs for why both halves matter.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::Arc;
+
+use gpui::{App, RenderImage, SharedString, Window};
+use image::{Frame, RgbaImage};
 
 use crate::paths;
 
@@ -88,4 +98,142 @@ fn sanitize(s: &str) -> String {
             }
         })
         .collect()
+}
+
+// --- Rendering: decode-at-display-size cache ---
+
+/// Cap on a decoded image's longest edge. Phone photos are ~4000 px but a note
+/// shows them at ~1000 px even on a Retina display; decoding at native size
+/// costs ~11× the RAM for no visible gain (a 3024×4032 photo is 47 MB of RGBA
+/// versus ~4 MB downscaled). 2048 stays crisp at any realistic note width.
+const MAX_IMAGE_EDGE: u32 = 2048;
+
+/// A cache slot for one image source.
+enum Slot {
+    /// A decode is in flight (off-thread).
+    Loading,
+    /// Decoded, GPU-ready.
+    Ready(Arc<RenderImage>),
+    /// The file is missing or couldn't be decoded.
+    Failed,
+}
+
+/// Decodes note images at **display** resolution and caches the GPU-ready
+/// bitmaps. Two problems this solves, both of which surfaced once real phone
+/// photos were imported (synthetic perf DBs had none):
+///
+/// 1. **Size** — gpui decodes an image to full-native-resolution RGBA
+///    regardless of how small it's shown, so a 12-megapixel photo eats ~47 MB
+///    of RAM to display at under 1 MP. [`decode_scaled`] downscales first.
+/// 2. **Lifetime** — gpui never auto-evicts a `RenderImage` (CPU buffer *or*
+///    its GPU atlas texture), so images accumulate for the life of the window.
+///    [`ImageStore::release`] frees them when the view changes (the PDF viewer
+///    does the same for its rasterized pages).
+#[derive(Default)]
+pub struct ImageStore {
+    cache: HashMap<SharedString, Slot>,
+}
+
+impl ImageStore {
+    /// The decoded bitmap for `src`, or `None` while it loads / on failure.
+    pub fn get(&self, src: &str) -> Option<Arc<RenderImage>> {
+        match self.cache.get(src) {
+            Some(Slot::Ready(arc)) => Some(arc.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether `src` failed to decode — the caller shows a fallback, not a
+    /// loading placeholder that would never resolve.
+    pub fn failed(&self, src: &str) -> bool {
+        matches!(self.cache.get(src), Some(Slot::Failed))
+    }
+
+    /// Claim `src` for loading. Returns `false` if it's already known (loading,
+    /// ready, or failed), so the caller kicks off a decode exactly once.
+    pub fn begin(&mut self, src: SharedString) -> bool {
+        if self.cache.contains_key(&src) {
+            return false;
+        }
+        self.cache.insert(src, Slot::Loading);
+        true
+    }
+
+    /// Record a finished decode (`None` → failed).
+    pub fn finish(&mut self, src: SharedString, image: Option<Arc<RenderImage>>) {
+        self.cache
+            .insert(src, image.map_or(Slot::Failed, Slot::Ready));
+    }
+
+    /// Free every cached bitmap — CPU buffer (dropping the `Arc`) and GPU atlas
+    /// texture (`drop_image`). gpui caches one atlas texture per `RenderImage`
+    /// on paint and only releases it here, so this must run before the bitmaps
+    /// are forgotten or the textures leak.
+    pub fn release(&mut self, window: &mut Window, cx: &mut App) {
+        for (_, slot) in self.cache.drain() {
+            if let Slot::Ready(arc) = slot {
+                cx.drop_image(arc, Some(window));
+            }
+        }
+    }
+}
+
+/// Decode `path` to a GPU-ready bitmap, downscaled so its longest edge is at
+/// most [`MAX_IMAGE_EDGE`]. Runs off the UI thread. `None` if the file can't be
+/// decoded.
+pub fn decode_scaled(path: &Path) -> Option<Arc<RenderImage>> {
+    let buf = scale_and_bgra(image::open(path).ok()?);
+    Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
+}
+
+/// Downscale `img` so its longest edge is at most [`MAX_IMAGE_EDGE`], then
+/// convert to the BGRA byte order [`RenderImage`] expects. Split out so the
+/// scaling + channel swap are unit-testable without building a `RenderImage`.
+fn scale_and_bgra(img: image::DynamicImage) -> RgbaImage {
+    let (w, h) = (img.width(), img.height());
+    let small = if w.max(h) > MAX_IMAGE_EDGE {
+        let scale = MAX_IMAGE_EDGE as f32 / w.max(h) as f32;
+        let (nw, nh) = ((w as f32 * scale) as u32, (h as f32 * scale) as u32);
+        // `DynamicImage::thumbnail` box-samples in the image's native format
+        // (no RGBA blow-up, no f32 inflation that the filtered `resize` would
+        // do — ~146 MB for a 12-megapixel photo), so only the decoder's own
+        // full-res buffer is ever allocated.
+        img.thumbnail(nw.max(1), nh.max(1))
+    } else {
+        img
+    };
+    let mut rgba = small.into_rgba8();
+    // gpui's `RenderImage` holds straight (non-premultiplied) BGRA; the decoded
+    // buffer is RGBA, so swap R and B to match.
+    for px in rgba.chunks_exact_mut(4) {
+        px.swap(0, 2);
+    }
+    rgba
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{DynamicImage, Rgba, RgbaImage};
+
+    #[test]
+    fn large_images_downscale_to_the_cap() {
+        // A 4000×3000 photo (like an imported phone shot) is capped on its
+        // longest edge, keeping aspect ratio — ~11× fewer pixels = ~11× less RAM.
+        let big = DynamicImage::ImageRgba8(RgbaImage::new(4000, 3000));
+        let out = scale_and_bgra(big);
+        assert_eq!(out.width(), MAX_IMAGE_EDGE);
+        assert_eq!(out.height(), MAX_IMAGE_EDGE * 3 / 4);
+        assert!(out.width().max(out.height()) <= MAX_IMAGE_EDGE);
+    }
+
+    #[test]
+    fn small_images_are_untouched_but_swapped_to_bgra() {
+        // Under the cap: original size kept, only RGBA→BGRA channel swap applied.
+        let mut src = RgbaImage::new(2, 1);
+        src.put_pixel(0, 0, Rgba([10, 20, 30, 255])); // R,G,B,A
+        let out = scale_and_bgra(DynamicImage::ImageRgba8(src));
+        assert_eq!((out.width(), out.height()), (2, 1));
+        assert_eq!(out.get_pixel(0, 0).0, [30, 20, 10, 255]); // B,G,R,A
+    }
 }

@@ -8836,6 +8836,7 @@ dependencies = [
  "gpui-markdown",
  "gpui-pdf",
  "gpui_platform",
+ "image",
  "log",
  "rusqlite",
  "serde",
