@@ -42,7 +42,9 @@ actions!(
         FindInPage,
         GlobalSearch,
         // File menu: import a Logseq graph folder (no keybinding).
-        ImportLogseq
+        ImportLogseq,
+        // Shrink any image wider than the content area back to fit the view.
+        FitImages
     ]
 );
 
@@ -85,6 +87,8 @@ pub fn bind_keys(cx: &mut App) {
         // PDFs keep their own ⌘F (handled in the viewer); FindInPage no-ops there.
         KeyBinding::new("secondary-f", FindInPage, None),
         KeyBinding::new("secondary-shift-f", GlobalSearch, None),
+        // Fit over-wide images back into the page / journal view.
+        KeyBinding::new("secondary-shift-i", FitImages, None),
     ]);
 }
 
@@ -130,6 +134,7 @@ pub fn set_app_menu(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action("Find in Page", FindInPage),
                 MenuItem::action("Search All Notes", GlobalSearch),
+                MenuItem::action("Fit Images to View", FitImages),
             ],
             disabled: false,
         },

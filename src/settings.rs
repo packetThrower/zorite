@@ -457,6 +457,11 @@ impl Render for SettingsView {
                                     ("Indent / nest list item", vec!["Tab"]),
                                     ("Outdent", vec![keys::SHIFT, "Tab"]),
                                     ("Find in note", vec![keys::MOD, "F"]),
+                                    ("Search all notes", vec![keys::MOD, keys::SHIFT, "F"]),
+                                    (
+                                        "Fit oversized images to view",
+                                        vec![keys::MOD, keys::SHIFT, "I"],
+                                    ),
                                     ("Copy", vec![keys::MOD, "C"]),
                                     ("Cut", vec![keys::MOD, "X"]),
                                     ("Paste", vec![keys::MOD, "V"]),

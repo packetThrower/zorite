@@ -114,11 +114,33 @@ fn build(
             },
         );
 
+    // Wrap the image in a viewport-width horizontal scroll: if it's been resized
+    // wider than the content area, it scrolls within its own row (and its resize
+    // grip stays reachable) instead of running off the page — while sibling text
+    // keeps wrapping at the normal width. `Cmd+Shift+I` fits oversized images back.
+    // The inner `flex`/`items_start` sizes the relative holder to the image, so
+    // the resize grip pins to the image's corner (not the viewport edge).
     div()
         .py(px(4.0))
-        .flex()
-        .items_start()
-        .child(div().relative().child(image).child(measure).child(handle))
+        .child(
+            div()
+                .id(("img-scroll", attr_start))
+                .w_full()
+                .overflow_x_scroll()
+                .flex()
+                .items_start()
+                .child(
+                    // `flex_shrink_0` keeps the holder at the image's width so an
+                    // over-wide image overflows (and scrolls) instead of being
+                    // squeezed back to fit the rail.
+                    div()
+                        .relative()
+                        .flex_shrink_0()
+                        .child(image)
+                        .child(measure)
+                        .child(handle),
+                ),
+        )
         .into_any_element()
 }
 

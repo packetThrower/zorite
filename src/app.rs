@@ -32,8 +32,8 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    CloseTab, DeletePage, FindInPage, GlobalSearch, ImportLogseq, InsertTab, NewPage, NextTab,
-    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
+    CloseTab, DeletePage, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab, NewPage,
+    NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
     SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
@@ -2844,6 +2844,51 @@ impl AppView {
         });
     }
 
+    /// `FitImages` (`⌘⇧I`) handler: shrink any image in the active view that's
+    /// wider than the content column back to fit it (drops its `{width=N}`), so a
+    /// resize that ran off the page is recovered in one keystroke. Acts on the open
+    /// page, or every loaded day on the journal.
+    fn on_fit_images(&mut self, _: &FitImages, window: &mut Window, cx: &mut Context<Self>) {
+        // Collect (target, editor, max-width) up front so the write loop doesn't
+        // borrow `self` while it also mutates it.
+        let mut targets: Vec<(SlashTarget, Entity<InputState>, i64)> = Vec::new();
+        match self.tabs.get(self.active).map(|t| t.kind.clone()) {
+            Some(TabKind::Page(id)) => {
+                if let Some(pe) = self.page_editor.as_ref() {
+                    let max_w = content_width(self.page_scroll.bounds());
+                    targets.push((SlashTarget::Page(id), pe.state.clone(), max_w));
+                }
+            }
+            Some(TabKind::Journal) => {
+                let max_w = content_width(self.feed_scroll.bounds());
+                for (date, de) in &self.day_editors {
+                    targets.push((SlashTarget::Day(date.clone()), de.state.clone(), max_w));
+                }
+            }
+            _ => {} // PDF tab: no markdown images
+        }
+        let mut fitted = false;
+        for (target, editor, max_w) in targets {
+            // Skip a viewport that hasn't been measured yet (width ~0).
+            if max_w < 80 {
+                continue;
+            }
+            let value = editor.read(cx).value().to_string();
+            let Some(new) = fit_oversized(&value, max_w) else {
+                continue;
+            };
+            editor.update(cx, |st, cx| st.set_value(new.clone(), window, cx));
+            match &target {
+                SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+                SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+            }
+            fitted = true;
+        }
+        if fitted {
+            cx.notify();
+        }
+    }
+
     /// `RenamePage` handler: open a dialog with a text field, pre-filled
     /// with the current title, to rename the right-clicked page.
     fn on_rename_page(&mut self, _: &RenamePage, window: &mut Window, cx: &mut Context<Self>) {
@@ -3122,6 +3167,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_import_logseq))
+            .on_action(cx.listener(Self::on_fit_images))
             .on_action(cx.listener(Self::on_insert_tab))
             .on_action(cx.listener(Self::on_outdent))
             .on_action(cx.listener(Self::on_paste_image))
@@ -3281,6 +3327,38 @@ fn clipboard_ext(format: ImageFormat) -> &'static str {
         ImageFormat::Svg => "svg",
         _ => "png",
     }
+}
+
+/// The image content-column width for a page/feed `scroll` viewport: its width
+/// minus the body's 28px padding on each side.
+fn content_width(bounds: Bounds<Pixels>) -> i64 {
+    (f32::from(bounds.size.width) - 56.0) as i64
+}
+
+/// Drop the `{width=N}` sizing suffix from any image wider than `max_w` px, so it
+/// falls back to fitting the content column. (`{width=N}` is only ever an image
+/// attribute in zorite.) Returns the new content if anything changed.
+fn fit_oversized(content: &str, max_w: i64) -> Option<String> {
+    const TAG: &str = "{width=";
+    let mut out = String::with_capacity(content.len());
+    let mut rest = content;
+    let mut changed = false;
+    while let Some(i) = rest.find(TAG) {
+        let after = &rest[i + TAG.len()..];
+        let Some(close) = after.find('}') else {
+            break; // malformed; the trailing push keeps the remainder verbatim
+        };
+        match after[..close].parse::<i64>() {
+            Ok(n) if n > max_w => {
+                out.push_str(&rest[..i]); // keep text before the tag, drop the tag
+                changed = true;
+            }
+            _ => out.push_str(&rest[..i + TAG.len() + close + 1]), // keep tag verbatim
+        }
+        rest = &after[close + 1..];
+    }
+    out.push_str(rest);
+    changed.then_some(out)
 }
 
 /// Clamp `offset` to `source`'s length and snap it down to a char boundary.
@@ -3485,5 +3563,35 @@ pub(crate) fn date_label(i: usize) -> String {
         0 => format!("Today · {label}"),
         1 => format!("Yesterday · {label}"),
         _ => label,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_oversized;
+
+    #[test]
+    fn fit_oversized_drops_only_too_wide_widths() {
+        // Over the cap → the {width=N} is dropped (image falls back to fitting).
+        assert_eq!(
+            fit_oversized("![](images/a.jpg){width=2000}", 800).as_deref(),
+            Some("![](images/a.jpg)")
+        );
+        // At or under the cap → untouched (returns None = no change).
+        assert_eq!(fit_oversized("![](images/a.jpg){width=600}", 800), None);
+        assert_eq!(fit_oversized("![](images/a.jpg){width=800}", 800), None);
+        // No width attribute at all → no change.
+        assert_eq!(fit_oversized("![](images/a.jpg)", 800), None);
+    }
+
+    #[test]
+    fn fit_oversized_handles_mixed_and_surrounding_text() {
+        let src = "a ![](x){width=1500} b ![](y){width=300} c ![](z){width=2200} d";
+        assert_eq!(
+            fit_oversized(src, 800).as_deref(),
+            Some("a ![](x) b ![](y){width=300} c ![](z) d")
+        );
+        // A malformed (unclosed) tag is left verbatim and stops processing safely.
+        assert_eq!(fit_oversized("![](x){width=1500", 800), None);
     }
 }
