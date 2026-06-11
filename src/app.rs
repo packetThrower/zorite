@@ -38,6 +38,7 @@ use crate::actions::{
     RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
+use crate::images::ImageSeed;
 use crate::models::{Backlink, Page};
 use crate::settings::SettingsView;
 use crate::skins::{self, Skin};
@@ -200,6 +201,11 @@ pub struct ImageDrag {
 /// How many recently-viewed pages the sidebar's page tree is capped to.
 const RECENT_PAGES_LIMIT: usize = 10;
 
+/// How many image decodes may run concurrently. Each holds one transient
+/// full-resolution buffer (~35 MB for a 12 MP photo), so this bounds peak decode
+/// RAM at ~100 MB while loading a photo page ~3× faster than one-at-a-time.
+const MAX_IMAGE_DECODES: usize = 3;
+
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -267,12 +273,14 @@ pub struct AppView {
     // Focus for the open lightbox so it can capture Esc-to-close without a global
     // key binding (which would clash with the editor's Escape → slash-cancel).
     lightbox_focus: FocusHandle,
-    // Pending image decodes, run one at a time (`image_decoding` gates) so only a
-    // single full-resolution buffer is ever allocated — decoding a 12 MP photo
-    // briefly needs tens of MB, which would otherwise multiply across a photo-heavy
-    // page and spike RSS.
+    // Pending image decodes, run a bounded few at a time (`image_decodes` counts
+    // what's in flight, capped at `MAX_IMAGE_DECODES`). The bound keeps the
+    // transient full-resolution buffers in check — decoding a 12 MP photo briefly
+    // needs tens of MB, which would otherwise multiply unbounded across a
+    // photo-heavy page and spike RSS — while still loading a page of photos
+    // several times faster than one-at-a-time.
     image_queue: std::collections::VecDeque<(SharedString, PathBuf)>,
-    image_decoding: bool,
+    image_decodes: usize,
 
     // Open PDF viewers, keyed by resolved path. Each is an independent,
     // page-virtualized `gpui_pdf::PdfView` (own scroll handle + bounded memory),
@@ -472,7 +480,7 @@ impl AppView {
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             image_queue: std::collections::VecDeque::new(),
-            image_decoding: false,
+            image_decodes: 0,
             pdf_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
             page_editor: None,
@@ -1645,7 +1653,7 @@ impl AppView {
 
     /// Ensure the image at `src` is decoding/decoded (idempotent). Called from a
     /// not-yet-loaded image's placeholder the first time it paints: claims the
-    /// slot and queues a downscaled decode (run one at a time by
+    /// slot and queues a downscaled decode (run a bounded few at a time by
     /// [`Self::pump_image_decodes`]).
     pub fn ensure_image_loaded(&mut self, src: SharedString, cx: &mut Context<Self>) {
         if !self.image_store.borrow_mut().begin(src.clone()) {
@@ -1662,31 +1670,31 @@ impl AppView {
         self.pump_image_decodes(cx);
     }
 
-    /// Decode the next queued image off-thread, one at a time, then store the
-    /// bitmap, repaint, and pump the next. Serializing keeps at most one
-    /// full-resolution decode buffer alive at once.
+    /// Decode queued images off-thread, up to [`MAX_IMAGE_DECODES`] at a time,
+    /// each storing its bitmap, repainting, and pumping the next on completion.
+    /// The cap bounds the transient full-resolution decode buffers (a page of
+    /// 12 MP photos would otherwise hold one ~35 MB buffer per image at once).
     fn pump_image_decodes(&mut self, cx: &mut Context<Self>) {
-        if self.image_decoding {
-            return;
+        while self.image_decodes < MAX_IMAGE_DECODES {
+            let Some((src, path)) = self.image_queue.pop_front() else {
+                return;
+            };
+            self.image_decodes += 1;
+            let store = self.image_store.clone();
+            cx.spawn(async move |this, cx| {
+                let decoded = cx
+                    .background_executor()
+                    .spawn(async move { crate::images::decode_scaled(&path) })
+                    .await;
+                let _ = this.update(cx, |this, cx| {
+                    store.borrow_mut().finish(src, decoded);
+                    this.image_decodes -= 1;
+                    this.pump_image_decodes(cx);
+                    cx.notify();
+                });
+            })
+            .detach();
         }
-        let Some((src, path)) = self.image_queue.pop_front() else {
-            return;
-        };
-        self.image_decoding = true;
-        let store = self.image_store.clone();
-        cx.spawn(async move |this, cx| {
-            let decoded = cx
-                .background_executor()
-                .spawn(async move { crate::images::decode_scaled(&path) })
-                .await;
-            let _ = this.update(cx, |this, cx| {
-                store.borrow_mut().finish(src, decoded);
-                this.image_decoding = false;
-                this.pump_image_decodes(cx);
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     /// Free every decoded note image (CPU + GPU) and drop any pending decodes.
@@ -2714,12 +2722,19 @@ impl AppView {
     /// across windows on the next read (same-page concurrent edits = last write
     /// wins — there's no live in-memory sync yet).
     pub fn open_in_new_window(target: TabKind, cx: &mut App) {
-        Self::open_in_new_window_at(target, None, cx);
+        Self::open_in_new_window_at(target, None, Vec::new(), cx);
     }
 
     /// Open a window showing `target`. With `at` set (a tear-off drop point in
     /// global coords), the window opens under the cursor; otherwise it's centered.
-    pub fn open_in_new_window_at(target: TabKind, at: Option<Point<Pixels>>, cx: &mut App) {
+    /// `seed` carries the source window's already-decoded bitmaps for the moved
+    /// page, so its images appear immediately instead of re-decoding from disk.
+    pub fn open_in_new_window_at(
+        target: TabKind,
+        at: Option<Point<Pixels>>,
+        seed: ImageSeed,
+        cx: &mut App,
+    ) {
         let win_size = size(px(1100.0), px(800.0));
         let bounds = match at {
             // Drop the window so the cursor lands near where the tab strip will be
@@ -2758,6 +2773,9 @@ impl AppView {
                     }
                     TabKind::Journal => {}
                 }
+                // After the tab is open (its activation wiped the store), adopt the
+                // hand-me-down bitmaps so the first paint shows them, no decode.
+                view.update(cx, |this, _| this.image_store.borrow_mut().adopt(seed));
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             },
         );
@@ -2837,12 +2855,31 @@ impl AppView {
         if ix == 0 {
             return;
         }
+        // Hand over the page's already-decoded bitmaps — snapshot before
+        // `close_tab`, whose tab switch frees this window's image store.
+        let seed = self.image_seed_for(&drag.kind);
         self.close_tab(ix, window, cx);
         let source = window.window_handle();
         // Defer so cross-window updates don't re-enter mid-event.
         window.defer(cx, move |_, cx| {
-            AppView::resolve_tab_drop(drag.kind, pos, source, cx);
+            AppView::resolve_tab_drop(drag.kind, pos, source, seed, cx);
         });
+    }
+
+    /// The current store's decoded bitmaps for the images `kind`'s page actually
+    /// references — the hand-off seed when that tab moves to another window. The
+    /// store holds the *active* view's images, so filtering by the moved page's
+    /// content keeps a background-tab drag from carrying unrelated bitmaps.
+    fn image_seed_for(&self, kind: &TabKind) -> ImageSeed {
+        let TabKind::Page(id) = kind else {
+            return Vec::new();
+        };
+        let Ok(Some(page)) = self.db.get_page(*id) else {
+            return Vec::new();
+        };
+        let mut seed = self.image_store.borrow().snapshot();
+        seed.retain(|(src, _)| page.content.contains(src.as_ref()));
+        seed
     }
 
     /// The registered window other than `source` whose **tab strip** is under
@@ -2908,29 +2945,45 @@ impl AppView {
 
     /// Hand a torn-off tab to the window under `pos`, or open a fresh window when
     /// the cursor is over none. Runs at the App level (deferred), where re-entering
-    /// other windows is safe.
-    fn resolve_tab_drop(kind: TabKind, pos: Point<Pixels>, source: AnyWindowHandle, cx: &mut App) {
+    /// other windows is safe. `seed`: the source window's decoded bitmaps for the
+    /// moved page (see [`Self::image_seed_for`]).
+    fn resolve_tab_drop(
+        kind: TabKind,
+        pos: Point<Pixels>,
+        source: AnyWindowHandle,
+        seed: ImageSeed,
+        cx: &mut App,
+    ) {
         match Self::window_under(pos, source, cx) {
             Some((handle, weak)) => {
                 let _ = handle.update(cx, |_, w, cx| {
                     if let Some(view) = weak.upgrade() {
-                        view.update(cx, |this, cx| this.receive_tab(kind, w, cx));
+                        view.update(cx, |this, cx| this.receive_tab(kind, seed, w, cx));
                     }
                     w.activate_window();
                 });
             }
-            None => AppView::open_in_new_window_at(kind, Some(pos), cx),
+            None => AppView::open_in_new_window_at(kind, Some(pos), seed, cx),
         }
     }
 
     /// Open (and focus) a tab for `kind` in this window — the receiving end of a
     /// cross-window tab drag.
-    fn receive_tab(&mut self, kind: TabKind, window: &mut Window, cx: &mut Context<Self>) {
+    fn receive_tab(
+        &mut self,
+        kind: TabKind,
+        seed: ImageSeed,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match kind {
             TabKind::Page(id) => self.open_page_id(id, window, cx),
             TabKind::Pdf(path) => self.open_pdf(path, window, cx),
             TabKind::Journal => {}
         }
+        // After the open (whose tab switch wiped this window's store), adopt the
+        // source window's bitmaps so the moved page paints without re-decoding.
+        self.image_store.borrow_mut().adopt(seed);
     }
 
     /// Drag-reorder: move tab `from` to where tab `to` sits. `to == tabs.len()`
@@ -2971,8 +3024,12 @@ impl AppView {
             return;
         }
         let target = self.tabs[ix].kind.clone();
+        // Snapshot before `close_tab` — its tab switch frees this window's images.
+        let seed = self.image_seed_for(&target);
         self.close_tab(ix, window, cx);
-        window.defer(cx, move |_, cx| AppView::open_in_new_window(target, cx));
+        window.defer(cx, move |_, cx| {
+            AppView::open_in_new_window_at(target, None, seed, cx)
+        });
     }
 
     // --- Delete page (sidebar right-click → confirm) ---
@@ -3066,7 +3123,10 @@ impl AppView {
             self.tear_off_tab(ix, window, cx);
             return;
         }
-        window.defer(cx, move |_, cx| AppView::open_in_new_window(target, cx));
+        let seed = self.image_seed_for(&target);
+        window.defer(cx, move |_, cx| {
+            AppView::open_in_new_window_at(target, None, seed, cx)
+        });
     }
 
     /// Delete a named page and refresh the UI. Journals are never deleted

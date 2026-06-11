@@ -108,6 +108,12 @@ fn sanitize(s: &str) -> String {
 /// versus ~4 MB downscaled). 2048 stays crisp at any realistic note width.
 const MAX_IMAGE_EDGE: u32 = 2048;
 
+/// Decoded bitmaps handed from one window to another when a tab moves (drag a
+/// tab out / into another window, right-click → "Open in new window"), so the
+/// receiving window paints them immediately instead of re-decoding from disk.
+/// `Arc` clones — no bitmap is copied.
+pub type ImageSeed = Vec<(SharedString, Arc<RenderImage>)>;
+
 /// A cache slot for one image source.
 enum Slot {
     /// A decode is in flight (off-thread).
@@ -163,6 +169,25 @@ impl ImageStore {
     pub fn finish(&mut self, src: SharedString, image: Option<Arc<RenderImage>>) {
         self.cache
             .insert(src, image.map_or(Slot::Failed, Slot::Ready));
+    }
+
+    /// The decoded bitmaps, for seeding another window's store (see [`ImageSeed`]).
+    pub fn snapshot(&self) -> ImageSeed {
+        self.cache
+            .iter()
+            .filter_map(|(src, slot)| match slot {
+                Slot::Ready(arc) => Some((src.clone(), arc.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Adopt bitmaps decoded by another window. Existing entries win — a decode
+    /// already in flight here will land over its `Loading` slot, not be clobbered.
+    pub fn adopt(&mut self, seed: ImageSeed) {
+        for (src, arc) in seed {
+            self.cache.entry(src).or_insert(Slot::Ready(arc));
+        }
     }
 
     /// Free every cached bitmap — CPU buffer (dropping the `Arc`) and GPU atlas
@@ -225,6 +250,34 @@ mod tests {
         assert_eq!(out.width(), MAX_IMAGE_EDGE);
         assert_eq!(out.height(), MAX_IMAGE_EDGE * 3 / 4);
         assert!(out.width().max(out.height()) <= MAX_IMAGE_EDGE);
+    }
+
+    #[test]
+    fn seed_adopts_into_empty_store_and_blocks_redecode() {
+        let bitmap = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(1, 1))]));
+        let mut a = ImageStore::default();
+        a.finish("images/x.png".into(), Some(bitmap));
+        let seed = a.snapshot();
+        assert_eq!(seed.len(), 1);
+
+        let mut b = ImageStore::default();
+        b.adopt(seed);
+        // The adopted bitmap is served, and a placeholder's `begin` won't claim
+        // the slot for a fresh decode.
+        assert!(b.get("images/x.png").is_some());
+        assert!(!b.begin("images/x.png".into()));
+    }
+
+    #[test]
+    fn adopt_never_replaces_an_existing_entry() {
+        // Replacing a Ready slot would orphan the old bitmap's GPU texture (only
+        // `release` frees it), so adopt must keep what's already there.
+        let old = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(1, 1))]));
+        let new = Arc::new(RenderImage::new(vec![Frame::new(RgbaImage::new(2, 2))]));
+        let mut store = ImageStore::default();
+        store.finish("images/x.png".into(), Some(old.clone()));
+        store.adopt(vec![("images/x.png".into(), new)]);
+        assert_eq!(store.get("images/x.png").unwrap().id, old.id);
     }
 
     #[test]
