@@ -8,6 +8,7 @@ use gpui::{
 };
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::tab::{Tab, TabBar};
+use gpui_component::tooltip::Tooltip;
 
 use crate::actions::OpenInNewWindow;
 use crate::app::{AppView, DraggingTab, GlobalDraggingTab, TabDrag};
@@ -27,7 +28,10 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         // records which tab is the target.
         let kind = tab.kind.clone();
         let title = tab.title.clone();
-        let label = div()
+        // Cap the label: a long name (e.g. a PDF filename) is ellipsized, with the
+        // full title in a tooltip. A "(highlights)" tab keeps that suffix visible.
+        let (display, truncated) = tab_label(&title);
+        let mut label = div()
             .id(("tab-label", i))
             .on_mouse_down(
                 MouseButton::Right,
@@ -35,10 +39,14 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     this.set_context_target(kind.clone());
                 }),
             )
-            .child(title.clone())
-            .context_menu(|menu, _window, _cx| {
-                menu.menu("Open in new window", Box::new(OpenInNewWindow))
-            });
+            .child(display);
+        if truncated {
+            let full = title.clone();
+            label = label.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+        }
+        let label = label.context_menu(|menu, _window, _cx| {
+            menu.menu("Open in new window", Box::new(OpenInNewWindow))
+        });
         let mut t = Tab::new().child(label).on_click(cx.listener(
             move |this: &mut AppView, _ev, window, cx| {
                 this.activate_tab(i, window, cx);
@@ -153,6 +161,32 @@ fn ghost_tab(title: SharedString) -> Tab {
         .opacity(0.6)
 }
 
+/// Max characters shown in a tab label before it's ellipsized (PDF filenames
+/// get long); the full title lives in a tooltip.
+const MAX_TAB_CHARS: usize = 28;
+/// A PDF's notes page is titled `<name> (highlights)`. When such a tab is
+/// truncated, this suffix is kept so you can still tell it's the highlights page.
+const HL_SUFFIX: &str = " (highlights)";
+
+/// The label to display for a tab title, and whether it was shortened (→ show
+/// the full title in a tooltip). A normal long title gets a trailing ellipsis; a
+/// `(highlights)` title keeps that suffix and ellipsizes the name before it.
+fn tab_label(title: &str) -> (String, bool) {
+    if title.chars().count() <= MAX_TAB_CHARS {
+        return (title.to_string(), false);
+    }
+    if let Some(name) = title.strip_suffix(HL_SUFFIX) {
+        let room = MAX_TAB_CHARS
+            .saturating_sub(HL_SUFFIX.chars().count() + 1)
+            .max(1);
+        let head: String = name.chars().take(room).collect();
+        (format!("{head}…{HL_SUFFIX}"), true)
+    } else {
+        let head: String = title.chars().take(MAX_TAB_CHARS - 1).collect();
+        (format!("{head}…"), true)
+    }
+}
+
 fn close_button(ix: usize, cx: &mut Context<AppView>) -> impl IntoElement {
     div()
         .id(("tab-close", ix))
@@ -173,4 +207,31 @@ fn close_button(ix: usize, cx: &mut Context<AppView>) -> impl IntoElement {
                 this.close_tab(ix, window, cx);
             }),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_titles_pass_through() {
+        assert_eq!(tab_label("Journal"), ("Journal".to_string(), false));
+    }
+
+    #[test]
+    fn long_titles_get_a_trailing_ellipsis() {
+        let (d, t) = tab_label("7050X3-Datasheet_1692315230683_0.pdf");
+        assert!(t);
+        assert!(d.ends_with('…'));
+        assert_eq!(d.chars().count(), MAX_TAB_CHARS);
+    }
+
+    #[test]
+    fn highlights_suffix_stays_visible() {
+        let (d, t) = tab_label("7050X3-Datasheet_1692315230683_0.pdf (highlights)");
+        assert!(t);
+        assert!(d.ends_with(" (highlights)"));
+        assert!(d.contains('…'));
+        assert!(d.chars().count() <= MAX_TAB_CHARS);
+    }
 }
