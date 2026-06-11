@@ -6,7 +6,7 @@
 //! new page; non-recent pages and older days are found via search.
 
 use gpui::{
-    AnyElement, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
+    AnyElement, ClickEvent, Context, Div, FontWeight, InteractiveElement, IntoElement, MouseButton,
     ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder as _, px, relative,
 };
@@ -461,9 +461,20 @@ fn section_label(text: &str) -> impl IntoElement {
         .px_2()
         .pt_4()
         .pb_1()
-        .text_size(px(11.0))
-        .text_color(theme::text_tertiary())
-        .child(text.to_uppercase())
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .flex_shrink_0()
+                .text_size(px(11.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(theme::accent())
+                .child(text.to_uppercase()),
+        )
+        // A hairline rule fills the rest of the row, separating the groups.
+        .child(div().flex_1().h(px(1.0)).bg(theme::divider()))
 }
 
 fn empty_hint(text: &str) -> impl IntoElement {
