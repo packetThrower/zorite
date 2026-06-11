@@ -13,8 +13,8 @@ and a SQLite backend.
   (today on top, older days lazy-loaded as you scroll). Each day is a single
   markdown document.
 - **Read / edit per day** — a day renders as formatted markdown until you click
-  in to edit it (raw text); click away and it re-renders. No "filling out a form"
-  feel — every line is just editable text.
+  in (or right-click → **Edit**) to edit it (raw text); click away and it
+  re-renders. No "filling out a form" feel — every line is just editable text.
 - **`[[wiki-links]]` and `#tags`** — clickable in the rendered view, navigate to
   (and auto-create) pages, and power **backlinks** ("Linked References").
 - **Page hierarchy** — name a page `Projects::Tasks` to nest it with `::`; the
@@ -41,7 +41,15 @@ and a SQLite backend.
   of that kind. A PDF result opens the viewer, an image opens the page showing it.
 - **Sidebar** — collapses to a slim icon rail; a calendar icon jumps to any date
   (creating the day if needed); the page list shows your recently-viewed pages
-  (the rest are a search away).
+  (the rest are a search away). Over-long titles are truncated with a tooltip so
+  the rail stays tidy.
+- **Tabs & multiple windows** — open pages and PDFs in tabs (the journal is the
+  pinned first tab). **Drag a tab** to reorder it, drop it on **another window's
+  tab bar** to move it there, or release it on empty space or **outside any
+  window** to **tear it off into a new window** under the cursor — a ghost tab
+  previews where it'll land, and you can drag back to cancel. Right-click a tab
+  or a sidebar page for **Open in new window**. Every window is fully
+  independent, and edits **sync live** across all of them.
 - **Inline images** — `![](path-or-url)` images render for real; **paste** (Cmd+V)
   or **drag-and-drop** a file to add one (copied into the data dir's `images/`
   folder), and **drag the corner handle to resize** (saved as `{width=N}` in the
@@ -63,8 +71,9 @@ and a SQLite backend.
   `pdf/` folder; the viewer is the reusable
   [`gpui-pdf`](crates/gpui-pdf/README.md) crate.
 - **Markdown rendering** — headings, bold/italic/code, lists, quotes, GFM tables,
-  and strikethrough — via a custom renderer crate,
-  [`gpui-markdown`](crates/gpui-markdown/README.md).
+  strikethrough, and **Mermaid diagrams** (flowchart / sequence / class, rendered
+  pure-Rust and themed to match your skin; click one to expand it) — via a custom
+  renderer crate, [`gpui-markdown`](crates/gpui-markdown/README.md).
 - **Local SQLite** storage for notes; images and PDFs live beside it as files.
   Everything stays on your machine.
 
