@@ -23,6 +23,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Hierarchy follow-ups: cascade-rename a namespace (rename `Foo` → rewrite `Foo::*` children + their `[[links]]`); a "New sub-page" action
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)
+- [ ] **Auto-link existing page titles as you type** — when the typed word matches an existing page (e.g. a `meetings` page exists and the user types "meetings" in a page/journal), auto-wrap it as `[[meetings]]`. Settings on/off toggle. The typing-time counterpart of unlinked references (above)
 - [ ] Sidebar: a "show all pages" affordance (browse the full tree, not just recent)
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 - [ ] **Whiteboards** — a freeform spatial canvas (Logseq-style): drop pages/notes and sketch shapes, arrows, and freehand drawings on an infinite, pannable/zoomable board, linkable to pages. A distinct surface from the text journal. Build it as a reusable, host-agnostic **`gpui-whiteboard`** crate (like `gpui-markdown` / `gpui-pdf`)
