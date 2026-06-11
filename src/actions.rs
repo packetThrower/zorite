@@ -26,6 +26,8 @@ actions!(
         OpenInNewTab,
         OpenInNewWindow,
         RenamePage,
+        // Right-click → Edit on a rendered page/journal day → enter edit mode.
+        EditNote,
         NewPage,
         InsertTab,
         Outdent,

@@ -2,11 +2,14 @@
 //! "Linked References" panel.
 
 use gpui::{
-    ClickEvent, Context, ExternalPaths, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px, relative,
+    ClickEvent, Context, ExternalPaths, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    ParentElement, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
+    relative,
 };
 use gpui_component::input::Input;
+use gpui_component::menu::ContextMenuExt;
 
+use crate::actions::EditNote;
 use crate::app::{AppView, PageEditor, PageFind};
 use crate::hierarchy;
 use crate::models::{Backlink, Page};
@@ -79,7 +82,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         // into even when a PDF chip fills the body and sub-page /
                         // reference sections sit below. It grows to fill, pushing
                         // those sections to the bottom.
-                        .child(page_open_area(cx))
+                        .child(page_open_area(page_id, cx))
                         .when(!children.is_empty(), |this| {
                             this.child(sub_pages_section(&pe.title, &children, cx))
                         })
@@ -193,17 +196,27 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         }
         md.into_any_element()
     };
+    let page_id = pe.id;
     div()
         .id("page-body")
         .w_full()
         .min_h(px(24.0))
         .cursor_text()
         .child(inner)
+        // Right-click → Edit: remember this page, then `EditNote` puts it in edit mode.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this: &mut AppView, _, _window, _cx| {
+                this.set_context_edit(SlashTarget::Page(page_id));
+            }),
+        )
         .on_click(
             cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.edit_page(window, cx);
             }),
         )
+        // `context_menu` returns a non-interactive wrapper, so it must come last.
+        .context_menu(|menu, _window, _cx| menu.menu("Edit", Box::new(EditNote)))
 }
 
 /// The in-page find bar (⌘F), shown above a named page. Reads the `PageFind`
@@ -276,18 +289,27 @@ fn find_btn(id: &'static str, glyph: &'static str) -> gpui::Stateful<gpui::Div> 
 /// sub-pages / references sections). Clicking it enters edit mode with the caret
 /// on a trailing blank line — the same affordance as the journal feed's open day
 /// area, so the page stays easy to click into even with a PDF chip in the body.
-fn page_open_area(cx: &mut Context<AppView>) -> impl IntoElement {
+fn page_open_area(page_id: i64, cx: &mut Context<AppView>) -> impl IntoElement {
     div()
         .id("page-open")
         .flex_1()
         .min_h(px(60.0))
         .w_full()
         .cursor_text()
+        // Right-click → Edit here too, matching the page body above.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this: &mut AppView, _, _window, _cx| {
+                this.set_context_edit(SlashTarget::Page(page_id));
+            }),
+        )
         .on_click(
             cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.edit_page_at_end(window, cx);
             }),
         )
+        // `context_menu` returns a non-interactive wrapper, so it must come last.
+        .context_menu(|menu, _window, _cx| menu.menu("Edit", Box::new(EditNote)))
 }
 
 /// The "Sub-pages" index: pages nested directly under this one (`<title>::*`),

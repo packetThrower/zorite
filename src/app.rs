@@ -32,9 +32,9 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    CloseTab, DeletePage, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab, NewPage,
-    NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
-    SlashCancel, SlashConfirm, SlashDown, SlashUp,
+    CloseTab, DeletePage, EditNote, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab,
+    NewPage, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab,
+    RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
 };
 use crate::db::Db;
 use crate::models::{Backlink, Page};
@@ -256,6 +256,9 @@ pub struct AppView {
     /// The page (id + title) targeted by an open right-click context menu,
     /// read by the `DeletePage` / `RenamePage` actions.
     context_page: Option<(i64, SharedString)>,
+    /// The rendered page / journal day right-clicked for the "Edit" menu item,
+    /// read by the `EditNote` action.
+    context_edit: Option<SlashTarget>,
     /// The target of a right-click "Open in new window" — a page (sidebar or
     /// tab) or a PDF/journal tab. Set on right-click, taken by the handler.
     context_target: Option<TabKind>,
@@ -435,6 +438,7 @@ impl AppView {
             slash: None,
             templates: Vec::new(),
             context_page: None,
+            context_edit: None,
             context_target: None,
             doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
@@ -2729,6 +2733,22 @@ impl AppView {
         self.context_target = Some(target);
     }
 
+    /// Remember which rendered page / journal day a right-click targets, so the
+    /// `EditNote` menu item knows what to put into edit mode.
+    pub fn set_context_edit(&mut self, target: SlashTarget) {
+        self.context_edit = Some(target);
+    }
+
+    /// `EditNote` handler (right-click → Edit): enter edit mode on the targeted
+    /// rendered page or journal day.
+    fn on_edit_note(&mut self, _: &EditNote, window: &mut Window, cx: &mut Context<Self>) {
+        match self.context_edit.take() {
+            Some(SlashTarget::Day(date)) => self.edit_day(&date, window, cx),
+            Some(SlashTarget::Page(_)) => self.edit_page(window, cx),
+            None => {}
+        }
+    }
+
     /// `DeletePage` handler: confirm, then delete the remembered page.
     fn on_delete_page(&mut self, _: &DeletePage, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, title)) = self.context_page.take() else {
@@ -3460,6 +3480,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_rename_page))
+            .on_action(cx.listener(Self::on_edit_note))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_import_logseq))
             .on_action(cx.listener(Self::on_fit_images))

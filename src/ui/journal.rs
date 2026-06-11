@@ -4,11 +4,13 @@
 
 use gpui::{
     ClickEvent, Context, Entity, ExternalPaths, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, div,
+    MouseButton, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, div,
     prelude::FluentBuilder as _, px,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::ContextMenuExt;
 
+use crate::actions::EditNote;
 use crate::app::{self, AppView};
 use crate::slash::SlashTarget;
 use crate::theme;
@@ -170,17 +172,27 @@ fn rendered_day(
         }
         md.into_any_element()
     };
+    let d_ctx = date.to_string();
     div()
         .id(("day-body", i))
         .w_full()
         .min_h(px(24.0))
         .cursor_text()
         .child(inner)
+        // Right-click → Edit: remember this day, then `EditNote` puts it in edit mode.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |this: &mut AppView, _, _window, _cx| {
+                this.set_context_edit(SlashTarget::Day(d_ctx.clone()));
+            }),
+        )
         .on_click(
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.edit_day(&d, window, cx);
             }),
         )
+        // `context_menu` returns a non-interactive wrapper, so it must come last.
+        .context_menu(|menu, _window, _cx| menu.menu("Edit", Box::new(EditNote)))
 }
 
 fn load_older(cx: &mut Context<AppView>) -> impl IntoElement {
