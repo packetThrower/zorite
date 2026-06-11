@@ -1066,6 +1066,22 @@ impl PdfView {
         }
     }
 
+    /// Free the viewer's GPU textures but **keep** its rendered page bitmaps —
+    /// for a host moving this view to a different window (e.g. a tab drag). The
+    /// old window's textures are released now; the kept bitmaps re-upload
+    /// wherever the view next paints, so its pages appear there immediately,
+    /// with scroll, zoom, and (for an encrypted file) the unlocked state intact.
+    pub fn detach_textures(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for arc in std::mem::take(&mut self.pending_drops) {
+            cx.drop_image(arc, Some(window));
+        }
+        for slot in &self.pages {
+            if let Some(arc) = &slot.image {
+                cx.drop_image(arc.clone(), Some(window));
+            }
+        }
+    }
+
     /// Set the zoom factor (clamped), keeping the current page in view. Visible pages
     /// re-render crisp at the new scale; their current bitmaps stay on screen
     /// (rescaled) until the fresh ones land, so nothing blanks.

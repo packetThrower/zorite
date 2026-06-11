@@ -82,6 +82,7 @@ A self-contained, page-virtualized viewer entity (`impl Render`).
 | --- | --- | --- |
 | `new` | `fn new(path: PathBuf, style: PdfStyleFn, quality: PdfQualityFn, cx: &mut Context<Self>) -> Self` | Create a viewer and start the off-thread read + parse + measure. `style` and `quality` are read at paint time (see below). Call inside `cx.new(\|cx\| …)`. |
 | `release` | `fn release(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Free every rasterized page (CPU buffer + GPU atlas texture). Call before dropping the view — gpui only frees a `RenderImage`'s atlas texture via `drop_image`, never on plain drop. |
+| `detach_textures` | `fn detach_textures(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Free the GPU textures but **keep** the rendered page bitmaps — for hosts moving the view to a different window (e.g. a tab drag). The kept bitmaps re-upload wherever it next paints, so pages appear there immediately, with scroll, zoom, and unlocked state intact. |
 | `set_zoom` / `zoom_in` / `zoom_out` / `reset_zoom` | `fn …(&mut self, cx: &mut Context<Self>)` (`set_zoom` also takes `zoom: f32`) | Change zoom (clamped 0.5–3.0), keeping the current page in view; the visible pages re-rasterize crisp at the new scale, with no blank. |
 | `go_to_page` / `next_page` / `prev_page` | `fn …(&mut self, cx: &mut Context<Self>)` (`go_to_page` also takes `index: usize`) | Scroll so the target page sits at the top of the viewport. |
 

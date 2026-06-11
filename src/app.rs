@@ -114,6 +114,16 @@ pub struct DraggingTab {
     pub title: SharedString,
 }
 
+/// What a moving tab hands its destination window so the content shows up there
+/// immediately (see `take_tab_seed`): the source window's decoded image bitmaps
+/// for a page, or — for a PDF — the live viewer entity itself, preserving its
+/// scroll, zoom, unlocked state, parsed document, and rendered pages.
+#[derive(Default)]
+pub struct TabSeed {
+    images: ImageSeed,
+    pdf: Option<(PathBuf, Entity<crate::pdf::PdfView>)>,
+}
+
 /// Global slot holding the in-flight [`DraggingTab`] (set once at startup).
 #[derive(Default)]
 pub struct GlobalDraggingTab(pub Option<DraggingTab>);
@@ -2722,17 +2732,17 @@ impl AppView {
     /// across windows on the next read (same-page concurrent edits = last write
     /// wins — there's no live in-memory sync yet).
     pub fn open_in_new_window(target: TabKind, cx: &mut App) {
-        Self::open_in_new_window_at(target, None, Vec::new(), cx);
+        Self::open_in_new_window_at(target, None, TabSeed::default(), cx);
     }
 
     /// Open a window showing `target`. With `at` set (a tear-off drop point in
     /// global coords), the window opens under the cursor; otherwise it's centered.
-    /// `seed` carries the source window's already-decoded bitmaps for the moved
-    /// page, so its images appear immediately instead of re-decoding from disk.
+    /// `seed` carries the source window's hand-off (decoded image bitmaps / the
+    /// live PDF viewer), so the moved content appears immediately.
     pub fn open_in_new_window_at(
         target: TabKind,
         at: Option<Point<Pixels>>,
-        seed: ImageSeed,
+        mut seed: TabSeed,
         cx: &mut App,
     ) {
         let win_size = size(px(1100.0), px(800.0));
@@ -2764,6 +2774,9 @@ impl AppView {
                 let view = cx.new(|cx| AppView::new(window, cx));
                 view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
                 AppView::register_window(&view, window, cx);
+                // A moved PDF viewer must be in place before `open_pdf` looks
+                // for one; images are adopted after the open wipes the store.
+                view.update(cx, |this, _| this.adopt_pdf_seed(&mut seed));
                 match target {
                     TabKind::Page(id) => {
                         view.update(cx, |this, cx| this.open_page_id(id, window, cx));
@@ -2773,9 +2786,9 @@ impl AppView {
                     }
                     TabKind::Journal => {}
                 }
-                // After the tab is open (its activation wiped the store), adopt the
-                // hand-me-down bitmaps so the first paint shows them, no decode.
-                view.update(cx, |this, _| this.image_store.borrow_mut().adopt(seed));
+                view.update(cx, |this, _| {
+                    this.image_store.borrow_mut().adopt(seed.images)
+                });
                 cx.new(|cx| gpui_component::Root::new(view, window, cx))
             },
         );
@@ -2857,7 +2870,7 @@ impl AppView {
         }
         // Hand over the page's already-decoded bitmaps — snapshot before
         // `close_tab`, whose tab switch frees this window's image store.
-        let seed = self.image_seed_for(&drag.kind);
+        let seed = self.take_tab_seed(&drag.kind, window, cx);
         self.close_tab(ix, window, cx);
         let source = window.window_handle();
         // Defer so cross-window updates don't re-enter mid-event.
@@ -2866,20 +2879,58 @@ impl AppView {
         });
     }
 
-    /// The current store's decoded bitmaps for the images `kind`'s page actually
-    /// references — the hand-off seed when that tab moves to another window. The
-    /// store holds the *active* view's images, so filtering by the moved page's
-    /// content keeps a background-tab drag from carrying unrelated bitmaps.
-    fn image_seed_for(&self, kind: &TabKind) -> ImageSeed {
-        let TabKind::Page(id) = kind else {
-            return Vec::new();
-        };
-        let Ok(Some(page)) = self.db.get_page(*id) else {
-            return Vec::new();
-        };
-        let mut seed = self.image_store.borrow().snapshot();
-        seed.retain(|(src, _)| page.content.contains(src.as_ref()));
-        seed
+    /// Everything a moving tab hands its destination window so the content
+    /// appears there immediately. Destructive for a PDF tab — the live viewer
+    /// entity is *taken* from this window.
+    fn take_tab_seed(
+        &mut self,
+        kind: &TabKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> TabSeed {
+        match kind {
+            // A page carries the already-decoded bitmaps for its images. The
+            // store holds the *active* view's images, so filtering by the moved
+            // page's content keeps a background-tab drag from carrying
+            // unrelated bitmaps.
+            TabKind::Page(id) => {
+                let Ok(Some(page)) = self.db.get_page(*id) else {
+                    return TabSeed::default();
+                };
+                let mut images = self.image_store.borrow().snapshot();
+                images.retain(|(src, _)| page.content.contains(src.as_ref()));
+                TabSeed { images, pdf: None }
+            }
+            // A PDF carries its whole viewer — scroll, zoom, parsed document,
+            // unlocked state, rendered pages. Taken out of `pdf_views` here so
+            // the upcoming `close_tab` won't release it; this window's GPU
+            // textures are dropped now, and the kept bitmaps re-upload where
+            // the viewer next paints.
+            TabKind::Pdf(path) => {
+                let pdf = self.pdf_views.remove(path);
+                if let Some(view) = &pdf {
+                    view.update(cx, |v, cx| v.detach_textures(window, cx));
+                }
+                TabSeed {
+                    images: Vec::new(),
+                    pdf: pdf.map(|v| (path.clone(), v)),
+                }
+            }
+            TabKind::Journal => TabSeed::default(),
+        }
+    }
+
+    /// Hand a seed's PDF viewer to this window — the receiving half of
+    /// [`Self::take_tab_seed`]. Must run *before* `open_pdf` so its
+    /// "viewer already open" check adopts the moved entity instead of building
+    /// a fresh one (which would lose scroll/zoom/unlock and re-parse the file).
+    fn adopt_pdf_seed(&mut self, seed: &mut TabSeed) {
+        if let Some((path, view)) = seed.pdf.take()
+            // A viewer this window already has wins — don't clobber a live one.
+            && !self.pdf_views.contains_key(&path)
+        {
+            self.pdf_views.insert(path, view);
+        }
     }
 
     /// The registered window other than `source` whose **tab strip** is under
@@ -2945,13 +2996,13 @@ impl AppView {
 
     /// Hand a torn-off tab to the window under `pos`, or open a fresh window when
     /// the cursor is over none. Runs at the App level (deferred), where re-entering
-    /// other windows is safe. `seed`: the source window's decoded bitmaps for the
-    /// moved page (see [`Self::image_seed_for`]).
+    /// other windows is safe. `seed`: the source window's hand-off for the moved
+    /// tab (see [`Self::take_tab_seed`]).
     fn resolve_tab_drop(
         kind: TabKind,
         pos: Point<Pixels>,
         source: AnyWindowHandle,
-        seed: ImageSeed,
+        seed: TabSeed,
         cx: &mut App,
     ) {
         match Self::window_under(pos, source, cx) {
@@ -2972,10 +3023,12 @@ impl AppView {
     fn receive_tab(
         &mut self,
         kind: TabKind,
-        seed: ImageSeed,
+        mut seed: TabSeed,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A moved PDF viewer must be in place before `open_pdf` looks for one.
+        self.adopt_pdf_seed(&mut seed);
         match kind {
             TabKind::Page(id) => self.open_page_id(id, window, cx),
             TabKind::Pdf(path) => self.open_pdf(path, window, cx),
@@ -2983,7 +3036,7 @@ impl AppView {
         }
         // After the open (whose tab switch wiped this window's store), adopt the
         // source window's bitmaps so the moved page paints without re-decoding.
-        self.image_store.borrow_mut().adopt(seed);
+        self.image_store.borrow_mut().adopt(seed.images);
     }
 
     /// Drag-reorder: move tab `from` to where tab `to` sits. `to == tabs.len()`
@@ -3025,7 +3078,7 @@ impl AppView {
         }
         let target = self.tabs[ix].kind.clone();
         // Snapshot before `close_tab` — its tab switch frees this window's images.
-        let seed = self.image_seed_for(&target);
+        let seed = self.take_tab_seed(&target, window, cx);
         self.close_tab(ix, window, cx);
         window.defer(cx, move |_, cx| {
             AppView::open_in_new_window_at(target, None, seed, cx)
@@ -3123,7 +3176,7 @@ impl AppView {
             self.tear_off_tab(ix, window, cx);
             return;
         }
-        let seed = self.image_seed_for(&target);
+        let seed = self.take_tab_seed(&target, window, cx);
         window.defer(cx, move |_, cx| {
             AppView::open_in_new_window_at(target, None, seed, cx)
         });
