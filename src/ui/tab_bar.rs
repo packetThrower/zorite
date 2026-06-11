@@ -157,6 +157,9 @@ fn close_button(ix: usize, cx: &mut Context<AppView>) -> impl IntoElement {
     div()
         .id(("tab-close", ix))
         .px(px(4.0))
+        // Keep the × off the tab's right edge — roughly matching the label's
+        // left inset, so the tab looks balanced.
+        .mr(px(8.0))
         .rounded(px(4.0))
         .text_color(theme::text_tertiary())
         .cursor_pointer()
