@@ -21,11 +21,11 @@
 <g filter="url(#sh)">
   <rect x="292" y="205" width="440" height="614" rx="30" fill="none" stroke="url(#silver)" stroke-width="22"/>
   <g stroke-linecap="round">
-   <circle cx="352" cy="302" r="17" fill="url(#goldGrad)"/><line x1="386" y1="302" x2="684" y2="302" stroke="url(#silver)" stroke-width="17"/>
-   <circle cx="406" cy="386" r="17" fill="url(#goldGrad)"/><line x1="440" y1="386" x2="684" y2="386" stroke="url(#silver)" stroke-width="17"/>
-   <circle cx="406" cy="470" r="17" fill="url(#goldGrad)"/><line x1="440" y1="470" x2="642" y2="470" stroke="url(#silver)" stroke-width="17"/>
-   <circle cx="352" cy="554" r="17" fill="url(#goldGrad)"/><line x1="386" y1="554" x2="684" y2="554" stroke="url(#silver)" stroke-width="17"/>
-   <circle cx="406" cy="638" r="17" fill="url(#goldGrad)"/><line x1="440" y1="638" x2="666" y2="638" stroke="url(#silver)" stroke-width="17"/>
-   <circle cx="352" cy="722" r="17" fill="url(#goldGrad)"/><line x1="386" y1="722" x2="612" y2="722" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="352" cy="302" r="17" fill="url(#goldGrad)"/><line x1="386" y1="302" x2="450" y2="302" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="406" cy="386" r="17" fill="url(#goldGrad)"/><line x1="440" y1="386" x2="570" y2="386" stroke="url(#silver)" stroke-width="17"/><line x1="650" y1="386" x2="684" y2="386" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="406" cy="470" r="17" fill="url(#goldGrad)"/><line x1="440" y1="470" x2="512" y2="470" stroke="url(#silver)" stroke-width="17"/><line x1="592" y1="470" x2="684" y2="470" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="352" cy="554" r="17" fill="url(#goldGrad)"/><line x1="386" y1="554" x2="455" y2="554" stroke="url(#silver)" stroke-width="17"/><line x1="535" y1="554" x2="684" y2="554" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="406" cy="638" r="17" fill="url(#goldGrad)"/><line x1="477" y1="638" x2="684" y2="638" stroke="url(#silver)" stroke-width="17"/>
+   <circle cx="352" cy="722" r="17" fill="url(#goldGrad)"/><line x1="575" y1="722" x2="684" y2="722" stroke="url(#silver)" stroke-width="17"/>
   </g>
 </g></g></svg>
