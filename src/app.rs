@@ -11,7 +11,7 @@
 //! undo / IME). Content saves on `Change` and re-indexes `[[links]]`.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -314,6 +314,9 @@ pub struct AppView {
     /// Ids of pages the user pinned to the sidebar's "Favorites" group, in the
     /// order added; persisted across launches.
     pub favorites: Vec<i64>,
+    /// Namespace nodes (by full path) collapsed in the sidebar tree — their
+    /// descendants are hidden. Persisted across launches.
+    pub collapsed_nodes: HashSet<String>,
     /// The current global-search results (pages + referenced PDF/image files),
     /// kind-filtered, with per-kind counts for the results-pane chips.
     pub search: crate::search::Results,
@@ -505,6 +508,7 @@ impl AppView {
             sidebar_collapsed: false,
             recent_pages: Vec::new(),
             favorites: Vec::new(),
+            collapsed_nodes: HashSet::new(),
             search: crate::search::Results::default(),
             slash: None,
             templates: Vec::new(),
@@ -531,6 +535,7 @@ impl AppView {
         this.refresh_sidebar();
         this.recent_pages = this.load_recent_pages();
         this.favorites = this.load_favorites();
+        this.collapsed_nodes = this.load_collapsed();
         // Load user themes on top of the built-ins, then apply the saved
         // (or default) skin + mode before the first paint.
         this.skins.extend(skins::load_user_skins());
@@ -906,6 +911,43 @@ impl AppView {
         if let Err(e) = self.db.set_setting("favorites", &csv) {
             log::error!("save favorites: {e}");
         }
+    }
+
+    /// Load the persisted collapsed sidebar nodes (newline-separated paths —
+    /// titles are single-line, so a newline can't appear inside one).
+    fn load_collapsed(&self) -> HashSet<String> {
+        self.db
+            .get_setting("collapsed_nodes")
+            .map(|s| {
+                s.split('\n')
+                    .filter(|x| !x.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether the sidebar tree node at `path` is collapsed (descendants hidden).
+    pub fn is_collapsed(&self, path: &str) -> bool {
+        self.collapsed_nodes.contains(path)
+    }
+
+    /// Collapse / expand a sidebar namespace node (its disclosure chevron) and
+    /// persist. The sidebar reads `collapsed_nodes` at render, so just notify.
+    pub fn toggle_collapsed(&mut self, path: &str, cx: &mut Context<Self>) {
+        if !self.collapsed_nodes.remove(path) {
+            self.collapsed_nodes.insert(path.to_string());
+        }
+        let data = self
+            .collapsed_nodes
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Err(e) = self.db.set_setting("collapsed_nodes", &data) {
+            log::error!("save collapsed nodes: {e}");
+        }
+        cx.notify();
     }
 
     /// Open a specific journal day (by ISO `YYYY-MM-DD`) as a focused tab,

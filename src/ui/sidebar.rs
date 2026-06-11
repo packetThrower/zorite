@@ -10,7 +10,9 @@ use gpui::{
     ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder as _, px, relative,
 };
-use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt, tooltip::Tooltip};
+use gpui_component::{
+    Icon, IconName, Sizable, input::Input, menu::ContextMenuExt, tooltip::Tooltip,
+};
 
 use crate::actions::{
     DeletePage, NewPage, OpenInNewTab, OpenInNewWindow, RenamePage, ToggleFavorite,
@@ -278,10 +280,30 @@ fn push_tree_rows(
     for node in nodes {
         let active = node.id.is_some_and(|id| app.is_page_active(id));
         let is_fav = node.id.is_some_and(|id| app.is_favorite(id));
-        out.push(tree_row(node, depth, active, is_fav, window, cx));
-        push_tree_rows(&node.children, depth + 1, app, window, cx, out);
+        let has_children = !node.children.is_empty();
+        let collapsed = has_children && app.is_collapsed(&node.path);
+        out.push(tree_row(
+            node,
+            depth,
+            active,
+            is_fav,
+            has_children,
+            collapsed,
+            window,
+            cx,
+        ));
+        // A collapsed node hides its subtree.
+        if !collapsed {
+            push_tree_rows(&node.children, depth + 1, app, window, cx, out);
+        }
     }
 }
+
+/// Width of the disclosure-chevron gutter at the start of every tree row (the
+/// chevron sits here for nodes with children; leaves leave it blank, so all
+/// rows at a level align). Recent and favorite rows reserve it; the pinned
+/// Journal link doesn't.
+const CHEVRON_W: f32 = 16.0;
 
 /// A tree row's left padding (px) at `depth`; the base matches the other rows'
 /// `px_2`. Used both to indent the row and to work out how much room the title
@@ -291,11 +313,12 @@ fn row_indent(depth: usize) -> f32 {
 }
 
 /// Whether `label`, rendered at the row's 13px, is wider than the room left in a
-/// row indented to `depth` — i.e. it will be ellipsized, so it wants a tooltip.
-/// The sidebar is a fixed 240px; the scroll area pads 8px per side and a row pads
-/// its indent on the left and 8px (`pr_2`) on the right. The rest is the text box.
-fn label_overflows(label: &SharedString, depth: usize, window: &Window) -> bool {
-    let avail = 240.0 - 16.0 - row_indent(depth) - 8.0;
+/// row with `pad_left` left padding — i.e. it will be ellipsized, so it wants a
+/// tooltip. The sidebar is a fixed 240px; the scroll area pads 8px per side and a
+/// row pads `pad_left` on the left and 8px (`pr_2`) on the right; the rest is the
+/// text box.
+fn label_overflows(label: &SharedString, pad_left: f32, window: &Window) -> bool {
+    let avail = 240.0 - 16.0 - pad_left - 8.0;
     if avail <= 0.0 {
         return true;
     }
@@ -310,40 +333,34 @@ fn label_overflows(label: &SharedString, depth: usize, window: &Window) -> bool 
     width > px(avail)
 }
 
-/// One row in the recent page tree, indented by `depth`. A real page delegates
-/// to [`page_row`] (click + full right-click menu); a virtual namespace node is a
-/// bare clickable row. Clicking either opens the page by its full path.
+/// One row in the recent page tree, indented by `depth`. Shows the leaf segment,
+/// opens the page by its full path on click, draws the ancestor indent guides,
+/// and — for a node with children — a disclosure chevron that collapses the
+/// subtree. Real pages also get the right-click menu; virtual namespace nodes
+/// (no page of their own yet) don't.
+#[allow(clippy::too_many_arguments)]
 fn tree_row(
     node: &PageNode,
     depth: usize,
     active: bool,
     is_fav: bool,
+    has_children: bool,
+    collapsed: bool,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
     let label: SharedString = node.segment.clone().into();
     let full_path: SharedString = node.path.clone().into();
-    if let Some(id) = node.id {
-        return page_row(
-            id,
-            label,
-            full_path.clone(),
-            SharedString::from(format!("pn:{full_path}")),
-            active,
-            is_fav,
-            depth,
-            window,
-            cx,
-        );
-    }
-    // Virtual namespace node (no page of its own yet) — clickable, no menu.
-    let truncated = label_overflows(&label, depth, window);
+    // Text sits past the chevron gutter; the chevron (if any) and ancestor
+    // guides live in the indent to its left.
+    let pad_left = row_indent(depth) + CHEVRON_W;
+    let truncated = label_overflows(&label, pad_left, window);
     let click_path = node.path.clone();
     let mut row = base_row(
         SharedString::from(format!("pn:{full_path}")),
         &label,
-        false,
-        depth,
+        active,
+        pad_left,
     )
     .on_click(
         cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
@@ -354,11 +371,21 @@ fn tree_row(
         let full = label.clone();
         row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
     }
-    row.into_any_element()
+    for level in 1..=depth {
+        row = row.child(guide_line(level));
+    }
+    if has_children {
+        row = row.child(chevron(full_path.clone(), collapsed, row_indent(depth), cx));
+    }
+    match node.id {
+        Some(id) => with_page_menu(row, id, full_path, is_fav, cx),
+        None => row.into_any_element(),
+    }
 }
 
-/// A favorites-group row: the pinned page shown by its **full** title, with the
-/// same click + right-click menu as a recent row.
+/// A favorites-group row: the pinned page shown by its **full** title (flat, no
+/// children), aligned with the recent rows' text and carrying the same click +
+/// right-click menu.
 fn favorite_row(
     page: &Page,
     app: &AppView,
@@ -366,27 +393,35 @@ fn favorite_row(
     cx: &mut Context<AppView>,
 ) -> AnyElement {
     let title: SharedString = page.title.clone().into();
-    page_row(
-        page.id,
-        title.clone(),
-        title,
+    let pad_left = row_indent(0) + CHEVRON_W;
+    let truncated = label_overflows(&title, pad_left, window);
+    let click_path = page.title.clone();
+    let mut row = base_row(
         SharedString::from(format!("fav:{}", page.id)),
+        &title,
         app.is_page_active(page.id),
-        true,
-        0,
-        window,
-        cx,
+        pad_left,
     )
+    .on_click(
+        cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+            this.open_page_title(&click_path, window, cx);
+        }),
+    );
+    if truncated {
+        let full = title.clone();
+        row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+    }
+    with_page_menu(row, page.id, title, true, cx)
 }
 
-/// Shared styling for a clickable sidebar page row (the caller chains `on_click`
-/// etc.). `label` is what's shown; `depth` sets the indent.
-fn base_row(id: SharedString, label: &SharedString, active: bool, depth: usize) -> Stateful<Div> {
-    let mut row = div()
+/// Shared styling for a clickable sidebar page row (the caller chains `on_click`,
+/// guides, chevron, menu). `label` is what's shown; `pad_left` is its left
+/// padding (indent + chevron gutter).
+fn base_row(id: SharedString, label: &SharedString, active: bool, pad_left: f32) -> Stateful<Div> {
+    div()
         .id(id)
         .relative()
-        // Indent each level; the base matches the other rows' `px_2`.
-        .pl(px(row_indent(depth)))
+        .pl(px(pad_left))
         .pr_2()
         .py_1p5()
         .rounded(px(6.0))
@@ -402,60 +437,71 @@ fn base_row(id: SharedString, label: &SharedString, active: bool, depth: usize) 
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
-        .child(label.clone());
-    // A faint vertical guide per ancestor level — like the nested markdown list —
-    // so the subpage hierarchy reads at a glance. Drawn as overlays in the left
-    // padding (left of the text), so the full-width row highlight is untouched;
-    // rows are flush, so each segment joins the next into a continuous line.
-    for level in 1..=depth {
-        row = row.child(
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(px(guide_x(level)))
-                .w(px(1.0))
-                .bg(theme::border_subtle()),
-        );
-    }
-    row
+        .child(label.clone())
 }
 
-/// X (px from a row's left edge) of the indent guide for ancestor `level` — the
-/// gutter just left of that level's text.
-fn guide_x(level: usize) -> f32 {
-    row_indent(level - 1) + 6.0
+/// A faint vertical guide for ancestor `level` — like the nested markdown list,
+/// so the subpage hierarchy reads at a glance. An overlay in the left padding
+/// (left of the text), aligned under the parent's chevron; flush rows join the
+/// segments into a continuous line, and the full-width highlight is untouched.
+fn guide_line(level: usize) -> impl IntoElement {
+    let x = row_indent(level - 1) + CHEVRON_W / 2.0;
+    div()
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(x))
+        .w(px(1.0))
+        .bg(theme::border_subtle())
 }
 
-/// A real-page sidebar row (recent tree or favorites): opens `full_path` on
-/// click, with a right-click menu to (un)favorite, open elsewhere, rename, or
-/// delete. `label` is the shown text (tree leaf or full title); `elem_id` keeps
-/// it unique across the two lists.
-#[allow(clippy::too_many_arguments)]
-fn page_row(
+/// The disclosure chevron for a node with children, in its gutter at `x`. Toggles
+/// the node's collapsed state on press, stopping propagation so the row's
+/// click-to-open doesn't also fire.
+fn chevron(
+    path: SharedString,
+    collapsed: bool,
+    x: f32,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let icon = if collapsed {
+        IconName::ChevronRight
+    } else {
+        IconName::ChevronDown
+    };
+    let toggle_path = path.to_string();
+    div()
+        .id(SharedString::from(format!("chev:{path}")))
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .left(px(x))
+        .w(px(CHEVRON_W))
+        .flex()
+        .items_center()
+        .justify_center()
+        .text_color(theme::text_tertiary())
+        .cursor_pointer()
+        .hover(|h| h.text_color(theme::text_primary()))
+        .child(Icon::new(icon).with_size(px(12.0)))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |this: &mut AppView, _, _window, cx| {
+                cx.stop_propagation();
+                this.toggle_collapsed(&toggle_path, cx);
+            }),
+        )
+}
+
+/// Attach the page right-click menu (favorite toggle / open elsewhere / rename /
+/// delete) to a built row. Shared by recent and favorite rows.
+fn with_page_menu(
+    row: Stateful<Div>,
     id: i64,
-    label: SharedString,
     full_path: SharedString,
-    elem_id: SharedString,
-    active: bool,
     is_fav: bool,
-    depth: usize,
-    window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
-    let truncated = label_overflows(&label, depth, window);
-    let click_path = full_path.to_string();
-    let mut row = base_row(elem_id, &label, active, depth).on_click(cx.listener(
-        move |this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.open_page_title(&click_path, window, cx);
-        },
-    ));
-    if truncated {
-        let full = label.clone();
-        row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
-    }
-    // Right-click records the target page; the menu item dispatches an action
-    // handled on `AppView` (delete confirms first).
     let fav_label = if is_fav {
         "Remove from favorites"
     } else {
