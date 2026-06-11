@@ -35,7 +35,7 @@ use gpui_component::{
 use crate::actions::{
     CloseTab, DeletePage, EditNote, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab,
     NewPage, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab,
-    RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
+    RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -311,6 +311,9 @@ pub struct AppView {
     /// Ids of recently-viewed named pages, most-recent first (capped). The
     /// sidebar page tree is filtered to these; persisted across launches.
     pub recent_pages: Vec<i64>,
+    /// Ids of pages the user pinned to the sidebar's "Favorites" group, in the
+    /// order added; persisted across launches.
+    pub favorites: Vec<i64>,
     /// The current global-search results (pages + referenced PDF/image files),
     /// kind-filtered, with per-kind counts for the results-pane chips.
     pub search: crate::search::Results,
@@ -501,6 +504,7 @@ impl AppView {
             show_calendar: false,
             sidebar_collapsed: false,
             recent_pages: Vec::new(),
+            favorites: Vec::new(),
             search: crate::search::Results::default(),
             slash: None,
             templates: Vec::new(),
@@ -526,6 +530,7 @@ impl AppView {
         // in sync with other windows' edits.
         this.refresh_sidebar();
         this.recent_pages = this.load_recent_pages();
+        this.favorites = this.load_favorites();
         // Load user themes on top of the built-ins, then apply the saved
         // (or default) skin + mode before the first paint.
         this.skins.extend(skins::load_user_skins());
@@ -861,6 +866,45 @@ impl AppView {
             .join(",");
         if let Err(e) = self.db.set_setting("recent_pages", &csv) {
             log::error!("save recent pages: {e}");
+        }
+    }
+
+    /// Load the persisted favorites (a comma-separated id list; empty if none).
+    fn load_favorites(&self) -> Vec<i64> {
+        self.db
+            .get_setting("favorites")
+            .map(|s| s.split(',').filter_map(|x| x.trim().parse().ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Whether `id` is pinned to the sidebar's Favorites group.
+    pub fn is_favorite(&self, id: i64) -> bool {
+        self.favorites.contains(&id)
+    }
+
+    /// Pin / unpin a page (sidebar right-click → Favorite) and persist. The
+    /// sidebar reads `favorites` at render, so a notify is all that's needed.
+    fn toggle_favorite(&mut self, id: i64, cx: &mut Context<Self>) {
+        match self.favorites.iter().position(|&x| x == id) {
+            Some(pos) => {
+                self.favorites.remove(pos);
+            }
+            None => self.favorites.push(id),
+        }
+        self.persist_favorites();
+        cx.notify();
+    }
+
+    /// Persist the favorites as a comma-separated id list (mirrors recent pages).
+    fn persist_favorites(&self) {
+        let csv = self
+            .favorites
+            .iter()
+            .map(i64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Err(e) = self.db.set_setting("favorites", &csv) {
+            log::error!("save favorites: {e}");
         }
     }
 
@@ -3155,6 +3199,18 @@ impl AppView {
         }
     }
 
+    /// `ToggleFavorite` handler: pin / unpin the right-clicked page.
+    fn on_toggle_favorite(
+        &mut self,
+        _: &ToggleFavorite,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((id, _)) = self.context_page.take() {
+            self.toggle_favorite(id, cx);
+        }
+    }
+
     /// `OpenInNewWindow` handler (sidebar page or tab right-click): the remembered
     /// target *moves* to a fresh window rather than duplicating — if it's already open
     /// as a (non-Journal) tab here, tear it off (close here + open there); otherwise
@@ -3187,6 +3243,11 @@ impl AppView {
     fn delete_page(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         match self.db.delete_page(id) {
             Ok(true) => {
+                // Drop a deleted page from favorites so the dead id doesn't linger.
+                if let Some(pos) = self.favorites.iter().position(|&x| x == id) {
+                    self.favorites.remove(pos);
+                    self.persist_favorites();
+                }
                 // Close any tabs showing the deleted page (journal at 0 is safe).
                 let mut i = self.tabs.len();
                 while i > 1 {
@@ -3881,6 +3942,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_rename_page))
+            .on_action(cx.listener(Self::on_toggle_favorite))
             .on_action(cx.listener(Self::on_edit_note))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_import_logseq))

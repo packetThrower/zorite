@@ -12,9 +12,12 @@ use gpui::{
 };
 use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt, tooltip::Tooltip};
 
-use crate::actions::{DeletePage, NewPage, OpenInNewTab, OpenInNewWindow, RenamePage};
+use crate::actions::{
+    DeletePage, NewPage, OpenInNewTab, OpenInNewWindow, RenamePage, ToggleFavorite,
+};
 use crate::app::AppView;
 use crate::hierarchy::{self, PageNode};
+use crate::models::Page;
 use crate::theme;
 
 pub fn render(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -39,6 +42,18 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
     let mut page_rows: Vec<AnyElement> = Vec::new();
     push_tree_rows(&tree, 0, app, window, cx, &mut page_rows);
     let no_pages = page_rows.is_empty();
+
+    // Favorites: the pinned pages, shown by full title above the recent list, in
+    // the order added. A favorited page that's since been deleted is skipped.
+    let fav_pages: Vec<&Page> = app
+        .favorites
+        .iter()
+        .filter_map(|id| app.pages.iter().find(|p| p.id == *id))
+        .collect();
+    let mut fav_rows: Vec<AnyElement> = Vec::with_capacity(fav_pages.len());
+    for page in fav_pages {
+        fav_rows.push(favorite_row(page, app, window, cx));
+    }
 
     div()
         .w(px(240.0))
@@ -108,6 +123,9 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                         .flex()
                         .flex_col()
                         .child(journal_row(app.is_journal_view(), cx))
+                        .when(!fav_rows.is_empty(), |this| {
+                            this.child(section_label("Favorites")).children(fav_rows)
+                        })
                         .child(section_label("Recent"))
                         .when(no_pages, |this| {
                             this.child(empty_hint(if app.pages.is_empty() {
@@ -259,7 +277,8 @@ fn push_tree_rows(
 ) {
     for node in nodes {
         let active = node.id.is_some_and(|id| app.is_page_active(id));
-        out.push(tree_row(node, depth, active, window, cx));
+        let is_fav = node.id.is_some_and(|id| app.is_favorite(id));
+        out.push(tree_row(node, depth, active, is_fav, window, cx));
         push_tree_rows(&node.children, depth + 1, app, window, cx, out);
     }
 }
@@ -291,22 +310,80 @@ fn label_overflows(label: &SharedString, depth: usize, window: &Window) -> bool 
     width > px(avail)
 }
 
-/// One row in the page tree, indented by `depth`. Real pages get a right-click
-/// menu (open in new tab / rename / delete); virtual namespace nodes don't.
-/// Clicking either opens the page by its full path, creating it if needed.
+/// One row in the recent page tree, indented by `depth`. A real page delegates
+/// to [`page_row`] (click + full right-click menu); a virtual namespace node is a
+/// bare clickable row. Clicking either opens the page by its full path.
 fn tree_row(
     node: &PageNode,
     depth: usize,
     active: bool,
+    is_fav: bool,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
     let label: SharedString = node.segment.clone().into();
-    let click_path = node.path.clone();
+    let full_path: SharedString = node.path.clone().into();
+    if let Some(id) = node.id {
+        return page_row(
+            id,
+            label,
+            full_path.clone(),
+            SharedString::from(format!("pn:{full_path}")),
+            active,
+            is_fav,
+            depth,
+            window,
+            cx,
+        );
+    }
+    // Virtual namespace node (no page of its own yet) — clickable, no menu.
     let truncated = label_overflows(&label, depth, window);
+    let click_path = node.path.clone();
+    let mut row = base_row(
+        SharedString::from(format!("pn:{full_path}")),
+        &label,
+        false,
+        depth,
+    )
+    .on_click(
+        cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+            this.open_page_title(&click_path, window, cx);
+        }),
+    );
+    if truncated {
+        let full = label.clone();
+        row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+    }
+    row.into_any_element()
+}
 
-    let mut row = div()
-        .id(SharedString::from(format!("pn:{}", node.path)))
+/// A favorites-group row: the pinned page shown by its **full** title, with the
+/// same click + right-click menu as a recent row.
+fn favorite_row(
+    page: &Page,
+    app: &AppView,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
+    let title: SharedString = page.title.clone().into();
+    page_row(
+        page.id,
+        title.clone(),
+        title,
+        SharedString::from(format!("fav:{}", page.id)),
+        app.is_page_active(page.id),
+        true,
+        0,
+        window,
+        cx,
+    )
+}
+
+/// Shared styling for a clickable sidebar page row (the caller chains `on_click`
+/// etc.). `label` is what's shown; `depth` sets the indent.
+fn base_row(id: SharedString, label: &SharedString, active: bool, depth: usize) -> Stateful<Div> {
+    div()
+        .id(id)
         // Indent each level; the base matches the other rows' `px_2`.
         .pl(px(row_indent(depth)))
         .pr_2()
@@ -325,39 +402,58 @@ fn tree_row(
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
         .child(label.clone())
-        .on_click(
-            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-                this.open_page_title(&click_path, window, cx);
-            }),
-        );
+}
 
-    // Only when the title is actually clipped, reveal the full text on hover.
+/// A real-page sidebar row (recent tree or favorites): opens `full_path` on
+/// click, with a right-click menu to (un)favorite, open elsewhere, rename, or
+/// delete. `label` is the shown text (tree leaf or full title); `elem_id` keeps
+/// it unique across the two lists.
+#[allow(clippy::too_many_arguments)]
+fn page_row(
+    id: i64,
+    label: SharedString,
+    full_path: SharedString,
+    elem_id: SharedString,
+    active: bool,
+    is_fav: bool,
+    depth: usize,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
+    let truncated = label_overflows(&label, depth, window);
+    let click_path = full_path.to_string();
+    let mut row = base_row(elem_id, &label, active, depth).on_click(cx.listener(
+        move |this: &mut AppView, _: &ClickEvent, window, cx| {
+            this.open_page_title(&click_path, window, cx);
+        },
+    ));
     if truncated {
         let full = label.clone();
         row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
     }
-
     // Right-click records the target page; the menu item dispatches an action
     // handled on `AppView` (delete confirms first).
-    if let Some(id) = node.id {
-        let menu_label: SharedString = node.path.clone().into();
-        row.on_mouse_down(
-            MouseButton::Right,
-            cx.listener(move |this: &mut AppView, _, _window, _cx| {
-                this.set_context_page(id, menu_label.clone());
-            }),
-        )
-        .context_menu(|menu, _window, _cx| {
-            menu.menu("Open in new tab", Box::new(OpenInNewTab))
-                .menu("Open in new window", Box::new(OpenInNewWindow))
-                .separator()
-                .menu("Rename page", Box::new(RenamePage))
-                .menu("Delete page", Box::new(DeletePage))
-        })
-        .into_any_element()
+    let fav_label = if is_fav {
+        "Remove from favorites"
     } else {
-        row.into_any_element()
-    }
+        "Add to favorites"
+    };
+    row.on_mouse_down(
+        MouseButton::Right,
+        cx.listener(move |this: &mut AppView, _, _window, _cx| {
+            this.set_context_page(id, full_path.clone());
+        }),
+    )
+    .context_menu(move |menu, _window, _cx| {
+        menu.menu(fav_label, Box::new(ToggleFavorite))
+            .separator()
+            .menu("Open in new tab", Box::new(OpenInNewTab))
+            .menu("Open in new window", Box::new(OpenInNewWindow))
+            .separator()
+            .menu("Rename page", Box::new(RenamePage))
+            .menu("Delete page", Box::new(DeletePage))
+    })
+    .into_any_element()
 }
 
 fn section_label(text: &str) -> impl IntoElement {

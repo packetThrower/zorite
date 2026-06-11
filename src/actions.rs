@@ -9,9 +9,9 @@
 //! to `InsertTab` (insert two spaces in the focused editor; propagates when
 //! no editor is focused) — auto-grow editors aren't gpui-component-indentable.
 //!
-//! `DeletePage` / `OpenInNewTab` / `OpenInNewWindow` / `RenamePage` have no
-//! keybinding — they're dispatched by right-click context menus (sidebar pages
-//! and tabs) and handled on `AppView`.
+//! `DeletePage` / `OpenInNewTab` / `OpenInNewWindow` / `RenamePage` /
+//! `ToggleFavorite` have no keybinding — they're dispatched by right-click
+//! context menus (sidebar pages and tabs) and handled on `AppView`.
 
 use gpui::{App, KeyBinding, Menu, MenuItem, actions};
 
@@ -26,6 +26,8 @@ actions!(
         OpenInNewTab,
         OpenInNewWindow,
         RenamePage,
+        // Sidebar right-click → pin/unpin a page to the "Favorites" group.
+        ToggleFavorite,
         // Right-click → Edit on a rendered page/journal day → enter edit mode.
         EditNote,
         NewPage,
