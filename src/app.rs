@@ -214,6 +214,9 @@ pub struct AppView {
     // mermaid renderer (no `cx`) so it can read a ready diagram during paint while
     // `ensure_mermaid_loaded` drives the off-thread render. See `mermaid::MermaidStore`.
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
+    // The source of the mermaid diagram currently expanded in the lightbox overlay
+    // (click a diagram to open it large + scrollable). `None` = closed.
+    mermaid_lightbox: Option<SharedString>,
     // Pending image decodes, run one at a time (`image_decoding` gates) so only a
     // single full-resolution buffer is ever allocated — decoding a 12 MP photo
     // briefly needs tens of MB, which would otherwise multiply across a photo-heavy
@@ -411,6 +414,7 @@ impl AppView {
             image_widths: Rc::new(RefCell::new(HashMap::new())),
             image_store: Rc::new(RefCell::new(crate::images::ImageStore::default())),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
+            mermaid_lightbox: None,
             image_queue: std::collections::VecDeque::new(),
             image_decoding: false,
             pdf_views: HashMap::new(),
@@ -1544,6 +1548,13 @@ impl AppView {
             let _ = this.update(cx, |_, cx| cx.notify());
         })
         .detach();
+    }
+
+    /// Open a rendered mermaid diagram in the full-window lightbox overlay (large +
+    /// scrollable). Clicking the inline diagram calls this.
+    pub fn open_mermaid_lightbox(&mut self, source: SharedString, cx: &mut Context<Self>) {
+        self.mermaid_lightbox = Some(source);
+        cx.notify();
     }
 
     /// Ensure the image at `src` is decoding/decoded (idempotent). Called from a
@@ -3301,6 +3312,61 @@ impl Render for AppView {
             .into_any_element()
         });
 
+        // A clicked mermaid diagram, expanded full-window: the cached image at full
+        // resolution in a scrollable box, on a dimmed backdrop that dismisses on click.
+        let mermaid_lightbox = self
+            .mermaid_lightbox
+            .clone()
+            .and_then(|source| self.mermaid_store.borrow().get(&source))
+            .map(|image| {
+                gpui::deferred(
+                    div()
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::hsla(0., 0., 0., 0.72))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut AppView, _, _window, cx| {
+                                this.mermaid_lightbox = None;
+                                cx.notify();
+                            }),
+                        )
+                        .child(
+                            // The diagram itself: full size + scrollable; clicks here
+                            // pan/scroll rather than dismissing.
+                            div()
+                                .id("mermaid-lightbox")
+                                .occlude()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .max_w(gpui::relative(0.95))
+                                .max_h(gpui::relative(0.95))
+                                .overflow_scroll()
+                                .rounded(px(8.0))
+                                .bg(theme::bg_content())
+                                .border_1()
+                                .border_color(theme::border_subtle())
+                                .shadow_lg()
+                                .child(gpui::img(gpui::ImageSource::from(image))),
+                        )
+                        .child(
+                            // A clear close affordance (the backdrop handler does the work).
+                            div()
+                                .absolute()
+                                .top(px(14.0))
+                                .right(px(18.0))
+                                .text_size(px(22.0))
+                                .text_color(gpui::white())
+                                .cursor_pointer()
+                                .child("✕"),
+                        ),
+                )
+                .into_any_element()
+            });
+
         // Each journal day fills most of the window height so days read as
         // distinct "pages" instead of a continuous wall of text.
         let day_min = px(f32::from(window.viewport_size().height) * 0.75);
@@ -3520,6 +3586,7 @@ impl Render for AppView {
             .children(overlay)
             .children(drag_overlay)
             .children(calendar_overlay)
+            .children(mermaid_lightbox)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.

@@ -5,11 +5,12 @@
 //! it paints), or the source text on failure.
 
 use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Bounds, ImageSource, IntoElement, ParentElement, Pixels, SharedString, Styled,
-    WeakEntity, canvas, div, img, px, relative,
+    AnyElement, Bounds, ImageSource, InteractiveElement, IntoElement, ParentElement, Pixels,
+    SharedString, StatefulInteractiveElement, Styled, WeakEntity, canvas, div, img, px, relative,
 };
 use gpui_markdown::MermaidRenderer;
 
@@ -33,12 +34,32 @@ fn build(
     {
         let store = store.borrow();
         if let Some(image) = store.get(&source) {
+            // A stable id per diagram (from its source) so the click handler works.
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            source.hash(&mut hasher);
+            let id = hasher.finish() as usize;
+            let lightbox_weak = weak.clone();
+            let lightbox_src = source.clone();
             return div()
                 .py(px(4.0))
                 .child(
-                    img(ImageSource::from(image))
-                        .max_w(relative(1.0))
-                        .rounded(px(6.0)),
+                    // Click to expand into the full-window lightbox.
+                    div()
+                        .id(("mermaid", id))
+                        .cursor_pointer()
+                        .on_click(move |_ev, _window, cx| {
+                            // Consume the click so it doesn't also reach the day/page
+                            // click-to-edit handler underneath.
+                            cx.stop_propagation();
+                            let _ = lightbox_weak.update(cx, |this, cx| {
+                                this.open_mermaid_lightbox(lightbox_src.clone(), cx)
+                            });
+                        })
+                        .child(
+                            img(ImageSource::from(image))
+                                .max_w(relative(1.0))
+                                .rounded(px(6.0)),
+                        ),
                 )
                 .into_any_element();
         }
