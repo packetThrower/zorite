@@ -502,10 +502,10 @@ impl AppView {
             focus_handle: cx.focus_handle(),
         };
 
-        this.loaded_days = 14;
-        for i in 0..this.loaded_days {
-            this.ensure_day_editor(date_for_offset(i), window, cx);
-        }
+        // The journal feed loads lazily, on the first frame that actually shows
+        // it (see `ensure_feed_loaded` in `render`) — so a window opened on a
+        // torn-off page/PDF never builds a feed, and never pays to keep it
+        // in sync with other windows' edits.
         this.refresh_sidebar();
         this.recent_pages = this.load_recent_pages();
         // Load user themes on top of the built-ins, then apply the saved
@@ -712,6 +712,20 @@ impl AppView {
             self.persist(page.id, content);
         }
         self.refresh_sidebar();
+    }
+
+    /// Build the initial feed the first time this window shows the journal.
+    /// Runs from `render` (gated to the Journal tab being active), so the cost —
+    /// editors, day text, and the cross-window reload work that comes with them —
+    /// is only ever paid by windows that actually display the feed.
+    fn ensure_feed_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.loaded_days > 0 {
+            return;
+        }
+        self.loaded_days = 14;
+        for i in 0..self.loaded_days {
+            self.ensure_day_editor(date_for_offset(i), window, cx);
+        }
     }
 
     /// Grow the feed if the user has scrolled near the bottom.
@@ -1682,6 +1696,11 @@ impl AppView {
     fn release_images(&mut self, window: &mut Window, cx: &mut App) {
         self.image_queue.clear();
         self.image_store.borrow_mut().release(window, cx);
+        // Mermaid bitmaps are per-window and can be several MB each; drop them on
+        // view change like images (they re-render off-thread when shown again).
+        // Without this, a window that showed the journal once kept its diagrams
+        // in memory while displaying an unrelated page.
+        self.mermaid_store.borrow_mut().clear();
     }
 
     /// The image currently being resized, as `(attr offset, live width)`, so
@@ -3505,6 +3524,12 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Lazy journal feed: build it on the first frame that shows the Journal
+        // tab (covers startup, ⌘N windows, and a later tab click — the editors
+        // are created just above the feed render in this same pass).
+        if self.loaded_days == 0 && matches!(self.tabs[self.active].kind, TabKind::Journal) {
+            self.ensure_feed_loaded(window, cx);
+        }
         // First paint after a failed DB open: surface it once (deferred so we
         // don't open a dialog mid-layout).
         if self.db_error.is_some() && !self.db_error_shown {
