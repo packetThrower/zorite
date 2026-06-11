@@ -382,8 +382,9 @@ fn favorite_row(
 /// Shared styling for a clickable sidebar page row (the caller chains `on_click`
 /// etc.). `label` is what's shown; `depth` sets the indent.
 fn base_row(id: SharedString, label: &SharedString, active: bool, depth: usize) -> Stateful<Div> {
-    div()
+    let mut row = div()
         .id(id)
+        .relative()
         // Indent each level; the base matches the other rows' `px_2`.
         .pl(px(row_indent(depth)))
         .pr_2()
@@ -401,7 +402,29 @@ fn base_row(id: SharedString, label: &SharedString, active: bool, depth: usize) 
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
-        .child(label.clone())
+        .child(label.clone());
+    // A faint vertical guide per ancestor level — like the nested markdown list —
+    // so the subpage hierarchy reads at a glance. Drawn as overlays in the left
+    // padding (left of the text), so the full-width row highlight is untouched;
+    // rows are flush, so each segment joins the next into a continuous line.
+    for level in 1..=depth {
+        row = row.child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(guide_x(level)))
+                .w(px(1.0))
+                .bg(theme::border_subtle()),
+        );
+    }
+    row
+}
+
+/// X (px from a row's left edge) of the indent guide for ancestor `level` — the
+/// gutter just left of that level's text.
+fn guide_x(level: usize) -> f32 {
+    row_indent(level - 1) + 6.0
 }
 
 /// A real-page sidebar row (recent tree or favorites): opens `full_path` on
