@@ -7,27 +7,27 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, Div, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, div,
+    ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
     prelude::FluentBuilder as _, px, relative,
 };
-use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt};
+use gpui_component::{Icon, IconName, input::Input, menu::ContextMenuExt, tooltip::Tooltip};
 
 use crate::actions::{DeletePage, NewPage, OpenInNewTab, OpenInNewWindow, RenamePage};
 use crate::app::AppView;
 use crate::hierarchy::{self, PageNode};
 use crate::theme;
 
-pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+pub fn render(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> impl IntoElement {
     if app.sidebar_collapsed {
         collapsed_rail(cx).into_any_element()
     } else {
-        expanded(app, cx).into_any_element()
+        expanded(app, window, cx).into_any_element()
     }
 }
 
 /// The full sidebar: a header (collapse caret + jump-to-date/settings icons,
 /// then the search box) above the journal feed link and the page list.
-fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> impl IntoElement {
     // The tree is filtered to recently-viewed pages. `Foo::Bar` titles nest;
     // a namespace segment with no recent page of its own still shows as a
     // virtual (clickable) node so the path to a recent page is visible.
@@ -37,7 +37,7 @@ fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             .filter(|p| app.recent_pages.contains(&p.id)),
     );
     let mut page_rows: Vec<AnyElement> = Vec::new();
-    push_tree_rows(&tree, 0, app, cx, &mut page_rows);
+    push_tree_rows(&tree, 0, app, window, cx, &mut page_rows);
     let no_pages = page_rows.is_empty();
 
     div()
@@ -91,12 +91,11 @@ fn expanded(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .id("sidebar-scroll")
                 .flex_1()
                 .min_h_0()
-                // Scroll both ways: down through many pages, and right when a page
-                // title is wider than the rail. `items_start` lets the list size to
-                // its widest (non-wrapping) row instead of being clamped to the
-                // rail width — that overflow is what the horizontal scroll reveals.
-                .overflow_scroll()
-                .items_start()
+                // Scroll vertically through the list. Rows stretch to the rail width
+                // (default cross-axis stretch) and a title wider than that is clipped
+                // with an ellipsis — so a row and its selection highlight never run
+                // past the sidebar edge. The full title is shown in a tooltip.
+                .overflow_y_scroll()
                 .flex()
                 .flex_col()
                 .px_2()
@@ -254,35 +253,70 @@ fn push_tree_rows(
     nodes: &[PageNode],
     depth: usize,
     app: &AppView,
+    window: &mut Window,
     cx: &mut Context<AppView>,
     out: &mut Vec<AnyElement>,
 ) {
     for node in nodes {
         let active = node.id.is_some_and(|id| app.is_page_active(id));
-        out.push(tree_row(node, depth, active, cx));
-        push_tree_rows(&node.children, depth + 1, app, cx, out);
+        out.push(tree_row(node, depth, active, window, cx));
+        push_tree_rows(&node.children, depth + 1, app, window, cx, out);
     }
+}
+
+/// A tree row's left padding (px) at `depth`; the base matches the other rows'
+/// `px_2`. Used both to indent the row and to work out how much room the title
+/// has before it's clipped.
+fn row_indent(depth: usize) -> f32 {
+    8.0 + depth as f32 * 14.0
+}
+
+/// Whether `label`, rendered at the row's 13px, is wider than the room left in a
+/// row indented to `depth` — i.e. it will be ellipsized, so it wants a tooltip.
+/// The sidebar is a fixed 240px; the scroll area pads 8px per side and a row pads
+/// its indent on the left and 8px (`pr_2`) on the right. The rest is the text box.
+fn label_overflows(label: &SharedString, depth: usize, window: &Window) -> bool {
+    let avail = 240.0 - 16.0 - row_indent(depth) - 8.0;
+    if avail <= 0.0 {
+        return true;
+    }
+    // Shape the title at the row's 13px in the window's default font and compare
+    // its width to the room available. `to_run` carries the font from the current
+    // text style, which the rows inherit (they only override the size).
+    let run = window.text_style().to_run(label.len());
+    let width = window
+        .text_system()
+        .layout_line(label.as_ref(), px(13.0), &[run], None)
+        .width;
+    width > px(avail)
 }
 
 /// One row in the page tree, indented by `depth`. Real pages get a right-click
 /// menu (open in new tab / rename / delete); virtual namespace nodes don't.
 /// Clicking either opens the page by its full path, creating it if needed.
-fn tree_row(node: &PageNode, depth: usize, active: bool, cx: &mut Context<AppView>) -> AnyElement {
+fn tree_row(
+    node: &PageNode,
+    depth: usize,
+    active: bool,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
     let label: SharedString = node.segment.clone().into();
     let click_path = node.path.clone();
+    let truncated = label_overflows(&label, depth, window);
 
-    let row = div()
+    let mut row = div()
         .id(SharedString::from(format!("pn:{}", node.path)))
         // Indent each level; the base matches the other rows' `px_2`.
-        .pl(px(8.0 + depth as f32 * 14.0))
+        .pl(px(row_indent(depth)))
         .pr_2()
         .py_1p5()
         .rounded(px(6.0))
         .text_size(px(13.0))
         .cursor_pointer()
-        // Keep each title on one line; over-long ones overflow and the sidebar
-        // scrolls horizontally to reveal them rather than clipping with an ellipsis.
-        .whitespace_nowrap()
+        // Clip an over-long title to the rail width with an ellipsis so the row —
+        // and its selection highlight — never runs past the sidebar edge.
+        .truncate()
         .when(active, |d| {
             d.bg(theme::accent_tint()).text_color(theme::text_primary())
         })
@@ -290,12 +324,18 @@ fn tree_row(node: &PageNode, depth: usize, active: bool, cx: &mut Context<AppVie
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
         })
-        .child(label)
+        .child(label.clone())
         .on_click(
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.open_page_title(&click_path, window, cx);
             }),
         );
+
+    // Only when the title is actually clipped, reveal the full text on hover.
+    if truncated {
+        let full = label.clone();
+        row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+    }
 
     // Right-click records the target page; the menu item dispatches an action
     // handled on `AppView` (delete confirms first).

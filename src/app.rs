@@ -3578,7 +3578,7 @@ impl Render for AppView {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .child(ui::sidebar::render(self, cx))
+                    .child(ui::sidebar::render(self, window, cx))
                     .child(
                         div()
                             .flex_1()
