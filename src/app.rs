@@ -217,6 +217,9 @@ pub struct AppView {
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
+    // Focus for the open lightbox so it can capture Esc-to-close without a global
+    // key binding (which would clash with the editor's Escape → slash-cancel).
+    lightbox_focus: FocusHandle,
     // Pending image decodes, run one at a time (`image_decoding` gates) so only a
     // single full-resolution buffer is ever allocated — decoding a 12 MP photo
     // briefly needs tens of MB, which would otherwise multiply across a photo-heavy
@@ -415,6 +418,7 @@ impl AppView {
             image_store: Rc::new(RefCell::new(crate::images::ImageStore::default())),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
             mermaid_lightbox: None,
+            lightbox_focus: cx.focus_handle(),
             image_queue: std::collections::VecDeque::new(),
             image_decoding: false,
             pdf_views: HashMap::new(),
@@ -1551,9 +1555,24 @@ impl AppView {
     }
 
     /// Open a rendered mermaid diagram in the full-window lightbox overlay (large +
-    /// scrollable). Clicking the inline diagram calls this.
-    pub fn open_mermaid_lightbox(&mut self, source: SharedString, cx: &mut Context<Self>) {
+    /// scrollable). Clicking the inline diagram calls this; focusing the overlay lets
+    /// it capture Esc.
+    pub fn open_mermaid_lightbox(
+        &mut self,
+        source: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.mermaid_lightbox = Some(source);
+        window.focus(&self.lightbox_focus, cx);
+        cx.notify();
+    }
+
+    /// Close the lightbox and hand focus back to the app root (so keyboard shortcuts
+    /// keep working).
+    pub fn close_mermaid_lightbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.mermaid_lightbox = None;
+        window.focus(&self.focus_handle, cx);
         cx.notify();
     }
 
@@ -3328,11 +3347,20 @@ impl Render for AppView {
                         .items_center()
                         .justify_center()
                         .bg(gpui::hsla(0., 0., 0., 0.72))
+                        // Focused on open, so Esc dismisses (no global binding to
+                        // clash with the editor's Escape → slash-cancel).
+                        .track_focus(&self.lightbox_focus)
+                        .on_key_down(cx.listener(
+                            |this: &mut AppView, ev: &gpui::KeyDownEvent, window, cx| {
+                                if ev.keystroke.key == "escape" {
+                                    this.close_mermaid_lightbox(window, cx);
+                                }
+                            },
+                        ))
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(|this: &mut AppView, _, _window, cx| {
-                                this.mermaid_lightbox = None;
-                                cx.notify();
+                            cx.listener(|this: &mut AppView, _, window, cx| {
+                                this.close_mermaid_lightbox(window, cx);
                             }),
                         )
                         .child(

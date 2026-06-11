@@ -47,12 +47,12 @@ fn build(
                     div()
                         .id(("mermaid", id))
                         .cursor_pointer()
-                        .on_click(move |_ev, _window, cx| {
+                        .on_click(move |_ev, window, cx| {
                             // Consume the click so it doesn't also reach the day/page
                             // click-to-edit handler underneath.
                             cx.stop_propagation();
                             let _ = lightbox_weak.update(cx, |this, cx| {
-                                this.open_mermaid_lightbox(lightbox_src.clone(), cx)
+                                this.open_mermaid_lightbox(lightbox_src.clone(), window, cx)
                             });
                         })
                         .child(
