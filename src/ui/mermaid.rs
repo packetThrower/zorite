@@ -40,12 +40,16 @@ fn build(
             let id = hasher.finish() as usize;
             let lightbox_weak = weak.clone();
             let lightbox_src = source.clone();
+            // The click handler is on the image itself (`Img` is interactive), so the
+            // hit-box hugs the diagram — clicking the empty space beside a narrow
+            // diagram falls through to the day/page click-to-edit, not the lightbox.
             return div()
                 .py(px(4.0))
                 .child(
-                    // Click to expand into the full-window lightbox.
-                    div()
+                    img(ImageSource::from(image))
                         .id(("mermaid", id))
+                        .max_w(relative(1.0))
+                        .rounded(px(6.0))
                         .cursor_pointer()
                         .on_click(move |_ev, window, cx| {
                             // Consume the click so it doesn't also reach the day/page
@@ -54,12 +58,7 @@ fn build(
                             let _ = lightbox_weak.update(cx, |this, cx| {
                                 this.open_mermaid_lightbox(lightbox_src.clone(), window, cx)
                             });
-                        })
-                        .child(
-                            img(ImageSource::from(image))
-                                .max_w(relative(1.0))
-                                .rounded(px(6.0)),
-                        ),
+                        }),
                 )
                 .into_any_element();
         }
