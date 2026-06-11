@@ -3,14 +3,14 @@
 //! tabs don't fit (gpui-component `TabBar`).
 
 use gpui::{
-    AppContext, Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
-    StatefulInteractiveElement, Styled, div, px,
+    AppContext, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
+    StatefulInteractiveElement, Styled, canvas, div, px,
 };
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::tab::{Tab, TabBar};
 
 use crate::actions::OpenInNewWindow;
-use crate::app::{AppView, TabDrag};
+use crate::app::{AppView, DraggingTab, GlobalDraggingTab, TabDrag};
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -50,10 +50,25 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         if i != 0 {
             t = t
                 .suffix(close_button(i, cx))
-                .on_drag(TabDrag { ix: i, title }, |drag, _offset, _window, cx| {
-                    cx.stop_propagation();
-                    cx.new(|_| drag.clone())
-                })
+                .on_drag(
+                    TabDrag {
+                        ix: i,
+                        kind: tab.kind.clone(),
+                        title,
+                    },
+                    |drag, _offset, window, cx| {
+                        // Record the drag app-wide so the source window can route the
+                        // release (to another window, or a new one) when it lands off
+                        // the strip.
+                        cx.global_mut::<GlobalDraggingTab>().0 = Some(DraggingTab {
+                            source: window.window_handle(),
+                            kind: drag.kind.clone(),
+                            title: drag.title.clone(),
+                        });
+                        cx.stop_propagation();
+                        cx.new(|_| drag.clone())
+                    },
+                )
                 .drag_over::<TabDrag>(|style, _drag, _window, _cx| {
                     style.border_l_2().border_color(theme::accent())
                 })
@@ -64,6 +79,12 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 );
         }
         bar = bar.child(t);
+    }
+
+    // While a tab from another window is dragged over this one, show a translucent
+    // "ghost tab" at the end of the strip — where the dropped tab will land.
+    if let Some(title) = app.drop_ghost_title(cx) {
+        bar = bar.child(ghost_tab(title));
     }
 
     // A flex-grow drop zone filling the strip past the last tab, so a tab can be
@@ -85,7 +106,51 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             ),
     );
 
-    div().flex_shrink_0().w_full().child(bar)
+    // Record the strip's window-relative rect (behind the bar, so it never
+    // intercepts clicks) so another window's drag can tell when the cursor is
+    // over this tab bar — the cross-window "move here" target.
+    let strip_bounds = app.tab_strip_bounds.clone();
+    div()
+        .flex_shrink_0()
+        .w_full()
+        .relative()
+        .child(
+            canvas(
+                move |bounds, _window, _cx| strip_bounds.set(bounds),
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
+        .child(bar)
+}
+
+/// A translucent, dashed placeholder tab showing where a tab dragged in from
+/// another window would land. Non-interactive — purely an indicator.
+fn ghost_tab(title: SharedString) -> Tab {
+    Tab::new()
+        .disabled(true)
+        .child(
+            // `h_full` makes the dashed outline fill the tab's content height so
+            // the ghost reads as a full-size tab, not a small inner chip. A small
+            // negative left margin cancels the dashed box's own border+padding so
+            // the label lines up with the other tabs' text instead of sitting inset.
+            div()
+                .h_full()
+                .flex()
+                .items_center()
+                .gap_1()
+                .ml(px(-8.0))
+                .border_1()
+                .border_dashed()
+                .border_color(theme::accent())
+                .rounded(px(6.0))
+                .px(px(8.0))
+                .text_color(theme::accent())
+                .child("＋")
+                .child(title),
+        )
+        .opacity(0.6)
 }
 
 fn close_button(ix: usize, cx: &mut Context<AppView>) -> impl IntoElement {

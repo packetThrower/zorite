@@ -34,7 +34,10 @@ use gpui::{
 };
 use gpui_component::{Root, TitleBar};
 
-use app::{AppView, DocSignal, GlobalDocSignal, TabKind};
+use app::{
+    AppView, DocSignal, GlobalAppWindows, GlobalDocSignal, GlobalDraggingTab, GlobalDropTarget,
+    TabKind,
+};
 
 fn main() {
     env_logger::init();
@@ -58,6 +61,11 @@ fn main() {
         // live multi-window sync.
         let doc_signal = cx.new(|_| DocSignal);
         cx.set_global(GlobalDocSignal(doc_signal));
+        // Cross-window tab dragging: the in-flight tab, and the registry of open
+        // windows a tab can be dropped onto.
+        cx.set_global(GlobalDraggingTab::default());
+        cx.set_global(GlobalDropTarget::default());
+        cx.set_global(GlobalAppWindows::default());
 
         let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
         if let Err(err) = cx.open_window(
@@ -79,6 +87,7 @@ fn main() {
                 window.set_client_inset(px(10.0));
                 let view = cx.new(|cx| AppView::new(window, cx));
                 view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
+                AppView::register_window(&view, window, cx);
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {

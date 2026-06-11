@@ -10,18 +10,19 @@
 //! gives a real Word-like typing experience (native Enter / selection /
 //! undo / IME). Content saves on `Change` and re-indexes `[[links]]`.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    App, AppContext, Bounds, ClipboardEntry, Context, CursorStyle, Entity, EventEmitter,
-    FocusHandle, Global, ImageFormat, InteractiveElement, IntoElement, MouseButton, MouseMoveEvent,
-    MouseUpEvent, ParentElement, Pixels, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, Window, WindowAppearance,
-    WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div, px, size,
+    AnyWindowHandle, App, AppContext, Bounds, ClipboardEntry, Context, CursorStyle, Entity,
+    EventEmitter, FocusHandle, Global, ImageFormat, InteractiveElement, IntoElement, MouseButton,
+    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity, Window,
+    WindowAppearance, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div, point, px,
+    size,
 };
 use gpui_component::{
     Root, RopeExt, TitleBar, WindowExt,
@@ -88,13 +89,51 @@ pub struct GlobalDocSignal(pub Entity<DocSignal>);
 impl Global for GlobalDocSignal {}
 
 /// The payload + floating preview for a tab being dragged in the strip. Dropping
-/// it on another tab reorders (`reorder_tab`); dropping it in the content area
-/// tears it off into a new window (`tear_off_tab`) — browser-style.
+/// it on another tab reorders (`reorder_tab`); releasing it anywhere off the
+/// strip hands it to whichever window sits under the cursor, or — over no window
+/// — tears it into a fresh one (`on_tab_drag_release`). Browser-style.
 #[derive(Clone)]
 pub struct TabDrag {
     pub ix: usize,
+    pub kind: TabKind,
     pub title: SharedString,
 }
+
+/// The tab currently being dragged, shared across windows. The strip drag is a
+/// gpui-internal drag (never a native OS file drag), so releasing on the desktop
+/// only ever opens a new window — it can't drop a file there. Set when a drag
+/// starts; read by the source window on the terminating mouse-up.
+#[derive(Clone)]
+pub struct DraggingTab {
+    /// The window the tab was dragged from (only it acts on release — it owns the
+    /// tab and, via OS mouse capture, the release event).
+    pub source: AnyWindowHandle,
+    pub kind: TabKind,
+    /// The tab's label, shown as a "ghost tab" in whichever window it's over.
+    pub title: SharedString,
+}
+
+/// Global slot holding the in-flight [`DraggingTab`] (set once at startup).
+#[derive(Default)]
+pub struct GlobalDraggingTab(pub Option<DraggingTab>);
+
+impl Global for GlobalDraggingTab {}
+
+/// The window the dragged tab is currently hovering over (another window, never
+/// the source), so that window can show a ghost tab where the tab would land.
+/// Driven by the source window's `on_drag_move`; cleared on release.
+#[derive(Default)]
+pub struct GlobalDropTarget(pub Option<AnyWindowHandle>);
+
+impl Global for GlobalDropTarget {}
+
+/// Every live main window + a weak handle to its `AppView`, so a tab released
+/// over another window can be handed to it. Registered on window creation, pruned
+/// lazily (closed windows drop out). Settings windows aren't registered.
+#[derive(Default)]
+pub struct GlobalAppWindows(pub Vec<(AnyWindowHandle, WeakEntity<AppView>)>);
+
+impl Global for GlobalAppWindows {}
 
 impl Render for TabDrag {
     fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -163,6 +202,14 @@ const RECENT_PAGES_LIMIT: usize = 10;
 
 pub struct AppView {
     db: Db,
+    /// This view's window, so it can tell whether a cross-window tab drag is
+    /// hovering it (see [`GlobalDropTarget`]).
+    window_handle: AnyWindowHandle,
+    /// The tab strip's window-relative rect, captured each paint. A drag from
+    /// another window only treats this window as a move target when the cursor is
+    /// over *this rect* — so a window hidden behind the source (whose full bounds
+    /// overlap) is never picked; you must drop on a visible tab bar.
+    pub tab_strip_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Open tabs (index 0 is the pinned Journal) and the active index.
     pub tabs: Vec<OpenTab>,
     pub active: usize,
@@ -398,6 +445,8 @@ impl AppView {
 
         let mut this = Self {
             db,
+            window_handle: window.window_handle(),
+            tab_strip_bounds: Rc::new(Cell::new(Bounds::default())),
             tabs: vec![OpenTab {
                 kind: TabKind::Journal,
                 title: "Journal".into(),
@@ -2646,7 +2695,25 @@ impl AppView {
     /// across windows on the next read (same-page concurrent edits = last write
     /// wins — there's no live in-memory sync yet).
     pub fn open_in_new_window(target: TabKind, cx: &mut App) {
-        let bounds = Bounds::centered(None, size(px(1100.0), px(800.0)), cx);
+        Self::open_in_new_window_at(target, None, cx);
+    }
+
+    /// Open a window showing `target`. With `at` set (a tear-off drop point in
+    /// global coords), the window opens under the cursor; otherwise it's centered.
+    pub fn open_in_new_window_at(target: TabKind, at: Option<Point<Pixels>>, cx: &mut App) {
+        let win_size = size(px(1100.0), px(800.0));
+        let bounds = match at {
+            // Drop the window so the cursor lands near where the tab strip will be
+            // (roughly under the grabbed tab), clamped onto the visible area.
+            Some(p) => Bounds {
+                origin: point(
+                    (p.x - px(160.0)).max(px(0.0)),
+                    (p.y - px(12.0)).max(px(0.0)),
+                ),
+                size: win_size,
+            },
+            None => Bounds::centered(None, win_size, cx),
+        };
         let opened = cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
@@ -2662,6 +2729,7 @@ impl AppView {
                 window.set_client_inset(px(10.0));
                 let view = cx.new(|cx| AppView::new(window, cx));
                 view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
+                AppView::register_window(&view, window, cx);
                 match target {
                     TabKind::Page(id) => {
                         view.update(cx, |this, cx| this.open_page_id(id, window, cx));
@@ -2679,6 +2747,173 @@ impl AppView {
         }
     }
 
+    /// Record a freshly-created main window in [`GlobalAppWindows`] so dragged
+    /// tabs can find it, pruning any windows that have since closed.
+    pub fn register_window(view: &Entity<AppView>, window: &Window, cx: &mut App) {
+        let entry = (window.window_handle(), view.downgrade());
+        let reg = &mut cx.global_mut::<GlobalAppWindows>().0;
+        reg.retain(|(_, w)| w.upgrade().is_some());
+        reg.push(entry);
+    }
+
+    /// Each move of a tab strip drag (fired on the source window, which keeps mouse
+    /// capture even off-window): light up whichever *other* window sits under the
+    /// cursor so it can show a ghost tab, repainting the windows whose hover state
+    /// just changed.
+    fn on_tab_drag_move(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let pos = window.bounds().origin + window.mouse_position();
+        let new = Self::window_under(pos, self.window_handle, cx).map(|(h, _)| h);
+        let cur = cx.global::<GlobalDropTarget>().0;
+        if new != cur {
+            cx.global_mut::<GlobalDropTarget>().0 = new;
+            if let Some(old) = cur {
+                Self::notify_window(old, cx);
+            }
+            if let Some(h) = new {
+                Self::notify_window(h, cx);
+            }
+        }
+    }
+
+    /// Terminating mouse-up of a tab strip drag (released off the strip, anywhere
+    /// on screen). Only the source window runs this. Removes the tab here, then —
+    /// after the event settles — hands it to the window under the cursor, or opens
+    /// a new one if there's none. Reorders within the strip are handled separately
+    /// by the tab's own `on_drop`, which consumes the drag before this fires.
+    fn on_tab_drag_release(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !cx.has_active_drag() {
+            return;
+        }
+        let Some(drag) = cx.global::<GlobalDraggingTab>().0.clone() else {
+            return;
+        };
+        if drag.source != window.window_handle() {
+            return;
+        }
+        cx.global_mut::<GlobalDraggingTab>().0 = None;
+        // Drop the hover ghost and repaint that window.
+        if let Some(prev) = cx.global_mut::<GlobalDropTarget>().0.take() {
+            Self::notify_window(prev, cx);
+        }
+        // The release point in global (screen) coordinates: the window's on-screen
+        // origin plus the window-relative cursor.
+        let origin = window.bounds().origin;
+        let pos = origin + window.mouse_position();
+        // Released over our *own* tab strip → keep the tab here. A drop onto a tab
+        // already reordered (its `on_drop` consumed the drag before this ran); a
+        // drop on the empty strip is just a no-op. Either way, never tear off — so
+        // you can always drag back to the strip to cancel.
+        let own_strip = self.tab_strip_bounds.get();
+        let own_strip = Bounds {
+            origin: origin + own_strip.origin,
+            size: own_strip.size,
+        };
+        if own_strip.contains(&pos) {
+            return;
+        }
+        // Drop our copy of the tab (found by content, not the stale drag index).
+        let Some(ix) = self.tabs.iter().position(|t| t.kind == drag.kind) else {
+            return;
+        };
+        if ix == 0 {
+            return;
+        }
+        self.close_tab(ix, window, cx);
+        let source = window.window_handle();
+        // Defer so cross-window updates don't re-enter mid-event.
+        window.defer(cx, move |_, cx| {
+            AppView::resolve_tab_drop(drag.kind, pos, source, cx);
+        });
+    }
+
+    /// The registered window other than `source` whose **tab strip** is under
+    /// `pos` (a global point). Hit-testing the strip — not the whole window —
+    /// means a window hidden behind the source is never picked: to move a tab you
+    /// drop it on a visible tab bar, leaving the rest of a window free for "drag
+    /// back to cancel". Used to route a release and to drive the hover ghost.
+    fn window_under(
+        pos: Point<Pixels>,
+        source: AnyWindowHandle,
+        cx: &mut App,
+    ) -> Option<(AnyWindowHandle, WeakEntity<AppView>)> {
+        cx.global::<GlobalAppWindows>()
+            .0
+            .clone()
+            .into_iter()
+            .find(|(handle, weak)| {
+                if *handle == source {
+                    return false;
+                }
+                let Some(view) = weak.upgrade() else {
+                    return false;
+                };
+                // The strip rect is window-relative; offset by the window's
+                // on-screen origin to compare against the global cursor.
+                let strip = view.read(cx).tab_strip_bounds.get();
+                handle
+                    .update(cx, |_, w, _| {
+                        Bounds {
+                            origin: w.bounds().origin + strip.origin,
+                            size: strip.size,
+                        }
+                        .contains(&pos)
+                    })
+                    .unwrap_or(false)
+            })
+    }
+
+    /// Repaint the `AppView` in `handle`'s window — e.g. to add or drop its ghost tab.
+    fn notify_window(handle: AnyWindowHandle, cx: &mut App) {
+        let weak = cx
+            .global::<GlobalAppWindows>()
+            .0
+            .iter()
+            .find(|(h, _)| *h == handle)
+            .map(|(_, w)| w.clone());
+        if let Some(weak) = weak {
+            let _ = weak.update(cx, |_, cx| cx.notify());
+        }
+    }
+
+    /// The label to show as a ghost tab in this window's strip — `Some` only while
+    /// a tab dragged from another window is hovering over this one.
+    pub fn drop_ghost_title(&self, cx: &App) -> Option<SharedString> {
+        if cx.global::<GlobalDropTarget>().0 != Some(self.window_handle) {
+            return None;
+        }
+        cx.global::<GlobalDraggingTab>()
+            .0
+            .as_ref()
+            .map(|d| d.title.clone())
+    }
+
+    /// Hand a torn-off tab to the window under `pos`, or open a fresh window when
+    /// the cursor is over none. Runs at the App level (deferred), where re-entering
+    /// other windows is safe.
+    fn resolve_tab_drop(kind: TabKind, pos: Point<Pixels>, source: AnyWindowHandle, cx: &mut App) {
+        match Self::window_under(pos, source, cx) {
+            Some((handle, weak)) => {
+                let _ = handle.update(cx, |_, w, cx| {
+                    if let Some(view) = weak.upgrade() {
+                        view.update(cx, |this, cx| this.receive_tab(kind, w, cx));
+                    }
+                    w.activate_window();
+                });
+            }
+            None => AppView::open_in_new_window_at(kind, Some(pos), cx),
+        }
+    }
+
+    /// Open (and focus) a tab for `kind` in this window — the receiving end of a
+    /// cross-window tab drag.
+    fn receive_tab(&mut self, kind: TabKind, window: &mut Window, cx: &mut Context<Self>) {
+        match kind {
+            TabKind::Page(id) => self.open_page_id(id, window, cx),
+            TabKind::Pdf(path) => self.open_pdf(path, window, cx),
+            TabKind::Journal => {}
+        }
+    }
+
     /// Drag-reorder: move tab `from` to where tab `to` sits. `to == tabs.len()`
     /// appends to the very end (the drop zone past the last tab). The pinned
     /// Journal (index 0) never moves, and nothing moves before it.
@@ -2689,6 +2924,9 @@ impl AppView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A reorder ends the drag inside the strip — clear the shared slot so a
+        // later release elsewhere can't read a stale tab.
+        cx.global_mut::<GlobalDraggingTab>().0 = None;
         let n = self.tabs.len();
         if from == 0 || to == 0 || from >= n || to > n || from == to {
             return;
@@ -3426,6 +3664,31 @@ impl Render for AppView {
             .size_full()
             .bg(theme::bg_window())
             .text_color(theme::text_primary())
+            // A tab strip drag released anywhere off the strip ends here — in-window
+            // (`on_mouse_up`) or past the window edge (`on_mouse_up_out`, which fires
+            // because the drag began inside, so the OS keeps delivering the release).
+            // The handler hands the tab to the window under the cursor, or tears it
+            // into a new one. Strip reorders are consumed earlier by the tab's own
+            // `on_drop`, so they never reach here.
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this: &mut AppView, _: &MouseUpEvent, window, cx| {
+                    this.on_tab_drag_release(window, cx);
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this: &mut AppView, _: &MouseUpEvent, window, cx| {
+                    this.on_tab_drag_release(window, cx);
+                }),
+            )
+            // While a tab is dragged, track which other window it's over so that
+            // window can show a ghost tab where it would land.
+            .on_drag_move(cx.listener(
+                |this: &mut AppView, _: &gpui::DragMoveEvent<TabDrag>, window, cx| {
+                    this.on_tab_drag_move(window, cx);
+                },
+            ))
             // Slash-menu keys (gated: act only while the menu is open, else
             // let the editor handle the key normally).
             .on_action(cx.listener(|this: &mut AppView, _: &SlashUp, _, cx| {
@@ -3588,48 +3851,38 @@ impl Render for AppView {
                             .flex_col()
                             .bg(theme::bg_content())
                             .child(ui::tab_bar::render(self, cx))
-                            // Dropping a dragged tab here (off the strip, into the
-                            // content area) tears it off into a new window —
-                            // browser-style.
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_h_0()
-                                    .on_drop(cx.listener(
-                                        |this: &mut AppView, drag: &TabDrag, window, cx| {
-                                            this.tear_off_tab(drag.ix, window, cx);
-                                        },
-                                    ))
-                                    .child(if self.searching {
-                                        ui::search::render(self, cx).into_any_element()
-                                    } else {
-                                        match self.tabs[self.active].kind.clone() {
-                                            TabKind::Journal => {
-                                                ui::journal::render(self, day_min, cx)
-                                                    .into_any_element()
-                                            }
-                                            TabKind::Page(_) => {
-                                                ui::page_view::render(self, cx).into_any_element()
-                                            }
-                                            TabKind::Pdf(path) => {
-                                                match self.pdf_views.get(&path).cloned() {
-                                                    // Encrypted + not yet unlocked:
-                                                    // show the password prompt instead
-                                                    // of the (blank) viewer.
-                                                    Some(v) if v.read(cx).is_locked() => self
-                                                        .pdf_password_prompt(
-                                                            path.clone(),
-                                                            v.read(cx).unlock_failed(),
-                                                            cx,
-                                                        )
-                                                        .into_any_element(),
-                                                    Some(v) => v.into_any_element(),
-                                                    None => gpui::div().into_any_element(),
-                                                }
-                                            }
+                            // A dragged tab released here (or anywhere off the strip)
+                            // is handled by the root `on_mouse_up` / `on_mouse_up_out`
+                            // above — it tears off into a new window or moves to the
+                            // window under the cursor.
+                            .child(div().flex_1().min_h_0().child(if self.searching {
+                                ui::search::render(self, cx).into_any_element()
+                            } else {
+                                match self.tabs[self.active].kind.clone() {
+                                    TabKind::Journal => {
+                                        ui::journal::render(self, day_min, cx).into_any_element()
+                                    }
+                                    TabKind::Page(_) => {
+                                        ui::page_view::render(self, cx).into_any_element()
+                                    }
+                                    TabKind::Pdf(path) => {
+                                        match self.pdf_views.get(&path).cloned() {
+                                            // Encrypted + not yet unlocked:
+                                            // show the password prompt instead
+                                            // of the (blank) viewer.
+                                            Some(v) if v.read(cx).is_locked() => self
+                                                .pdf_password_prompt(
+                                                    path.clone(),
+                                                    v.read(cx).unlock_failed(),
+                                                    cx,
+                                                )
+                                                .into_any_element(),
+                                            Some(v) => v.into_any_element(),
+                                            None => gpui::div().into_any_element(),
                                         }
-                                    }),
-                            ),
+                                    }
+                                }
+                            })),
                     ),
             )
             .children(overlay)
