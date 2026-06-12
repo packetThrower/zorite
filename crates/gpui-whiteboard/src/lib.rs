@@ -6,14 +6,14 @@
 //! owns the scene model and its (de)serialization; the host owns persistence,
 //! theme, and navigation.
 //!
-//! **Phase 2** (this version): freehand pen. A left-drag draws a [`Stroke`] in
-//! world space (rendered with `PathBuilder::stroke`); pan moves to middle-drag
-//! or scroll, zoom stays on pinch / ⌘-scroll, double-click resets. Strokes (and
-//! the camera) persist via the host's [`WhiteboardView::set_on_change`] hook.
-//! Shapes, arrows, selection, and embedded page-cards arrive in later phases —
+//! **Phase 3** (this version): a tool palette — freehand **pen** plus
+//! **rectangle, ellipse, line, and arrow** (drag to create, rendered with
+//! `PathBuilder`). Pan is middle-drag / scroll; zoom is pinch / ⌘-scroll;
+//! double-click resets. Everything persists via [`WhiteboardView::set_on_change`].
+//! Text, selection/manipulation, and embedded page-cards come in later phases —
 //! see `docs/whiteboard-architecture.md` in the host repo.
 //!
-//! Perf note: committed strokes are re-tessellated each paint (as GPUI's own
+//! Perf note: elements are re-tessellated each paint (as GPUI's own
 //! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is
 //! the planned optimization once boards get large (Phase 6) — deferred so we
 //! don't build it before there's something to measure.
@@ -24,8 +24,8 @@ use std::rc::Rc;
 use gpui::{
     App, Bounds, Context, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, SharedString, Styled, Window, canvas, div, fill, point, px,
-    size,
+    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Window,
+    canvas, div, fill, point, px, size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -41,10 +41,10 @@ const MIN_DOT_SPACING: f32 = 16.0;
 const DOT: f32 = 2.0;
 /// Screen px per scroll "line" for inexact (`Lines`) scroll deltas.
 const LINE_PX: f32 = 16.0;
-/// Pen nib in screen px. A stroke's stored width is world-space (`NIB / zoom` at
-/// draw time) so it feels like a constant nib yet scales with the content.
+/// Pen nib in screen px. A stored width is world-space (`NIB / zoom` at draw
+/// time) so strokes/shapes feel like a constant nib yet scale with the content.
 const NIB: f32 = 2.5;
-/// Minimum on-screen gap between recorded stroke points (input thinning).
+/// Minimum on-screen gap between recorded freehand points (input thinning).
 const MIN_POINT_PX: f32 = 2.0;
 
 /// The board document: everything persisted for a whiteboard. Owned and
@@ -94,18 +94,41 @@ pub struct Element {
     pub kind: ElementKind,
 }
 
-/// The kinds of thing a board can hold. (Phase 2: freehand strokes only;
-/// shapes/arrows/text/embeds are added in later phases.)
+/// The kinds of thing a board can hold. Text + embeds arrive in later phases.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ElementKind {
     Draw(Stroke),
+    Rect(BoxGeom),
+    Ellipse(BoxGeom),
+    Line(SegGeom),
+    Arrow(SegGeom),
 }
 
 /// A freehand pen stroke: world-space points and a world-space width.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Stroke {
     pub points: Vec<[f32; 2]>,
+    pub width: f32,
+}
+
+/// An axis-aligned box (rectangle / ellipse bounding box), world-space.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct BoxGeom {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub width: f32,
+}
+
+/// A directed segment (line / arrow), world-space.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SegGeom {
+    pub x1: f32,
+    pub y1: f32,
+    pub x2: f32,
+    pub y2: f32,
     pub width: f32,
 }
 
@@ -166,6 +189,38 @@ impl Camera {
     }
 }
 
+/// The active drawing tool. UI state — not part of the persisted scene.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Tool {
+    Pen,
+    Rect,
+    Ellipse,
+    Line,
+    Arrow,
+}
+
+impl Tool {
+    const ALL: [Tool; 5] = [
+        Tool::Pen,
+        Tool::Rect,
+        Tool::Ellipse,
+        Tool::Line,
+        Tool::Arrow,
+    ];
+
+    /// A glyph for the toolbar button (dependency-free; the host has no icon set
+    /// in this crate).
+    fn glyph(self) -> &'static str {
+        match self {
+            Tool::Pen => "✎",
+            Tool::Rect => "▭",
+            Tool::Ellipse => "◯",
+            Tool::Line => "╱",
+            Tool::Arrow => "↗",
+        }
+    }
+}
+
 /// Theme colors, read at paint time (via [`WhiteboardStyleFn`]) so the board
 /// follows live theme changes per window.
 #[derive(Clone, Copy, Debug)]
@@ -174,19 +229,29 @@ pub struct WhiteboardStyle {
     pub bg: Hsla,
     /// The background grid dots.
     pub grid: Hsla,
-    /// HUD / muted on-canvas text.
+    /// HUD / muted on-canvas text and toolbar glyphs.
     pub text: Hsla,
-    /// Pen ink (stroke color). Per-stroke color comes with the color picker.
+    /// Ink (stroke/shape color). Per-element color comes with the color picker.
     pub ink: Hsla,
+    /// Toolbar panel background.
+    pub panel: Hsla,
+    /// Active-tool highlight.
+    pub accent: Hsla,
 }
 
 /// A `() -> WhiteboardStyle` the host supplies; called each paint so the board
 /// tracks theme changes without the host pushing updates.
 pub type WhiteboardStyleFn = Rc<dyn Fn() -> WhiteboardStyle>;
 
-/// Called when the board changes (a stroke committed, the camera moved), with
+/// Called when the board changes (an element committed, the camera moved), with
 /// the serialized scene JSON, so the host can persist it.
 pub type ChangeFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+/// An element being created by the current left-drag.
+struct Pending {
+    anchor: [f32; 2],
+    kind: ElementKind,
+}
 
 /// The whiteboard view entity. The host holds it in an `Entity<WhiteboardView>`
 /// (keyed by board id) and renders it into a tab.
@@ -194,19 +259,19 @@ pub struct WhiteboardView {
     scene: Scene,
     style: WhiteboardStyleFn,
     on_change: Option<ChangeFn>,
+    tool: Tool,
     /// Canvas bounds in window coords, captured each paint so input handlers can
     /// map window-relative event positions into the board.
     bounds: Rc<Cell<Bounds<Pixels>>>,
-    /// The in-progress freehand stroke (world points), while the left button is
-    /// down and dragging.
-    drawing: Option<Stroke>,
+    /// The element being created by the in-progress left-drag.
+    pending: Option<Pending>,
     /// True while a middle-drag pan is in progress.
     panning: bool,
     /// Last pointer position (window coords) during a pan.
     last: Point<Pixels>,
     /// Next element id.
     next_id: u64,
-    /// Unsaved changes since the last `on_change` flush (flushed on mouse-up).
+    /// Unsaved changes since the last flush (flushed on mouse-up).
     dirty: bool,
 }
 
@@ -223,8 +288,9 @@ impl WhiteboardView {
             scene,
             style,
             on_change: None,
+            tool: Tool::Pen,
             bounds: Rc::new(Cell::new(Bounds::default())),
-            drawing: None,
+            pending: None,
             panning: false,
             last: Point::default(),
             next_id,
@@ -240,6 +306,19 @@ impl WhiteboardView {
     /// The current board document (for the host to persist).
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    /// The active tool (e.g. for host-driven chrome).
+    pub fn tool(&self) -> Tool {
+        self.tool
+    }
+
+    /// Switch the active drawing tool.
+    pub fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        if self.tool != tool {
+            self.tool = tool;
+            cx.notify();
+        }
     }
 
     /// Reset the viewport to the origin at 100% (also bound to double-click).
@@ -289,7 +368,7 @@ impl WhiteboardView {
 
     fn on_left_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if ev.click_count >= 2 {
-            self.drawing = None;
+            self.pending = None;
             self.reset_view(cx);
             return;
         }
@@ -298,22 +377,52 @@ impl WhiteboardView {
         }
         let p = self.event_to_world(ev.position);
         let width = NIB / self.scene.camera.zoom.max(MIN_ZOOM);
-        self.drawing = Some(Stroke {
-            points: vec![p],
-            width,
-        });
+        let kind = match self.tool {
+            Tool::Pen => ElementKind::Draw(Stroke {
+                points: vec![p],
+                width,
+            }),
+            Tool::Rect => ElementKind::Rect(BoxGeom {
+                x: p[0],
+                y: p[1],
+                w: 0.0,
+                h: 0.0,
+                width,
+            }),
+            Tool::Ellipse => ElementKind::Ellipse(BoxGeom {
+                x: p[0],
+                y: p[1],
+                w: 0.0,
+                h: 0.0,
+                width,
+            }),
+            Tool::Line => ElementKind::Line(SegGeom {
+                x1: p[0],
+                y1: p[1],
+                x2: p[0],
+                y2: p[1],
+                width,
+            }),
+            Tool::Arrow => ElementKind::Arrow(SegGeom {
+                x1: p[0],
+                y1: p[1],
+                x2: p[0],
+                y2: p[1],
+                width,
+            }),
+        };
+        self.pending = Some(Pending { anchor: p, kind });
         cx.notify();
     }
 
     fn on_left_up(&mut self, _ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(stroke) = self.drawing.take() {
-            // A click (or double-click) leaves no mark — only an actual drag.
-            if stroke.points.len() >= 2 {
+        if let Some(pending) = self.pending.take() {
+            if committable(&pending.kind) {
                 let id = self.next_id;
                 self.next_id += 1;
                 self.scene.elements.push(Element {
                     id,
-                    kind: ElementKind::Draw(stroke),
+                    kind: pending.kind,
                 });
                 self.dirty = true;
             }
@@ -328,7 +437,7 @@ impl WhiteboardView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        if self.drawing.is_some() {
+        if self.pending.is_some() {
             return;
         }
         self.panning = true;
@@ -344,18 +453,33 @@ impl WhiteboardView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.drawing.is_some() {
-            let p = self.event_to_world(ev.position);
+        if self.pending.is_some() {
+            let cur = self.event_to_world(ev.position);
             let z = self.scene.camera.zoom.max(MIN_ZOOM);
-            let stroke = self.drawing.as_mut().unwrap();
-            // Thin the input: skip points within MIN_POINT_PX (screen) of the last.
-            if let Some(last) = stroke.points.last() {
-                let (dx, dy) = ((p[0] - last[0]) * z, (p[1] - last[1]) * z);
-                if dx * dx + dy * dy < MIN_POINT_PX * MIN_POINT_PX {
-                    return;
+            let anchor = self.pending.as_ref().unwrap().anchor;
+            let pending = self.pending.as_mut().unwrap();
+            match &mut pending.kind {
+                ElementKind::Draw(s) => {
+                    // Thin the input: skip points within MIN_POINT_PX of the last.
+                    if let Some(last) = s.points.last() {
+                        let (dx, dy) = ((cur[0] - last[0]) * z, (cur[1] - last[1]) * z);
+                        if dx * dx + dy * dy < MIN_POINT_PX * MIN_POINT_PX {
+                            return;
+                        }
+                    }
+                    s.points.push(cur);
+                }
+                ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+                    b.x = anchor[0].min(cur[0]);
+                    b.y = anchor[1].min(cur[1]);
+                    b.w = (cur[0] - anchor[0]).abs();
+                    b.h = (cur[1] - anchor[1]).abs();
+                }
+                ElementKind::Line(s) | ElementKind::Arrow(s) => {
+                    s.x2 = cur[0];
+                    s.y2 = cur[1];
                 }
             }
-            stroke.points.push(p);
             cx.notify();
         } else if self.panning {
             let dx = f32::from(ev.position.x - self.last.x);
@@ -379,7 +503,6 @@ impl WhiteboardView {
         } else {
             self.scene.camera.pan_by(dx, dy);
         }
-        // Persisted on the next mouse-up (avoids a write per scroll tick).
         self.dirty = true;
         cx.notify();
     }
@@ -396,6 +519,28 @@ impl WhiteboardView {
         let o = self.bounds.get().origin;
         (f32::from(p.x - o.x), f32::from(p.y - o.y))
     }
+}
+
+/// Whether an in-progress element is big enough to keep (a click that doesn't
+/// drag leaves nothing).
+fn committable(kind: &ElementKind) -> bool {
+    match kind {
+        ElementKind::Draw(s) => s.points.len() >= 2,
+        ElementKind::Rect(b) | ElementKind::Ellipse(b) => b.w > 1.0 || b.h > 1.0,
+        ElementKind::Line(s) | ElementKind::Arrow(s) => {
+            let (dx, dy) = (s.x2 - s.x1, s.y2 - s.y1);
+            dx * dx + dy * dy > 4.0
+        }
+    }
+}
+
+/// World → absolute screen point at the current camera.
+fn to_screen(wx: f32, wy: f32, cam: Camera, origin: Point<Pixels>) -> Point<Pixels> {
+    let z = cam.zoom.max(MIN_ZOOM);
+    point(
+        px(f32::from(origin.x) + (wx - cam.x) * z),
+        px(f32::from(origin.y) + (wy - cam.y) * z),
+    )
 }
 
 /// Paint the board background + the world-space dot grid into `bounds`.
@@ -432,7 +577,23 @@ fn paint_board(bounds: Bounds<Pixels>, cam: Camera, bg: Hsla, grid: Hsla, window
     }
 }
 
-/// Tessellate + paint one world-space stroke at the current camera.
+/// Paint one element at the current camera.
+fn paint_element(
+    kind: &ElementKind,
+    cam: Camera,
+    origin: Point<Pixels>,
+    ink: Hsla,
+    window: &mut Window,
+) {
+    match kind {
+        ElementKind::Draw(s) => paint_stroke(&s.points, s.width, cam, origin, ink, window),
+        ElementKind::Rect(b) => paint_rect(b, cam, origin, ink, window),
+        ElementKind::Ellipse(b) => paint_ellipse(b, cam, origin, ink, window),
+        ElementKind::Line(s) => paint_segment(s, false, cam, origin, ink, window),
+        ElementKind::Arrow(s) => paint_segment(s, true, cam, origin, ink, window),
+    }
+}
+
 fn paint_stroke(
     points: &[[f32; 2]],
     world_w: f32,
@@ -445,14 +606,91 @@ fn paint_stroke(
         return;
     }
     let z = cam.zoom.max(MIN_ZOOM);
-    let (ox, oy) = (f32::from(origin.x), f32::from(origin.y));
-    let to_screen = |p: &[f32; 2]| point(px(ox + (p[0] - cam.x) * z), px(oy + (p[1] - cam.y) * z));
     let mut pb = PathBuilder::stroke(px((world_w * z).max(0.5)));
-    pb.move_to(to_screen(&points[0]));
+    pb.move_to(to_screen(points[0][0], points[0][1], cam, origin));
     for p in &points[1..] {
-        pb.line_to(to_screen(p));
+        pb.line_to(to_screen(p[0], p[1], cam, origin));
     }
     if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+}
+
+fn paint_rect(b: &BoxGeom, cam: Camera, origin: Point<Pixels>, ink: Hsla, window: &mut Window) {
+    let z = cam.zoom.max(MIN_ZOOM);
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    pb.move_to(to_screen(b.x, b.y, cam, origin));
+    pb.line_to(to_screen(b.x + b.w, b.y, cam, origin));
+    pb.line_to(to_screen(b.x + b.w, b.y + b.h, cam, origin));
+    pb.line_to(to_screen(b.x, b.y + b.h, cam, origin));
+    pb.close();
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+}
+
+fn paint_ellipse(b: &BoxGeom, cam: Camera, origin: Point<Pixels>, ink: Hsla, window: &mut Window) {
+    let z = cam.zoom.max(MIN_ZOOM);
+    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+    let (rx, ry) = (b.w / 2.0, b.h / 2.0);
+    // Kappa: control-point offset for a circle-from-4-cubics approximation.
+    const K: f32 = 0.552_284_8;
+    let (kx, ky) = (rx * K, ry * K);
+    let s = |wx: f32, wy: f32| to_screen(wx, wy, cam, origin);
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    pb.move_to(s(cx + rx, cy)); // right
+    pb.cubic_bezier_to(s(cx, cy + ry), s(cx + rx, cy + ky), s(cx + kx, cy + ry)); // → bottom
+    pb.cubic_bezier_to(s(cx - rx, cy), s(cx - kx, cy + ry), s(cx - rx, cy + ky)); // → left
+    pb.cubic_bezier_to(s(cx, cy - ry), s(cx - rx, cy - ky), s(cx - kx, cy - ry)); // → top
+    pb.cubic_bezier_to(s(cx + rx, cy), s(cx + kx, cy - ry), s(cx + rx, cy - ky)); // → right
+    pb.close();
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+}
+
+fn paint_segment(
+    seg: &SegGeom,
+    arrow: bool,
+    cam: Camera,
+    origin: Point<Pixels>,
+    ink: Hsla,
+    window: &mut Window,
+) {
+    let z = cam.zoom.max(MIN_ZOOM);
+    let p1 = to_screen(seg.x1, seg.y1, cam, origin);
+    let p2 = to_screen(seg.x2, seg.y2, cam, origin);
+    let mut pb = PathBuilder::stroke(px((seg.width * z).max(0.5)));
+    pb.move_to(p1);
+    pb.line_to(p2);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+    if !arrow {
+        return;
+    }
+    // Filled arrowhead at p2 (screen space).
+    let (dx, dy) = (f32::from(p2.x - p1.x), f32::from(p2.y - p1.y));
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1.0 {
+        return;
+    }
+    let (ux, uy) = (dx / len, dy / len);
+    let head = (seg.width * z * 6.0).max(8.0);
+    let (bx, by) = (f32::from(p2.x), f32::from(p2.y));
+    // Barb = p2 + head * rotate((-u), ±angle).
+    let barb = |a: f32| {
+        let (c, s) = (a.cos(), a.sin());
+        let rx = (-ux) * c - (-uy) * s;
+        let ry = (-ux) * s + (-uy) * c;
+        point(px(bx + head * rx), px(by + head * ry))
+    };
+    let mut hb = PathBuilder::fill();
+    hb.move_to(p2);
+    hb.line_to(barb(0.45));
+    hb.line_to(barb(-0.45));
+    hb.close();
+    if let Ok(path) = hb.build() {
         window.paint_path(path, ink);
     }
 }
@@ -460,46 +698,83 @@ fn paint_stroke(
 impl Render for WhiteboardView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = (self.style)();
-        let (bg, grid, text, ink) = (style.bg, style.grid, style.text, style.ink);
+        let WhiteboardStyle {
+            bg,
+            grid,
+            text,
+            ink,
+            panel,
+            accent,
+        } = style;
         let cam = self.scene.camera;
         let bounds_cell = self.bounds.clone();
-        // Snapshot the strokes (world coords) for the paint closure. Re-cloned
+        // Snapshot element kinds (world coords) for the paint closure. Re-cloned
         // each frame for now; see the path-cache perf note at the top.
-        let strokes: Vec<(Vec<[f32; 2]>, f32)> = self
-            .scene
-            .elements
-            .iter()
-            .map(|e| match &e.kind {
-                ElementKind::Draw(s) => (s.points.clone(), s.width),
-            })
-            .collect();
-        let inprog = self.drawing.as_ref().map(|s| (s.points.clone(), s.width));
+        let kinds: Vec<ElementKind> = self.scene.elements.iter().map(|e| e.kind.clone()).collect();
+        let pending = self.pending.as_ref().map(|p| p.kind.clone());
+
+        // Tool palette (top-center). The pill `occlude()`s so clicking a tool
+        // doesn't also start a draw on the board beneath it.
+        let active = self.tool;
+        let mut buttons = Vec::with_capacity(Tool::ALL.len());
+        for (i, &t) in Tool::ALL.iter().enumerate() {
+            let mut b = div()
+                .id(("wb-tool", i))
+                .size(px(30.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .text_size(px(15.0))
+                .text_color(ink)
+                .child(t.glyph())
+                .on_click(cx.listener(move |this, _ev, _window, cx| this.set_tool(t, cx)));
+            if t == active {
+                b = b.bg(accent);
+            }
+            buttons.push(b);
+        }
+        let toolbar = div()
+            .absolute()
+            .top(px(10.0))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .flex()
+                    .gap(px(2.0))
+                    .p(px(3.0))
+                    .rounded(px(9.0))
+                    .bg(panel)
+                    .occlude()
+                    .children(buttons),
+            );
 
         div()
             .size_full()
             .relative()
-            // Clip painting (grid + strokes) to the board's own bounds so panned
-            // content never bleeds over the sidebar or tab bar. `paint_path`
-            // honors the active content mask, which this pushes for its children.
+            // Clip painting (grid + elements) to the board so panned content
+            // never bleeds over the sidebar or tab bar.
             .overflow_hidden()
             .child(
                 canvas(
                     move |bounds, _, _| bounds_cell.set(bounds),
                     move |bounds, _, window, _| {
                         paint_board(bounds, cam, bg, grid, window);
-                        for (pts, w) in &strokes {
-                            paint_stroke(pts, *w, cam, bounds.origin, ink, window);
+                        for k in &kinds {
+                            paint_element(k, cam, bounds.origin, ink, window);
                         }
-                        if let Some((pts, w)) = &inprog {
-                            paint_stroke(pts, *w, cam, bounds.origin, ink, window);
+                        if let Some(k) = &pending {
+                            paint_element(k, cam, bounds.origin, ink, window);
                         }
                     },
                 )
                 .absolute()
                 .size_full(),
             )
-            // Left draws; middle / scroll pan; pinch / ⌘-scroll zoom. Plain
-            // (non-interactive) children below don't block these.
+            // Left = current tool; middle / scroll pan; pinch / ⌘-scroll zoom.
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_left_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_left_up))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_down))
@@ -507,6 +782,7 @@ impl Render for WhiteboardView {
             .on_mouse_move(cx.listener(Self::on_move))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
+            .child(toolbar)
             .child(
                 div()
                     .absolute()
@@ -549,23 +825,73 @@ mod tests {
     }
 
     #[test]
-    fn strokes_round_trip_through_json() {
+    fn every_element_kind_round_trips_through_json() {
         let scene = Scene {
             camera: Camera::default(),
-            elements: vec![Element {
-                id: 7,
-                kind: ElementKind::Draw(Stroke {
-                    points: vec![[0.0, 0.0], [10.0, 5.0], [20.0, -3.0]],
-                    width: 3.0,
-                }),
-            }],
+            elements: vec![
+                Element {
+                    id: 1,
+                    kind: ElementKind::Draw(Stroke {
+                        points: vec![[0.0, 0.0], [10.0, 5.0]],
+                        width: 3.0,
+                    }),
+                },
+                Element {
+                    id: 2,
+                    kind: ElementKind::Rect(BoxGeom {
+                        x: 1.0,
+                        y: 2.0,
+                        w: 30.0,
+                        h: 40.0,
+                        width: 2.0,
+                    }),
+                },
+                Element {
+                    id: 3,
+                    kind: ElementKind::Ellipse(BoxGeom {
+                        x: 5.0,
+                        y: 6.0,
+                        w: 7.0,
+                        h: 8.0,
+                        width: 1.5,
+                    }),
+                },
+                Element {
+                    id: 4,
+                    kind: ElementKind::Line(SegGeom {
+                        x1: 0.0,
+                        y1: 0.0,
+                        x2: 9.0,
+                        y2: 9.0,
+                        width: 2.0,
+                    }),
+                },
+                Element {
+                    id: 5,
+                    kind: ElementKind::Arrow(SegGeom {
+                        x1: 1.0,
+                        y1: 1.0,
+                        x2: 2.0,
+                        y2: 8.0,
+                        width: 2.5,
+                    }),
+                },
+            ],
         };
         let restored = Scene::from_json(&scene.to_json());
-        assert_eq!(restored.elements.len(), 1);
-        assert_eq!(restored.elements[0].id, 7);
-        let ElementKind::Draw(s) = &restored.elements[0].kind;
-        assert_eq!(s.points, vec![[0.0, 0.0], [10.0, 5.0], [20.0, -3.0]]);
-        assert_eq!(s.width, 3.0);
+        assert_eq!(restored.elements.len(), 5);
+        assert_eq!(restored.elements[1].id, 2);
+        match &restored.elements[2].kind {
+            ElementKind::Ellipse(b) => {
+                assert_eq!(b.w, 7.0);
+                assert_eq!(b.h, 8.0);
+            }
+            other => panic!("expected ellipse, got {other:?}"),
+        }
+        match &restored.elements[4].kind {
+            ElementKind::Arrow(s) => assert_eq!(s.y2, 8.0),
+            other => panic!("expected arrow, got {other:?}"),
+        }
     }
 
     #[test]
@@ -617,5 +943,28 @@ mod tests {
         assert_eq!(c.zoom, MAX_ZOOM);
         c.zoom_about(0.0, 0.0, 0.0001);
         assert_eq!(c.zoom, MIN_ZOOM);
+    }
+
+    #[test]
+    fn tiny_drags_are_not_committed() {
+        // A click (no real drag) leaves nothing on the board.
+        assert!(!committable(&ElementKind::Draw(Stroke {
+            points: vec![[0.0, 0.0]],
+            width: 1.0,
+        })));
+        assert!(!committable(&ElementKind::Rect(BoxGeom {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+            width: 1.0,
+        })));
+        assert!(committable(&ElementKind::Rect(BoxGeom {
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 5.0,
+            width: 1.0,
+        })));
     }
 }

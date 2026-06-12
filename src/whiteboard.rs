@@ -20,5 +20,7 @@ pub fn style() -> WhiteboardStyleFn {
         grid: theme::border_subtle(),
         text: theme::text_tertiary(),
         ink: theme::text_primary(),
+        panel: theme::glass_strong(),
+        accent: theme::accent_tint(),
     })
 }
