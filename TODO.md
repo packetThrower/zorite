@@ -40,7 +40,7 @@ work is collected under [Completed](#completed) at the bottom.
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited); consider importing whiteboards/draws as attachments
-- [ ] **Print / PDF export** — generate a PDF from a note (`oxidize-pdf` can generate; or a typeset path like typst/`printpdf`)
+- [ ] **Print / PDF export** — generate a PDF from a note (`oxidize-pdf` can generate; or a typeset path like typst/`printpdf`). Design: [docs/printing.md](docs/printing.md) (HTML→browser first; PDF path is the crate-worthy follow-up)
 - [ ] PDF: **fit-width / fit-page** zoom modes (zoom is free-scale only today)
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
