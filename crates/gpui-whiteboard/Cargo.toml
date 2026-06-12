@@ -1,0 +1,19 @@
+[package]
+name = "gpui-whiteboard"
+version = "0.1.0"
+edition = "2024"
+description = "An infinite, pannable/zoomable whiteboard canvas for GPUI."
+license = "GPL-3.0-or-later"
+
+[dependencies]
+# Same git spec (no rev) as the workspace root so Cargo unifies to one gpui;
+# the lock pins the actual revision.
+gpui = { git = "https://github.com/zed-industries/zed" }
+
+# The board model (`Scene` + camera, and elements once drawing lands) is owned
+# and (de)serialized by this crate, so the host can persist it as an opaque
+# JSON string in its own store.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+log = "0.4"

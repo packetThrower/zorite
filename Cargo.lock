@@ -2474,6 +2474,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-whiteboard"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "log",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "gpui_linux"
 version = "0.1.0"
 source = "git+https://github.com/zed-industries/zed#13e7c1176804c790ec2971d2e592e5363c982d04"
@@ -8867,6 +8877,7 @@ dependencies = [
  "gpui-component-assets",
  "gpui-markdown",
  "gpui-pdf",
+ "gpui-whiteboard",
  "gpui_platform",
  "image",
  "log",

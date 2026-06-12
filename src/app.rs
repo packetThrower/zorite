@@ -34,8 +34,8 @@ use gpui_component::{
 
 use crate::actions::{
     CloseTab, DeletePage, EditNote, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab,
-    NewPage, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab,
-    RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    NewPage, NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent,
+    PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -64,6 +64,8 @@ pub enum TabKind {
     Page(i64),
     /// A PDF viewer for the file at this path.
     Pdf(PathBuf),
+    /// A whiteboard canvas (the `kind = 'whiteboard'` page id).
+    Whiteboard(i64),
 }
 
 /// An open tab: its content kind + a cached title for the tab strip.
@@ -297,6 +299,11 @@ pub struct AppView {
     // removed (and its GPU textures released) when the tab closes.
     pub pdf_views: HashMap<PathBuf, Entity<crate::pdf::PdfView>>,
 
+    // Open whiteboard canvases, keyed by board (page) id. Each is an independent
+    // `gpui_whiteboard::WhiteboardView`; dropped when its tab closes. Reloaded
+    // from the DB on a cross-window move (no live hand-off needed yet).
+    pub whiteboard_views: HashMap<i64, Entity<crate::whiteboard::WhiteboardView>>,
+
     // Sidebar.
     pub pages: Vec<Page>,
     pub new_page_input: Entity<InputState>,
@@ -498,6 +505,7 @@ impl AppView {
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
             pdf_views: HashMap::new(),
+            whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
             page_editor: None,
             pages: Vec::new(),
@@ -1049,6 +1057,7 @@ impl AppView {
             }
             TabKind::Page(id) => self.load_page_editor(id, window, cx),
             TabKind::Pdf(_) => self.page_editor = None,
+            TabKind::Whiteboard(_) => self.page_editor = None,
         }
         // Focus the AppView so the window's key dispatch reaches its global shortcuts
         // (⌘F, ⌘W, …) right after a tab click — without having to click into the
@@ -1077,6 +1086,10 @@ impl AppView {
             && let Some(view) = self.pdf_views.remove(&path)
         {
             view.update(cx, |v, cx| v.release(window, cx));
+        }
+        // Drop a closing board's view entity (no GPU textures to release yet).
+        if let TabKind::Whiteboard(id) = self.tabs[ix].kind {
+            self.whiteboard_views.remove(&id);
         }
         self.tabs.remove(ix);
         if self.active > ix {
@@ -1921,6 +1934,63 @@ impl AppView {
         )
         .detach();
         self.pdf_views.insert(path, view);
+    }
+
+    /// Open a whiteboard in its own canvas tab (focusing it if already open). A
+    /// board is a `kind = 'whiteboard'` page; its canvas JSON lives in the page
+    /// `content`, deserialized into a `Scene` the view renders.
+    pub fn open_whiteboard(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Whiteboard(bid) if bid == id))
+        {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        let (title, content) = match self.db.get_page(id) {
+            Ok(Some(p)) => (p.title, p.content),
+            Ok(None) => {
+                log::warn!("whiteboard {id} not found");
+                return;
+            }
+            Err(e) => {
+                log::error!("open whiteboard {id}: {e}");
+                return;
+            }
+        };
+        self.tabs.push(OpenTab {
+            kind: TabKind::Whiteboard(id),
+            title: title.into(),
+        });
+        self.activate_tab(self.tabs.len() - 1, window, cx);
+        if self.whiteboard_views.contains_key(&id) {
+            return; // view already built (e.g. re-open of a background tab)
+        }
+        let scene = crate::whiteboard::Scene::from_json(&content);
+        let view = cx.new(|cx| {
+            crate::whiteboard::WhiteboardView::new(scene, crate::whiteboard::style(), cx)
+        });
+        self.whiteboard_views.insert(id, view);
+    }
+
+    /// Create (or reuse) a whiteboard and open it. Phase 0 uses a single
+    /// well-known board name; naming + a sidebar listing come in a later phase.
+    pub fn new_whiteboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match self.db.get_or_create_whiteboard("Whiteboard") {
+            Ok(page) => self.open_whiteboard(page.id, window, cx),
+            Err(e) => log::error!("new whiteboard: {e}"),
+        }
+    }
+
+    /// `NewWhiteboard` handler (File menu): create + open a whiteboard canvas.
+    fn on_new_whiteboard(
+        &mut self,
+        _: &NewWhiteboard,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_whiteboard(window, cx);
     }
 
     /// Read the password field and try to unlock the encrypted PDF at `path`.
@@ -2870,6 +2940,9 @@ impl AppView {
                     TabKind::Pdf(path) => {
                         view.update(cx, |this, cx| this.open_pdf(path, window, cx));
                     }
+                    TabKind::Whiteboard(id) => {
+                        view.update(cx, |this, cx| this.open_whiteboard(id, window, cx));
+                    }
                     TabKind::Journal => {}
                 }
                 view.update(cx, |this, _| {
@@ -3002,6 +3075,9 @@ impl AppView {
                     pdf: pdf.map(|v| (path.clone(), v)),
                 }
             }
+            // A board reloads cheaply from the DB on the destination window, so
+            // it carries no live entity (no unsaved in-memory edits in Phase 0).
+            TabKind::Whiteboard(_) => TabSeed::default(),
             TabKind::Journal => TabSeed::default(),
         }
     }
@@ -3118,6 +3194,7 @@ impl AppView {
         match kind {
             TabKind::Page(id) => self.open_page_id(id, window, cx),
             TabKind::Pdf(path) => self.open_pdf(path, window, cx),
+            TabKind::Whiteboard(id) => self.open_whiteboard(id, window, cx),
             TabKind::Journal => {}
         }
         // After the open (whose tab switch wiped this window's store), adopt the
@@ -3987,6 +4064,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_toggle_favorite))
             .on_action(cx.listener(Self::on_edit_note))
             .on_action(cx.listener(Self::on_new_page))
+            .on_action(cx.listener(Self::on_new_whiteboard))
             .on_action(cx.listener(Self::on_import_logseq))
             .on_action(cx.listener(Self::on_fit_images))
             .on_action(cx.listener(Self::on_insert_tab))
@@ -4119,6 +4197,12 @@ impl Render for AppView {
                                                     cx,
                                                 )
                                                 .into_any_element(),
+                                            Some(v) => v.into_any_element(),
+                                            None => gpui::div().into_any_element(),
+                                        }
+                                    }
+                                    TabKind::Whiteboard(id) => {
+                                        match self.whiteboard_views.get(&id).cloned() {
                                             Some(v) => v.into_any_element(),
                                             None => gpui::div().into_any_element(),
                                         }

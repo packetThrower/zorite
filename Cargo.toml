@@ -12,7 +12,7 @@ name = "zorite"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/gpui-markdown", "crates/gpui-pdf"]
+members = ["crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard"]
 resolver = "2"
 
 [dependencies]
@@ -22,6 +22,9 @@ gpui-markdown = { path = "crates/gpui-markdown" }
 # Our own page-virtualized PDF viewer (pure-Rust hayro), a workspace crate.
 # `markup` adds the text-extraction layer + highlight rendering (Logseq-style).
 gpui-pdf = { path = "crates/gpui-pdf", features = ["markup", "search"] }
+
+# Our own infinite-canvas whiteboard, a host-agnostic workspace crate.
+gpui-whiteboard = { path = "crates/gpui-whiteboard" }
 
 # Mermaid diagrams: a pure-Rust mermaid → SVG renderer (zed-industries — the
 # same crate Zed's markdown preview uses; no JS/Node). We rasterize its SVG to a

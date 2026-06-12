@@ -44,7 +44,7 @@ pub struct Db {
 
 /// The newest schema version [`Db::migrate`] upgrades to. Bump this with each new
 /// migration step so [`Db::open`] knows when a pre-migration backup is warranted.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 /// A failed on-disk database open. Carries the pre-migration backup path (when one
 /// was taken) so the caller can point the user at their recoverable data instead
@@ -209,6 +209,38 @@ impl Db {
             )?;
             tx.commit()?;
         }
+        if version < 6 {
+            // Whiteboards are pages with `kind = 'whiteboard'` (their canvas
+            // stored as JSON in `content`). Add the discriminator, defaulting
+            // every existing row to 'page'. The FTS index is for text notes, so
+            // re-create its triggers to skip non-'page' rows — a board's JSON
+            // body would otherwise pollute search. `kind` is immutable per row
+            // in practice (a page never becomes a board), so guarding INSERT /
+            // UPDATE on `new.kind` and DELETE on `old.kind` is sufficient.
+            let tx = conn.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE pages ADD COLUMN kind TEXT NOT NULL DEFAULT 'page';\
+                 DROP TRIGGER IF EXISTS pages_fts_ai;\
+                 DROP TRIGGER IF EXISTS pages_fts_ad;\
+                 DROP TRIGGER IF EXISTS pages_fts_au;\
+                 CREATE TRIGGER pages_fts_ai AFTER INSERT ON pages WHEN new.kind = 'page' BEGIN \
+                    INSERT INTO pages_fts(rowid, title, content) \
+                       VALUES (new.id, new.title, new.content); \
+                 END;\
+                 CREATE TRIGGER pages_fts_ad AFTER DELETE ON pages WHEN old.kind = 'page' BEGIN \
+                    INSERT INTO pages_fts(pages_fts, rowid, title, content) \
+                       VALUES ('delete', old.id, old.title, old.content); \
+                 END;\
+                 CREATE TRIGGER pages_fts_au AFTER UPDATE ON pages WHEN new.kind = 'page' BEGIN \
+                    INSERT INTO pages_fts(pages_fts, rowid, title, content) \
+                       VALUES ('delete', old.id, old.title, old.content); \
+                    INSERT INTO pages_fts(rowid, title, content) \
+                       VALUES (new.id, new.title, new.content); \
+                 END;\
+                 PRAGMA user_version = 6;",
+            )?;
+            tx.commit()?;
+        }
         // Key/value app settings (theme mode, etc.). Idempotent, so no
         // `user_version` bump is needed.
         conn.execute_batch(
@@ -282,6 +314,38 @@ impl Db {
         })
     }
 
+    /// A whiteboard page by title (case-insensitive), creating it if absent. A
+    /// whiteboard stores its canvas as JSON in `content` and is distinguished by
+    /// `kind = 'whiteboard'`, so it stays out of the page sidebar
+    /// ([`list_pages`](Self::list_pages)) and full-text search. The returned
+    /// page's `content` is the stored canvas JSON (empty `{}` for a new board).
+    pub fn get_or_create_whiteboard(&self, title: &str) -> rusqlite::Result<Page> {
+        let title = title.trim();
+        if let Some(page) = self
+            .conn
+            .query_row(
+                "SELECT id, title, is_journal, journal_date, content \
+                 FROM pages WHERE title = ?1 COLLATE NOCASE AND kind = 'whiteboard'",
+                params![title],
+                row_to_page,
+            )
+            .optional()?
+        {
+            return Ok(page);
+        }
+        self.conn.execute(
+            "INSERT INTO pages (title, is_journal, kind, content) VALUES (?1, 0, 'whiteboard', '{}')",
+            params![title],
+        )?;
+        Ok(Page {
+            id: self.conn.last_insert_rowid(),
+            title: title.to_string(),
+            is_journal: false,
+            journal_date: None,
+            content: "{}".to_string(),
+        })
+    }
+
     pub fn get_page(&self, id: i64) -> rusqlite::Result<Option<Page>> {
         self.conn
             .query_row(
@@ -326,7 +390,7 @@ impl Db {
     pub fn list_pages(&self) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, title, is_journal, journal_date FROM pages \
-             WHERE is_journal = 0 ORDER BY title COLLATE NOCASE",
+             WHERE is_journal = 0 AND kind = 'page' ORDER BY title COLLATE NOCASE",
         )?;
         stmt.query_map([], |row| {
             Ok(Page {

@@ -27,6 +27,7 @@ mod skins;
 mod slash;
 mod theme;
 mod ui;
+mod whiteboard;
 
 use gpui::{
     App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions, px,

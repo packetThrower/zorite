@@ -31,6 +31,8 @@ actions!(
         // Right-click → Edit on a rendered page/journal day → enter edit mode.
         EditNote,
         NewPage,
+        // File menu: create + open a new whiteboard canvas (no keybinding).
+        NewWhiteboard,
         InsertTab,
         Outdent,
         PasteImage,
@@ -117,6 +119,7 @@ pub fn set_app_menu(cx: &mut App) {
             name: "File".into(),
             items: vec![
                 MenuItem::action("New Tab", NewPage),
+                MenuItem::action("New Whiteboard", NewWhiteboard),
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::separator(),
                 MenuItem::action("Import from Logseq…", ImportLogseq),
