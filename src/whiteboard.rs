@@ -22,5 +22,6 @@ pub fn style() -> WhiteboardStyleFn {
         ink: theme::text_primary(),
         panel: theme::glass_strong(),
         accent: theme::accent_tint(),
+        selection: theme::accent(),
     })
 }

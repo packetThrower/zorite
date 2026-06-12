@@ -6,11 +6,12 @@
 //! owns the scene model and its (de)serialization; the host owns persistence,
 //! theme, and navigation.
 //!
-//! **Phase 4** (this version): selection & manipulation. A **Select** tool
-//! (click to select, drag to move) joins the pen and shape tools, with a
-//! selection outline and toolbar **delete / undo / redo**. Earlier phases:
-//! pan/zoom + grid, freehand pen, and rect/ellipse/line/arrow. Resize/rotate,
-//! marquee + multi-select, text, and embedded page-cards come next — see
+//! **Phase 4b** (this version): selection & manipulation. A **Select** tool —
+//! click to select, drag to move; corner handles resize boxes/strokes (Shift
+//! keeps proportions), endpoint handles re-point lines/arrows (Shift snaps to
+//! 45°); toolbar **delete / undo / redo**. Earlier phases: pan/zoom + grid,
+//! freehand pen, and rect/ellipse/line/arrow. Rotation, marquee + multi-select,
+//! text, and embedded page-cards come next — see
 //! `docs/whiteboard-architecture.md` in the host repo.
 //!
 //! Perf note: elements are re-tessellated each paint (as GPUI's own
@@ -22,10 +23,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, BorderStyle, Bounds, Context, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent, Pixels,
-    Point, Render, ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
-    Window, canvas, div, fill, outline, point, px, size,
+    App, Bounds, Context, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render,
+    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Window,
+    canvas, div, fill, point, px, size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +51,12 @@ const MIN_POINT_PX: f32 = 2.0;
 const SELECT_PAD: f32 = 6.0;
 /// Most undo steps kept (bounds memory; each step is a scene snapshot).
 const UNDO_CAP: usize = 50;
+/// Selection-box padding around the element, screen px (handles sit on it).
+const SEL_PAD_PX: f32 = 5.0;
+/// Half-size of a corner resize handle, screen px.
+const HANDLE_HALF: f32 = 4.5;
+/// Grab radius for a corner handle, screen px.
+const HANDLE_GRAB: f32 = 10.0;
 
 /// The board document: everything persisted for a whiteboard. Owned and
 /// (de)serialized here; the host stores [`Scene::to_json`] opaquely (for zorite,
@@ -240,8 +247,10 @@ pub struct WhiteboardStyle {
     pub ink: Hsla,
     /// Toolbar panel background.
     pub panel: Hsla,
-    /// Active-tool highlight + selection outline.
+    /// Active-tool highlight (a subtle fill behind the current tool button).
     pub accent: Hsla,
+    /// Selection outline — wants to be clearly visible, so a strong color.
+    pub selection: Hsla,
 }
 
 /// A `() -> WhiteboardStyle` the host supplies; called each paint so the board
@@ -256,6 +265,31 @@ pub type ChangeFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
 struct Pending {
     anchor: [f32; 2],
     kind: ElementKind,
+}
+
+/// An in-progress corner-resize of a selected box/stroke.
+struct Resizing {
+    id: u64,
+    /// The fixed (opposite) corner, world space.
+    anchor: [f32; 2],
+    /// The dragged corner's original position, world space.
+    from: [f32; 2],
+    /// The element's geometry at the start of the resize.
+    orig: ElementKind,
+}
+
+/// An in-progress drag of one endpoint of a selected line/arrow.
+#[derive(Clone, Copy)]
+struct EndpointDrag {
+    id: u64,
+    /// Which endpoint: 0 = (x1,y1), 1 = (x2,y2).
+    which: usize,
+}
+
+/// What a press on a selection handle begins.
+enum HandleGrab {
+    Corner(Resizing),
+    Endpoint(EndpointDrag),
 }
 
 /// The whiteboard view entity. The host holds it in an `Entity<WhiteboardView>`
@@ -276,6 +310,10 @@ pub struct WhiteboardView {
     drag_from: Option<[f32; 2]>,
     /// Whether the current move-drag has actually moved (undo is pushed once).
     moved: bool,
+    /// In-progress corner-resize of the selected box/stroke.
+    resizing: Option<Resizing>,
+    /// In-progress endpoint-drag of the selected line/arrow.
+    endpoint: Option<EndpointDrag>,
     /// Undo / redo stacks of scene snapshots.
     history: Vec<Scene>,
     redo: Vec<Scene>,
@@ -308,6 +346,8 @@ impl WhiteboardView {
             selected: None,
             drag_from: None,
             moved: false,
+            resizing: None,
+            endpoint: None,
             history: Vec::new(),
             redo: Vec::new(),
             panning: false,
@@ -427,6 +467,56 @@ impl WhiteboardView {
         [wx, wy]
     }
 
+    /// If `pos` (window coords) is on a manipulation handle of the current
+    /// selection, what to begin. Lines/arrows manipulate by their two
+    /// endpoints; everything else by its bounding-box corners (a line's bbox is
+    /// degenerate, which would make corner-resize wildly imprecise).
+    fn handle_hit(&self, pos: Point<Pixels>) -> Option<HandleGrab> {
+        let id = self.selected?;
+        let kind = &self.scene.elements.iter().find(|e| e.id == id)?.kind;
+        let cam = self.scene.camera;
+        let origin = self.bounds.get().origin;
+        let near = |wx: f32, wy: f32, ox: f32, oy: f32| {
+            let s = to_screen(wx, wy, cam, origin);
+            let (dx, dy) = (
+                f32::from(pos.x) - (f32::from(s.x) + ox),
+                f32::from(pos.y) - (f32::from(s.y) + oy),
+            );
+            dx * dx + dy * dy <= HANDLE_GRAB * HANDLE_GRAB
+        };
+
+        if let ElementKind::Line(s) | ElementKind::Arrow(s) = kind {
+            for (which, (wx, wy)) in [(s.x1, s.y1), (s.x2, s.y2)].into_iter().enumerate() {
+                if near(wx, wy, 0.0, 0.0) {
+                    return Some(HandleGrab::Endpoint(EndpointDrag { id, which }));
+                }
+            }
+            return None;
+        }
+
+        // Corner handles sit on the padded box, so offset the hit point to match.
+        let bb = bbox(kind);
+        let wc = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
+        let off = [
+            (-SEL_PAD_PX, -SEL_PAD_PX),
+            (SEL_PAD_PX, -SEL_PAD_PX),
+            (-SEL_PAD_PX, SEL_PAD_PX),
+            (SEL_PAD_PX, SEL_PAD_PX),
+        ];
+        for i in 0..4 {
+            if near(wc[i].0, wc[i].1, off[i].0, off[i].1) {
+                let opp = wc[3 - i];
+                return Some(HandleGrab::Corner(Resizing {
+                    id,
+                    anchor: [opp.0, opp.1],
+                    from: [wc[i].0, wc[i].1],
+                    orig: kind.clone(),
+                }));
+            }
+        }
+        None
+    }
+
     fn on_left_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         if ev.click_count >= 2 {
             self.pending = None;
@@ -439,7 +529,17 @@ impl WhiteboardView {
         let p = self.event_to_world(ev.position);
 
         if self.tool == Tool::Select {
-            // Hit-test topmost-first; select + arm a move, or deselect.
+            // A handle on the current selection takes priority.
+            if let Some(grab) = self.handle_hit(ev.position) {
+                self.push_undo();
+                match grab {
+                    HandleGrab::Corner(rs) => self.resizing = Some(rs),
+                    HandleGrab::Endpoint(ep) => self.endpoint = Some(ep),
+                }
+                cx.notify();
+                return;
+            }
+            // Otherwise hit-test topmost-first; select + arm a move, or deselect.
             let pad = SELECT_PAD / self.scene.camera.zoom.max(MIN_ZOOM);
             self.selected = self
                 .scene
@@ -495,6 +595,12 @@ impl WhiteboardView {
     }
 
     fn on_left_up(&mut self, _ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.resizing.take().is_some() || self.endpoint.take().is_some() {
+            self.dirty = true;
+            cx.notify();
+            self.flush(window, cx);
+            return;
+        }
         if self.drag_from.take().is_some() {
             if self.moved {
                 self.dirty = true;
@@ -526,7 +632,11 @@ impl WhiteboardView {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
-        if self.pending.is_some() || self.drag_from.is_some() {
+        if self.pending.is_some()
+            || self.drag_from.is_some()
+            || self.resizing.is_some()
+            || self.endpoint.is_some()
+        {
             return;
         }
         self.panning = true;
@@ -542,6 +652,62 @@ impl WhiteboardView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Resizing the selection (corner-handle drag).
+        if self.resizing.is_some() {
+            let cur = self.event_to_world(ev.position);
+            let (id, anchor, from, mut kind) = {
+                let r = self.resizing.as_ref().unwrap();
+                (r.id, r.anchor, r.from, r.orig.clone())
+            };
+            let mut sx = if (from[0] - anchor[0]).abs() > 1e-3 {
+                (cur[0] - anchor[0]) / (from[0] - anchor[0])
+            } else {
+                1.0
+            };
+            let mut sy = if (from[1] - anchor[1]).abs() > 1e-3 {
+                (cur[1] - anchor[1]) / (from[1] - anchor[1])
+            } else {
+                1.0
+            };
+            // Shift locks the aspect ratio (proportional resize).
+            if ev.modifiers.shift {
+                (sx, sy) = constrain_uniform(sx, sy);
+            }
+            resize_about(&mut kind, anchor[0], anchor[1], sx, sy);
+            if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == id) {
+                e.kind = kind;
+            }
+            cx.notify();
+            return;
+        }
+        // Dragging a line/arrow endpoint (Shift snaps the angle to 45°).
+        if let Some(ep) = self.endpoint {
+            let cur = self.event_to_world(ev.position);
+            let shift = ev.modifiers.shift;
+            if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == ep.id)
+                && let ElementKind::Line(s) | ElementKind::Arrow(s) = &mut e.kind
+            {
+                let (ox, oy) = if ep.which == 0 {
+                    (s.x2, s.y2)
+                } else {
+                    (s.x1, s.y1)
+                };
+                let (nx, ny) = if shift {
+                    snap_45(ox, oy, cur[0], cur[1])
+                } else {
+                    (cur[0], cur[1])
+                };
+                if ep.which == 0 {
+                    s.x1 = nx;
+                    s.y1 = ny;
+                } else {
+                    s.x2 = nx;
+                    s.y2 = ny;
+                }
+            }
+            cx.notify();
+            return;
+        }
         // Moving the selection.
         if let Some(from) = self.drag_from {
             let cur = self.event_to_world(ev.position);
@@ -694,6 +860,55 @@ fn translate(kind: &mut ElementKind, dx: f32, dy: f32) {
             s.x2 += dx;
             s.y1 += dy;
             s.y2 += dy;
+        }
+    }
+}
+
+/// Constrain a pair of scale factors to a uniform magnitude (proportional
+/// resize) while preserving each axis's direction — keeps a circle circular.
+fn constrain_uniform(sx: f32, sy: f32) -> (f32, f32) {
+    let s = sx.abs().max(sy.abs());
+    (s.copysign(sx), s.copysign(sy))
+}
+
+/// Snap target `(tx, ty)` so its angle from `(ox, oy)` is a multiple of 45°,
+/// preserving the distance (the line-drawing constraint for endpoint drags).
+fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
+    let (dx, dy) = (tx - ox, ty - oy);
+    let len = (dx * dx + dy * dy).sqrt();
+    if len < 1e-3 {
+        return (tx, ty);
+    }
+    let step = std::f32::consts::FRAC_PI_4;
+    let ang = (dy.atan2(dx) / step).round() * step;
+    (ox + len * ang.cos(), oy + len * ang.sin())
+}
+
+/// Scale an element's geometry about `(ax, ay)` by `(sx, sy)` (world space).
+/// Stroke width is left unchanged.
+fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
+    let fx = |x: f32| ax + (x - ax) * sx;
+    let fy = |y: f32| ay + (y - ay) * sy;
+    match kind {
+        ElementKind::Draw(s) => {
+            for p in &mut s.points {
+                p[0] = fx(p[0]);
+                p[1] = fy(p[1]);
+            }
+        }
+        ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+            let (x0, x1) = (fx(b.x), fx(b.x + b.w));
+            let (y0, y1) = (fy(b.y), fy(b.y + b.h));
+            b.x = x0.min(x1);
+            b.w = (x1 - x0).abs();
+            b.y = y0.min(y1);
+            b.h = (y1 - y0).abs();
+        }
+        ElementKind::Line(s) | ElementKind::Arrow(s) => {
+            s.x1 = fx(s.x1);
+            s.x2 = fx(s.x2);
+            s.y1 = fy(s.y1);
+            s.y2 = fy(s.y2);
         }
     }
 }
@@ -856,30 +1071,54 @@ fn paint_segment(
     }
 }
 
-/// Paint the selection outline (a padded box around the selected element).
+/// Paint the selection outline: a solid, padded accent box around the selected
+/// element (thick enough to read clearly against any board background).
+/// A solid accent square handle centered at a screen point.
+fn draw_handle(hx: f32, hy: f32, color: Hsla, window: &mut Window) {
+    let h = HANDLE_HALF;
+    window.paint_quad(fill(
+        Bounds {
+            origin: point(px(hx - h), px(hy - h)),
+            size: size(px(h * 2.0), px(h * 2.0)),
+        },
+        color,
+    ));
+}
+
 fn paint_selection(
-    bb: (f32, f32, f32, f32),
+    kind: &ElementKind,
     cam: Camera,
     origin: Point<Pixels>,
-    accent: Hsla,
+    color: Hsla,
     window: &mut Window,
 ) {
+    // Lines/arrows: a handle at each endpoint (no box — its bbox is degenerate).
+    if let ElementKind::Line(s) | ElementKind::Arrow(s) = kind {
+        for (wx, wy) in [(s.x1, s.y1), (s.x2, s.y2)] {
+            let p = to_screen(wx, wy, cam, origin);
+            draw_handle(f32::from(p.x), f32::from(p.y), color, window);
+        }
+        return;
+    }
+    // Everything else: a padded box + four corner handles.
+    let bb = bbox(kind);
     let tl = to_screen(bb.0, bb.1, cam, origin);
     let br = to_screen(bb.2, bb.3, cam, origin);
-    let m = 4.0;
-    let (ox, oy) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
-    let (w, h) = (
-        f32::from(br.x) - f32::from(tl.x) + 2.0 * m,
-        f32::from(br.y) - f32::from(tl.y) + 2.0 * m,
-    );
-    window.paint_quad(outline(
-        Bounds {
-            origin: point(px(ox), px(oy)),
-            size: size(px(w), px(h)),
-        },
-        accent,
-        BorderStyle::Dashed,
-    ));
+    let m = SEL_PAD_PX;
+    let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
+    let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
+    let mut pb = PathBuilder::stroke(px(1.5));
+    pb.move_to(point(px(x0), px(y0)));
+    pb.line_to(point(px(x1), px(y0)));
+    pb.line_to(point(px(x1), px(y1)));
+    pb.line_to(point(px(x0), px(y1)));
+    pb.close();
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, color);
+    }
+    for (hx, hy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+        draw_handle(hx, hy, color, window);
+    }
 }
 
 impl Render for WhiteboardView {
@@ -892,6 +1131,7 @@ impl Render for WhiteboardView {
             ink,
             panel,
             accent,
+            selection,
         } = style;
         let cam = self.scene.camera;
         let bounds_cell = self.bounds.clone();
@@ -902,7 +1142,7 @@ impl Render for WhiteboardView {
         let sel = self
             .selected
             .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
-            .map(|e| bbox(&e.kind));
+            .map(|e| e.kind.clone());
 
         // Tool palette + actions (top-center). The pill `occlude()`s so clicking
         // a button doesn't also act on the board beneath it.
@@ -983,8 +1223,8 @@ impl Render for WhiteboardView {
                         if let Some(k) = &pending {
                             paint_element(k, cam, bounds.origin, ink, window);
                         }
-                        if let Some(bb) = sel {
-                            paint_selection(bb, cam, bounds.origin, accent, window);
+                        if let Some(k) = &sel {
+                            paint_selection(k, cam, bounds.origin, selection, window);
                         }
                     },
                 )
@@ -1116,6 +1356,45 @@ mod tests {
         assert!(hit_test(&k, 5.0, -2.0, 1.0));
         assert!(hit_test(&k, 4.5, -2.5, 1.0)); // inside pad
         assert!(!hit_test(&k, 100.0, 100.0, 1.0));
+    }
+
+    #[test]
+    fn shift_constrains_resize_to_a_uniform_scale() {
+        // The smaller axis snaps up to the larger magnitude; directions hold.
+        assert_eq!(constrain_uniform(3.0, 1.5), (3.0, 3.0));
+        assert_eq!(constrain_uniform(-2.0, 0.5), (-2.0, 2.0));
+    }
+
+    #[test]
+    fn snap_45_locks_angle_and_keeps_length() {
+        // Near 45° snaps onto the exact diagonal (x == y).
+        let (x, y) = snap_45(0.0, 0.0, 10.0, 9.0);
+        assert!((x - y).abs() < 1e-3, "{x} vs {y}");
+        // Near-horizontal snaps flat, preserving the distance.
+        let (x, y) = snap_45(0.0, 0.0, 10.0, 1.0);
+        assert!(y.abs() < 1e-3);
+        assert!((x - 101.0f32.sqrt()).abs() < 1e-2);
+    }
+
+    #[test]
+    fn resize_scales_geometry_about_the_anchor() {
+        // Drag the bottom-right corner of a 20×20 rect to double it, anchored
+        // at the top-left — origin stays put, size doubles.
+        let mut k = ElementKind::Rect(BoxGeom {
+            x: 10.0,
+            y: 10.0,
+            w: 20.0,
+            h: 20.0,
+            width: 1.0,
+        });
+        resize_about(&mut k, 10.0, 10.0, 2.0, 2.0);
+        match k {
+            ElementKind::Rect(b) => {
+                assert_eq!((b.x, b.y), (10.0, 10.0));
+                assert_eq!((b.w, b.h), (40.0, 40.0));
+            }
+            other => panic!("expected rect, got {other:?}"),
+        }
     }
 
     #[test]
