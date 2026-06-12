@@ -10,10 +10,11 @@
 //! titled card that links to a host page (the page-agnostic crate gets the id +
 //! title via callbacks and delegates picking/opening to the host). Double-click
 //! opens the page; the host indexes a board's cards as links so each page's
-//! backlinks show the board. Earlier phases: pan/zoom + grid, freehand pen,
-//! rect/ellipse/line/arrow, text, and a full select / move / resize / delete /
-//! undo editor. Rotation, marquee + multi-select, and richer card previews come
-//! next — see `docs/whiteboard-architecture.md` in the host repo.
+//! backlinks show the board. This version also adds **marquee + multi-select**
+//! (drag a box / shift-click to pick several; move or delete the group). Earlier
+//! phases: pan/zoom + grid, freehand pen, rect/ellipse/line/arrow, text, and a
+//! full select / move / resize / delete / undo editor. Rotation and richer card
+//! previews come next — see `docs/whiteboard-architecture.md` in the host repo.
 //!
 //! Perf note: elements are re-tessellated each paint (as GPUI's own
 //! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is
@@ -364,8 +365,10 @@ pub struct WhiteboardView {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The element being created by the in-progress left-drag.
     pending: Option<Pending>,
-    /// The currently selected element (Select tool).
-    selected: Option<u64>,
+    /// The currently selected elements (Select tool).
+    selected: Vec<u64>,
+    /// In-progress marquee box (start, current) in world coords.
+    marquee: Option<([f32; 2], [f32; 2])>,
     /// The last world point of an in-progress move-drag, if any.
     drag_from: Option<[f32; 2]>,
     /// Whether the current move-drag has actually moved (undo is pushed once).
@@ -407,7 +410,8 @@ impl WhiteboardView {
             editing: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             pending: None,
-            selected: None,
+            selected: Vec::new(),
+            marquee: None,
             drag_from: None,
             moved: false,
             resizing: None,
@@ -463,7 +467,7 @@ impl WhiteboardView {
                 h: EMBED_H / zoom,
             }),
         });
-        self.selected = Some(id);
+        self.selected = vec![id];
         self.tool = Tool::Select;
         cx.notify();
     }
@@ -471,6 +475,19 @@ impl WhiteboardView {
     /// The current board document (for the host to persist).
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+
+    /// The lone selected id, if exactly one element is selected. Single-element
+    /// manipulation (resize, endpoints, edit) only applies then.
+    fn selected_single(&self) -> Option<u64> {
+        match self.selected.as_slice() {
+            [id] => Some(*id),
+            _ => None,
+        }
+    }
+
+    fn is_selected(&self, id: u64) -> bool {
+        self.selected.contains(&id)
     }
 
     /// The active tool (e.g. for host-driven chrome).
@@ -483,7 +500,7 @@ impl WhiteboardView {
         if self.tool != tool {
             self.tool = tool;
             if tool != Tool::Select {
-                self.selected = None;
+                self.selected.clear();
             }
             cx.notify();
         }
@@ -526,7 +543,7 @@ impl WhiteboardView {
     pub fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(prev) = self.history.pop() {
             self.redo.push(std::mem::replace(&mut self.scene, prev));
-            self.selected = None;
+            self.selected.clear();
             self.dirty = true;
             cx.notify();
             self.flush(window, cx);
@@ -537,22 +554,25 @@ impl WhiteboardView {
     pub fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(next) = self.redo.pop() {
             self.history.push(std::mem::replace(&mut self.scene, next));
-            self.selected = None;
+            self.selected.clear();
             self.dirty = true;
             cx.notify();
             self.flush(window, cx);
         }
     }
 
-    /// Delete the selected element.
+    /// Delete the selected elements.
     fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected.take() {
-            self.push_undo();
-            self.scene.elements.retain(|e| e.id != id);
-            self.dirty = true;
-            cx.notify();
-            self.flush(window, cx);
+        if self.selected.is_empty() {
+            return;
         }
+        self.push_undo();
+        let gone = std::mem::take(&mut self.selected);
+        self.scene.elements.retain(|e| !gone.contains(&e.id));
+        self.editing = None;
+        self.dirty = true;
+        cx.notify();
+        self.flush(window, cx);
     }
 
     /// Flush pending changes through the host's persistence hook.
@@ -578,7 +598,7 @@ impl WhiteboardView {
     /// endpoints; everything else by its bounding-box corners (a line's bbox is
     /// degenerate, which would make corner-resize wildly imprecise).
     fn handle_hit(&self, pos: Point<Pixels>) -> Option<HandleGrab> {
-        let id = self.selected?;
+        let id = self.selected_single()?;
         let kind = &self.scene.elements.iter().find(|e| e.id == id)?.kind;
         let cam = self.scene.camera;
         let origin = self.bounds.get().origin;
@@ -666,7 +686,7 @@ impl WhiteboardView {
             if self.tool == Tool::Select {
                 // Double-click a text element re-opens it for editing.
                 if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
-                    self.selected = Some(id);
+                    self.selected = vec![id];
                     self.editing = Some(id);
                     self.focus.focus(window, cx);
                     cx.notify();
@@ -674,7 +694,7 @@ impl WhiteboardView {
                 }
                 // Double-click a page-card opens its page.
                 if let Some((id, page_id)) = self.embed_at(p, SELECT_PAD / zoom) {
-                    self.selected = Some(id);
+                    self.selected = vec![id];
                     if let Some(f) = self.on_open.clone() {
                         f(page_id, window, cx);
                     }
@@ -689,7 +709,7 @@ impl WhiteboardView {
         if self.tool == Tool::Text {
             // Edit a text under the cursor, else create a new one here.
             if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
-                self.selected = Some(id);
+                self.selected = vec![id];
                 self.editing = Some(id);
             } else {
                 self.push_undo();
@@ -705,7 +725,7 @@ impl WhiteboardView {
                         measured_w: 0.0,
                     }),
                 });
-                self.selected = Some(id);
+                self.selected = vec![id];
                 self.editing = Some(id);
                 self.dirty = true;
             }
@@ -733,17 +753,44 @@ impl WhiteboardView {
                 cx.notify();
                 return;
             }
-            // Otherwise hit-test topmost-first; select + arm a move, or deselect.
+            // Otherwise hit-test topmost-first.
             let pad = SELECT_PAD / zoom;
-            self.selected = self
+            let hit = self
                 .scene
                 .elements
                 .iter()
                 .rev()
                 .find(|e| hit_test(&e.kind, p[0], p[1], pad))
                 .map(|e| e.id);
-            self.drag_from = self.selected.map(|_| p);
-            self.moved = false;
+            match hit {
+                Some(id) if ev.modifiers.shift => {
+                    // Shift-click toggles membership (no move).
+                    if let Some(pos) = self.selected.iter().position(|&s| s == id) {
+                        self.selected.remove(pos);
+                    } else {
+                        self.selected.push(id);
+                    }
+                    self.drag_from = None;
+                }
+                Some(id) => {
+                    // Click an unselected element selects only it; clicking one
+                    // already in the selection keeps the group (so a drag moves
+                    // them all). Either way, arm a move.
+                    if !self.is_selected(id) {
+                        self.selected = vec![id];
+                    }
+                    self.drag_from = Some(p);
+                    self.moved = false;
+                }
+                None => {
+                    // Empty space: clear (unless extending) and start a marquee.
+                    if !ev.modifiers.shift {
+                        self.selected.clear();
+                    }
+                    self.marquee = Some((p, p));
+                    self.drag_from = None;
+                }
+            }
             cx.notify();
             return;
         }
@@ -804,6 +851,20 @@ impl WhiteboardView {
             self.flush(window, cx);
             return;
         }
+        // Finish a marquee: add every element whose bounds intersect the box.
+        if let Some((a, b)) = self.marquee.take() {
+            let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
+            let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
+            for e in &self.scene.elements {
+                let bb = bbox(&e.kind);
+                let hits = bb.0 <= x1 && bb.2 >= x0 && bb.1 <= y1 && bb.3 >= y0;
+                if hits && !self.selected.contains(&e.id) {
+                    self.selected.push(e.id);
+                }
+            }
+            cx.notify();
+            return;
+        }
         if let Some(pending) = self.pending.take() {
             if committable(&pending.kind) {
                 self.push_undo();
@@ -830,6 +891,7 @@ impl WhiteboardView {
             || self.drag_from.is_some()
             || self.resizing.is_some()
             || self.endpoint.is_some()
+            || self.marquee.is_some()
         {
             return;
         }
@@ -916,7 +978,7 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
-        // Moving the selection.
+        // Moving the selection (all selected elements together).
         if let Some(from) = self.drag_from {
             let cur = self.event_to_world(ev.position);
             let (dx, dy) = (cur[0] - from[0], cur[1] - from[1]);
@@ -925,14 +987,22 @@ impl WhiteboardView {
                     self.push_undo();
                     self.moved = true;
                 }
-                if let Some(id) = self.selected
-                    && let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == id)
-                {
-                    translate(&mut e.kind, dx, dy);
+                let sel = self.selected.clone();
+                for e in self.scene.elements.iter_mut() {
+                    if sel.contains(&e.id) {
+                        translate(&mut e.kind, dx, dy);
+                    }
                 }
                 self.drag_from = Some(cur);
                 cx.notify();
             }
+            return;
+        }
+        // Dragging a marquee box (started on empty space).
+        if let Some((start, _)) = self.marquee {
+            let cur = self.event_to_world(ev.position);
+            self.marquee = Some((start, cur));
+            cx.notify();
             return;
         }
         // Creating an element.
@@ -1482,6 +1552,68 @@ fn paint_selection(
     }
 }
 
+/// A thin selection outline (no handles) — used for each element in a
+/// multi-selection.
+fn paint_box_outline(
+    bb: (f32, f32, f32, f32),
+    cam: Camera,
+    origin: Point<Pixels>,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let tl = to_screen(bb.0, bb.1, cam, origin);
+    let br = to_screen(bb.2, bb.3, cam, origin);
+    let m = SEL_PAD_PX;
+    let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
+    let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
+    let mut pb = PathBuilder::stroke(px(1.5));
+    pb.move_to(point(px(x0), px(y0)));
+    pb.line_to(point(px(x1), px(y0)));
+    pb.line_to(point(px(x1), px(y1)));
+    pb.line_to(point(px(x0), px(y1)));
+    pb.close();
+    if let Ok(p) = pb.build() {
+        window.paint_path(p, color);
+    }
+}
+
+/// The in-progress marquee box: a faint fill + thin outline.
+fn paint_marquee(
+    a: [f32; 2],
+    b: [f32; 2],
+    cam: Camera,
+    origin: Point<Pixels>,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let pa = to_screen(a[0], a[1], cam, origin);
+    let pb = to_screen(b[0], b[1], cam, origin);
+    let (x0, x1) = (
+        f32::from(pa.x).min(f32::from(pb.x)),
+        f32::from(pa.x).max(f32::from(pb.x)),
+    );
+    let (y0, y1) = (
+        f32::from(pa.y).min(f32::from(pb.y)),
+        f32::from(pa.y).max(f32::from(pb.y)),
+    );
+    let bounds = Bounds {
+        origin: point(px(x0), px(y0)),
+        size: size(px(x1 - x0), px(y1 - y0)),
+    };
+    let mut faint = color;
+    faint.a *= 0.12;
+    window.paint_quad(fill(bounds, faint));
+    let mut pbld = PathBuilder::stroke(px(1.0));
+    pbld.move_to(point(px(x0), px(y0)));
+    pbld.line_to(point(px(x1), px(y0)));
+    pbld.line_to(point(px(x1), px(y1)));
+    pbld.line_to(point(px(x0), px(y1)));
+    pbld.close();
+    if let Ok(p) = pbld.build() {
+        window.paint_path(p, color);
+    }
+}
+
 impl Render for WhiteboardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = (self.style)();
@@ -1510,12 +1642,24 @@ impl Render for WhiteboardView {
         // each frame for now; see the path-cache perf note at the top.
         let kinds: Vec<ElementKind> = self.scene.elements.iter().map(|e| e.kind.clone()).collect();
         let pending = self.pending.as_ref().map(|p| p.kind.clone());
-        // No resize box while a text element is being edited — just its caret.
-        let sel = self
-            .selected
-            .filter(|&id| Some(id) != self.editing)
+        // A single selection gets the full box + handles (unless it's the text
+        // being edited — then just the caret); multiple selections get a thin
+        // outline each (no handles); plus the in-progress marquee box.
+        let single_sel = self
+            .selected_single()
+            .filter(|id| Some(*id) != self.editing)
             .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
             .map(|e| e.kind.clone());
+        let multi_sel: Vec<ElementKind> = if self.selected.len() > 1 {
+            self.selected
+                .iter()
+                .filter_map(|id| self.scene.elements.iter().find(|e| e.id == *id))
+                .map(|e| e.kind.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let marquee = self.marquee;
 
         // Text renders as positioned overlay children (real glyph layout, scales
         // with zoom) above the canvas; the one being edited shows a caret. They
@@ -1666,8 +1810,14 @@ impl Render for WhiteboardView {
                         if let Some(k) = &pending {
                             paint_element(k, cam, bounds.origin, ink, window);
                         }
-                        if let Some(k) = &sel {
+                        if let Some(k) = &single_sel {
                             paint_selection(k, cam, bounds.origin, selection, window);
+                        }
+                        for k in &multi_sel {
+                            paint_box_outline(bbox(k), cam, bounds.origin, selection, window);
+                        }
+                        if let Some((a, b)) = marquee {
+                            paint_marquee(a, b, cam, bounds.origin, selection, window);
                         }
                     },
                 )
