@@ -376,6 +376,20 @@ struct Resizing {
     orig: ElementKind,
 }
 
+/// An in-progress proportional resize of a multi-selection by a corner of its
+/// (axis-aligned) group bounds. Every member scales uniformly about the opposite
+/// corner, so the group grows/shrinks as one.
+struct GroupResizing {
+    /// The fixed opposite corner of the group bounds, world space.
+    anchor: [f32; 2],
+    /// The dragged corner's original position, world space.
+    from: [f32; 2],
+    /// Cursor → dragged-corner offset at grab (1:1 tracking, no jump).
+    grab: [f32; 2],
+    /// Each selected element's id + geometry at the start of the resize.
+    orig: Vec<(u64, ElementKind)>,
+}
+
 /// An in-progress drag of one endpoint of a selected line/arrow.
 #[derive(Clone, Copy)]
 struct EndpointDrag {
@@ -384,19 +398,19 @@ struct EndpointDrag {
     which: usize,
 }
 
-/// An in-progress rotation of a selected element about a fixed center.
+/// An in-progress rotation of the selection (one element or a group) about a
+/// fixed center. Drives every selected element, so it needs no element id.
 #[derive(Clone, Copy)]
 struct Rotating {
-    id: u64,
     /// Pivot (world), captured at grab so it can't drift between frames.
     center: [f32; 2],
     /// Pointer angle about `center` at grab (radians).
     start_pointer: f32,
-    /// Rotation already applied to the element since grab (radians).
+    /// Rotation already applied since grab (radians).
     applied: f32,
-    /// The element's absolute orientation at grab (a box/text angle, or a
-    /// line/arrow's direction), used to snap to horizontal/vertical. `None` for
-    /// kinds without a meaningful orientation (freehand strokes).
+    /// Orientation to snap to horizontal/vertical: a single element's angle (box
+    /// / text) or line direction; `Some(0)` for a group (snaps quarter-turns);
+    /// `None` when there's nothing meaningful to snap (a lone freehand stroke).
     base: Option<f32>,
 }
 
@@ -405,6 +419,7 @@ enum HandleGrab {
     Corner(Resizing),
     Endpoint(EndpointDrag),
     Rotate,
+    GroupCorner(GroupResizing),
 }
 
 /// Which property the picker is editing.
@@ -469,6 +484,8 @@ pub struct WhiteboardView {
     moved: bool,
     /// In-progress corner-resize of the selected box/stroke.
     resizing: Option<Resizing>,
+    /// In-progress proportional resize of a multi-selection.
+    group_resizing: Option<GroupResizing>,
     /// In-progress endpoint-drag of the selected line/arrow.
     endpoint: Option<EndpointDrag>,
     /// In-progress rotation of the selected element.
@@ -526,6 +543,7 @@ impl WhiteboardView {
             drag_from: None,
             moved: false,
             resizing: None,
+            group_resizing: None,
             endpoint: None,
             rotating: None,
             active_stroke: None,
@@ -617,6 +635,31 @@ impl WhiteboardView {
 
     fn is_selected(&self, id: u64) -> bool {
         self.selected.contains(&id)
+    }
+
+    /// World-space bounds enclosing the whole selection, or `None` if empty.
+    fn selection_bbox(&self) -> Option<(f32, f32, f32, f32)> {
+        let mut it = self
+            .scene
+            .elements
+            .iter()
+            .filter(|e| self.selected.contains(&e.id))
+            .map(|e| bbox(&e.kind));
+        let first = it.next()?;
+        Some(it.fold(first, |a, b| {
+            (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+        }))
+    }
+
+    /// Whether a *group* rotation applies: more than one element selected, at
+    /// least one of which can rotate (so an all-cards group offers no grip).
+    fn group_rotatable(&self) -> bool {
+        self.selected.len() > 1
+            && self
+                .scene
+                .elements
+                .iter()
+                .any(|e| self.selected.contains(&e.id) && rotatable(&e.kind))
     }
 
     /// The active tool (e.g. for host-driven chrome).
@@ -855,8 +898,6 @@ impl WhiteboardView {
     /// endpoints; everything else by its bounding-box corners (a line's bbox is
     /// degenerate, which would make corner-resize wildly imprecise).
     fn handle_hit(&self, pos: Point<Pixels>) -> Option<HandleGrab> {
-        let id = self.selected_single()?;
-        let kind = &self.scene.elements.iter().find(|e| e.id == id)?.kind;
         let cam = self.scene.camera;
         let origin = self.bounds.get().origin;
         let cursor = self.event_to_world(pos);
@@ -868,6 +909,48 @@ impl WhiteboardView {
             );
             dx * dx + dy * dy <= HANDLE_GRAB * HANDLE_GRAB
         };
+
+        // A multi-selection offers a group rotate grip (if anything's rotatable)
+        // and proportional corner-resize of the group bounds.
+        if self.selected.len() > 1 {
+            let bb = self.selection_bbox()?;
+            if self.group_rotatable() {
+                let (rx, ry) = rotate_handle_for_bbox(bb, cam, origin);
+                let (dx, dy) = (f32::from(pos.x) - rx, f32::from(pos.y) - ry);
+                if dx * dx + dy * dy <= HANDLE_GRAB * HANDLE_GRAB {
+                    return Some(HandleGrab::Rotate);
+                }
+            }
+            let wc = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
+            let off = [
+                (-SEL_PAD_PX, -SEL_PAD_PX),
+                (SEL_PAD_PX, -SEL_PAD_PX),
+                (-SEL_PAD_PX, SEL_PAD_PX),
+                (SEL_PAD_PX, SEL_PAD_PX),
+            ];
+            for i in 0..4 {
+                if near(wc[i].0, wc[i].1, off[i].0, off[i].1) {
+                    let opp = wc[3 - i];
+                    let orig = self
+                        .scene
+                        .elements
+                        .iter()
+                        .filter(|e| self.is_selected(e.id))
+                        .map(|e| (e.id, e.kind.clone()))
+                        .collect();
+                    return Some(HandleGrab::GroupCorner(GroupResizing {
+                        anchor: [opp.0, opp.1],
+                        from: [wc[i].0, wc[i].1],
+                        grab: [wc[i].0 - cursor[0], wc[i].1 - cursor[1]],
+                        orig,
+                    }));
+                }
+            }
+            return None;
+        }
+
+        let id = self.selected_single()?;
+        let kind = &self.scene.elements.iter().find(|e| e.id == id)?.kind;
 
         // The rotate handle floats above every rotatable element (not text/cards).
         if rotatable(kind) {
@@ -1100,24 +1183,38 @@ impl WhiteboardView {
                 self.push_undo();
                 match grab {
                     HandleGrab::Corner(rs) => self.resizing = Some(rs),
+                    HandleGrab::GroupCorner(gr) => self.group_resizing = Some(gr),
                     HandleGrab::Endpoint(ep) => self.endpoint = Some(ep),
                     HandleGrab::Rotate => {
-                        if let Some(id) = self.selected_single() {
-                            let found = self.scene.elements.iter().find(|e| e.id == id).map(|e| {
-                                let bb = bbox(&e.kind);
-                                let center = [(bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0];
-                                (center, reference_angle(&e.kind))
+                        // Pivot = the whole selection's bounds center (a single
+                        // element's own center, or the group's). Snap on the lone
+                        // element's orientation, or — for a group — the first
+                        // oriented member's, so it squares to horizontal/vertical
+                        // (falling back to quarter-turns if nothing's oriented).
+                        if let Some(bb) = self.selection_bbox() {
+                            let center = [(bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0];
+                            let base = match self.selected_single() {
+                                Some(id) => self
+                                    .scene
+                                    .elements
+                                    .iter()
+                                    .find(|e| e.id == id)
+                                    .and_then(|e| reference_angle(&e.kind)),
+                                None => self
+                                    .scene
+                                    .elements
+                                    .iter()
+                                    .filter(|e| self.is_selected(e.id))
+                                    .find_map(|e| reference_angle(&e.kind))
+                                    .or(Some(0.0)),
+                            };
+                            let start_pointer = (p[1] - center[1]).atan2(p[0] - center[0]);
+                            self.rotating = Some(Rotating {
+                                center,
+                                start_pointer,
+                                applied: 0.0,
+                                base,
                             });
-                            if let Some((center, base)) = found {
-                                let start_pointer = (p[1] - center[1]).atan2(p[0] - center[0]);
-                                self.rotating = Some(Rotating {
-                                    id,
-                                    center,
-                                    start_pointer,
-                                    applied: 0.0,
-                                    base,
-                                });
-                            }
                         }
                     }
                 }
@@ -1215,6 +1312,7 @@ impl WhiteboardView {
             return;
         }
         if self.resizing.take().is_some()
+            || self.group_resizing.take().is_some()
             || self.endpoint.take().is_some()
             || self.rotating.take().is_some()
         {
@@ -1280,6 +1378,7 @@ impl WhiteboardView {
         if self.pending.is_some()
             || self.drag_from.is_some()
             || self.resizing.is_some()
+            || self.group_resizing.is_some()
             || self.endpoint.is_some()
             || self.rotating.is_some()
             || self.picker_drag.is_some()
@@ -1351,11 +1450,39 @@ impl WhiteboardView {
             let tau = std::f32::consts::TAU;
             let mut delta = total - rot.applied;
             delta -= (delta / tau).round() * tau;
-            if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == rot.id) {
-                rotate_element(&mut e.kind, rot.center[0], rot.center[1], delta);
+            // Every selected element turns about the shared pivot (a single
+            // selection is just the one, pivoting on its own center).
+            let sel = self.selected.clone();
+            for e in self.scene.elements.iter_mut() {
+                if sel.contains(&e.id) {
+                    rotate_element(&mut e.kind, rot.center[0], rot.center[1], delta);
+                }
             }
             rot.applied += delta;
             self.rotating = Some(rot);
+            cx.notify();
+            return;
+        }
+        // Resizing a multi-selection by a group-bounds corner: scale every
+        // member uniformly (proportional) about the opposite corner, each from
+        // its geometry at grab so the scaling never compounds.
+        if let Some(gr) = self.group_resizing.take() {
+            let cur = self.event_to_world(ev.position);
+            let target = [cur[0] + gr.grab[0], cur[1] + gr.grab[1]];
+            let s = diagonal_scale(gr.anchor, gr.from, target);
+            let font = self.font.clone();
+            for (id, orig) in &gr.orig {
+                let mut kind = orig.clone();
+                resize_about(&mut kind, gr.anchor[0], gr.anchor[1], s, s);
+                if let ElementKind::Text(t) = &mut kind {
+                    let (w, h) = font.measure(&t.content, t.size);
+                    (t.measured_w, t.measured_h) = (w, h);
+                }
+                if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == *id) {
+                    e.kind = kind;
+                }
+            }
+            self.group_resizing = Some(gr);
             cx.notify();
             return;
         }
@@ -1768,13 +1895,29 @@ fn reference_angle(kind: &ElementKind) -> Option<f32> {
     }
 }
 
-/// Rotate an element by `delta` radians about a fixed pivot. Boxes and text
-/// accumulate an angle; lines/arrows/strokes bake the rotation into their points
-/// (they have no orientation field of their own).
+/// Rotate an element by `delta` radians about a fixed pivot `(cx, cy)`. A
+/// box/text/card's *center* orbits the pivot and (for the rotatable ones) its
+/// own angle accumulates; lines/strokes bake the rotation into their points. For
+/// a single-element rotation the pivot is the element's own center, so the orbit
+/// is a no-op and it just spins in place; for a group it's the shared center, so
+/// the whole selection turns as one.
 fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
+    // Orbit a box's top-left so its center lands where the pivot rotation sends
+    // it; returns the new top-left.
+    let orbit = |x: f32, y: f32, w: f32, h: f32| {
+        let (nx, ny) = rotate_pt(x + w / 2.0, y + h / 2.0, cx, cy, delta);
+        (nx - w / 2.0, ny - h / 2.0)
+    };
     match kind {
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => b.rotation += delta,
-        ElementKind::Text(t) => t.rotation += delta,
+        ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+            (b.x, b.y) = orbit(b.x, b.y, b.w, b.h);
+            b.rotation += delta;
+        }
+        ElementKind::Text(t) => {
+            let (w, h) = text_extent(t);
+            (t.x, t.y) = orbit(t.x, t.y, w, h);
+            t.rotation += delta;
+        }
         ElementKind::Line(s) | ElementKind::Arrow(s) => {
             let (x1, y1) = rotate_pt(s.x1, s.y1, cx, cy, delta);
             let (x2, y2) = rotate_pt(s.x2, s.y2, cx, cy, delta);
@@ -1786,19 +1929,30 @@ fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
                 (p[0], p[1]) = (x, y);
             }
         }
-        ElementKind::Embed(_) => {}
+        // A card can't tilt (it's an HTML overlay), but in a group it orbits the
+        // pivot so the selection moves together.
+        ElementKind::Embed(em) => (em.x, em.y) = orbit(em.x, em.y, em.w, em.h),
     }
 }
 
-/// Screen position of an element's rotate handle: above the selection box's
-/// top-center. `handle_hit` and `paint_selection` agree via this one source.
-fn rotate_handle_screen(kind: &ElementKind, cam: Camera, origin: Point<Pixels>) -> (f32, f32) {
-    let bb = bbox(kind);
+/// Screen position of a rotate handle: above a bounds' top-center. `handle_hit`
+/// and `paint_selection` agree via this one source (for single elements and for
+/// a group, whose bounds is the union of the selection).
+fn rotate_handle_for_bbox(
+    bb: (f32, f32, f32, f32),
+    cam: Camera,
+    origin: Point<Pixels>,
+) -> (f32, f32) {
     let top = to_screen((bb.0 + bb.2) / 2.0, bb.1, cam, origin);
     (
         f32::from(top.x),
         f32::from(top.y) - SEL_PAD_PX - ROTATE_DIST,
     )
+}
+
+/// Screen position of a single element's rotate handle.
+fn rotate_handle_screen(kind: &ElementKind, cam: Camera, origin: Point<Pixels>) -> (f32, f32) {
+    rotate_handle_for_bbox(bbox(kind), cam, origin)
 }
 
 fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
@@ -2505,6 +2659,12 @@ impl Render for WhiteboardView {
         } else {
             Vec::new()
         };
+        // A multi-selection gets an enclosing box with resize corners, plus a
+        // shared rotate grip when at least one member can rotate.
+        let group_sel = (self.selected.len() > 1)
+            .then(|| self.selection_bbox())
+            .flatten()
+            .map(|bb| (bb, self.group_rotatable()));
         let marquee = self.marquee;
 
         // Page-cards render as positioned overlay children (host-styled boxes).
@@ -2947,6 +3107,23 @@ impl Render for WhiteboardView {
                         for k in &multi_sel {
                             paint_box_outline(bbox(k), cam, bounds.origin, selection, window);
                         }
+                        // Group: an enclosing box with resize corners, plus a
+                        // shared rotate grip above it when the group can rotate.
+                        if let Some((bb, can_rotate)) = group_sel {
+                            paint_box_outline(bb, cam, bounds.origin, selection, window);
+                            let tl = to_screen(bb.0, bb.1, cam, bounds.origin);
+                            let br = to_screen(bb.2, bb.3, cam, bounds.origin);
+                            let m = SEL_PAD_PX;
+                            let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
+                            let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
+                            for (hx, hy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                                draw_handle(hx, hy, selection, window);
+                            }
+                            if can_rotate {
+                                let (rx, ry) = rotate_handle_for_bbox(bb, cam, bounds.origin);
+                                draw_rotate_handle(rx, ry, selection, window);
+                            }
+                        }
                         if let Some((a, b)) = marquee {
                             paint_marquee(a, b, cam, bounds.origin, selection, window);
                         }
@@ -3197,11 +3374,11 @@ mod tests {
             other => panic!("expected line, got {other:?}"),
         }
 
-        // Text rotates like a box: it accumulates an angle (the glyph outlines
-        // are spun about the block center at paint time).
+        // Text rotates like a box: spun about its own center, it accumulates an
+        // angle and stays put (centered on the pivot here, so no orbit).
         let mut txt = ElementKind::Text(TextGeom {
-            x: 0.0,
-            y: 0.0,
+            x: -20.0,
+            y: -8.0,
             content: "hi".into(),
             size: 16.0,
             rotation: 0.0,
@@ -3210,8 +3387,33 @@ mod tests {
         });
         rotate_element(&mut txt, 0.0, 0.0, FRAC_PI_2);
         match txt {
-            ElementKind::Text(t) => assert!((t.rotation - FRAC_PI_2).abs() < 1e-5),
+            ElementKind::Text(t) => {
+                assert!((t.rotation - FRAC_PI_2).abs() < 1e-5);
+                assert!(
+                    (t.x + 20.0).abs() < 1e-3 && (t.y + 8.0).abs() < 1e-3,
+                    "{t:?}"
+                );
+            }
             other => panic!("expected text, got {other:?}"),
+        }
+
+        // Orbiting: rotating a box about a *different* pivot moves its center
+        // along the arc. A unit box at (1,0) turned 90° about the origin → (0,1).
+        let mut orb = ElementKind::Rect(BoxGeom {
+            x: 0.5,
+            y: -0.5,
+            w: 1.0,
+            h: 1.0,
+            width: 1.0,
+            rotation: 0.0,
+        });
+        rotate_element(&mut orb, 0.0, 0.0, FRAC_PI_2);
+        match orb {
+            ElementKind::Rect(b) => {
+                let (ccx, ccy) = (b.x + 0.5, b.y + 0.5);
+                assert!(ccx.abs() < 1e-3 && (ccy - 1.0).abs() < 1e-3, "{b:?}");
+            }
+            other => panic!("expected rect, got {other:?}"),
         }
     }
 
