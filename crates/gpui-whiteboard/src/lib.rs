@@ -78,6 +78,9 @@ const HUE_H: f32 = 14.0;
 /// shows resize corners. Rotated past it, only the rotate handle is offered
 /// (rotated-frame resize is intentionally out of scope; rotate back to resize).
 const ROT_EPS: f32 = 0.05;
+/// While rotating, an orientation within this many radians (~6°) of horizontal
+/// or vertical snaps to it, so boxes square up to the grid easily.
+const ROT_SNAP: f32 = 0.105;
 /// Default text size at creation, screen px (stored world size is this / zoom).
 const TEXT_SIZE: f32 = 18.0;
 /// Rough per-character advance and line height, as fractions of the font size,
@@ -391,6 +394,10 @@ struct Rotating {
     start_pointer: f32,
     /// Rotation already applied to the element since grab (radians).
     applied: f32,
+    /// The element's absolute orientation at grab (a box/text angle, or a
+    /// line/arrow's direction), used to snap to horizontal/vertical. `None` for
+    /// kinds without a meaningful orientation (freehand strokes).
+    base: Option<f32>,
 }
 
 /// What a press on a selection handle begins.
@@ -1096,17 +1103,19 @@ impl WhiteboardView {
                     HandleGrab::Endpoint(ep) => self.endpoint = Some(ep),
                     HandleGrab::Rotate => {
                         if let Some(id) = self.selected_single() {
-                            let center = self.scene.elements.iter().find(|e| e.id == id).map(|e| {
+                            let found = self.scene.elements.iter().find(|e| e.id == id).map(|e| {
                                 let bb = bbox(&e.kind);
-                                [(bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0]
+                                let center = [(bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0];
+                                (center, reference_angle(&e.kind))
                             });
-                            if let Some(center) = center {
+                            if let Some((center, base)) = found {
                                 let start_pointer = (p[1] - center[1]).atan2(p[0] - center[0]);
                                 self.rotating = Some(Rotating {
                                     id,
                                     center,
                                     start_pointer,
                                     applied: 0.0,
+                                    base,
                                 });
                             }
                         }
@@ -1324,9 +1333,18 @@ impl WhiteboardView {
             let cur = self.event_to_world(ev.position);
             let ang = (cur[1] - rot.center[1]).atan2(cur[0] - rot.center[0]);
             let mut total = ang - rot.start_pointer;
-            if ev.modifiers.shift {
-                let step = std::f32::consts::PI / 12.0;
-                total = (total / step).round() * step;
+            match rot.base {
+                // Box/text/line: work in absolute orientation so Shift gives
+                // clean 15° angles and, unmodified, it snaps to horizontal /
+                // vertical when within ROT_SNAP (the easy-squaring the user wants).
+                Some(base) => total = snap_angle(base + total, ev.modifiers.shift) - base,
+                // Freehand: no absolute orientation; Shift still steps relatively.
+                None => {
+                    if ev.modifiers.shift {
+                        let step = std::f32::consts::PI / 12.0;
+                        total = (total / step).round() * step;
+                    }
+                }
             }
             // Apply only the change since last frame, normalized to [-π, π] so the
             // atan2 wrap-around at ±π doesn't spin the element a full turn.
@@ -1719,6 +1737,35 @@ fn aabb(pts: &[[f32; 2]]) -> (f32, f32, f32, f32) {
 /// transform, so they're excluded (the rotate handle never shows for them).
 fn rotatable(kind: &ElementKind) -> bool {
     !matches!(kind, ElementKind::Embed(_))
+}
+
+/// Snap an absolute orientation (radians) while rotating: with `shift`, to the
+/// nearest 15°; otherwise to horizontal/vertical when within [`ROT_SNAP`], else
+/// left free so any angle is still reachable away from the cardinals.
+fn snap_angle(abs: f32, shift: bool) -> f32 {
+    if shift {
+        let step = std::f32::consts::PI / 12.0;
+        return (abs / step).round() * step;
+    }
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let card = (abs / quarter).round() * quarter;
+    if (abs - card).abs() < ROT_SNAP {
+        card
+    } else {
+        abs
+    }
+}
+
+/// An element's absolute orientation for cardinal-snapping while rotating: a
+/// box/text angle, or a line/arrow's direction. `None` for freehand strokes
+/// (which have no meaningful single orientation).
+fn reference_angle(kind: &ElementKind) -> Option<f32> {
+    match kind {
+        ElementKind::Rect(b) | ElementKind::Ellipse(b) => Some(b.rotation),
+        ElementKind::Text(t) => Some(t.rotation),
+        ElementKind::Line(s) | ElementKind::Arrow(s) => Some((s.y2 - s.y1).atan2(s.x2 - s.x1)),
+        ElementKind::Draw(_) | ElementKind::Embed(_) => None,
+    }
 }
 
 /// Rotate an element by `delta` radians about a fixed pivot. Boxes and text
@@ -3166,6 +3213,21 @@ mod tests {
             ElementKind::Text(t) => assert!((t.rotation - FRAC_PI_2).abs() < 1e-5),
             other => panic!("expected text, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rotation_snaps_to_horizontal_and_vertical() {
+        use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+        let step = std::f32::consts::PI / 12.0;
+        // Within the snap zone of a cardinal snaps onto it...
+        assert!((snap_angle(FRAC_PI_2 - 0.05, false) - FRAC_PI_2).abs() < 1e-6);
+        assert!(snap_angle(0.04, false).abs() < 1e-6);
+        assert!((snap_angle(-FRAC_PI_2 + 0.03, false) + FRAC_PI_2).abs() < 1e-6);
+        // ...but a hair outside it, and at 45°, the angle is left free.
+        assert!((snap_angle(FRAC_PI_2 - 0.2, false) - (FRAC_PI_2 - 0.2)).abs() < 1e-6);
+        assert!((snap_angle(FRAC_PI_4, false) - FRAC_PI_4).abs() < 1e-6);
+        // Shift snaps to the nearest 15° everywhere.
+        assert!((snap_angle(0.30, true) - step).abs() < 1e-4);
     }
 
     #[test]
