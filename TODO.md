@@ -27,6 +27,14 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Sidebar: a "show all pages" affordance (browse the full tree, not just recent)
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 - [ ] **Whiteboards** — a freeform spatial canvas (Logseq-style): drop pages/notes and sketch shapes, arrows, and freehand drawings on an infinite, pannable/zoomable board, linkable to pages. A distinct surface from the text journal. Build it as a reusable, host-agnostic **`gpui-whiteboard`** crate (like `gpui-markdown` / `gpui-pdf`). Design: [docs/whiteboard-architecture.md](docs/whiteboard-architecture.md). Follow-ups:
+  - [ ] **Pan mode** — a dedicated pan tool with a hand icon; make it the default tool (Pen is the default today, and panning is middle-drag only)
+  - [ ] **Multiple page management** — currently only one board/page; there's no way to create a new one
+  - [ ] **Keyboard shortcuts** — for tools and actions (select / pen / shapes / text, delete, undo-redo, zoom, …)
+  - [ ] **Toolbar tooltips** — label each tool and action button on hover
+  - [ ] **Organize the toolbar** — clearer grouping / layout of the tools, color, and actions
+  - [ ] **More shapes**
+  - [ ] **Picture / image uploads** — drop or paste images onto the board
+  - [ ] **Templates** — reusable board templates, selectable by the user
   - [ ] Per-axis **group resize** — side/edge handles to *stretch* a multi-selection (corner handles scale proportionally only today; per-axis is messy with text + rotation, so it's deferred)
   - [ ] **Custom / uploaded fonts** for whiteboard text — the crate already consumes font *bytes* (`WhiteboardView::set_font` + `Font::from_bytes`, default is bundled JetBrains Mono); add host UI to pick a `.ttf`/`.otf`, and optionally a per-board / per-text-element font choice
 
