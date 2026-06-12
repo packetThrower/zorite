@@ -877,6 +877,45 @@ mod tests {
     }
 
     #[test]
+    fn whiteboards_are_pages_kept_out_of_sidebar_and_search() {
+        let db = Db::open_in_memory().unwrap();
+        // A new board carries an empty-scene placeholder in its content column.
+        let a = db.get_or_create_whiteboard("Design Board").unwrap();
+        assert_eq!(a.content, "{}");
+        // Reuse is by title, case-insensitively — no duplicate row.
+        let b = db.get_or_create_whiteboard("design board").unwrap();
+        assert_eq!(a.id, b.id);
+        // A board is NOT listed as a page, so it never shows in the sidebar tree.
+        assert!(
+            db.list_pages().unwrap().iter().all(|p| p.id != a.id),
+            "whiteboard leaked into the page list"
+        );
+        // Its canvas JSON stays out of FTS (the kind-guarded triggers), while a
+        // normal page's content is still indexed — the v6 control. (`pages_fts`
+        // is external-content, so probe via MATCH, not a rowid lookup.)
+        let hits = |term: &str| -> i64 {
+            db.conn
+                .query_row(
+                    "SELECT count(*) FROM pages_fts WHERE pages_fts MATCH ?1",
+                    params![format!("\"{term}\"")],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        db.set_page_content(a.id, r#"{"marker":"zphirium","camera":{}}"#)
+            .unwrap();
+        assert_eq!(
+            hits("zphirium"),
+            0,
+            "whiteboard content must not be searchable"
+        );
+
+        let p = db.get_or_create_page("Notes").unwrap();
+        db.set_page_content(p.id, "hello zphirium world").unwrap();
+        assert_eq!(hits("zphirium"), 1, "a normal page should be searchable");
+    }
+
+    #[test]
     fn search_substring_case_insensitive_and_stays_synced() {
         let db = Db::open_in_memory().unwrap();
         let p = db.get_or_create_page("Datasheet").unwrap();
@@ -923,7 +962,7 @@ mod tests {
         let version: i64 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, SCHEMA_VERSION);
         let db = Db { conn };
         assert!(
             db.search_rows("oscillation", 10)

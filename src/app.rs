@@ -1971,7 +1971,23 @@ impl AppView {
         let view = cx.new(|cx| {
             crate::whiteboard::WhiteboardView::new(scene, crate::whiteboard::style(), cx)
         });
+        // Persist edits (strokes, camera) back to the board's page row.
+        let weak = cx.entity().downgrade();
+        view.update(cx, |v, _| {
+            v.set_on_change(Rc::new(move |json, _window, cx| {
+                if let Some(app) = weak.upgrade() {
+                    app.update(cx, |a, _| a.save_board(id, &json));
+                }
+            }));
+        });
         self.whiteboard_views.insert(id, view);
+    }
+
+    /// Persist a whiteboard's canvas JSON (called by the view's on_change hook).
+    fn save_board(&self, id: i64, json: &str) {
+        if let Err(e) = self.db.set_page_content(id, json) {
+            log::error!("save whiteboard {id}: {e}");
+        }
     }
 
     /// Create (or reuse) a whiteboard and open it. Phase 0 uses a single

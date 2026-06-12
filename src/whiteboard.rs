@@ -19,5 +19,6 @@ pub fn style() -> WhiteboardStyleFn {
         bg: theme::bg_content(),
         grid: theme::border_subtle(),
         text: theme::text_tertiary(),
+        ink: theme::text_primary(),
     })
 }
