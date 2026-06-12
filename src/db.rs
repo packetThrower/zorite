@@ -567,6 +567,37 @@ impl Db {
         Ok(())
     }
 
+    /// Replace `source_page_id`'s outgoing links with edges to `target_ids`.
+    /// Used for whiteboard page-cards, which carry page ids directly (unlike
+    /// markdown `[[links]]`, which resolve by title via [`rebuild_page_links`]).
+    pub fn set_page_links(&self, source_page_id: i64, target_ids: &[i64]) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM page_links WHERE source_page_id = ?1",
+            params![source_page_id],
+        )?;
+        for &target in target_ids {
+            if target != source_page_id {
+                self.conn.execute(
+                    "INSERT OR IGNORE INTO page_links (source_page_id, target_page_id) \
+                     VALUES (?1, ?2)",
+                    params![source_page_id, target],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the page with `id` is a whiteboard (so callers can route it to the
+    /// canvas viewer rather than the markdown editor).
+    pub fn is_whiteboard(&self, id: i64) -> bool {
+        self.conn
+            .query_row("SELECT kind FROM pages WHERE id = ?1", params![id], |r| {
+                r.get::<_, String>(0)
+            })
+            .map(|k| k == "whiteboard")
+            .unwrap_or(false)
+    }
+
     /// Pages that link to `page_id`, each with the linking line as a
     /// snippet — the "Linked References" list.
     pub fn backlinks(&self, page_id: i64) -> rusqlite::Result<Vec<Backlink>> {
@@ -874,6 +905,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n2, 1, "trigram is case-insensitive");
+    }
+
+    #[test]
+    fn whiteboard_cards_link_and_show_as_backlinks() {
+        let db = Db::open_in_memory().unwrap();
+        let board = db.get_or_create_whiteboard("Board").unwrap();
+        let page = db.get_or_create_page("Target").unwrap();
+        assert!(db.is_whiteboard(board.id));
+        assert!(!db.is_whiteboard(page.id));
+        // A page-card on the board links board → page; the page's backlinks show it.
+        db.set_page_links(board.id, &[page.id]).unwrap();
+        let bl = db.backlinks(page.id).unwrap();
+        assert!(
+            bl.iter().any(|b| b.source_page_id == board.id),
+            "the board should appear in the page's backlinks"
+        );
+        // Removing the card (re-save with no targets) clears the link.
+        db.set_page_links(board.id, &[]).unwrap();
+        assert!(db.backlinks(page.id).unwrap().is_empty());
     }
 
     #[test]

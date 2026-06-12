@@ -796,6 +796,12 @@ impl AppView {
     /// Open a page in the **foreground** (left-click): focus its tab if it's
     /// already open, else open a new tab for it and switch to it.
     pub fn open_page_id(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        // A whiteboard is a page row too, so route it to the canvas viewer rather
+        // than the markdown editor (e.g. opening a board from a page's backlinks).
+        if self.db.is_whiteboard(id) {
+            self.open_whiteboard(id, window, cx);
+            return;
+        }
         match self.db.get_page(id) {
             Ok(Some(page)) => self.open_page_foreground(page, window, cx),
             Ok(None) => log::warn!("page {id} not found"),
@@ -1971,23 +1977,120 @@ impl AppView {
         let view = cx.new(|cx| {
             crate::whiteboard::WhiteboardView::new(scene, crate::whiteboard::style(), cx)
         });
-        // Persist edits (strokes, camera) back to the board's page row.
+        // Persist edits (strokes, camera) back to the board's page row; pick a
+        // page for a placed card; open a page when a card is double-clicked.
         let weak = cx.entity().downgrade();
         view.update(cx, |v, _| {
+            let w = weak.clone();
             v.set_on_change(Rc::new(move |json, _window, cx| {
-                if let Some(app) = weak.upgrade() {
+                if let Some(app) = w.upgrade() {
                     app.update(cx, |a, _| a.save_board(id, &json));
+                }
+            }));
+            let w = weak.clone();
+            v.set_on_place_embed(Rc::new(move |x, y, window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.place_embed_dialog(id, x, y, window, cx));
+                }
+            }));
+            let w = weak.clone();
+            v.set_on_open(Rc::new(move |page_id, window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.open_page_id(page_id, window, cx));
                 }
             }));
         });
         self.whiteboard_views.insert(id, view);
     }
 
-    /// Persist a whiteboard's canvas JSON (called by the view's on_change hook).
+    /// Persist a whiteboard's canvas JSON and index its page-card embeds as
+    /// links (so each referenced page's backlinks show the board).
     fn save_board(&self, id: i64, json: &str) {
         if let Err(e) = self.db.set_page_content(id, json) {
             log::error!("save whiteboard {id}: {e}");
+            return;
         }
+        let scene = crate::whiteboard::Scene::from_json(json);
+        let targets: Vec<i64> = scene
+            .elements
+            .iter()
+            .filter_map(|e| match &e.kind {
+                crate::whiteboard::ElementKind::Embed(em) => Some(em.page_id),
+                _ => None,
+            })
+            .collect();
+        if let Err(e) = self.db.set_page_links(id, &targets) {
+            log::error!("link whiteboard {id}: {e}");
+        }
+    }
+
+    /// Open the "insert page card" dialog, then place the chosen page as a card
+    /// at world `(x, y)` on board `board_id`.
+    fn place_embed_dialog(
+        &mut self,
+        board_id: i64,
+        x: f32,
+        y: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.new_page_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        let input = self.new_page_input.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let input_btn = input.clone();
+            let weak_btn = weak.clone();
+            dialog
+                .title("Insert page card")
+                .w(px(420.0))
+                .child(Input::new(&input))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("embed-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("embed-insert")
+                                .primary()
+                                .label("Insert")
+                                .on_click(move |_, window, cx| {
+                                    let title = input_btn.read(cx).value().trim().to_string();
+                                    if !title.is_empty() {
+                                        let _ = weak_btn.update(cx, |this, cx| {
+                                            this.insert_embed(board_id, &title, x, y, cx)
+                                        });
+                                    }
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+        });
+    }
+
+    /// Resolve `title` to a page (creating it) and add it as a card on the board.
+    fn insert_embed(&mut self, board_id: i64, title: &str, x: f32, y: f32, cx: &mut Context<Self>) {
+        let page = match self.db.get_or_create_page(title) {
+            Ok(p) => p,
+            Err(e) => {
+                log::error!("embed page {title:?}: {e}");
+                return;
+            }
+        };
+        if let Some(view) = self.whiteboard_views.get(&board_id).cloned() {
+            // Persist here (not via the view's on_change) — we're already inside
+            // an AppView update, so a re-entrant save would panic.
+            let json = view.update(cx, |v, cx| {
+                v.add_embed(page.id, page.title.clone(), x, y, cx);
+                v.scene().to_json()
+            });
+            self.save_board(board_id, &json);
+        }
+        self.record_recent(page.id);
+        self.refresh_sidebar();
+        cx.notify();
     }
 
     /// Create (or reuse) a whiteboard and open it. Phase 0 uses a single

@@ -6,14 +6,14 @@
 //! owns the scene model and its (de)serialization; the host owns persistence,
 //! theme, and navigation.
 //!
-//! **Phase 5** (this version): on-canvas **text** — a Text tool (click to place,
-//! type to edit, double-click to re-edit), rendered with real glyph layout that
-//! scales with zoom and persists. Plus resize polish: corner handles track the
-//! cursor (grab offset + diagonal-projection proportional resize), and text is
-//! measured so its box fits the glyphs. Earlier phases: pan/zoom + grid, freehand
-//! pen, rect/ellipse/line/arrow, and select / move / resize / delete / undo.
-//! Rotation, marquee + multi-select, and embedded page-cards come next — see
-//! `docs/whiteboard-architecture.md` in the host repo.
+//! **Phase 6** (this version): **page-card embeds** — a card tool (▤) drops a
+//! titled card that links to a host page (the page-agnostic crate gets the id +
+//! title via callbacks and delegates picking/opening to the host). Double-click
+//! opens the page; the host indexes a board's cards as links so each page's
+//! backlinks show the board. Earlier phases: pan/zoom + grid, freehand pen,
+//! rect/ellipse/line/arrow, text, and a full select / move / resize / delete /
+//! undo editor. Rotation, marquee + multi-select, and richer card previews come
+//! next — see `docs/whiteboard-architecture.md` in the host repo.
 //!
 //! Perf note: elements are re-tessellated each paint (as GPUI's own
 //! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is
@@ -64,6 +64,9 @@ const TEXT_SIZE: f32 = 18.0;
 /// for an approximate text bounding box (hit-testing / selection).
 const TEXT_CHAR_W: f32 = 0.55;
 const TEXT_LINE_H: f32 = 1.3;
+/// Default page-card size at creation, screen px (stored world size is / zoom).
+const EMBED_W: f32 = 210.0;
+const EMBED_H: f32 = 76.0;
 
 /// The board document: everything persisted for a whiteboard. Owned and
 /// (de)serialized here; the host stores [`Scene::to_json`] opaquely (for zorite,
@@ -112,7 +115,7 @@ pub struct Element {
     pub kind: ElementKind,
 }
 
-/// The kinds of thing a board can hold. Text + embeds arrive in later phases.
+/// The kinds of thing a board can hold.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ElementKind {
@@ -122,6 +125,20 @@ pub enum ElementKind {
     Line(SegGeom),
     Arrow(SegGeom),
     Text(TextGeom),
+    Embed(EmbedGeom),
+}
+
+/// A page-card: a titled box anchored at `(x, y)` that links to a host page
+/// (`page_id`). The crate is page-agnostic — the host supplies the id + title
+/// and handles opening it; this just stores and draws the card.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EmbedGeom {
+    pub page_id: i64,
+    pub title: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
 }
 
 /// A text label: a top-left anchor, its content, and a world-space font size.
@@ -229,10 +246,11 @@ pub enum Tool {
     Line,
     Arrow,
     Text,
+    Embed,
 }
 
 impl Tool {
-    const ALL: [Tool; 7] = [
+    const ALL: [Tool; 8] = [
         Tool::Select,
         Tool::Pen,
         Tool::Rect,
@@ -240,6 +258,7 @@ impl Tool {
         Tool::Line,
         Tool::Arrow,
         Tool::Text,
+        Tool::Embed,
     ];
 
     /// A glyph for the toolbar button (dependency-free; the host has no icon set
@@ -253,6 +272,7 @@ impl Tool {
             Tool::Line => "╱",
             Tool::Arrow => "↗",
             Tool::Text => "T",
+            Tool::Embed => "▤",
         }
     }
 }
@@ -284,6 +304,13 @@ pub type WhiteboardStyleFn = Rc<dyn Fn() -> WhiteboardStyle>;
 /// Called when the board changes (an element committed/moved/deleted, the camera
 /// moved), with the serialized scene JSON, so the host can persist it.
 pub type ChangeFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+/// Called when the page-card tool is clicked at world `(x, y)` — the host picks
+/// a page and calls [`WhiteboardView::add_embed`].
+pub type PlaceEmbedFn = Rc<dyn Fn(f32, f32, &mut Window, &mut App)>;
+
+/// Called to open a page (double-clicking a card) — the host opens it in a tab.
+pub type OpenPageFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
 /// An element being created by the current left-drag.
 struct Pending {
@@ -325,6 +352,8 @@ pub struct WhiteboardView {
     scene: Scene,
     style: WhiteboardStyleFn,
     on_change: Option<ChangeFn>,
+    on_place_embed: Option<PlaceEmbedFn>,
+    on_open: Option<OpenPageFn>,
     tool: Tool,
     /// Keyboard focus — grabbed while editing a text element.
     focus: FocusHandle,
@@ -371,6 +400,8 @@ impl WhiteboardView {
             scene,
             style,
             on_change: None,
+            on_place_embed: None,
+            on_open: None,
             tool: Tool::Pen,
             focus: cx.focus_handle(),
             editing: None,
@@ -393,6 +424,48 @@ impl WhiteboardView {
     /// Install the persistence hook (called with the serialized scene on change).
     pub fn set_on_change(&mut self, f: ChangeFn) {
         self.on_change = Some(f);
+    }
+
+    /// Install the page-card placement hook (page-card tool click).
+    pub fn set_on_place_embed(&mut self, f: PlaceEmbedFn) {
+        self.on_place_embed = Some(f);
+    }
+
+    /// Install the open-page hook (double-click a card).
+    pub fn set_on_open(&mut self, f: OpenPageFn) {
+        self.on_open = Some(f);
+    }
+
+    /// Insert a page-card at world `(x, y)` and select it. Called by the host
+    /// after the user picks a page (in response to [`PlaceEmbedFn`]). Does *not*
+    /// fire `on_change` — the host calls this mid-update, so a re-entrant save
+    /// would panic; the host persists explicitly via [`scene`](Self::scene).
+    pub fn add_embed(
+        &mut self,
+        page_id: i64,
+        title: impl Into<String>,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_undo();
+        let id = self.next_id;
+        self.next_id += 1;
+        let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+        self.scene.elements.push(Element {
+            id,
+            kind: ElementKind::Embed(EmbedGeom {
+                page_id,
+                title: title.into(),
+                x,
+                y,
+                w: EMBED_W / zoom,
+                h: EMBED_H / zoom,
+            }),
+        });
+        self.selected = Some(id);
+        self.tool = Tool::Select;
+        cx.notify();
     }
 
     /// The current board document (for the host to persist).
@@ -562,6 +635,20 @@ impl WhiteboardView {
             .map(|e| e.id)
     }
 
+    /// The topmost page-card under a world point: `(element id, page id)`.
+    fn embed_at(&self, p: [f32; 2], pad: f32) -> Option<(u64, i64)> {
+        self.scene
+            .elements
+            .iter()
+            .rev()
+            .find_map(|e| match &e.kind {
+                ElementKind::Embed(em) if hit_test(&e.kind, p[0], p[1], pad) => {
+                    Some((e.id, em.page_id))
+                }
+                _ => None,
+            })
+    }
+
     fn on_left_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.panning {
             return;
@@ -576,15 +663,24 @@ impl WhiteboardView {
 
         if ev.click_count >= 2 {
             self.pending = None;
-            // Double-click a text element (Select tool) re-opens it for editing.
-            if self.tool == Tool::Select
-                && let Some(id) = self.text_at(p, SELECT_PAD / zoom)
-            {
-                self.selected = Some(id);
-                self.editing = Some(id);
-                self.focus.focus(window, cx);
-                cx.notify();
-                return;
+            if self.tool == Tool::Select {
+                // Double-click a text element re-opens it for editing.
+                if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
+                    self.selected = Some(id);
+                    self.editing = Some(id);
+                    self.focus.focus(window, cx);
+                    cx.notify();
+                    return;
+                }
+                // Double-click a page-card opens its page.
+                if let Some((id, page_id)) = self.embed_at(p, SELECT_PAD / zoom) {
+                    self.selected = Some(id);
+                    if let Some(f) = self.on_open.clone() {
+                        f(page_id, window, cx);
+                    }
+                    cx.notify();
+                    return;
+                }
             }
             self.reset_view(cx);
             return;
@@ -615,6 +711,14 @@ impl WhiteboardView {
             }
             self.focus.focus(window, cx);
             cx.notify();
+            return;
+        }
+
+        if self.tool == Tool::Embed {
+            // The host picks a page, then calls back into `add_embed`.
+            if let Some(f) = self.on_place_embed.clone() {
+                f(p[0], p[1], window, cx);
+            }
             return;
         }
 
@@ -678,7 +782,7 @@ impl WhiteboardView {
                 y2: p[1],
                 width,
             }),
-            Tool::Select | Tool::Text => return,
+            Tool::Select | Tool::Text | Tool::Embed => return,
         };
         self.pending = Some(Pending { anchor: p, kind });
         cx.notify();
@@ -857,8 +961,8 @@ impl WhiteboardView {
                     s.x2 = cur[0];
                     s.y2 = cur[1];
                 }
-                // Text isn't created by dragging, so it's never pending here.
-                ElementKind::Text(_) => {}
+                // Text/cards aren't created by dragging, so never pending here.
+                ElementKind::Text(_) | ElementKind::Embed(_) => {}
             }
             cx.notify();
             return;
@@ -955,8 +1059,8 @@ fn committable(kind: &ElementKind) -> bool {
             let (dx, dy) = (s.x2 - s.x1, s.y2 - s.y1);
             dx * dx + dy * dy > 4.0
         }
-        // Text is created on click (not via a drag), so it's never pending.
-        ElementKind::Text(_) => false,
+        // Text and cards are created on click (not via a drag), never pending.
+        ElementKind::Text(_) | ElementKind::Embed(_) => false,
     }
 }
 
@@ -986,6 +1090,7 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
             let (w, h) = text_extent(t);
             (t.x, t.y, t.x + w, t.y + h)
         }
+        ElementKind::Embed(em) => (em.x, em.y, em.x + em.w, em.y + em.h),
     }
 }
 
@@ -1017,6 +1122,10 @@ fn translate(kind: &mut ElementKind, dx: f32, dy: f32) {
         ElementKind::Text(t) => {
             t.x += dx;
             t.y += dy;
+        }
+        ElementKind::Embed(em) => {
+            em.x += dx;
+            em.y += dy;
         }
     }
 }
@@ -1154,6 +1263,14 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
             t.y = fy(t.y);
             t.size = (t.size * sx.abs()).max(0.5);
         }
+        ElementKind::Embed(em) => {
+            let (x0, x1) = (fx(em.x), fx(em.x + em.w));
+            let (y0, y1) = (fy(em.y), fy(em.y + em.h));
+            em.x = x0.min(x1);
+            em.w = (x1 - x0).abs();
+            em.y = y0.min(y1);
+            em.h = (y1 - y0).abs();
+        }
     }
 }
 
@@ -1214,8 +1331,8 @@ fn paint_element(
         ElementKind::Ellipse(b) => paint_ellipse(b, cam, origin, ink, window),
         ElementKind::Line(s) => paint_segment(s, false, cam, origin, ink, window),
         ElementKind::Arrow(s) => paint_segment(s, true, cam, origin, ink, window),
-        // Text is drawn as an overlay element in render(), not in the canvas.
-        ElementKind::Text(_) => {}
+        // Text and cards are drawn as overlay elements in render(), not here.
+        ElementKind::Text(_) | ElementKind::Embed(_) => {}
     }
 }
 
@@ -1430,6 +1547,41 @@ impl Render for WhiteboardView {
                             .children(lines),
                     )
                 }
+                // Page-card: a titled box (top-aligned header + hint) that links
+                // to a host page. Subtle border — the accent is the selection.
+                ElementKind::Embed(em) => Some(
+                    div()
+                        .absolute()
+                        .left(px((em.x - cam.x) * zoom))
+                        .top(px((em.y - cam.y) * zoom))
+                        .w(px(em.w * zoom))
+                        .h(px(em.h * zoom))
+                        .bg(panel)
+                        .border_1()
+                        .border_color(grid)
+                        .rounded(px(8.0))
+                        .overflow_hidden()
+                        .p(px(10.0 * zoom))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0 * zoom))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0 * zoom))
+                                .text_size(px(14.0 * zoom))
+                                .text_color(ink)
+                                .child(div().text_color(accent).child("▤"))
+                                .child(SharedString::from(em.title.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0 * zoom))
+                                .text_color(text)
+                                .child("Double-click to open"),
+                        ),
+                ),
                 _ => None,
             })
             .collect();
