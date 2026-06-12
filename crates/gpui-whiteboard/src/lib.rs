@@ -23,8 +23,12 @@
 //! the planned optimization once boards get large (Phase 6) — deferred so we
 //! don't build it before there's something to measure.
 
+mod font;
+
 use std::cell::Cell;
 use std::rc::Rc;
+
+pub use font::Font;
 
 use gpui::{
     App, Bounds, Context, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
@@ -170,10 +174,13 @@ pub struct TextGeom {
     pub y: f32,
     pub content: String,
     pub size: f32,
-    /// Cached world-space width, measured each render so the selection box and
-    /// hit-test fit the real glyphs. Not persisted; `0.0` means unmeasured.
+    /// Cached world-space extent, set each render from the font layout so the
+    /// selection box and hit-test fit the real glyphs. Not persisted; a zero
+    /// height means unmeasured (a fallback estimate is used until then).
     #[serde(skip)]
     pub measured_w: f32,
+    #[serde(skip)]
+    pub measured_h: f32,
 }
 
 /// A freehand pen stroke: world-space points and a world-space width.
@@ -427,6 +434,9 @@ pub struct WhiteboardView {
     on_change: Option<ChangeFn>,
     on_place_embed: Option<PlaceEmbedFn>,
     on_open: Option<OpenPageFn>,
+    /// The face used to render text as vector outlines. Defaults to the bundled
+    /// JetBrains Mono; the host can swap in a custom/user-uploaded font.
+    font: Font,
     tool: Tool,
     /// Keyboard focus — grabbed while editing a text element.
     focus: FocusHandle,
@@ -493,6 +503,7 @@ impl WhiteboardView {
             on_change: None,
             on_place_embed: None,
             on_open: None,
+            font: Font::default(),
             tool: Tool::Pen,
             focus: cx.focus_handle(),
             editing: None,
@@ -535,6 +546,13 @@ impl WhiteboardView {
     /// Install the open-page hook (double-click a card).
     pub fn set_on_open(&mut self, f: OpenPageFn) {
         self.on_open = Some(f);
+    }
+
+    /// Swap the font used to render text (e.g. a user-uploaded face). Build one
+    /// with [`Font::from_bytes`].
+    pub fn set_font(&mut self, font: Font, cx: &mut Context<Self>) {
+        self.font = font;
+        cx.notify();
     }
 
     /// Insert a page-card at world `(x, y)` and select it. Called by the host
@@ -1024,6 +1042,7 @@ impl WhiteboardView {
                         content: String::new(),
                         size: TEXT_SIZE / zoom,
                         measured_w: 0.0,
+                        measured_h: 0.0,
                     }),
                     stroke: self.active_stroke,
                     fill: None,
@@ -1248,7 +1267,7 @@ impl WhiteboardView {
         self.flush(window, cx);
     }
 
-    fn on_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
         // Dragging inside the color picker (SV square, hue strip, alpha strip).
         if let Some(drag) = self.picker_drag {
             let pos = ev.position;
@@ -1330,12 +1349,14 @@ impl WhiteboardView {
                 (sx, sy)
             };
             resize_about(&mut kind, anchor[0], anchor[1], sx, sy);
-            let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+            let font = self.font.clone();
             if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == id) {
                 e.kind = kind;
                 // Re-measure text now so its box tracks the cursor this frame.
                 if let ElementKind::Text(t) = &mut e.kind {
-                    t.measured_w = measure_text_width(&t.content, px(t.size * zoom), window) / zoom;
+                    let (w, h) = font.measure(&t.content, t.size);
+                    t.measured_w = w;
+                    t.measured_h = h;
                 }
             }
             cx.notify();
@@ -1766,23 +1787,6 @@ fn diagonal_scale(anchor: [f32; 2], from: [f32; 2], target: [f32; 2]) -> f32 {
     (c[0] * d[0] + c[1] * d[1]) / dd
 }
 
-/// The rendered world-independent width (px) of the widest line of `content` at
-/// `font_size`, via the real glyph layout.
-fn measure_text_width(content: &str, font_size: Pixels, window: &mut Window) -> f32 {
-    content
-        .split('\n')
-        .map(|line| {
-            let run = window.text_style().to_run(line.len());
-            f32::from(
-                window
-                    .text_system()
-                    .layout_line(line, font_size, &[run], None)
-                    .width,
-            )
-        })
-        .fold(0.0_f32, f32::max)
-}
-
 /// Snap target `(tx, ty)` so its angle from `(ox, oy)` is a multiple of 45°,
 /// preserving the distance (the line-drawing constraint for endpoint drags).
 fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
@@ -1833,23 +1837,21 @@ fn text_key(content: &mut String, key: &str, key_char: Option<&str>, cmd: bool) 
 /// Approximate world-space (width, height) of a text element — enough for
 /// hit-testing and the selection box (real shaping happens at paint time).
 fn text_extent(t: &TextGeom) -> (f32, f32) {
+    // Once a render has laid the text out, use the real extent. Before that
+    // (e.g. a freshly loaded board, pre-first-paint), fall back to a rough
+    // character-count estimate so hit-test/bounds aren't degenerate.
+    if t.measured_h > 0.0 {
+        return (t.measured_w, t.measured_h);
+    }
     let rows = t.content.split('\n').count().max(1) as f32;
-    let h = rows * t.size * TEXT_LINE_H;
-    // Prefer the measured width; fall back to a character-count estimate until
-    // the first render measures it.
-    let w = if t.measured_w > 0.0 {
-        t.measured_w
-    } else {
-        let cols = t
-            .content
-            .split('\n')
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0)
-            .max(1) as f32;
-        cols * t.size * TEXT_CHAR_W
-    };
-    (w, h)
+    let cols = t
+        .content
+        .split('\n')
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(1) as f32;
+    (cols * t.size * TEXT_CHAR_W, rows * t.size * TEXT_LINE_H)
 }
 
 /// Scale an element's geometry about `(ax, ay)` by `(sx, sy)` (world space).
@@ -1936,6 +1938,93 @@ fn paint_board(bounds: Bounds<Pixels>, cam: Camera, bg: Hsla, grid: Hsla, window
             wy += step;
         }
         wx += step;
+    }
+}
+
+/// One element prepared for the paint closure: its geometry + resolved colors,
+/// plus pre-laid-out text outlines for Text elements (the layout needs the font,
+/// which the paint closure can't reach, so `render` builds it up front).
+struct ElemPaint {
+    kind: ElementKind,
+    stroke: Hsla,
+    fill: Option<Hsla>,
+    text: Option<TextOutline>,
+}
+
+/// A text element's glyph outlines (text-local space) plus placement, captured
+/// for the paint closure to transform (camera + rotation) and fill.
+struct TextOutline {
+    segs: Vec<font::Seg>,
+    x: f32,
+    y: f32,
+    rotation: f32,
+    w: f32,
+    h: f32,
+    line_height: f32,
+    /// Caret's text-local top, when this text is being edited.
+    caret: Option<[f32; 2]>,
+}
+
+/// Paint a text element's vector outlines (and, when editing, its caret). Local
+/// glyph points are placed at `(x, y)`, rotated about the block's center, then
+/// projected to the screen — so text rotates and scales like the shapes.
+fn paint_text(
+    t: &TextOutline,
+    cam: Camera,
+    origin: Point<Pixels>,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let (cx, cy) = (t.x + t.w / 2.0, t.y + t.h / 2.0);
+    let tf = |p: [f32; 2]| {
+        let (rx, ry) = rotate_pt(t.x + p[0], t.y + p[1], cx, cy, t.rotation);
+        to_screen(rx, ry, cam, origin)
+    };
+    // Convert the two-thirds-toward-the-control-point so a quadratic Bézier
+    // becomes the equivalent cubic the path builder accepts.
+    let two_thirds = |a: Point<Pixels>, b: Point<Pixels>| {
+        point(
+            px(f32::from(a.x) + (f32::from(b.x) - f32::from(a.x)) * 2.0 / 3.0),
+            px(f32::from(a.y) + (f32::from(b.y) - f32::from(a.y)) * 2.0 / 3.0),
+        )
+    };
+    if !t.segs.is_empty() {
+        let mut pb = PathBuilder::fill();
+        let mut cur = point(px(0.0), px(0.0));
+        for seg in &t.segs {
+            match *seg {
+                font::Seg::Move(p) => {
+                    cur = tf(p);
+                    pb.move_to(cur);
+                }
+                font::Seg::Line(p) => {
+                    cur = tf(p);
+                    pb.line_to(cur);
+                }
+                font::Seg::Quad(c, e) => {
+                    let (sc, se) = (tf(c), tf(e));
+                    pb.cubic_bezier_to(se, two_thirds(cur, sc), two_thirds(se, sc));
+                    cur = se;
+                }
+                font::Seg::Cubic(c1, c2, e) => {
+                    let se = tf(e);
+                    pb.cubic_bezier_to(se, tf(c1), tf(c2));
+                    cur = se;
+                }
+                font::Seg::Close => pb.close(),
+            }
+        }
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
+        }
+    }
+    if let Some(cp) = t.caret {
+        let mut pb = PathBuilder::stroke(px(1.5));
+        pb.move_to(tf(cp));
+        pb.line_to(tf([cp[0], cp[1] + t.line_height]));
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
+        }
     }
 }
 
@@ -2257,7 +2346,7 @@ fn paint_marquee(
 }
 
 impl Render for WhiteboardView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let WhiteboardStyle {
             bg,
             grid,
@@ -2272,26 +2361,44 @@ impl Render for WhiteboardView {
         let zoom = cam.zoom.max(MIN_ZOOM);
         let bounds_cell = self.bounds.clone();
 
-        // Measure each text element's rendered width so the selection box and
-        // hit-test fit the real glyphs (not a character-count estimate). Must run
-        // before the `sel`/overlay snapshots below so they see fresh widths.
-        for e in &mut self.scene.elements {
-            if let ElementKind::Text(t) = &mut e.kind {
-                t.measured_w = measure_text_width(&t.content, px(t.size * zoom), window) / zoom;
-            }
-        }
-        // Snapshot element kinds + their resolved ink (own color, else theme) for
-        // the paint closure. Re-cloned each frame for now; see the path-cache note.
-        let kinds: Vec<(ElementKind, Hsla, Option<Hsla>)> = self
+        // One pass over the elements: lay out each text element with the font
+        // (setting its measured extent for selection/hit-test and producing
+        // outline segments) and snapshot each element's resolved colors for the
+        // paint closure. Text becomes vector outlines drawn on the canvas, so it
+        // z-orders with shapes and rotates with them. Re-laid each frame for now;
+        // see the path-cache note at the top.
+        let font = self.font.clone();
+        let editing = self.editing;
+        let elems: Vec<ElemPaint> = self
             .scene
             .elements
-            .iter()
+            .iter_mut()
             .map(|e| {
-                (
-                    e.kind.clone(),
-                    e.stroke.map_or(ink, u32_to_hsla),
-                    e.fill.map(u32_to_hsla),
-                )
+                let stroke = e.stroke.map_or(ink, u32_to_hsla);
+                let fill = e.fill.map(u32_to_hsla);
+                let text = if let ElementKind::Text(t) = &mut e.kind {
+                    let layout = font.layout(&t.content, t.size);
+                    t.measured_w = layout.width;
+                    t.measured_h = layout.height;
+                    Some(TextOutline {
+                        segs: layout.segs,
+                        x: t.x,
+                        y: t.y,
+                        rotation: 0.0,
+                        w: layout.width,
+                        h: layout.height,
+                        line_height: layout.line_height,
+                        caret: (editing == Some(e.id)).then_some(layout.caret),
+                    })
+                } else {
+                    None
+                };
+                ElemPaint {
+                    kind: e.kind.clone(),
+                    stroke,
+                    fill,
+                    text,
+                }
             })
             .collect();
         // The in-progress element previews in the current active color / fill.
@@ -2317,36 +2424,13 @@ impl Render for WhiteboardView {
         };
         let marquee = self.marquee;
 
-        // Text renders as positioned overlay children (real glyph layout, scales
-        // with zoom) above the canvas; the one being edited shows a caret. They
-        // sit at root-relative offsets, so no canvas origin is needed.
-        let editing = self.editing;
-        let text_divs: Vec<_> = self
+        // Page-cards render as positioned overlay children (host-styled boxes).
+        // Text is no longer a div — it's drawn as vector outlines on the canvas.
+        let overlay_divs: Vec<_> = self
             .scene
             .elements
             .iter()
             .filter_map(|e| match &e.kind {
-                ElementKind::Text(t) => {
-                    let mut display = t.content.clone();
-                    if editing == Some(e.id) {
-                        display.push('│');
-                    }
-                    let lines = display
-                        .split('\n')
-                        .map(|l| div().child(SharedString::from(l.to_string())))
-                        .collect::<Vec<_>>();
-                    Some(
-                        div()
-                            .absolute()
-                            .left(px((t.x - cam.x) * zoom))
-                            .top(px((t.y - cam.y) * zoom))
-                            .flex()
-                            .flex_col()
-                            .text_size(px(t.size * zoom))
-                            .text_color(e.stroke.map_or(ink, u32_to_hsla))
-                            .children(lines),
-                    )
-                }
                 // Page-card: a titled box (top-aligned header + hint) that links
                 // to a host page. Subtle border — the accent is the selection.
                 ElementKind::Embed(em) => Some(
@@ -2758,8 +2842,18 @@ impl Render for WhiteboardView {
                     move |bounds, _, _| bounds_cell.set(bounds),
                     move |bounds, _, window, _| {
                         paint_board(bounds, cam, bg, grid, window);
-                        for (k, c, f) in &kinds {
-                            paint_element(k, cam, bounds.origin, *c, *f, window);
+                        for ep in &elems {
+                            match &ep.text {
+                                Some(t) => paint_text(t, cam, bounds.origin, ep.stroke, window),
+                                None => paint_element(
+                                    &ep.kind,
+                                    cam,
+                                    bounds.origin,
+                                    ep.stroke,
+                                    ep.fill,
+                                    window,
+                                ),
+                            }
                         }
                         if let Some(k) = &pending {
                             paint_element(k, cam, bounds.origin, pending_ink, pending_fill, window);
@@ -2786,7 +2880,7 @@ impl Render for WhiteboardView {
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
             .on_key_down(cx.listener(Self::on_key))
-            .children(text_divs)
+            .children(overlay_divs)
             .child(toolbar)
             .children(picker_panel)
             .child(
@@ -3054,6 +3148,7 @@ mod tests {
             content: "ab\ncde".into(),
             size: 10.0,
             measured_w: 0.0,
+            measured_h: 0.0,
         };
         let bb = bbox(&ElementKind::Text(t));
         assert_eq!((bb.0, bb.1), (5.0, 6.0));

@@ -17,3 +17,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 log = "0.4"
+
+# Glyph outlines for on-canvas text: text is rendered as vector paths (not gpui
+# overlay glyphs) so it rotates + scales with the camera and shapes, and so the
+# host can supply a custom/user-uploaded face. Pinned to gpui's version so the
+# lockfile unifies to a single copy. The default face (JetBrains Mono, OFL) is
+# bundled under `assets/`.
+ttf-parser = "0.25"
