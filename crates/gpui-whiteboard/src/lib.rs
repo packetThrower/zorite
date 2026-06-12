@@ -131,6 +131,10 @@ pub struct Element {
     /// uncolored elements still adapt to light/dark. Absent in older boards → 0.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stroke: Option<u32>,
+    /// Fill color for closed shapes (rect/ellipse), packed `0xRRGGBBAA`. `None`
+    /// is an unfilled outline. Ignored by other kinds. Absent in older boards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<u32>,
 }
 
 /// The kinds of thing a board can hold.
@@ -384,13 +388,24 @@ enum HandleGrab {
     Rotate,
 }
 
-/// Open color-picker state: the HSV the controls currently reflect. The picker
-/// edits `active_stroke` and recolors the selection live.
+/// Which property the picker is editing.
+#[derive(Clone, Copy, PartialEq)]
+enum PickerTarget {
+    /// Outline / ink color (`None` = theme ink).
+    Stroke,
+    /// Shape fill (`None` = unfilled).
+    Fill,
+}
+
+/// Open color-picker state: the HSVA the controls currently reflect, and which
+/// property (stroke or fill) it edits. Recolors the selection live.
 #[derive(Clone, Copy)]
 struct Picker {
+    target: PickerTarget,
     h: f32,
     s: f32,
     v: f32,
+    a: f32,
 }
 
 /// Which picker control an in-progress drag is manipulating.
@@ -400,6 +415,8 @@ enum PickerDrag {
     Sv,
     /// The hue strip.
     Hue,
+    /// The alpha (opacity) strip.
+    Alpha,
 }
 
 /// The whiteboard view entity. The host holds it in an `Entity<WhiteboardView>`
@@ -436,15 +453,18 @@ pub struct WhiteboardView {
     rotating: Option<Rotating>,
     /// Current ink color for new elements (`None` follows the theme ink).
     active_stroke: Option<u32>,
+    /// Current fill for new shapes (`None` = unfilled).
+    active_fill: Option<u32>,
     /// Open color picker, if any.
     picker: Option<Picker>,
     /// In-progress drag inside the open picker.
     picker_drag: Option<PickerDrag>,
-    /// Screen bounds of the picker panel and its two draggable regions, captured
-    /// each paint so press/drag handlers can hit-test them.
+    /// Screen bounds of the picker panel and its draggable regions, captured each
+    /// paint so press/drag handlers can hit-test them.
     picker_bounds: Rc<Cell<Bounds<Pixels>>>,
     sv_bounds: Rc<Cell<Bounds<Pixels>>>,
     hue_bounds: Rc<Cell<Bounds<Pixels>>>,
+    alpha_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Undo / redo stacks of scene snapshots.
     history: Vec<Scene>,
     redo: Vec<Scene>,
@@ -486,11 +506,13 @@ impl WhiteboardView {
             endpoint: None,
             rotating: None,
             active_stroke: None,
+            active_fill: None,
             picker: None,
             picker_drag: None,
             picker_bounds: Rc::new(Cell::new(Bounds::default())),
             sv_bounds: Rc::new(Cell::new(Bounds::default())),
             hue_bounds: Rc::new(Cell::new(Bounds::default())),
+            alpha_bounds: Rc::new(Cell::new(Bounds::default())),
             history: Vec::new(),
             redo: Vec::new(),
             panning: false,
@@ -542,6 +564,7 @@ impl WhiteboardView {
                 h: EMBED_H / zoom,
             }),
             stroke: None,
+            fill: None,
         });
         self.selected = vec![id];
         self.tool = Tool::Select;
@@ -664,34 +687,84 @@ impl WhiteboardView {
 
     // --- color picker ------------------------------------------------------
 
-    /// Open or close the color picker. Opening seeds the HSV controls from the
+    /// The color the picker should start from for `target`: the single
     /// selection's color (if any), else the active color, else a default.
+    fn seed_color(&self, target: PickerTarget) -> u32 {
+        let from_sel = self
+            .selected_single()
+            .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
+            .and_then(|e| match target {
+                PickerTarget::Stroke => e.stroke,
+                PickerTarget::Fill => e.fill,
+            });
+        let active = match target {
+            PickerTarget::Stroke => self.active_stroke,
+            PickerTarget::Fill => self.active_fill,
+        };
+        from_sel.or(active).unwrap_or(0x4080f0ff)
+    }
+
+    /// Point the picker's HSVA controls at `target`'s current color.
+    fn seed_picker(&mut self, target: PickerTarget) {
+        let c = self.seed_color(target);
+        let (h, s, v) = u32_to_hsv(c);
+        self.picker = Some(Picker {
+            target,
+            h,
+            s,
+            v,
+            a: u32_alpha(c),
+        });
+    }
+
+    /// Open or close the color picker. Opening seeds the controls from the
+    /// stroke color (selection's, else active, else a default).
     fn toggle_picker(&mut self, cx: &mut Context<Self>) {
         if self.picker.is_some() {
             self.picker = None;
         } else {
-            let seed = self
-                .selected_single()
-                .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
-                .and_then(|e| e.stroke)
-                .or(self.active_stroke)
-                .unwrap_or(0x4080f0ff);
-            let (h, s, v) = u32_to_hsv(seed);
-            self.picker = Some(Picker { h, s, v });
+            self.seed_picker(PickerTarget::Stroke);
         }
         cx.notify();
     }
 
-    /// Set the active color and recolor the selection, *without* undo/flush —
-    /// used for live picker drags (undo is pushed once when the drag starts; the
-    /// flush happens on release).
-    fn set_stroke_live(&mut self, color: Option<u32>, cx: &mut Context<Self>) {
-        self.active_stroke = color;
+    /// Switch which property (stroke / fill) the picker edits, re-seeding its
+    /// controls from that property's current color.
+    fn set_picker_target(&mut self, target: PickerTarget, cx: &mut Context<Self>) {
+        if self.picker.map(|p| p.target) != Some(target) {
+            self.seed_picker(target);
+            cx.notify();
+        }
+    }
+
+    /// The picker's current target (stroke unless the picker says otherwise).
+    fn picker_target(&self) -> PickerTarget {
+        self.picker.map_or(PickerTarget::Stroke, |p| p.target)
+    }
+
+    /// Apply `color` to the active target on the active swatch and the selection,
+    /// *without* undo/flush — used for live picker drags (undo is pushed once at
+    /// drag start; the flush happens on release).
+    fn set_color_live(&mut self, color: Option<u32>, cx: &mut Context<Self>) {
+        let target = self.picker_target();
+        match target {
+            PickerTarget::Stroke => self.active_stroke = color,
+            PickerTarget::Fill => self.active_fill = color,
+        }
         if !self.selected.is_empty() {
             let sel = self.selected.clone();
             for e in self.scene.elements.iter_mut() {
-                if sel.contains(&e.id) {
-                    e.stroke = color;
+                if !sel.contains(&e.id) {
+                    continue;
+                }
+                match target {
+                    PickerTarget::Stroke => e.stroke = color,
+                    // Fill only attaches to closed shapes — never lines/strokes.
+                    PickerTarget::Fill => {
+                        if matches!(e.kind, ElementKind::Rect(_) | ElementKind::Ellipse(_)) {
+                            e.fill = color;
+                        }
+                    }
                 }
             }
             self.dirty = true;
@@ -699,8 +772,8 @@ impl WhiteboardView {
         cx.notify();
     }
 
-    /// A discrete, undoable color choice (a swatch or the "Auto" reset). Recolors
-    /// the selection and syncs the picker controls to the chosen color.
+    /// A discrete, undoable color choice (a swatch, or the Auto / None reset).
+    /// Recolors the selection and syncs the picker controls to the chosen color.
     fn pick_color(&mut self, color: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected.is_empty() {
             self.push_undo();
@@ -713,8 +786,9 @@ impl WhiteboardView {
             }
             p.s = s;
             p.v = v;
+            p.a = u32_alpha(c);
         }
-        self.set_stroke_live(color, cx);
+        self.set_color_live(color, cx);
         self.flush(window, cx);
     }
 
@@ -728,16 +802,15 @@ impl WhiteboardView {
         (s, v)
     }
 
-    /// Hue under a window-coords position in the hue strip.
-    fn hue_from_pos(&self, pos: Point<Pixels>) -> f32 {
-        let b = self.hue_bounds.get();
-        let w = f32::from(b.size.width).max(1.0);
-        ((f32::from(pos.x) - f32::from(b.origin.x)) / w).clamp(0.0, 1.0)
+    /// A 0..1 fraction along a horizontal strip (hue or alpha) under `pos`.
+    fn frac_x(&self, bounds: Bounds<Pixels>, pos: Point<Pixels>) -> f32 {
+        let w = f32::from(bounds.size.width).max(1.0);
+        ((f32::from(pos.x) - f32::from(bounds.origin.x)) / w).clamp(0.0, 1.0)
     }
 
     /// The picker's current color as a packed int (for live application).
     fn picker_u32(&self) -> Option<u32> {
-        self.picker.map(|p| hsv_to_u32(p.h, p.s, p.v))
+        self.picker.map(|p| hsva_to_u32(p.h, p.s, p.v, p.a))
     }
 
     /// World point under a window-coords event position.
@@ -861,7 +934,7 @@ impl WhiteboardView {
                     (p.s, p.v) = (s, v);
                 }
                 if let Some(c) = self.picker_u32() {
-                    self.set_stroke_live(Some(c), cx);
+                    self.set_color_live(Some(c), cx);
                 }
                 return;
             }
@@ -870,12 +943,26 @@ impl WhiteboardView {
                     self.push_undo();
                 }
                 self.picker_drag = Some(PickerDrag::Hue);
-                let h = self.hue_from_pos(pos);
+                let h = self.frac_x(self.hue_bounds.get(), pos);
                 if let Some(p) = self.picker.as_mut() {
                     p.h = h;
                 }
                 if let Some(c) = self.picker_u32() {
-                    self.set_stroke_live(Some(c), cx);
+                    self.set_color_live(Some(c), cx);
+                }
+                return;
+            }
+            if self.alpha_bounds.get().contains(&pos) {
+                if !self.selected.is_empty() {
+                    self.push_undo();
+                }
+                self.picker_drag = Some(PickerDrag::Alpha);
+                let a = self.frac_x(self.alpha_bounds.get(), pos);
+                if let Some(p) = self.picker.as_mut() {
+                    p.a = a;
+                }
+                if let Some(c) = self.picker_u32() {
+                    self.set_color_live(Some(c), cx);
                 }
                 return;
             }
@@ -939,6 +1026,7 @@ impl WhiteboardView {
                         measured_w: 0.0,
                     }),
                     stroke: self.active_stroke,
+                    fill: None,
                 });
                 self.selected = vec![id];
                 self.editing = Some(id);
@@ -1112,10 +1200,18 @@ impl WhiteboardView {
                 self.push_undo();
                 let id = self.next_id;
                 self.next_id += 1;
+                // Fill applies only to closed shapes.
+                let fill = if matches!(pending.kind, ElementKind::Rect(_) | ElementKind::Ellipse(_))
+                {
+                    self.active_fill
+                } else {
+                    None
+                };
                 self.scene.elements.push(Element {
                     id,
                     kind: pending.kind,
                     stroke: self.active_stroke,
+                    fill,
                 });
                 self.dirty = true;
             }
@@ -1153,7 +1249,7 @@ impl WhiteboardView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // Dragging inside the color picker (SV square or hue strip).
+        // Dragging inside the color picker (SV square, hue strip, alpha strip).
         if let Some(drag) = self.picker_drag {
             let pos = ev.position;
             match drag {
@@ -1164,14 +1260,20 @@ impl WhiteboardView {
                     }
                 }
                 PickerDrag::Hue => {
-                    let h = self.hue_from_pos(pos);
+                    let h = self.frac_x(self.hue_bounds.get(), pos);
                     if let Some(p) = self.picker.as_mut() {
                         p.h = h;
                     }
                 }
+                PickerDrag::Alpha => {
+                    let a = self.frac_x(self.alpha_bounds.get(), pos);
+                    if let Some(p) = self.picker.as_mut() {
+                        p.a = a;
+                    }
+                }
             }
             if let Some(c) = self.picker_u32() {
-                self.set_stroke_live(Some(c), cx);
+                self.set_color_live(Some(c), cx);
             }
             return;
         }
@@ -1493,14 +1595,24 @@ fn rgb_to_hsv(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
 
 /// HSV (each 0..1) packed into an opaque `0xRRGGBBff`.
 fn hsv_to_u32(h: f32, s: f32, v: f32) -> u32 {
+    hsva_to_u32(h, s, v, 1.0)
+}
+
+/// HSVA (each 0..1) packed into `0xRRGGBBAA`.
+fn hsva_to_u32(h: f32, s: f32, v: f32, a: f32) -> u32 {
     let (r, g, b) = hsv_to_rgb(h, s, v);
-    pack_rgba(r, g, b, 1.0)
+    pack_rgba(r, g, b, a)
 }
 
 /// A packed color's HSV (alpha dropped).
 fn u32_to_hsv(c: u32) -> (f32, f32, f32) {
     let p = rgba(c);
     rgb_to_hsv(p.r, p.g, p.b)
+}
+
+/// A packed color's alpha as 0..1.
+fn u32_alpha(c: u32) -> f32 {
+    (c & 0xff) as f32 / 255.0
 }
 
 /// Rotate `(x, y)` by `a` radians about `(cx, cy)`.
@@ -1833,12 +1945,13 @@ fn paint_element(
     cam: Camera,
     origin: Point<Pixels>,
     ink: Hsla,
+    fill: Option<Hsla>,
     window: &mut Window,
 ) {
     match kind {
         ElementKind::Draw(s) => paint_stroke(&s.points, s.width, cam, origin, ink, window),
-        ElementKind::Rect(b) => paint_rect(b, cam, origin, ink, window),
-        ElementKind::Ellipse(b) => paint_ellipse(b, cam, origin, ink, window),
+        ElementKind::Rect(b) => paint_rect(b, cam, origin, ink, fill, window),
+        ElementKind::Ellipse(b) => paint_ellipse(b, cam, origin, ink, fill, window),
         ElementKind::Line(s) => paint_segment(s, false, cam, origin, ink, window),
         ElementKind::Arrow(s) => paint_segment(s, true, cam, origin, ink, window),
         // Text and cards are drawn as overlay elements in render(), not here.
@@ -1868,21 +1981,45 @@ fn paint_stroke(
     }
 }
 
-fn paint_rect(b: &BoxGeom, cam: Camera, origin: Point<Pixels>, ink: Hsla, window: &mut Window) {
+fn paint_rect(
+    b: &BoxGeom,
+    cam: Camera,
+    origin: Point<Pixels>,
+    ink: Hsla,
+    fill: Option<Hsla>,
+    window: &mut Window,
+) {
     let z = cam.zoom.max(MIN_ZOOM);
     let c = box_padded_corners(b, 0.0);
+    let trace = |pb: &mut PathBuilder| {
+        pb.move_to(to_screen(c[0][0], c[0][1], cam, origin));
+        pb.line_to(to_screen(c[1][0], c[1][1], cam, origin));
+        pb.line_to(to_screen(c[2][0], c[2][1], cam, origin));
+        pb.line_to(to_screen(c[3][0], c[3][1], cam, origin));
+        pb.close();
+    };
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
     let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
-    pb.move_to(to_screen(c[0][0], c[0][1], cam, origin));
-    pb.line_to(to_screen(c[1][0], c[1][1], cam, origin));
-    pb.line_to(to_screen(c[2][0], c[2][1], cam, origin));
-    pb.line_to(to_screen(c[3][0], c[3][1], cam, origin));
-    pb.close();
+    trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
     }
 }
 
-fn paint_ellipse(b: &BoxGeom, cam: Camera, origin: Point<Pixels>, ink: Hsla, window: &mut Window) {
+fn paint_ellipse(
+    b: &BoxGeom,
+    cam: Camera,
+    origin: Point<Pixels>,
+    ink: Hsla,
+    fill: Option<Hsla>,
+    window: &mut Window,
+) {
     let z = cam.zoom.max(MIN_ZOOM);
     let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
     let (rx, ry) = (b.w / 2.0, b.h / 2.0);
@@ -1893,13 +2030,23 @@ fn paint_ellipse(b: &BoxGeom, cam: Camera, origin: Point<Pixels>, ink: Hsla, win
         let (px_, py_) = rotate_pt(wx, wy, cx, cy, b.rotation);
         to_screen(px_, py_, cam, origin)
     };
+    let trace = |pb: &mut PathBuilder| {
+        pb.move_to(s(cx + rx, cy));
+        pb.cubic_bezier_to(s(cx, cy + ry), s(cx + rx, cy + ky), s(cx + kx, cy + ry));
+        pb.cubic_bezier_to(s(cx - rx, cy), s(cx - kx, cy + ry), s(cx - rx, cy + ky));
+        pb.cubic_bezier_to(s(cx, cy - ry), s(cx - rx, cy - ky), s(cx - kx, cy - ry));
+        pb.cubic_bezier_to(s(cx + rx, cy), s(cx + kx, cy - ry), s(cx + rx, cy - ky));
+        pb.close();
+    };
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
     let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
-    pb.move_to(s(cx + rx, cy));
-    pb.cubic_bezier_to(s(cx, cy + ry), s(cx + rx, cy + ky), s(cx + kx, cy + ry));
-    pb.cubic_bezier_to(s(cx - rx, cy), s(cx - kx, cy + ry), s(cx - rx, cy + ky));
-    pb.cubic_bezier_to(s(cx, cy - ry), s(cx - rx, cy - ky), s(cx - kx, cy - ry));
-    pb.cubic_bezier_to(s(cx + rx, cy), s(cx + kx, cy - ry), s(cx + rx, cy - ky));
-    pb.close();
+    trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
     }
@@ -2135,14 +2282,21 @@ impl Render for WhiteboardView {
         }
         // Snapshot element kinds + their resolved ink (own color, else theme) for
         // the paint closure. Re-cloned each frame for now; see the path-cache note.
-        let kinds: Vec<(ElementKind, Hsla)> = self
+        let kinds: Vec<(ElementKind, Hsla, Option<Hsla>)> = self
             .scene
             .elements
             .iter()
-            .map(|e| (e.kind.clone(), e.stroke.map_or(ink, u32_to_hsla)))
+            .map(|e| {
+                (
+                    e.kind.clone(),
+                    e.stroke.map_or(ink, u32_to_hsla),
+                    e.fill.map(u32_to_hsla),
+                )
+            })
             .collect();
-        // The in-progress element previews in the current active color.
+        // The in-progress element previews in the current active color / fill.
         let pending_ink = self.active_stroke.map_or(ink, u32_to_hsla);
+        let pending_fill = self.active_fill.map(u32_to_hsla);
         let pending = self.pending.as_ref().map(|p| p.kind.clone());
         // A single selection gets the full box + handles (unless it's the text
         // being edited — then just the caret); multiple selections get a thin
@@ -2329,12 +2483,78 @@ impl Render for WhiteboardView {
         // elsewhere on the panel, and closes on a press outside it.
         let sv_cell = self.sv_bounds.clone();
         let hue_cell = self.hue_bounds.clone();
+        let alpha_cell = self.alpha_bounds.clone();
         let panel_cell = self.picker_bounds.clone();
         let swatch_list = swatches;
         let white = hsla(0.0, 0.0, 1.0, 1.0);
+        // The stroke / fill colors backing the two target tabs (selection's, else
+        // the active value). `None` = theme ink (stroke) or unfilled (fill).
+        let stroke_disp = self
+            .selected_single()
+            .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
+            .and_then(|e| e.stroke)
+            .or(self.active_stroke);
+        let fill_disp = self
+            .selected_single()
+            .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
+            .and_then(|e| e.fill)
+            .or(self.active_fill);
         let picker_panel = self.picker.map(|p| {
-            let cur = hsv_to_u32(p.h, p.s, p.v);
+            let cur = hsva_to_u32(p.h, p.s, p.v, p.a);
             let hex = format!("#{:06X}", cur >> 8);
+            let clear = hsla(0.0, 0.0, 0.0, 0.0);
+
+            // Stroke / fill target tabs. The active one is highlighted; clicking
+            // re-seeds the controls from that property's color.
+            let tab = |active: bool, sw: Hsla, label: &'static str, id: &'static str| {
+                let mut d = div()
+                    .id(id)
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .px(px(8.0))
+                    .py(px(4.0))
+                    .rounded(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(ink);
+                if active {
+                    d = d.bg(accent);
+                }
+                d.child(
+                    div()
+                        .size(px(12.0))
+                        .rounded(px(3.0))
+                        .bg(sw)
+                        .border_1()
+                        .border_color(grid),
+                )
+                .child(label)
+            };
+            let tabs = div()
+                .flex()
+                .gap(px(6.0))
+                .child(
+                    tab(
+                        p.target == PickerTarget::Stroke,
+                        stroke_disp.map_or(ink, u32_to_hsla),
+                        "Stroke",
+                        "wb-tab-stroke",
+                    )
+                    .on_click(cx.listener(|this, _ev, _w, cx| {
+                        this.set_picker_target(PickerTarget::Stroke, cx)
+                    })),
+                )
+                .child(
+                    tab(
+                        p.target == PickerTarget::Fill,
+                        fill_disp.map_or(clear, u32_to_hsla),
+                        "Fill",
+                        "wb-tab-fill",
+                    )
+                    .on_click(cx.listener(|this, _ev, _w, cx| {
+                        this.set_picker_target(PickerTarget::Fill, cx)
+                    })),
+                );
 
             let sv_square = div()
                 .relative()
@@ -2407,6 +2627,42 @@ impl Render for WhiteboardView {
                         .border_color(hsla(0.0, 0.0, 0.0, 0.5)),
                 );
 
+            // Alpha (opacity) strip: transparent → the current color, opaque.
+            let alpha_strip = div()
+                .relative()
+                .w(px(SV_W))
+                .h(px(HUE_H))
+                .rounded(px(4.0))
+                .overflow_hidden()
+                .bg(linear_gradient(
+                    90.0,
+                    linear_color_stop(clear, 0.0),
+                    linear_color_stop(u32_to_hsla(hsv_to_u32(p.h, p.s, p.v)), 1.0),
+                ))
+                .child(
+                    canvas(move |b, _, _| alpha_cell.set(b), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(p.a * SV_W - 1.5))
+                        .top(px(-2.0))
+                        .w(px(3.0))
+                        .h(px(HUE_H + 4.0))
+                        .rounded(px(2.0))
+                        .bg(white)
+                        .border_1()
+                        .border_color(hsla(0.0, 0.0, 0.0, 0.5)),
+                );
+
+            // Reset means "back to theme ink" for stroke, "no fill" for fill.
+            let reset_label = if p.target == PickerTarget::Fill {
+                "None"
+            } else {
+                "Auto"
+            };
             let info_row = div()
                 .flex()
                 .items_center()
@@ -2436,7 +2692,7 @@ impl Render for WhiteboardView {
                         .border_color(grid)
                         .text_size(px(12.0))
                         .text_color(ink)
-                        .child("Auto")
+                        .child(reset_label)
                         .on_click(
                             cx.listener(|this, _ev, window, cx| this.pick_color(None, window, cx)),
                         ),
@@ -2483,8 +2739,10 @@ impl Render for WhiteboardView {
                                 .absolute()
                                 .size_full(),
                         )
+                        .child(tabs)
                         .child(sv_square)
                         .child(hue_strip)
+                        .child(alpha_strip)
                         .child(info_row)
                         .child(swatch_grid),
                 )
@@ -2500,11 +2758,11 @@ impl Render for WhiteboardView {
                     move |bounds, _, _| bounds_cell.set(bounds),
                     move |bounds, _, window, _| {
                         paint_board(bounds, cam, bg, grid, window);
-                        for (k, c) in &kinds {
-                            paint_element(k, cam, bounds.origin, *c, window);
+                        for (k, c, f) in &kinds {
+                            paint_element(k, cam, bounds.origin, *c, *f, window);
                         }
                         if let Some(k) = &pending {
-                            paint_element(k, cam, bounds.origin, pending_ink, window);
+                            paint_element(k, cam, bounds.origin, pending_ink, pending_fill, window);
                         }
                         if let Some(k) = &single_sel {
                             paint_selection(k, cam, bounds.origin, selection, window);
@@ -2583,6 +2841,7 @@ mod tests {
                         width: 3.0,
                     }),
                     stroke: None,
+                    fill: None,
                 },
                 Element {
                     id: 2,
@@ -2595,6 +2854,7 @@ mod tests {
                         rotation: 0.0,
                     }),
                     stroke: Some(0xff0000ff),
+                    fill: Some(0x00ff0080),
                 },
                 Element {
                     id: 3,
@@ -2606,6 +2866,7 @@ mod tests {
                         width: 2.5,
                     }),
                     stroke: None,
+                    fill: None,
                 },
             ],
         };
@@ -2617,7 +2878,9 @@ mod tests {
         }
         // Per-element color round-trips; an uncolored element stays `None`.
         assert_eq!(restored.elements[1].stroke, Some(0xff0000ff));
+        assert_eq!(restored.elements[1].fill, Some(0x00ff0080));
         assert_eq!(restored.elements[0].stroke, None);
+        assert_eq!(restored.elements[0].fill, None);
     }
 
     #[test]
