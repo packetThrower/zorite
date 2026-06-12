@@ -11,10 +11,12 @@
 //! title via callbacks and delegates picking/opening to the host). Double-click
 //! opens the page; the host indexes a board's cards as links so each page's
 //! backlinks show the board. This version also adds **marquee + multi-select**
-//! (drag a box / shift-click to pick several; move or delete the group). Earlier
-//! phases: pan/zoom + grid, freehand pen, rect/ellipse/line/arrow, text, and a
-//! full select / move / resize / delete / undo editor. Rotation and richer card
-//! previews come next — see `docs/whiteboard-architecture.md` in the host repo.
+//! (drag a box / shift-click to pick several; move or delete the group) and
+//! **rotation** — a round grip above a single selection spins shapes, lines, and
+//! strokes (text/cards can't rotate; they're HTML overlays). Earlier phases:
+//! pan/zoom + grid, freehand pen, rect/ellipse/line/arrow, text, and a full
+//! select / move / resize / delete / undo editor — see
+//! `docs/whiteboard-architecture.md` in the host repo.
 //!
 //! Perf note: elements are re-tessellated each paint (as GPUI's own
 //! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is
@@ -59,6 +61,12 @@ const SEL_PAD_PX: f32 = 5.0;
 const HANDLE_HALF: f32 = 4.5;
 /// Grab radius for a corner handle, screen px.
 const HANDLE_GRAB: f32 = 10.0;
+/// Gap from the selection's top to the rotate handle, screen px.
+const ROTATE_DIST: f32 = 22.0;
+/// Below this absolute rotation (radians), a box is treated as upright — it
+/// shows resize corners. Rotated past it, only the rotate handle is offered
+/// (rotated-frame resize is intentionally out of scope; rotate back to resize).
+const ROT_EPS: f32 = 0.05;
 /// Default text size at creation, screen px (stored world size is this / zoom).
 const TEXT_SIZE: f32 = 18.0;
 /// Rough per-character advance and line height, as fractions of the font size,
@@ -162,7 +170,8 @@ pub struct Stroke {
     pub width: f32,
 }
 
-/// An axis-aligned box (rectangle / ellipse bounding box), world-space.
+/// A box (rectangle / ellipse), world-space. `x,y,w,h` describe the *unrotated*
+/// box; `rotation` (radians, clockwise) spins it about its center at paint time.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct BoxGeom {
     pub x: f32,
@@ -170,6 +179,9 @@ pub struct BoxGeom {
     pub w: f32,
     pub h: f32,
     pub width: f32,
+    /// Rotation about the box center, radians. Absent in older boards → 0.
+    #[serde(default)]
+    pub rotation: f32,
 }
 
 /// A directed segment (line / arrow), world-space.
@@ -341,10 +353,23 @@ struct EndpointDrag {
     which: usize,
 }
 
+/// An in-progress rotation of a selected element about a fixed center.
+#[derive(Clone, Copy)]
+struct Rotating {
+    id: u64,
+    /// Pivot (world), captured at grab so it can't drift between frames.
+    center: [f32; 2],
+    /// Pointer angle about `center` at grab (radians).
+    start_pointer: f32,
+    /// Rotation already applied to the element since grab (radians).
+    applied: f32,
+}
+
 /// What a press on a selection handle begins.
 enum HandleGrab {
     Corner(Resizing),
     Endpoint(EndpointDrag),
+    Rotate,
 }
 
 /// The whiteboard view entity. The host holds it in an `Entity<WhiteboardView>`
@@ -377,6 +402,8 @@ pub struct WhiteboardView {
     resizing: Option<Resizing>,
     /// In-progress endpoint-drag of the selected line/arrow.
     endpoint: Option<EndpointDrag>,
+    /// In-progress rotation of the selected element.
+    rotating: Option<Rotating>,
     /// Undo / redo stacks of scene snapshots.
     history: Vec<Scene>,
     redo: Vec<Scene>,
@@ -416,6 +443,7 @@ impl WhiteboardView {
             moved: false,
             resizing: None,
             endpoint: None,
+            rotating: None,
             history: Vec::new(),
             redo: Vec::new(),
             panning: false,
@@ -612,12 +640,29 @@ impl WhiteboardView {
             dx * dx + dy * dy <= HANDLE_GRAB * HANDLE_GRAB
         };
 
+        // The rotate handle floats above every rotatable element (not text/cards).
+        if rotatable(kind) {
+            let (rx, ry) = rotate_handle_screen(kind, cam, origin);
+            let (dx, dy) = (f32::from(pos.x) - rx, f32::from(pos.y) - ry);
+            if dx * dx + dy * dy <= HANDLE_GRAB * HANDLE_GRAB {
+                return Some(HandleGrab::Rotate);
+            }
+        }
+
         if let ElementKind::Line(s) | ElementKind::Arrow(s) = kind {
             for (which, (wx, wy)) in [(s.x1, s.y1), (s.x2, s.y2)].into_iter().enumerate() {
                 if near(wx, wy, 0.0, 0.0) {
                     return Some(HandleGrab::Endpoint(EndpointDrag { id, which }));
                 }
             }
+            return None;
+        }
+
+        // A rotated box offers no corner resize — only the rotate handle above
+        // (corner handles + resize math assume an axis-aligned box).
+        if let ElementKind::Rect(b) | ElementKind::Ellipse(b) = kind
+            && b.rotation.abs() > ROT_EPS
+        {
             return None;
         }
 
@@ -749,6 +794,23 @@ impl WhiteboardView {
                 match grab {
                     HandleGrab::Corner(rs) => self.resizing = Some(rs),
                     HandleGrab::Endpoint(ep) => self.endpoint = Some(ep),
+                    HandleGrab::Rotate => {
+                        if let Some(id) = self.selected_single() {
+                            let center = self.scene.elements.iter().find(|e| e.id == id).map(|e| {
+                                let bb = bbox(&e.kind);
+                                [(bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0]
+                            });
+                            if let Some(center) = center {
+                                let start_pointer = (p[1] - center[1]).atan2(p[0] - center[0]);
+                                self.rotating = Some(Rotating {
+                                    id,
+                                    center,
+                                    start_pointer,
+                                    applied: 0.0,
+                                });
+                            }
+                        }
+                    }
                 }
                 cx.notify();
                 return;
@@ -807,6 +869,7 @@ impl WhiteboardView {
                 w: 0.0,
                 h: 0.0,
                 width,
+                rotation: 0.0,
             }),
             Tool::Ellipse => ElementKind::Ellipse(BoxGeom {
                 x: p[0],
@@ -814,6 +877,7 @@ impl WhiteboardView {
                 w: 0.0,
                 h: 0.0,
                 width,
+                rotation: 0.0,
             }),
             Tool::Line => ElementKind::Line(SegGeom {
                 x1: p[0],
@@ -836,7 +900,10 @@ impl WhiteboardView {
     }
 
     fn on_left_up(&mut self, _ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.resizing.take().is_some() || self.endpoint.take().is_some() {
+        if self.resizing.take().is_some()
+            || self.endpoint.take().is_some()
+            || self.rotating.take().is_some()
+        {
             self.dirty = true;
             cx.notify();
             self.flush(window, cx);
@@ -891,6 +958,7 @@ impl WhiteboardView {
             || self.drag_from.is_some()
             || self.resizing.is_some()
             || self.endpoint.is_some()
+            || self.rotating.is_some()
             || self.marquee.is_some()
         {
             return;
@@ -908,6 +976,28 @@ impl WhiteboardView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Rotating the selection (rotate-handle drag). Shift snaps to 15° steps.
+        if let Some(mut rot) = self.rotating.take() {
+            let cur = self.event_to_world(ev.position);
+            let ang = (cur[1] - rot.center[1]).atan2(cur[0] - rot.center[0]);
+            let mut total = ang - rot.start_pointer;
+            if ev.modifiers.shift {
+                let step = std::f32::consts::PI / 12.0;
+                total = (total / step).round() * step;
+            }
+            // Apply only the change since last frame, normalized to [-π, π] so the
+            // atan2 wrap-around at ±π doesn't spin the element a full turn.
+            let tau = std::f32::consts::TAU;
+            let mut delta = total - rot.applied;
+            delta -= (delta / tau).round() * tau;
+            if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == rot.id) {
+                rotate_element(&mut e.kind, rot.center[0], rot.center[1], delta);
+            }
+            rot.applied += delta;
+            self.rotating = Some(rot);
+            cx.notify();
+            return;
+        }
         // Resizing the selection (corner-handle drag).
         if self.resizing.is_some() {
             let cur = self.event_to_world(ev.position);
@@ -1135,6 +1225,66 @@ fn committable(kind: &ElementKind) -> bool {
 }
 
 /// An element's world-space bounding box `(min_x, min_y, max_x, max_y)`.
+/// Rotate `(x, y)` by `a` radians about `(cx, cy)`.
+fn rotate_pt(x: f32, y: f32, cx: f32, cy: f32, a: f32) -> (f32, f32) {
+    if a == 0.0 {
+        return (x, y);
+    }
+    let (s, c) = a.sin_cos();
+    let (dx, dy) = (x - cx, y - cy);
+    (cx + dx * c - dy * s, cy + dx * s + dy * c)
+}
+
+/// The four world-space corners of a box (TL, TR, BR, BL order), grown outward
+/// by `pad` on every side and spun by its rotation about its center.
+fn box_padded_corners(b: &BoxGeom, pad: f32) -> [[f32; 2]; 4] {
+    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+    let (x0, y0) = (b.x - pad, b.y - pad);
+    let (x1, y1) = (b.x + b.w + pad, b.y + b.h + pad);
+    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|[x, y]| {
+        let (rx, ry) = rotate_pt(x, y, cx, cy, b.rotation);
+        [rx, ry]
+    })
+}
+
+/// Whether an element can be rotated. Text and page-cards are HTML overlays that
+/// GPUI can't transform, so they're excluded (the rotate handle never shows).
+fn rotatable(kind: &ElementKind) -> bool {
+    !matches!(kind, ElementKind::Text(_) | ElementKind::Embed(_))
+}
+
+/// Rotate an element by `delta` radians about a fixed pivot. Boxes accumulate an
+/// angle; lines/arrows/strokes bake the rotation into their points (they have no
+/// orientation field of their own).
+fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
+    match kind {
+        ElementKind::Rect(b) | ElementKind::Ellipse(b) => b.rotation += delta,
+        ElementKind::Line(s) | ElementKind::Arrow(s) => {
+            let (x1, y1) = rotate_pt(s.x1, s.y1, cx, cy, delta);
+            let (x2, y2) = rotate_pt(s.x2, s.y2, cx, cy, delta);
+            (s.x1, s.y1, s.x2, s.y2) = (x1, y1, x2, y2);
+        }
+        ElementKind::Draw(st) => {
+            for p in &mut st.points {
+                let (x, y) = rotate_pt(p[0], p[1], cx, cy, delta);
+                (p[0], p[1]) = (x, y);
+            }
+        }
+        ElementKind::Text(_) | ElementKind::Embed(_) => {}
+    }
+}
+
+/// Screen position of an element's rotate handle: above the selection box's
+/// top-center. `handle_hit` and `paint_selection` agree via this one source.
+fn rotate_handle_screen(kind: &ElementKind, cam: Camera, origin: Point<Pixels>) -> (f32, f32) {
+    let bb = bbox(kind);
+    let top = to_screen((bb.0 + bb.2) / 2.0, bb.1, cam, origin);
+    (
+        f32::from(top.x),
+        f32::from(top.y) - SEL_PAD_PX - ROTATE_DIST,
+    )
+}
+
 fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
     match kind {
         ElementKind::Draw(s) => {
@@ -1149,7 +1299,19 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
             }
             (x0, y0, x1, y1)
         }
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => (b.x, b.y, b.x + b.w, b.y + b.h),
+        ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+            // Axis-aligned bounds of the (possibly rotated) box.
+            let c = box_padded_corners(b, 0.0);
+            let (mut x0, mut y0) = (f32::MAX, f32::MAX);
+            let (mut x1, mut y1) = (f32::MIN, f32::MIN);
+            for [px_, py_] in c {
+                x0 = x0.min(px_);
+                y0 = y0.min(py_);
+                x1 = x1.max(px_);
+                y1 = y1.max(py_);
+            }
+            (x0, y0, x1, y1)
+        }
         ElementKind::Line(s) | ElementKind::Arrow(s) => (
             s.x1.min(s.x2),
             s.y1.min(s.y2),
@@ -1430,11 +1592,12 @@ fn paint_stroke(
 
 fn paint_rect(b: &BoxGeom, cam: Camera, origin: Point<Pixels>, ink: Hsla, window: &mut Window) {
     let z = cam.zoom.max(MIN_ZOOM);
+    let c = box_padded_corners(b, 0.0);
     let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
-    pb.move_to(to_screen(b.x, b.y, cam, origin));
-    pb.line_to(to_screen(b.x + b.w, b.y, cam, origin));
-    pb.line_to(to_screen(b.x + b.w, b.y + b.h, cam, origin));
-    pb.line_to(to_screen(b.x, b.y + b.h, cam, origin));
+    pb.move_to(to_screen(c[0][0], c[0][1], cam, origin));
+    pb.line_to(to_screen(c[1][0], c[1][1], cam, origin));
+    pb.line_to(to_screen(c[2][0], c[2][1], cam, origin));
+    pb.line_to(to_screen(c[3][0], c[3][1], cam, origin));
     pb.close();
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -1447,7 +1610,11 @@ fn paint_ellipse(b: &BoxGeom, cam: Camera, origin: Point<Pixels>, ink: Hsla, win
     let (rx, ry) = (b.w / 2.0, b.h / 2.0);
     const K: f32 = 0.552_284_8;
     let (kx, ky) = (rx * K, ry * K);
-    let s = |wx: f32, wy: f32| to_screen(wx, wy, cam, origin);
+    // Every point is rotated about the box center before projection.
+    let s = |wx: f32, wy: f32| {
+        let (px_, py_) = rotate_pt(wx, wy, cx, cy, b.rotation);
+        to_screen(px_, py_, cam, origin)
+    };
     let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
     pb.move_to(s(cx + rx, cy));
     pb.cubic_bezier_to(s(cx, cy + ry), s(cx + rx, cy + ky), s(cx + kx, cy + ry));
@@ -1516,6 +1683,25 @@ fn draw_handle(hx: f32, hy: f32, color: Hsla, window: &mut Window) {
     ));
 }
 
+/// A filled circular handle (distinct from the square resize handles) marking
+/// the rotation grip, centered at a screen point.
+fn draw_rotate_handle(hx: f32, hy: f32, color: Hsla, window: &mut Window) {
+    let r = HANDLE_HALF + 0.5;
+    const K: f32 = 0.552_284_8;
+    let k = r * K;
+    let p = |x: f32, y: f32| point(px(x), px(y));
+    let mut pb = PathBuilder::fill();
+    pb.move_to(p(hx + r, hy));
+    pb.cubic_bezier_to(p(hx, hy + r), p(hx + r, hy + k), p(hx + k, hy + r));
+    pb.cubic_bezier_to(p(hx - r, hy), p(hx - k, hy + r), p(hx - r, hy + k));
+    pb.cubic_bezier_to(p(hx, hy - r), p(hx - r, hy - k), p(hx - k, hy - r));
+    pb.cubic_bezier_to(p(hx + r, hy), p(hx + k, hy - r), p(hx + r, hy - k));
+    pb.close();
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, color);
+    }
+}
+
 fn paint_selection(
     kind: &ElementKind,
     cam: Camera,
@@ -1523,15 +1709,42 @@ fn paint_selection(
     color: Hsla,
     window: &mut Window,
 ) {
-    // Lines/arrows: a handle at each endpoint (no box — its bbox is degenerate).
+    // Lines/arrows: a handle at each endpoint (no box — its bbox is degenerate)
+    // plus a rotate grip above.
     if let ElementKind::Line(s) | ElementKind::Arrow(s) = kind {
         for (wx, wy) in [(s.x1, s.y1), (s.x2, s.y2)] {
             let p = to_screen(wx, wy, cam, origin);
             draw_handle(f32::from(p.x), f32::from(p.y), color, window);
         }
+        let (rx, ry) = rotate_handle_screen(kind, cam, origin);
+        draw_rotate_handle(rx, ry, color, window);
         return;
     }
-    // Everything else: a padded box + four corner handles.
+    // Rect/Ellipse: the (possibly rotated) box outline + a rotate grip. Corner
+    // resize handles show only when upright — a rotated box hides them.
+    if let ElementKind::Rect(b) | ElementKind::Ellipse(b) = kind {
+        let z = cam.zoom.max(MIN_ZOOM);
+        let s = box_padded_corners(b, SEL_PAD_PX / z).map(|p| to_screen(p[0], p[1], cam, origin));
+        let mut pb = PathBuilder::stroke(px(1.5));
+        pb.move_to(s[0]);
+        pb.line_to(s[1]);
+        pb.line_to(s[2]);
+        pb.line_to(s[3]);
+        pb.close();
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
+        }
+        if b.rotation.abs() <= ROT_EPS {
+            for p in &s {
+                draw_handle(f32::from(p.x), f32::from(p.y), color, window);
+            }
+        }
+        let (rx, ry) = rotate_handle_screen(kind, cam, origin);
+        draw_rotate_handle(rx, ry, color, window);
+        return;
+    }
+    // Draw / Text / Embed: a padded AABB box + four corner handles. Freehand
+    // strokes (rotatable) also get a rotate grip; text and cards don't.
     let bb = bbox(kind);
     let tl = to_screen(bb.0, bb.1, cam, origin);
     let br = to_screen(bb.2, bb.3, cam, origin);
@@ -1549,6 +1762,10 @@ fn paint_selection(
     }
     for (hx, hy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
         draw_handle(hx, hy, color, window);
+    }
+    if rotatable(kind) {
+        let (rx, ry) = rotate_handle_screen(kind, cam, origin);
+        draw_rotate_handle(rx, ry, color, window);
     }
 }
 
@@ -1894,6 +2111,7 @@ mod tests {
                         w: 30.0,
                         h: 40.0,
                         width: 2.0,
+                        rotation: 0.0,
                     }),
                 },
                 Element {
@@ -1984,6 +2202,7 @@ mod tests {
             w: 20.0,
             h: 20.0,
             width: 1.0,
+            rotation: 0.0,
         });
         resize_about(&mut k, 10.0, 10.0, 2.0, 2.0);
         match k {
@@ -1992,6 +2211,48 @@ mod tests {
                 assert_eq!((b.w, b.h), (40.0, 40.0));
             }
             other => panic!("expected rect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rotation_accumulates_on_boxes_and_bakes_into_segments() {
+        use std::f32::consts::FRAC_PI_2;
+        // A box stores the angle and its center-anchored bounds don't move.
+        let mut k = ElementKind::Rect(BoxGeom {
+            x: -10.0,
+            y: -10.0,
+            w: 20.0,
+            h: 20.0,
+            width: 1.0,
+            rotation: 0.0,
+        });
+        rotate_element(&mut k, 0.0, 0.0, FRAC_PI_2);
+        match &k {
+            ElementKind::Rect(b) => assert!((b.rotation - FRAC_PI_2).abs() < 1e-5),
+            other => panic!("expected rect, got {other:?}"),
+        }
+        // A square's bounds are unchanged by a 90° turn about its center.
+        let bb = bbox(&k);
+        assert!(
+            (bb.0 + 10.0).abs() < 1e-3 && (bb.2 - 10.0).abs() < 1e-3,
+            "{bb:?}"
+        );
+
+        // A line bakes the rotation into its endpoints: +90° about the origin
+        // sends (10,0) → (0,10).
+        let mut seg = ElementKind::Line(SegGeom {
+            x1: 0.0,
+            y1: 0.0,
+            x2: 10.0,
+            y2: 0.0,
+            width: 1.0,
+        });
+        rotate_element(&mut seg, 0.0, 0.0, FRAC_PI_2);
+        match seg {
+            ElementKind::Line(s) => {
+                assert!(s.x2.abs() < 1e-3 && (s.y2 - 10.0).abs() < 1e-3, "{s:?}");
+            }
+            other => panic!("expected line, got {other:?}"),
         }
     }
 
@@ -2046,6 +2307,7 @@ mod tests {
             w: 20.0,
             h: 5.0,
             width: 1.0,
+            rotation: 0.0,
         })));
     }
 }
