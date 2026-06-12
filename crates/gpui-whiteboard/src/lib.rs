@@ -6,12 +6,13 @@
 //! owns the scene model and its (de)serialization; the host owns persistence,
 //! theme, and navigation.
 //!
-//! **Phase 4b** (this version): selection & manipulation. A **Select** tool —
-//! click to select, drag to move; corner handles resize boxes/strokes (Shift
-//! keeps proportions), endpoint handles re-point lines/arrows (Shift snaps to
-//! 45°); toolbar **delete / undo / redo**. Earlier phases: pan/zoom + grid,
-//! freehand pen, and rect/ellipse/line/arrow. Rotation, marquee + multi-select,
-//! text, and embedded page-cards come next — see
+//! **Phase 5** (this version): on-canvas **text** — a Text tool (click to place,
+//! type to edit, double-click to re-edit), rendered with real glyph layout that
+//! scales with zoom and persists. Plus resize polish: corner handles track the
+//! cursor (grab offset + diagonal-projection proportional resize), and text is
+//! measured so its box fits the glyphs. Earlier phases: pan/zoom + grid, freehand
+//! pen, rect/ellipse/line/arrow, and select / move / resize / delete / undo.
+//! Rotation, marquee + multi-select, and embedded page-cards come next — see
 //! `docs/whiteboard-architecture.md` in the host repo.
 //!
 //! Perf note: elements are re-tessellated each paint (as GPUI's own
@@ -23,10 +24,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
-    App, Bounds, Context, Hsla, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render,
-    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, Window,
-    canvas, div, fill, point, px, size,
+    App, Bounds, Context, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder,
+    PinchEvent, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Styled, Window, canvas, div, fill, point, px, size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -57,6 +58,12 @@ const SEL_PAD_PX: f32 = 5.0;
 const HANDLE_HALF: f32 = 4.5;
 /// Grab radius for a corner handle, screen px.
 const HANDLE_GRAB: f32 = 10.0;
+/// Default text size at creation, screen px (stored world size is this / zoom).
+const TEXT_SIZE: f32 = 18.0;
+/// Rough per-character advance and line height, as fractions of the font size,
+/// for an approximate text bounding box (hit-testing / selection).
+const TEXT_CHAR_W: f32 = 0.55;
+const TEXT_LINE_H: f32 = 1.3;
 
 /// The board document: everything persisted for a whiteboard. Owned and
 /// (de)serialized here; the host stores [`Scene::to_json`] opaquely (for zorite,
@@ -114,6 +121,20 @@ pub enum ElementKind {
     Ellipse(BoxGeom),
     Line(SegGeom),
     Arrow(SegGeom),
+    Text(TextGeom),
+}
+
+/// A text label: a top-left anchor, its content, and a world-space font size.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TextGeom {
+    pub x: f32,
+    pub y: f32,
+    pub content: String,
+    pub size: f32,
+    /// Cached world-space width, measured each render so the selection box and
+    /// hit-test fit the real glyphs. Not persisted; `0.0` means unmeasured.
+    #[serde(skip)]
+    pub measured_w: f32,
 }
 
 /// A freehand pen stroke: world-space points and a world-space width.
@@ -207,16 +228,18 @@ pub enum Tool {
     Ellipse,
     Line,
     Arrow,
+    Text,
 }
 
 impl Tool {
-    const ALL: [Tool; 6] = [
+    const ALL: [Tool; 7] = [
         Tool::Select,
         Tool::Pen,
         Tool::Rect,
         Tool::Ellipse,
         Tool::Line,
         Tool::Arrow,
+        Tool::Text,
     ];
 
     /// A glyph for the toolbar button (dependency-free; the host has no icon set
@@ -229,6 +252,7 @@ impl Tool {
             Tool::Ellipse => "◯",
             Tool::Line => "╱",
             Tool::Arrow => "↗",
+            Tool::Text => "T",
         }
     }
 }
@@ -274,6 +298,9 @@ struct Resizing {
     anchor: [f32; 2],
     /// The dragged corner's original position, world space.
     from: [f32; 2],
+    /// World offset from the cursor to the dragged corner at grab time, kept so
+    /// the corner tracks the cursor 1:1 (no jump on grab).
+    grab: [f32; 2],
     /// The element's geometry at the start of the resize.
     orig: ElementKind,
 }
@@ -299,6 +326,10 @@ pub struct WhiteboardView {
     style: WhiteboardStyleFn,
     on_change: Option<ChangeFn>,
     tool: Tool,
+    /// Keyboard focus — grabbed while editing a text element.
+    focus: FocusHandle,
+    /// The text element currently being edited (Text tool / double-click).
+    editing: Option<u64>,
     /// Canvas bounds in window coords, captured each paint so input handlers can
     /// map window-relative event positions into the board.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -329,7 +360,7 @@ pub struct WhiteboardView {
 
 impl WhiteboardView {
     /// Build a view over `scene`. Call inside `cx.new(|cx| WhiteboardView::new(..))`.
-    pub fn new(scene: Scene, style: WhiteboardStyleFn, _cx: &mut Context<Self>) -> Self {
+    pub fn new(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Self {
         let next_id = scene
             .elements
             .iter()
@@ -341,6 +372,8 @@ impl WhiteboardView {
             style,
             on_change: None,
             tool: Tool::Pen,
+            focus: cx.focus_handle(),
+            editing: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             pending: None,
             selected: None,
@@ -476,6 +509,7 @@ impl WhiteboardView {
         let kind = &self.scene.elements.iter().find(|e| e.id == id)?.kind;
         let cam = self.scene.camera;
         let origin = self.bounds.get().origin;
+        let cursor = self.event_to_world(pos);
         let near = |wx: f32, wy: f32, ox: f32, oy: f32| {
             let s = to_screen(wx, wy, cam, origin);
             let (dx, dy) = (
@@ -510,6 +544,7 @@ impl WhiteboardView {
                     id,
                     anchor: [opp.0, opp.1],
                     from: [wc[i].0, wc[i].1],
+                    grab: [wc[i].0 - cursor[0], wc[i].1 - cursor[1]],
                     orig: kind.clone(),
                 }));
             }
@@ -517,16 +552,71 @@ impl WhiteboardView {
         None
     }
 
-    fn on_left_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if ev.click_count >= 2 {
-            self.pending = None;
-            self.reset_view(cx);
-            return;
-        }
+    /// The topmost text element under a world point (within `pad`), if any.
+    fn text_at(&self, p: [f32; 2], pad: f32) -> Option<u64> {
+        self.scene
+            .elements
+            .iter()
+            .rev()
+            .find(|e| matches!(e.kind, ElementKind::Text(_)) && hit_test(&e.kind, p[0], p[1], pad))
+            .map(|e| e.id)
+    }
+
+    fn on_left_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.panning {
             return;
         }
         let p = self.event_to_world(ev.position);
+        let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+
+        // Any click first commits an in-progress text edit.
+        if self.editing.is_some() {
+            self.commit_text(window, cx);
+        }
+
+        if ev.click_count >= 2 {
+            self.pending = None;
+            // Double-click a text element (Select tool) re-opens it for editing.
+            if self.tool == Tool::Select
+                && let Some(id) = self.text_at(p, SELECT_PAD / zoom)
+            {
+                self.selected = Some(id);
+                self.editing = Some(id);
+                self.focus.focus(window, cx);
+                cx.notify();
+                return;
+            }
+            self.reset_view(cx);
+            return;
+        }
+
+        if self.tool == Tool::Text {
+            // Edit a text under the cursor, else create a new one here.
+            if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
+                self.selected = Some(id);
+                self.editing = Some(id);
+            } else {
+                self.push_undo();
+                let id = self.next_id;
+                self.next_id += 1;
+                self.scene.elements.push(Element {
+                    id,
+                    kind: ElementKind::Text(TextGeom {
+                        x: p[0],
+                        y: p[1],
+                        content: String::new(),
+                        size: TEXT_SIZE / zoom,
+                        measured_w: 0.0,
+                    }),
+                });
+                self.selected = Some(id);
+                self.editing = Some(id);
+                self.dirty = true;
+            }
+            self.focus.focus(window, cx);
+            cx.notify();
+            return;
+        }
 
         if self.tool == Tool::Select {
             // A handle on the current selection takes priority.
@@ -540,7 +630,7 @@ impl WhiteboardView {
                 return;
             }
             // Otherwise hit-test topmost-first; select + arm a move, or deselect.
-            let pad = SELECT_PAD / self.scene.camera.zoom.max(MIN_ZOOM);
+            let pad = SELECT_PAD / zoom;
             self.selected = self
                 .scene
                 .elements
@@ -554,7 +644,7 @@ impl WhiteboardView {
             return;
         }
 
-        let width = NIB / self.scene.camera.zoom.max(MIN_ZOOM);
+        let width = NIB / zoom;
         let kind = match self.tool {
             Tool::Pen => ElementKind::Draw(Stroke {
                 points: vec![p],
@@ -588,7 +678,7 @@ impl WhiteboardView {
                 y2: p[1],
                 width,
             }),
-            Tool::Select => return,
+            Tool::Select | Tool::Text => return,
         };
         self.pending = Some(Pending { anchor: p, kind });
         cx.notify();
@@ -651,31 +741,45 @@ impl WhiteboardView {
         self.flush(window, cx);
     }
 
-    fn on_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_move(&mut self, ev: &MouseMoveEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Resizing the selection (corner-handle drag).
         if self.resizing.is_some() {
             let cur = self.event_to_world(ev.position);
-            let (id, anchor, from, mut kind) = {
+            let (id, anchor, from, grab, mut kind) = {
                 let r = self.resizing.as_ref().unwrap();
-                (r.id, r.anchor, r.from, r.orig.clone())
+                (r.id, r.anchor, r.from, r.grab, r.orig.clone())
             };
-            let mut sx = if (from[0] - anchor[0]).abs() > 1e-3 {
-                (cur[0] - anchor[0]) / (from[0] - anchor[0])
+            // Where the dragged corner should sit: cursor + the grab offset, so
+            // it tracks the cursor without jumping when the drag starts.
+            let target = [cur[0] + grab[0], cur[1] + grab[1]];
+            // Text always scales proportionally (its size is a single font size);
+            // Shift does so for shapes. Both use the diagonal projection so the
+            // corner tracks the cursor at the right rate. Free resize is per-axis.
+            let proportional = ev.modifiers.shift || matches!(kind, ElementKind::Text(_));
+            let (sx, sy) = if proportional {
+                let s = diagonal_scale(anchor, from, target);
+                (s, s)
             } else {
-                1.0
+                let sx = if (from[0] - anchor[0]).abs() > 1e-3 {
+                    (target[0] - anchor[0]) / (from[0] - anchor[0])
+                } else {
+                    1.0
+                };
+                let sy = if (from[1] - anchor[1]).abs() > 1e-3 {
+                    (target[1] - anchor[1]) / (from[1] - anchor[1])
+                } else {
+                    1.0
+                };
+                (sx, sy)
             };
-            let mut sy = if (from[1] - anchor[1]).abs() > 1e-3 {
-                (cur[1] - anchor[1]) / (from[1] - anchor[1])
-            } else {
-                1.0
-            };
-            // Shift locks the aspect ratio (proportional resize).
-            if ev.modifiers.shift {
-                (sx, sy) = constrain_uniform(sx, sy);
-            }
             resize_about(&mut kind, anchor[0], anchor[1], sx, sy);
+            let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
             if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == id) {
                 e.kind = kind;
+                // Re-measure text now so its box tracks the cursor this frame.
+                if let ElementKind::Text(t) = &mut e.kind {
+                    t.measured_w = measure_text_width(&t.content, px(t.size * zoom), window) / zoom;
+                }
             }
             cx.notify();
             return;
@@ -753,6 +857,8 @@ impl WhiteboardView {
                     s.x2 = cur[0];
                     s.y2 = cur[1];
                 }
+                // Text isn't created by dragging, so it's never pending here.
+                ElementKind::Text(_) => {}
             }
             cx.notify();
             return;
@@ -796,6 +902,47 @@ impl WhiteboardView {
         let o = self.bounds.get().origin;
         (f32::from(p.x - o.x), f32::from(p.y - o.y))
     }
+
+    /// Finish editing the current text element, dropping it if it's empty.
+    fn commit_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.editing.take() else {
+            return;
+        };
+        let empty =
+            self.scene.elements.iter().find(|e| e.id == id).is_none_or(
+                |e| matches!(&e.kind, ElementKind::Text(t) if t.content.trim().is_empty()),
+            );
+        if empty {
+            self.scene.elements.retain(|e| e.id != id);
+        }
+        self.dirty = true;
+        cx.notify();
+        self.flush(window, cx);
+    }
+
+    fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.editing else {
+            cx.propagate();
+            return;
+        };
+        let ks = &ev.keystroke;
+        let cmd = ks.modifiers.platform || ks.modifiers.control;
+        let res = if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == id)
+            && let ElementKind::Text(t) = &mut e.kind
+        {
+            text_key(&mut t.content, &ks.key, ks.key_char.as_deref(), cmd)
+        } else {
+            KeyResult::Commit
+        };
+        match res {
+            KeyResult::Edited => {
+                self.dirty = true;
+                cx.notify();
+            }
+            KeyResult::Commit => self.commit_text(window, cx),
+            KeyResult::Pass => cx.propagate(),
+        }
+    }
 }
 
 /// Whether an in-progress element is big enough to keep (a click that doesn't
@@ -808,6 +955,8 @@ fn committable(kind: &ElementKind) -> bool {
             let (dx, dy) = (s.x2 - s.x1, s.y2 - s.y1);
             dx * dx + dy * dy > 4.0
         }
+        // Text is created on click (not via a drag), so it's never pending.
+        ElementKind::Text(_) => false,
     }
 }
 
@@ -833,6 +982,10 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
             s.x1.max(s.x2),
             s.y1.max(s.y2),
         ),
+        ElementKind::Text(t) => {
+            let (w, h) = text_extent(t);
+            (t.x, t.y, t.x + w, t.y + h)
+        }
     }
 }
 
@@ -861,14 +1014,42 @@ fn translate(kind: &mut ElementKind, dx: f32, dy: f32) {
             s.y1 += dy;
             s.y2 += dy;
         }
+        ElementKind::Text(t) => {
+            t.x += dx;
+            t.y += dy;
+        }
     }
 }
 
-/// Constrain a pair of scale factors to a uniform magnitude (proportional
-/// resize) while preserving each axis's direction — keeps a circle circular.
-fn constrain_uniform(sx: f32, sy: f32) -> (f32, f32) {
-    let s = sx.abs().max(sy.abs());
-    (s.copysign(sx), s.copysign(sy))
+/// The proportional-resize scale: project the (offset) cursor onto the diagonal
+/// from `anchor` through the dragged corner `from`, so the corner stays on that
+/// diagonal and tracks the cursor's projection. Keeps the aspect ratio *and*
+/// scales at the cursor's rate (not the faster max-of-axes rate).
+fn diagonal_scale(anchor: [f32; 2], from: [f32; 2], target: [f32; 2]) -> f32 {
+    let d = [from[0] - anchor[0], from[1] - anchor[1]];
+    let c = [target[0] - anchor[0], target[1] - anchor[1]];
+    let dd = d[0] * d[0] + d[1] * d[1];
+    if dd < 1e-6 {
+        return 1.0;
+    }
+    (c[0] * d[0] + c[1] * d[1]) / dd
+}
+
+/// The rendered world-independent width (px) of the widest line of `content` at
+/// `font_size`, via the real glyph layout.
+fn measure_text_width(content: &str, font_size: Pixels, window: &mut Window) -> f32 {
+    content
+        .split('\n')
+        .map(|line| {
+            let run = window.text_style().to_run(line.len());
+            f32::from(
+                window
+                    .text_system()
+                    .layout_line(line, font_size, &[run], None)
+                    .width,
+            )
+        })
+        .fold(0.0_f32, f32::max)
 }
 
 /// Snap target `(tx, ty)` so its angle from `(ox, oy)` is a multiple of 45°,
@@ -882,6 +1063,62 @@ fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
     let step = std::f32::consts::FRAC_PI_4;
     let ang = (dy.atan2(dx) / step).round() * step;
     (ox + len * ang.cos(), oy + len * ang.sin())
+}
+
+/// The outcome of a key press while editing text.
+enum KeyResult {
+    Edited,
+    Commit,
+    Pass,
+}
+
+/// Apply one key press to a text buffer. Basic editing only: printable input
+/// (incl. space), Enter (newline), and Backspace; Escape commits; modified
+/// chords pass through. No IME composition or mid-string cursor yet.
+fn text_key(content: &mut String, key: &str, key_char: Option<&str>, cmd: bool) -> KeyResult {
+    if cmd {
+        return KeyResult::Pass;
+    }
+    match key {
+        "escape" => KeyResult::Commit,
+        "enter" => {
+            content.push('\n');
+            KeyResult::Edited
+        }
+        "backspace" => {
+            content.pop();
+            KeyResult::Edited
+        }
+        _ => match key_char {
+            Some(c) if c.chars().next().is_some_and(|ch| !ch.is_control()) => {
+                content.push_str(c);
+                KeyResult::Edited
+            }
+            _ => KeyResult::Pass,
+        },
+    }
+}
+
+/// Approximate world-space (width, height) of a text element — enough for
+/// hit-testing and the selection box (real shaping happens at paint time).
+fn text_extent(t: &TextGeom) -> (f32, f32) {
+    let rows = t.content.split('\n').count().max(1) as f32;
+    let h = rows * t.size * TEXT_LINE_H;
+    // Prefer the measured width; fall back to a character-count estimate until
+    // the first render measures it.
+    let w = if t.measured_w > 0.0 {
+        t.measured_w
+    } else {
+        let cols = t
+            .content
+            .split('\n')
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0)
+            .max(1) as f32;
+        cols * t.size * TEXT_CHAR_W
+    };
+    (w, h)
 }
 
 /// Scale an element's geometry about `(ax, ay)` by `(sx, sy)` (world space).
@@ -909,6 +1146,13 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
             s.x2 = fx(s.x2);
             s.y1 = fy(s.y1);
             s.y2 = fy(s.y2);
+        }
+        ElementKind::Text(t) => {
+            // Callers pass a uniform factor for text (sx == sy), so position
+            // scales uniformly and the font size by that magnitude.
+            t.x = fx(t.x);
+            t.y = fy(t.y);
+            t.size = (t.size * sx.abs()).max(0.5);
         }
     }
 }
@@ -970,6 +1214,8 @@ fn paint_element(
         ElementKind::Ellipse(b) => paint_ellipse(b, cam, origin, ink, window),
         ElementKind::Line(s) => paint_segment(s, false, cam, origin, ink, window),
         ElementKind::Arrow(s) => paint_segment(s, true, cam, origin, ink, window),
+        // Text is drawn as an overlay element in render(), not in the canvas.
+        ElementKind::Text(_) => {}
     }
 }
 
@@ -1071,8 +1317,6 @@ fn paint_segment(
     }
 }
 
-/// Paint the selection outline: a solid, padded accent box around the selected
-/// element (thick enough to read clearly against any board background).
 /// A solid accent square handle centered at a screen point.
 fn draw_handle(hx: f32, hy: f32, color: Hsla, window: &mut Window) {
     let h = HANDLE_HALF;
@@ -1122,7 +1366,7 @@ fn paint_selection(
 }
 
 impl Render for WhiteboardView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let style = (self.style)();
         let WhiteboardStyle {
             bg,
@@ -1134,15 +1378,61 @@ impl Render for WhiteboardView {
             selection,
         } = style;
         let cam = self.scene.camera;
+        let zoom = cam.zoom.max(MIN_ZOOM);
         let bounds_cell = self.bounds.clone();
+
+        // Measure each text element's rendered width so the selection box and
+        // hit-test fit the real glyphs (not a character-count estimate). Must run
+        // before the `sel`/overlay snapshots below so they see fresh widths.
+        for e in &mut self.scene.elements {
+            if let ElementKind::Text(t) = &mut e.kind {
+                t.measured_w = measure_text_width(&t.content, px(t.size * zoom), window) / zoom;
+            }
+        }
         // Snapshot element kinds (world coords) for the paint closure. Re-cloned
         // each frame for now; see the path-cache perf note at the top.
         let kinds: Vec<ElementKind> = self.scene.elements.iter().map(|e| e.kind.clone()).collect();
         let pending = self.pending.as_ref().map(|p| p.kind.clone());
+        // No resize box while a text element is being edited — just its caret.
         let sel = self
             .selected
+            .filter(|&id| Some(id) != self.editing)
             .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
             .map(|e| e.kind.clone());
+
+        // Text renders as positioned overlay children (real glyph layout, scales
+        // with zoom) above the canvas; the one being edited shows a caret. They
+        // sit at root-relative offsets, so no canvas origin is needed.
+        let editing = self.editing;
+        let text_divs: Vec<_> = self
+            .scene
+            .elements
+            .iter()
+            .filter_map(|e| match &e.kind {
+                ElementKind::Text(t) => {
+                    let mut display = t.content.clone();
+                    if editing == Some(e.id) {
+                        display.push('│');
+                    }
+                    let lines = display
+                        .split('\n')
+                        .map(|l| div().child(SharedString::from(l.to_string())))
+                        .collect::<Vec<_>>();
+                    Some(
+                        div()
+                            .absolute()
+                            .left(px((t.x - cam.x) * zoom))
+                            .top(px((t.y - cam.y) * zoom))
+                            .flex()
+                            .flex_col()
+                            .text_size(px(t.size * zoom))
+                            .text_color(ink)
+                            .children(lines),
+                    )
+                }
+                _ => None,
+            })
+            .collect();
 
         // Tool palette + actions (top-center). The pill `occlude()`s so clicking
         // a button doesn't also act on the board beneath it.
@@ -1209,6 +1499,7 @@ impl Render for WhiteboardView {
             );
 
         div()
+            .track_focus(&self.focus)
             .size_full()
             .relative()
             .overflow_hidden()
@@ -1238,6 +1529,8 @@ impl Render for WhiteboardView {
             .on_mouse_move(cx.listener(Self::on_move))
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
+            .on_key_down(cx.listener(Self::on_key))
+            .children(text_divs)
             .child(toolbar)
             .child(
                 div()
@@ -1359,10 +1652,13 @@ mod tests {
     }
 
     #[test]
-    fn shift_constrains_resize_to_a_uniform_scale() {
-        // The smaller axis snaps up to the larger magnitude; directions hold.
-        assert_eq!(constrain_uniform(3.0, 1.5), (3.0, 3.0));
-        assert_eq!(constrain_uniform(-2.0, 0.5), (-2.0, 2.0));
+    fn diagonal_scale_projects_the_cursor_onto_the_diagonal() {
+        // On the diagonal: cursor twice as far from the anchor → 2×.
+        let s = diagonal_scale([0.0, 0.0], [10.0, 10.0], [20.0, 20.0]);
+        assert!((s - 2.0).abs() < 1e-4, "{s}");
+        // Off-diagonal projects onto it: (20,0) onto the (10,10) line → 1×.
+        let s = diagonal_scale([0.0, 0.0], [10.0, 10.0], [20.0, 0.0]);
+        assert!((s - 1.0).abs() < 1e-4, "{s}");
     }
 
     #[test]
@@ -1395,6 +1691,45 @@ mod tests {
             }
             other => panic!("expected rect, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn text_key_handles_basic_editing() {
+        let mut s = String::new();
+        assert!(matches!(
+            text_key(&mut s, "h", Some("h"), false),
+            KeyResult::Edited
+        ));
+        text_key(&mut s, "i", Some("i"), false);
+        text_key(&mut s, "space", Some(" "), false);
+        assert_eq!(s, "hi ");
+        text_key(&mut s, "enter", None, false);
+        text_key(&mut s, "backspace", None, false);
+        assert_eq!(s, "hi ");
+        // ⌘/Ctrl chords pass through; Escape commits — neither types.
+        assert!(matches!(
+            text_key(&mut s, "a", Some("a"), true),
+            KeyResult::Pass
+        ));
+        assert!(matches!(
+            text_key(&mut s, "escape", None, false),
+            KeyResult::Commit
+        ));
+        assert_eq!(s, "hi ");
+    }
+
+    #[test]
+    fn text_bbox_anchors_at_origin_and_grows() {
+        let t = TextGeom {
+            x: 5.0,
+            y: 6.0,
+            content: "ab\ncde".into(),
+            size: 10.0,
+            measured_w: 0.0,
+        };
+        let bb = bbox(&ElementKind::Text(t));
+        assert_eq!((bb.0, bb.1), (5.0, 6.0));
+        assert!(bb.2 > bb.0 && bb.3 > bb.1);
     }
 
     #[test]
