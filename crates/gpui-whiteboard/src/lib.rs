@@ -478,6 +478,10 @@ impl Render for WhiteboardView {
         div()
             .size_full()
             .relative()
+            // Clip painting (grid + strokes) to the board's own bounds so panned
+            // content never bleeds over the sidebar or tab bar. `paint_path`
+            // honors the active content mask, which this pushes for its children.
+            .overflow_hidden()
             .child(
                 canvas(
                     move |bounds, _, _| bounds_cell.set(bounds),
