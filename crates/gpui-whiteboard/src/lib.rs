@@ -12,11 +12,13 @@
 //! opens the page; the host indexes a board's cards as links so each page's
 //! backlinks show the board. This version also adds **marquee + multi-select**
 //! (drag a box / shift-click to pick several; move or delete the group) and
-//! **rotation** — a round grip above a single selection spins shapes, lines, and
-//! strokes (text/cards can't rotate; they're HTML overlays). Earlier phases:
-//! pan/zoom + grid, freehand pen, rect/ellipse/line/arrow, text, and a full
-//! select / move / resize / delete / undo editor — see
-//! `docs/whiteboard-architecture.md` in the host repo.
+//! **rotation** — a round grip above a single selection spins shapes, lines,
+//! strokes, and text. Text is drawn as **vector outlines** (the `font` module,
+//! via `ttf-parser`) rather than gpui overlay glyphs, so it rotates + scales
+//! with the camera and a host can supply a custom face; page-cards remain
+//! un-rotatable overlays. Earlier phases: pan/zoom + grid, freehand pen,
+//! rect/ellipse/line/arrow, text, and a full select / move / resize / delete /
+//! undo editor — see `docs/whiteboard-architecture.md` in the host repo.
 //!
 //! Perf note: elements are re-tessellated each paint (as GPUI's own
 //! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is
@@ -174,6 +176,9 @@ pub struct TextGeom {
     pub y: f32,
     pub content: String,
     pub size: f32,
+    /// Rotation about the text block's center, radians. Absent in older boards → 0.
+    #[serde(default)]
+    pub rotation: f32,
     /// Cached world-space extent, set each render from the font layout so the
     /// selection box and hit-test fit the real glyphs. Not persisted; a zero
     /// height means unmeasured (a fallback estimate is used until then).
@@ -875,15 +880,32 @@ impl WhiteboardView {
             return None;
         }
 
-        // A rotated box offers no corner resize — only the rotate handle above
-        // (corner handles + resize math assume an axis-aligned box).
-        if let ElementKind::Rect(b) | ElementKind::Ellipse(b) = kind
-            && b.rotation.abs() > ROT_EPS
-        {
+        // Box-like (rect/ellipse/text): corners on the (possibly rotated) box.
+        // Upright resizes about the opposite corner (free aspect ratio); rotated
+        // resizes proportionally about the center — a similarity transform that
+        // stays correct under rotation (set up here, applied in `on_move`).
+        if let Some((x, y, w, h, rot)) = box_like(kind) {
+            let z = cam.zoom.max(MIN_ZOOM);
+            let cu = box_padded_corners(x, y, w, h, rot, 0.0);
+            let cp = box_padded_corners(x, y, w, h, rot, SEL_PAD_PX / z);
+            let center = [x + w / 2.0, y + h / 2.0];
+            let rotated = rot.abs() > ROT_EPS;
+            for i in 0..4 {
+                if near(cp[i][0], cp[i][1], 0.0, 0.0) {
+                    let anchor = if rotated { center } else { cu[(i + 2) % 4] };
+                    return Some(HandleGrab::Corner(Resizing {
+                        id,
+                        anchor,
+                        from: cu[i],
+                        grab: [cu[i][0] - cursor[0], cu[i][1] - cursor[1]],
+                        orig: kind.clone(),
+                    }));
+                }
+            }
             return None;
         }
 
-        // Corner handles sit on the padded box, so offset the hit point to match.
+        // Draw / Embed: corners on the padded AABB (offset the hit to match).
         let bb = bbox(kind);
         let wc = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
         let off = [
@@ -1041,6 +1063,7 @@ impl WhiteboardView {
                         y: p[1],
                         content: String::new(),
                         size: TEXT_SIZE / zoom,
+                        rotation: 0.0,
                         measured_w: 0.0,
                         measured_h: 0.0,
                     }),
@@ -1328,10 +1351,14 @@ impl WhiteboardView {
             // Where the dragged corner should sit: cursor + the grab offset, so
             // it tracks the cursor without jumping when the drag starts.
             let target = [cur[0] + grab[0], cur[1] + grab[1]];
-            // Text always scales proportionally (its size is a single font size);
-            // Shift does so for shapes. Both use the diagonal projection so the
-            // corner tracks the cursor at the right rate. Free resize is per-axis.
-            let proportional = ev.modifiers.shift || matches!(kind, ElementKind::Text(_));
+            // Text always scales proportionally (its size is a single font
+            // size); Shift does so for shapes; and a *rotated* box-like element
+            // must (its anchor is the center, so a uniform scale keeps it correct
+            // under rotation). Both use the diagonal projection so the corner
+            // tracks the cursor at the right rate. Free resize is per-axis.
+            let rotated = box_like(&kind).is_some_and(|(.., r)| r.abs() > ROT_EPS);
+            let proportional =
+                ev.modifiers.shift || rotated || matches!(kind, ElementKind::Text(_));
             let (sx, sy) = if proportional {
                 let s = diagonal_scale(anchor, from, target);
                 (s, s)
@@ -1646,30 +1673,61 @@ fn rotate_pt(x: f32, y: f32, cx: f32, cy: f32, a: f32) -> (f32, f32) {
     (cx + dx * c - dy * s, cy + dx * s + dy * c)
 }
 
+/// The unrotated box `(x, y, w, h)` plus rotation of a "box-like" element —
+/// rect, ellipse, or text (whose size is its measured extent). `None` for the
+/// other kinds. Lets the rotation/selection/resize code treat all three alike.
+fn box_like(kind: &ElementKind) -> Option<(f32, f32, f32, f32, f32)> {
+    match kind {
+        ElementKind::Rect(b) | ElementKind::Ellipse(b) => Some((b.x, b.y, b.w, b.h, b.rotation)),
+        ElementKind::Text(t) => {
+            let (w, h) = text_extent(t);
+            Some((t.x, t.y, w, h, t.rotation))
+        }
+        _ => None,
+    }
+}
+
 /// The four world-space corners of a box (TL, TR, BR, BL order), grown outward
-/// by `pad` on every side and spun by its rotation about its center.
-fn box_padded_corners(b: &BoxGeom, pad: f32) -> [[f32; 2]; 4] {
-    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
-    let (x0, y0) = (b.x - pad, b.y - pad);
-    let (x1, y1) = (b.x + b.w + pad, b.y + b.h + pad);
-    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|[x, y]| {
-        let (rx, ry) = rotate_pt(x, y, cx, cy, b.rotation);
+/// by `pad` on every side and spun by `rotation` about its center.
+fn box_padded_corners(x: f32, y: f32, w: f32, h: f32, rotation: f32, pad: f32) -> [[f32; 2]; 4] {
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    let (x0, y0) = (x - pad, y - pad);
+    let (x1, y1) = (x + w + pad, y + h + pad);
+    [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].map(|[px_, py_]| {
+        let (rx, ry) = rotate_pt(px_, py_, cx, cy, rotation);
         [rx, ry]
     })
 }
 
-/// Whether an element can be rotated. Text and page-cards are HTML overlays that
-/// GPUI can't transform, so they're excluded (the rotate handle never shows).
-fn rotatable(kind: &ElementKind) -> bool {
-    !matches!(kind, ElementKind::Text(_) | ElementKind::Embed(_))
+/// Axis-aligned bounds of a set of points (empty → a zero box at the origin).
+fn aabb(pts: &[[f32; 2]]) -> (f32, f32, f32, f32) {
+    if pts.is_empty() {
+        return (0.0, 0.0, 0.0, 0.0);
+    }
+    let (mut x0, mut y0) = (f32::MAX, f32::MAX);
+    let (mut x1, mut y1) = (f32::MIN, f32::MIN);
+    for p in pts {
+        x0 = x0.min(p[0]);
+        y0 = y0.min(p[1]);
+        x1 = x1.max(p[0]);
+        y1 = y1.max(p[1]);
+    }
+    (x0, y0, x1, y1)
 }
 
-/// Rotate an element by `delta` radians about a fixed pivot. Boxes accumulate an
-/// angle; lines/arrows/strokes bake the rotation into their points (they have no
-/// orientation field of their own).
+/// Whether an element can be rotated. Page-cards are HTML overlays GPUI can't
+/// transform, so they're excluded (the rotate handle never shows for them).
+fn rotatable(kind: &ElementKind) -> bool {
+    !matches!(kind, ElementKind::Embed(_))
+}
+
+/// Rotate an element by `delta` radians about a fixed pivot. Boxes and text
+/// accumulate an angle; lines/arrows/strokes bake the rotation into their points
+/// (they have no orientation field of their own).
 fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
     match kind {
         ElementKind::Rect(b) | ElementKind::Ellipse(b) => b.rotation += delta,
+        ElementKind::Text(t) => t.rotation += delta,
         ElementKind::Line(s) | ElementKind::Arrow(s) => {
             let (x1, y1) = rotate_pt(s.x1, s.y1, cx, cy, delta);
             let (x2, y2) = rotate_pt(s.x2, s.y2, cx, cy, delta);
@@ -1681,7 +1739,7 @@ fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
                 (p[0], p[1]) = (x, y);
             }
         }
-        ElementKind::Text(_) | ElementKind::Embed(_) => {}
+        ElementKind::Embed(_) => {}
     }
 }
 
@@ -1697,43 +1755,21 @@ fn rotate_handle_screen(kind: &ElementKind, cam: Camera, origin: Point<Pixels>) 
 }
 
 fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
+    // Box-like kinds (rect/ellipse/text): AABB of the (possibly rotated) box.
+    if let Some((x, y, w, h, rot)) = box_like(kind) {
+        return aabb(&box_padded_corners(x, y, w, h, rot, 0.0));
+    }
     match kind {
-        ElementKind::Draw(s) => {
-            let mut pts = s.points.iter();
-            let f = pts.next().copied().unwrap_or([0.0, 0.0]);
-            let (mut x0, mut y0, mut x1, mut y1) = (f[0], f[1], f[0], f[1]);
-            for p in pts {
-                x0 = x0.min(p[0]);
-                y0 = y0.min(p[1]);
-                x1 = x1.max(p[0]);
-                y1 = y1.max(p[1]);
-            }
-            (x0, y0, x1, y1)
-        }
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
-            // Axis-aligned bounds of the (possibly rotated) box.
-            let c = box_padded_corners(b, 0.0);
-            let (mut x0, mut y0) = (f32::MAX, f32::MAX);
-            let (mut x1, mut y1) = (f32::MIN, f32::MIN);
-            for [px_, py_] in c {
-                x0 = x0.min(px_);
-                y0 = y0.min(py_);
-                x1 = x1.max(px_);
-                y1 = y1.max(py_);
-            }
-            (x0, y0, x1, y1)
-        }
+        ElementKind::Draw(s) => aabb(&s.points),
         ElementKind::Line(s) | ElementKind::Arrow(s) => (
             s.x1.min(s.x2),
             s.y1.min(s.y2),
             s.x1.max(s.x2),
             s.y1.max(s.y2),
         ),
-        ElementKind::Text(t) => {
-            let (w, h) = text_extent(t);
-            (t.x, t.y, t.x + w, t.y + h)
-        }
         ElementKind::Embed(em) => (em.x, em.y, em.x + em.w, em.y + em.h),
+        // Handled above.
+        ElementKind::Rect(_) | ElementKind::Ellipse(_) | ElementKind::Text(_) => unreachable!(),
     }
 }
 
@@ -2079,7 +2115,7 @@ fn paint_rect(
     window: &mut Window,
 ) {
     let z = cam.zoom.max(MIN_ZOOM);
-    let c = box_padded_corners(b, 0.0);
+    let c = box_padded_corners(b.x, b.y, b.w, b.h, b.rotation, 0.0);
     let trace = |pb: &mut PathBuilder| {
         pb.move_to(to_screen(c[0][0], c[0][1], cam, origin));
         pb.line_to(to_screen(c[1][0], c[1][1], cam, origin));
@@ -2234,11 +2270,13 @@ fn paint_selection(
         draw_rotate_handle(rx, ry, color, window);
         return;
     }
-    // Rect/Ellipse: the (possibly rotated) box outline + a rotate grip. Corner
-    // resize handles show only when upright — a rotated box hides them.
-    if let ElementKind::Rect(b) | ElementKind::Ellipse(b) = kind {
+    // Box-like (rect/ellipse/text): the (possibly rotated) box outline + a
+    // rotate grip. Corner resize handles show only when upright — a rotated box
+    // hides them (rotated-frame resize is out of scope).
+    if let Some((x, y, w, h, rot)) = box_like(kind) {
         let z = cam.zoom.max(MIN_ZOOM);
-        let s = box_padded_corners(b, SEL_PAD_PX / z).map(|p| to_screen(p[0], p[1], cam, origin));
+        let s = box_padded_corners(x, y, w, h, rot, SEL_PAD_PX / z)
+            .map(|p| to_screen(p[0], p[1], cam, origin));
         let mut pb = PathBuilder::stroke(px(1.5));
         pb.move_to(s[0]);
         pb.line_to(s[1]);
@@ -2248,17 +2286,15 @@ fn paint_selection(
         if let Ok(path) = pb.build() {
             window.paint_path(path, color);
         }
-        if b.rotation.abs() <= ROT_EPS {
-            for p in &s {
-                draw_handle(f32::from(p.x), f32::from(p.y), color, window);
-            }
+        for p in &s {
+            draw_handle(f32::from(p.x), f32::from(p.y), color, window);
         }
         let (rx, ry) = rotate_handle_screen(kind, cam, origin);
         draw_rotate_handle(rx, ry, color, window);
         return;
     }
-    // Draw / Text / Embed: a padded AABB box + four corner handles. Freehand
-    // strokes (rotatable) also get a rotate grip; text and cards don't.
+    // Draw / Embed: a padded AABB box + four corner handles. Freehand strokes
+    // (rotatable) also get a rotate grip; cards don't.
     let bb = bbox(kind);
     let tl = to_screen(bb.0, bb.1, cam, origin);
     let br = to_screen(bb.2, bb.3, cam, origin);
@@ -2384,7 +2420,7 @@ impl Render for WhiteboardView {
                         segs: layout.segs,
                         x: t.x,
                         y: t.y,
-                        rotation: 0.0,
+                        rotation: t.rotation,
                         w: layout.width,
                         h: layout.height,
                         line_height: layout.line_height,
@@ -3113,6 +3149,23 @@ mod tests {
             }
             other => panic!("expected line, got {other:?}"),
         }
+
+        // Text rotates like a box: it accumulates an angle (the glyph outlines
+        // are spun about the block center at paint time).
+        let mut txt = ElementKind::Text(TextGeom {
+            x: 0.0,
+            y: 0.0,
+            content: "hi".into(),
+            size: 16.0,
+            rotation: 0.0,
+            measured_w: 40.0,
+            measured_h: 16.0,
+        });
+        rotate_element(&mut txt, 0.0, 0.0, FRAC_PI_2);
+        match txt {
+            ElementKind::Text(t) => assert!((t.rotation - FRAC_PI_2).abs() < 1e-5),
+            other => panic!("expected text, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3147,6 +3200,7 @@ mod tests {
             y: 6.0,
             content: "ab\ncde".into(),
             size: 10.0,
+            rotation: 0.0,
             measured_w: 0.0,
             measured_h: 0.0,
         };
