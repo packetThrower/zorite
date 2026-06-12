@@ -23,5 +23,21 @@ pub fn style() -> WhiteboardStyleFn {
         panel: theme::glass_strong(),
         accent: theme::accent_tint(),
         selection: theme::accent(),
+        // Quick swatches for the color picker: neutrals (ink → white) plus a
+        // spread of hues. The picker's gradient area covers everything else.
+        swatches: vec![
+            theme::text_primary(),
+            gpui::hsla(0.0, 0.0, 0.45, 1.0),
+            gpui::hsla(0.0, 0.0, 1.0, 1.0),
+            theme::accent(),
+            gpui::hsla(0.00, 0.72, 0.55, 1.0), // red
+            gpui::hsla(0.08, 0.85, 0.55, 1.0), // orange
+            gpui::hsla(0.14, 0.80, 0.52, 1.0), // amber
+            gpui::hsla(0.33, 0.55, 0.45, 1.0), // green
+            gpui::hsla(0.52, 0.65, 0.50, 1.0), // teal
+            gpui::hsla(0.60, 0.70, 0.55, 1.0), // blue
+            gpui::hsla(0.75, 0.55, 0.58, 1.0), // violet
+            gpui::hsla(0.90, 0.65, 0.60, 1.0), // pink
+        ],
     })
 }
