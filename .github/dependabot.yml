@@ -1,6 +1,6 @@
 version: 2
 
-# Dependency-update schedule for the two ecosystems zorite uses: the Cargo
+# Dependency-update schedule for the two ecosystems Zorite uses: the Cargo
 # workspace at the repo root (the app crate plus crates/gpui-markdown and
 # crates/gpui-pdf, all resolved through the root Cargo.lock) and the GitHub
 # Actions in the workflows. Paths are explicit so renaming a directory surfaces

@@ -1,4 +1,4 @@
-//! zorite — a local-first outliner and daily-journal note app, built on
+//! Zorite — a local-first outliner and daily-journal note app, built on
 //! GPUI + gpui-component with a SQLite backend. Bootstrap mirrors
 //! `~/git/etch341`'s `gui::run`: register icon assets, init
 //! gpui-component, pin a dark theme, rebind the outliner keys, then open
@@ -73,7 +73,7 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("zorite".into()),
+                    title: Some("Zorite".into()),
                     ..TitleBar::title_bar_options()
                 }),
                 app_id: Some("zorite".into()),

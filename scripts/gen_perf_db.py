@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a throwaway zorite database for performance testing.
+"""Generate a throwaway Zorite database for performance testing.
 
 Creates a SQLite file with the v3 schema and a large set of synthetic pages:
 a 3-level `Area::Topic::Note` namespace tree (plus a few flat pages), a couple

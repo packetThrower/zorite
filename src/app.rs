@@ -1740,7 +1740,7 @@ impl AppView {
             }
             store.begin(source.clone());
         }
-        // Build the diagram theme from zorite's current palette now (it's a
+        // Build the diagram theme from Zorite's current palette now (it's a
         // thread-local read on this main thread); the result is `Send`.
         let theme = crate::mermaid::current_theme();
         let svg = cx.svg_renderer();
@@ -3143,7 +3143,7 @@ impl AppView {
                         .flex_col()
                         .gap(px(10.0))
                         .child(div().text_color(theme::text_secondary()).child(
-                            "zorite opened a temporary, empty workspace because the database \
+                            "Zorite opened a temporary, empty workspace because the database \
                                  couldn't be opened or upgraded. Changes here won't be saved.",
                         ))
                         .child(
@@ -3301,7 +3301,7 @@ impl AppView {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Settings · zorite".into()),
+                    title: Some("Settings · Zorite".into()),
                     ..TitleBar::title_bar_options()
                 }),
                 window_decorations: Some(WindowDecorations::Client),
@@ -3356,7 +3356,7 @@ impl AppView {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("zorite".into()),
+                    title: Some("Zorite".into()),
                     ..TitleBar::title_bar_options()
                 }),
                 app_id: Some("zorite".into()),
@@ -3924,7 +3924,7 @@ impl AppView {
                         .child(div().text_color(theme::text_secondary()).child(
                             "Logseq makes every line a bullet. “Flatten outline” turns each \
                              top-level bullet into a paragraph or heading (nested bullets stay \
-                             lists) so pages read like zorite pages; “Keep bullets” preserves \
+                             lists) so pages read like Zorite pages; “Keep bullets” preserves \
                              the outline exactly. Existing pages keep their content — imported \
                              text is appended below it.",
                         )),
@@ -4560,7 +4560,7 @@ impl Render for AppView {
                                 .px_2()
                                 .text_size(px(13.0))
                                 .text_color(theme::text_secondary())
-                                .child("zorite"),
+                                .child("Zorite"),
                         )
                         .child(
                             div()

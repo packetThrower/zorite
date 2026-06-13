@@ -1,4 +1,4 @@
-//! Color tokens for zorite. A runtime-switchable **palette** (light /
+//! Color tokens for Zorite. A runtime-switchable **palette** (light /
 //! dark) held in a thread-local, so the `theme::token()` accessors stay
 //! `cx`-free and every call site is unchanged when the theme switches.
 //! On a switch the active palette is also overlaid onto gpui-component's
@@ -21,7 +21,7 @@ fn from_rgb(hex: u32, alpha: f32) -> Hsla {
     .into()
 }
 
-/// All of zorite's semantic color tokens for one appearance.
+/// All of Zorite's semantic color tokens for one appearance.
 #[derive(Clone, Copy)]
 pub struct Palette {
     pub bg_window: Hsla,
@@ -266,7 +266,7 @@ pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App)
 }
 
 /// Overlay the palette onto gpui-component's `Theme` so its widgets
-/// (Select, inputs, tabs, dialogs) track zorite's colors. Run after
+/// (Select, inputs, tabs, dialogs) track Zorite's colors. Run after
 /// `Theme::change`, which resets colors to the mode's defaults.
 fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     let t = Theme::global_mut(cx);

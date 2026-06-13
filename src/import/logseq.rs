@@ -1,10 +1,10 @@
 //! The Logseq reader: turns a graph folder (`pages/`, `journals/`,
 //! `assets/`) into an [`ImportBundle`] for [`super::write_bundle`]. Pure
 //! filesystem + string work — no database access. The interesting part is
-//! translating Logseq's conventions into zorite's:
+//! translating Logseq's conventions into Zorite's:
 //!
 //! - **Namespaces** — `Budget___2024.md` files and `[[Budget/2024]]` links
-//!   both become zorite's `Budget::2024`.
+//!   both become Zorite's `Budget::2024`.
 //! - **Outliner** — Logseq makes every line a bullet. `Options::flatten`
 //!   turns top-level blocks into paragraphs/headings (children stay nested
 //!   lists); otherwise every block stays a list item.
@@ -12,14 +12,14 @@
 //!   `CANCELED` → struck-through `- [x]`.
 //! - **Properties** — Logseq-internal metadata (`id::`, `collapsed::`,
 //!   `query-table::`, …) is dropped; `title::`/`alias::` feed the page title
-//!   and zorite's alias table; anything else (`subject::`, `attendees::`, …)
+//!   and Zorite's alias table; anything else (`subject::`, `attendees::`, …)
 //!   is kept as plain text.
 //! - **Macros** — `{{video url}}` → the url, `{{embed [[X]]}}` → `[[X]]`,
 //!   `((block-ref))` → the referenced block's text; queries and unknown
 //!   macros are kept visible as inline code.
 //! - **Assets** — image links are rewritten to `images/<name>` and PDFs to
 //!   `[[pdf/<name>]]` chips, with the files queued for copying.
-//! - **PDF highlights** — Logseq's `hls__*` pages become zorite's
+//! - **PDF highlights** — Logseq's `hls__*` pages become Zorite's
 //!   `<name>.pdf (highlights)` pages (`- p<N>: quote [[pdf/…#pN|↗]]`).
 //!
 //! Whiteboards, draws, `logseq/` config, and `bak`/`.recycle` folders are
@@ -39,7 +39,7 @@ pub struct Options {
 
 // --- Scanning ---
 
-/// What a source file becomes in zorite.
+/// What a source file becomes in Zorite.
 enum Kind {
     Page(String),
     Journal(String),
@@ -115,7 +115,7 @@ fn journal_date(stem: &str) -> Option<String> {
     Some(format!("{y}-{m}-{d}"))
 }
 
-/// File stem → zorite page title: percent-decode (Logseq encodes special
+/// File stem → Zorite page title: percent-decode (Logseq encodes special
 /// characters, sometimes repeatedly) and turn `___` namespaces into `::`.
 fn title_from_stem(stem: &str) -> String {
     let decoded = percent_decode_repeated(stem);
@@ -247,7 +247,7 @@ fn strip_continuation(raw: &str, depth: usize) -> String {
 
 // --- Block conversion ---
 
-/// A block after conversion: zorite-markdown lines plus rendering flags.
+/// A block after conversion: Zorite-markdown lines plus rendering flags.
 struct ConvBlock {
     depth: usize,
     lines: Vec<String>,
@@ -281,7 +281,7 @@ fn is_internal_prop(key: &str) -> bool {
 }
 
 /// Split a `key:: value` property line. The key must look like an identifier
-/// so prose containing `::` (e.g. zorite links!) isn't mistaken for one.
+/// so prose containing `::` (e.g. Zorite links!) isn't mistaken for one.
 fn parse_prop(line: &str) -> Option<(&str, &str)> {
     let rest = line.trim_start();
     let idx = rest.find("::")?;
@@ -773,7 +773,7 @@ fn split_standalone_images(block: ConvBlock) -> Vec<ConvBlock> {
 
 // --- Rendering ---
 
-/// Render converted blocks as zorite markdown. With `flatten`, top-level
+/// Render converted blocks as Zorite markdown. With `flatten`, top-level
 /// blocks become paragraphs/headings and only nested blocks stay list items;
 /// otherwise everything is a list item at its depth. List indentation is two
 /// spaces per level; multi-line blocks keep their extra lines aligned under
@@ -834,7 +834,7 @@ fn render(blocks: &[ConvBlock], flatten: bool) -> String {
 
 // --- PDF-highlight pages ---
 
-/// Convert a Logseq `hls__*` page into zorite's `<name>.pdf (highlights)`
+/// Convert a Logseq `hls__*` page into Zorite's `<name>.pdf (highlights)`
 /// page. Returns `(title, content, pdf-copy)` or `None` when the source PDF
 /// can't be determined.
 fn convert_highlights(conv: &mut Converter, blocks: &[Block]) -> Option<(String, String)> {
@@ -897,7 +897,7 @@ fn convert_highlights(conv: &mut Converter, blocks: &[Block]) -> Option<(String,
     Some((title, lines.join("\n")))
 }
 
-/// Map a Logseq highlight color onto zorite's palette (yellow is the default
+/// Map a Logseq highlight color onto Zorite's palette (yellow is the default
 /// and is omitted from the stored line).
 fn map_color(logseq: &str) -> String {
     match logseq.to_ascii_lowercase().as_str() {

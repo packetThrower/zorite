@@ -51,7 +51,7 @@
     <string>NSApplication</string>
 
     <key>NSHumanReadableCopyright</key>
-    <string>© 2026 packetThrower / zorite contributors</string>
+    <string>© 2026 packetThrower / Zorite contributors</string>
 
     <!--
       Single-instance launch: a second activation (dock click, `open -a

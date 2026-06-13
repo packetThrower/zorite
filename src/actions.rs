@@ -107,11 +107,11 @@ pub fn set_app_menu(cx: &mut App) {
     use gpui_component::input;
     cx.set_menus([
         Menu {
-            name: "zorite".into(),
+            name: "Zorite".into(),
             items: vec![
                 MenuItem::action("Settings…", OpenSettings),
                 MenuItem::separator(),
-                MenuItem::action("Quit zorite", Quit),
+                MenuItem::action("Quit Zorite", Quit),
             ],
             disabled: false,
         },

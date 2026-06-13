@@ -93,7 +93,7 @@ const EMBED_H: f32 = 76.0;
 const IMAGE_PLACE_PX: f32 = 280.0;
 
 /// The board document: everything persisted for a whiteboard. Owned and
-/// (de)serialized here; the host stores [`Scene::to_json`] opaquely (for zorite,
+/// (de)serialized here; the host stores [`Scene::to_json`] opaquely (for Zorite,
 /// in the `content` column of a `kind = 'whiteboard'` page).
 ///
 /// Every field is `#[serde(default)]` so older boards keep loading as the model

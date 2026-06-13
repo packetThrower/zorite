@@ -1,7 +1,7 @@
 # Markdown coverage
 
 A reference document exercising everything `gpui-markdown` renders. Seed it into
-a zorite database (it's the `Markdown Test` page) to eyeball the renderer, or
+a Zorite database (it's the `Markdown Test` page) to eyeball the renderer, or
 read it as living documentation of supported syntax.
 
 ## Headings
@@ -27,8 +27,8 @@ continues on the next line.
 - External link: [GPUI](https://www.gpui.rs)
 - Autolink: <https://commonmark.org>
 - Reference-style link: [the CommonMark spec][cm]
-- Wiki-link (zorite): [[project]]
-- Tags (zorite): #markdown #test-page
+- Wiki-link (Zorite): [[project]]
+- Tags (Zorite): #markdown #test-page
 
 [cm]: https://commonmark.org
 
@@ -70,7 +70,7 @@ Inline: `cargo run`. A fenced block with a language:
 
 ```rust
 fn main() {
-    println!("hello, zorite");
+    println!("hello, Zorite");
 }
 ```
 

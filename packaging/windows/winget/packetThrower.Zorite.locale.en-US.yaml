@@ -16,7 +16,7 @@ PackageName: Zorite
 PackageUrl: https://github.com/packetThrower/zorite
 License: GPL-3.0-or-later
 LicenseUrl: https://github.com/packetThrower/zorite/blob/main/LICENSE
-Copyright: © 2026 packetThrower / zorite contributors
+Copyright: © 2026 packetThrower / Zorite contributors
 CopyrightUrl: https://github.com/packetThrower/zorite/blob/main/LICENSE
 ShortDescription: A local-first outliner and daily-journal note app (Logseq-style).
 Description: |-

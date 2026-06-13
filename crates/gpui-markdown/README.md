@@ -172,7 +172,7 @@ Every node `ParseOptions::gfm()` produces is rendered: headings, paragraphs,
 bold/italic/strikethrough/inline-code, links (inline, autolink, reference-style),
 images, ordered/unordered/nested/task lists, blockquotes (nested), fenced code,
 thematic breaks, tables (with alignment), footnotes (references + definitions), and
-raw HTML (shown literally). Plus zorite-style `[[wiki-links]]` and `#tags`.
+raw HTML (shown literally). Plus Zorite-style `[[wiki-links]]` and `#tags`.
 
 Not handled (not enabled by `gfm()`): math (`$x$`), frontmatter (YAML/TOML), and MDX.
 Footnote references render as `[label]` markers but are not click-to-jump (that would

@@ -1,4 +1,4 @@
-//! Where zorite keeps its data. One SQLite file under the platform's
+//! Where Zorite keeps its data. One SQLite file under the platform's
 //! per-user application-data directory, created on first run.
 
 use std::path::{Path, PathBuf};

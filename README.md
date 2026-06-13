@@ -1,4 +1,4 @@
-# zorite
+# Zorite
 
 A local-first, Logseq-style **daily journal** for the desktop — but with a
 **Word-like** typing experience rather than an outliner. Built in Rust with
@@ -101,7 +101,7 @@ the caret lands). Built-in markdown commands live in
 
 ## Themes
 
-zorite ships several built-in themes (Zorite, Nord, Solarized, Dracula, Tokyo
+Zorite ships several built-in themes (Zorite, Nord, Solarized, Dracula, Tokyo
 Night, Foundry, Cyberpunk, E-Ink), each with a light and dark variant (Cyberpunk
 is dark-only). Open **Settings** (the ⚙ in the
 title bar) to pick a theme and choose **Light / Dark / Auto** (Auto follows your
@@ -167,7 +167,7 @@ zorite/
 
 ## Performance
 
-zorite stays responsive with large note collections. The numbers below come from
+Zorite stays responsive with large note collections. The numbers below come from
 synthetic databases built by [`scripts/gen_perf_db.py`](scripts/gen_perf_db.py)
 — a 3-level `Area::Topic::Note` namespace tree with `[[wiki-links]]`, inline
 images, and a couple weeks of journal days. The `ZORITE_DB` environment variable

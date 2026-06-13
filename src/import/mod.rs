@@ -2,7 +2,7 @@
 //!
 //! Imports are two-phase: a **reader** for each source turns its files into a
 //! source-agnostic [`ImportBundle`] (pure filesystem + string work, no DB),
-//! and the **engine** here writes any bundle into zorite — one shared
+//! and the **engine** here writes any bundle into Zorite — one shared
 //! implementation of the collision policy (existing content stays, imported
 //! text appends below), `[[link]]`/`#tag` re-indexing, alias merging, and
 //! asset copying into the managed `images/`/`pdf/` stores.
@@ -39,9 +39,9 @@ pub struct ImportBundle {
 /// A named page to import.
 pub struct ImportPage {
     pub title: String,
-    /// zorite-flavored markdown.
+    /// Zorite-flavored markdown.
     pub content: String,
-    /// Extra names for the page, merged into zorite's alias table.
+    /// Extra names for the page, merged into Zorite's alias table.
     pub aliases: Vec<String>,
     /// A `<name>.pdf (highlights)` page (counted separately in the summary).
     pub is_highlights: bool,

@@ -140,7 +140,7 @@ callbacks + an `EventEmitter` for surrounding chrome + `release` /
 | Behavior out | `Rc<dyn Fn(…)>` typedefs | same, installed via setters; + `EventEmitter` |
 | GPU lifecycle | none | `release()` / `detach_textures()` — host must call |
 
-### 2. zorite host integration
+### 2. Zorite host integration
 
 The `Pdf` tab kind is a complete, recent worked example of every touch-point.
 `TabKind` is exhaustively matched in ~12 places, so the compiler enumerates the
@@ -260,7 +260,7 @@ rasterized snapshot when zoomed away from 1:1, swap in a real editor at 1:1
 | **6 — Scale & multi-window polish** | Viewport culling; the `release` / `detach_textures` texture discipline; cross-window tab tear-off; sidebar "Whiteboards" affordance. | A ~500-element board stays smooth; tear-off preserves state. |
 
 **Shippable v1 = Phases 0–2** ("a sketch layer that persists"). 3–4 is the real
-editor; 5–6 is the integration that makes it *zorite's* whiteboard rather than a
+editor; 5–6 is the integration that makes it *Zorite's* whiteboard rather than a
 generic canvas.
 
 ---

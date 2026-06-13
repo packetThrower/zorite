@@ -86,7 +86,7 @@ work, deferred.
 ## The real work is fidelity, not plumbing
 
 `to_html` handles standard markdown (headings, lists, tables, code, blockquotes,
-links) on day one. The effort is in zorite's **non-standard extensions**, applied
+links) on day one. The effort is in Zorite's **non-standard extensions**, applied
 *after* parsing in the GPUI renderer, which a faithful print must reproduce:
 
 - **`[[wiki-links]]` and `#tags`** — string-scanned post-parse
@@ -112,7 +112,7 @@ for images + mermaid + the wiki-link/tag extensions.
 
 - **The HTML path: no.** It's one compiled-in function call (`to_html`) + a CSS
   template + *app-specific* extension handling. The reusable core is trivial; the
-  rest is zorite-only. Keep it inline (a `src/print.rs` module).
+  rest is Zorite-only. Keep it inline (a `src/print.rs` module).
 
 - **The PDF path: yes, when built.** A pure markdown→PDF crate fills a genuine
   ecosystem gap (today everyone shells out to Chrome/weasyprint), and — unlike
@@ -126,7 +126,7 @@ for images + mermaid + the wiki-link/tag extensions.
   the screen renderer's builder methods
   ([gpui-markdown/src/lib.rs:258](../crates/gpui-markdown/src/lib.rs:258)). Same
   input (markdown + extension hooks), different output target (paper vs. screen).
-  zorite's quirks stay in the app; the pipeline stays publishable.
+  Zorite's quirks stay in the app; the pipeline stays publishable.
 
   Candidate generators (all GPL-compatible): `typst` (Apache-2.0, gorgeous
   output, large dep), `printpdf` / `genpdf` (MIT, lighter, manual layout).

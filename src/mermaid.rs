@@ -84,7 +84,7 @@ fn hex(color: Hsla) -> String {
     )
 }
 
-/// Build a `mermaid_rs_renderer::Theme` from zorite's current (thread-local) theme
+/// Build a `mermaid_rs_renderer::Theme` from Zorite's current (thread-local) theme
 /// palette, so a diagram matches whatever skin / light-dark mode is active. Call on
 /// the **main thread** (the palette is thread-local); the result is all `String`, so
 /// it's `Send` and crosses into the off-thread render.
