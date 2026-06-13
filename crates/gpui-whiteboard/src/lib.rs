@@ -323,19 +323,35 @@ impl Tool {
         }
     }
 
-    /// A human label for the tooltip (the toolbar is icon-only).
+    /// A human label for the tooltip (the toolbar is icon-only), with the
+    /// keyboard shortcut where one exists (see [`shortcut`](Tool::shortcut)).
     fn label(self) -> &'static str {
         match self {
-            Tool::Pan => "Pan — drag to move the canvas",
-            Tool::Select => "Select",
-            Tool::Pen => "Pen",
-            Tool::Rect => "Rectangle",
-            Tool::Ellipse => "Ellipse",
-            Tool::Line => "Line",
-            Tool::Arrow => "Arrow",
-            Tool::Text => "Text",
+            Tool::Pan => "Pan — drag to move (H)",
+            Tool::Select => "Select (V)",
+            Tool::Pen => "Pen (P)",
+            Tool::Rect => "Rectangle (R)",
+            Tool::Ellipse => "Ellipse (O)",
+            Tool::Line => "Line (L)",
+            Tool::Arrow => "Arrow (A)",
+            Tool::Text => "Text (T)",
             Tool::Embed => "Page card",
         }
+    }
+
+    /// The single-key shortcut that selects this tool, if any.
+    fn shortcut(key: &str) -> Option<Tool> {
+        Some(match key {
+            "h" => Tool::Pan,
+            "v" => Tool::Select,
+            "p" => Tool::Pen,
+            "r" => Tool::Rect,
+            "o" => Tool::Ellipse,
+            "l" => Tool::Line,
+            "a" => Tool::Arrow,
+            "t" => Tool::Text,
+            _ => return None,
+        })
     }
 
     /// The bundled SVG icon for this tool as `(cache-key, bytes)`, or `None` to
@@ -1225,6 +1241,10 @@ impl WhiteboardView {
             return;
         }
 
+        // Take keyboard focus so the board's shortcuts (tool keys, ⌫, ⌘Z…) work
+        // after a click on the canvas.
+        self.focus.focus(window, cx);
+
         let p = self.event_to_world(ev.position);
         let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
 
@@ -1815,6 +1835,44 @@ impl WhiteboardView {
         self.flush(window, cx);
     }
 
+    /// Handle a board keyboard shortcut (the board has focus and isn't editing
+    /// text). Returns whether the key was consumed. Single letters pick a tool;
+    /// ⌫/Del clears the selection's elements; ⌘Z / ⌘⇧Z undo / redo; Esc
+    /// deselects. Other modified chords (⌘W, …) pass through to the host.
+    fn handle_shortcut(
+        &mut self,
+        ev: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let ks = &ev.keystroke;
+        let cmd = ks.modifiers.platform || ks.modifiers.control;
+        if cmd && ks.key == "z" {
+            if ks.modifiers.shift {
+                self.redo(window, cx);
+            } else {
+                self.undo(window, cx);
+            }
+            return true;
+        }
+        if cmd || ks.modifiers.alt {
+            return false;
+        }
+        if let Some(tool) = Tool::shortcut(&ks.key) {
+            self.set_tool(tool, cx);
+            return true;
+        }
+        match ks.key.as_str() {
+            "backspace" | "delete" => self.delete_selected(window, cx),
+            "escape" if !self.selected.is_empty() => {
+                self.selected.clear();
+                cx.notify();
+            }
+            _ => return false,
+        }
+        true
+    }
+
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         // Escape closes an open color picker (when the board holds focus).
         if self.picker.is_some() && ev.keystroke.key == "escape" {
@@ -1822,8 +1880,11 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
+        // Not editing text → keys are board shortcuts (tools, delete, undo/redo).
         let Some(id) = self.editing else {
-            cx.propagate();
+            if !self.handle_shortcut(ev, window, cx) {
+                cx.propagate();
+            }
             return;
         };
         let ks = &ev.keystroke;
@@ -2928,17 +2989,17 @@ impl Render for WhiteboardView {
                     .child(div().w(px(7.0)))
                     .child(
                         act(0, "wb-icon-undo", UNDO_ICON)
-                            .tooltip(self.tip("Undo"))
+                            .tooltip(self.tip("Undo (⌘Z)"))
                             .on_click(cx.listener(|this, _ev, window, cx| this.undo(window, cx))),
                     )
                     .child(
                         act(1, "wb-icon-redo", REDO_ICON)
-                            .tooltip(self.tip("Redo"))
+                            .tooltip(self.tip("Redo (⌘⇧Z)"))
                             .on_click(cx.listener(|this, _ev, window, cx| this.redo(window, cx))),
                     )
                     .child(
                         act(2, "wb-icon-delete", DELETE_ICON)
-                            .tooltip(self.tip("Delete selection"))
+                            .tooltip(self.tip("Delete selection (⌫)"))
                             .on_click(cx.listener(|this, _ev, window, cx| {
                                 this.delete_selected(window, cx)
                             })),
