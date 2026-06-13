@@ -50,11 +50,24 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
     let fav_pages: Vec<&Page> = app
         .favorites
         .iter()
-        .filter_map(|id| app.pages.iter().find(|p| p.id == *id))
+        .filter_map(|id| {
+            // A favorite can be a page or a whiteboard, so search both lists.
+            app.pages
+                .iter()
+                .chain(app.whiteboards.iter())
+                .find(|p| p.id == *id)
+        })
         .collect();
     let mut fav_rows: Vec<AnyElement> = Vec::with_capacity(fav_pages.len());
     for page in fav_pages {
         fav_rows.push(favorite_row(page, app, window, cx));
+    }
+
+    // Whiteboards: every board, shown flat (a distinct surface from the notes
+    // tree). Always-present header carries a `+` to create a new board.
+    let mut wb_rows: Vec<AnyElement> = Vec::with_capacity(app.whiteboards.len());
+    for page in &app.whiteboards {
+        wb_rows.push(whiteboard_row(page, app, window, cx));
     }
 
     div()
@@ -128,6 +141,29 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                         .when(!fav_rows.is_empty(), |this| {
                             this.child(section_label("Favorites")).children(fav_rows)
                         })
+                        .child(
+                            // Whiteboards header — a section label with a trailing
+                            // `+` that creates a new board.
+                            div()
+                                .px_2()
+                                .pt_4()
+                                .pb_1()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap_2()
+                                .child(
+                                    div()
+                                        .flex_shrink_0()
+                                        .text_size(px(11.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(theme::accent())
+                                        .child("WHITEBOARDS"),
+                                )
+                                .child(div().flex_1().h(px(1.0)).bg(theme::divider()))
+                                .child(new_whiteboard_icon(cx)),
+                        )
+                        .children(wb_rows)
                         .child(section_label("Recent"))
                         .when(no_pages, |this| {
                             this.child(empty_hint(if app.pages.is_empty() {
@@ -395,7 +431,9 @@ fn favorite_row(
     let title: SharedString = page.title.clone().into();
     let pad_left = row_indent(0) + CHEVRON_W;
     let truncated = label_overflows(&title, pad_left, window);
-    let click_path = page.title.clone();
+    // Open by id so a favorited whiteboard routes to the canvas (opening by
+    // title would hit `get_or_create_page` and mis-open / duplicate it).
+    let id = page.id;
     let mut row = base_row(
         SharedString::from(format!("fav:{}", page.id)),
         &title,
@@ -404,7 +442,7 @@ fn favorite_row(
     )
     .on_click(
         cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-            this.open_page_title(&click_path, window, cx);
+            this.open_page_id(id, window, cx);
         }),
     );
     if truncated {
@@ -412,6 +450,46 @@ fn favorite_row(
         row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
     }
     with_page_menu(row, page.id, title, true, cx)
+}
+
+/// A "Whiteboards" section row: a board shown by its full title, opened by id
+/// (so it routes to the canvas viewer, not the markdown editor), with the same
+/// right-click menu (rename / delete / favorite) as page rows.
+fn whiteboard_row(
+    page: &Page,
+    app: &AppView,
+    window: &mut Window,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
+    let title: SharedString = page.title.clone().into();
+    let pad_left = row_indent(0) + CHEVRON_W;
+    let truncated = label_overflows(&title, pad_left, window);
+    let id = page.id;
+    let mut row = base_row(
+        SharedString::from(format!("wb:{}", page.id)),
+        &title,
+        app.is_page_active(page.id),
+        pad_left,
+    )
+    .on_click(
+        cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+            this.open_page_id(id, window, cx);
+        }),
+    );
+    if truncated {
+        let full = title.clone();
+        row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+    }
+    with_page_menu(row, page.id, title, app.is_favorite(page.id), cx)
+}
+
+/// The `+` in the Whiteboards section header — creates a new board.
+fn new_whiteboard_icon(cx: &mut Context<AppView>) -> impl IntoElement {
+    icon_btn("new-whiteboard", IconName::Plus).on_click(cx.listener(
+        |this: &mut AppView, _: &ClickEvent, window, cx| {
+            this.new_whiteboard(window, cx);
+        },
+    ))
 }
 
 /// Shared styling for a clickable sidebar page row (the caller chains `on_click`,

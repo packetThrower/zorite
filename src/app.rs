@@ -306,6 +306,9 @@ pub struct AppView {
 
     // Sidebar.
     pub pages: Vec<Page>,
+    /// Whiteboards for the sidebar's "Whiteboards" section (titles only; content
+    /// not loaded). Refreshed alongside `pages`.
+    pub whiteboards: Vec<Page>,
     pub new_page_input: Entity<InputState>,
     pub search_input: Entity<InputState>,
     /// Jump-to-date calendar (opened from the sidebar calendar icon); picking
@@ -509,6 +512,7 @@ impl AppView {
             feed_scroll: ScrollHandle::new(),
             page_editor: None,
             pages: Vec::new(),
+            whiteboards: Vec::new(),
             new_page_input,
             search_input,
             calendar,
@@ -1364,6 +1368,7 @@ impl AppView {
 
     fn refresh_sidebar(&mut self) {
         self.pages = self.db.list_pages().unwrap_or_default();
+        self.whiteboards = self.db.list_whiteboards().unwrap_or_default();
         self.templates = self
             .db
             .get_page_by_title(slash::TEMPLATES_PAGE)
@@ -2093,11 +2098,16 @@ impl AppView {
         cx.notify();
     }
 
-    /// Create (or reuse) a whiteboard and open it. Phase 0 uses a single
-    /// well-known board name; naming + a sidebar listing come in a later phase.
+    /// Create a new, distinct whiteboard ("Untitled Whiteboard", suffixed if
+    /// taken) and open it. Refreshes the sidebar so the new board shows in the
+    /// "Whiteboards" section right away.
     pub fn new_whiteboard(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.db.get_or_create_whiteboard("Whiteboard") {
-            Ok(page) => self.open_whiteboard(page.id, window, cx),
+        match self.db.create_whiteboard() {
+            Ok(page) => {
+                self.open_whiteboard(page.id, window, cx);
+                self.refresh_sidebar();
+                cx.notify();
+            }
             Err(e) => log::error!("new whiteboard: {e}"),
         }
     }

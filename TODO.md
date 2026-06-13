@@ -27,7 +27,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Sidebar: a "show all pages" affordance (browse the full tree, not just recent)
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 - [ ] **Whiteboards** — a freeform spatial canvas (Logseq-style): drop pages/notes and sketch shapes, arrows, and freehand drawings on an infinite, pannable/zoomable board, linkable to pages. A distinct surface from the text journal. Build it as a reusable, host-agnostic **`gpui-whiteboard`** crate (like `gpui-markdown` / `gpui-pdf`). Design: [docs/whiteboard-architecture.md](docs/whiteboard-architecture.md). Follow-ups:
-  - [ ] **Pan mode** — a dedicated pan tool with a hand icon; make it the default tool (Pen is the default today, and panning is middle-drag only)
+  - [x] **Pan mode** — a dedicated pan tool (✋) that's the default tool; left-drag pans with a grab cursor (double-click recenters, middle-drag still pans)
   - [ ] **Multiple page management** — currently only one board/page; there's no way to create a new one
   - [ ] **Keyboard shortcuts** — for tools and actions (select / pen / shapes / text, delete, undo-redo, zoom, …)
   - [ ] **Toolbar tooltips** — label each tool and action button on hover

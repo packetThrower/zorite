@@ -314,24 +314,19 @@ impl Db {
         })
     }
 
-    /// A whiteboard page by title (case-insensitive), creating it if absent. A
-    /// whiteboard stores its canvas as JSON in `content` and is distinguished by
-    /// `kind = 'whiteboard'`, so it stays out of the page sidebar
-    /// ([`list_pages`](Self::list_pages)) and full-text search. The returned
-    /// page's `content` is the stored canvas JSON (empty `{}` for a new board).
-    pub fn get_or_create_whiteboard(&self, title: &str) -> rusqlite::Result<Page> {
-        let title = title.trim();
-        if let Some(page) = self
-            .conn
-            .query_row(
-                "SELECT id, title, is_journal, journal_date, content \
-                 FROM pages WHERE title = ?1 COLLATE NOCASE AND kind = 'whiteboard'",
-                params![title],
-                row_to_page,
-            )
-            .optional()?
-        {
-            return Ok(page);
+    /// Create a brand-new, empty whiteboard with a unique "Untitled Whiteboard"
+    /// title (suffixed `2`, `3`, … if taken) — so the user can keep many
+    /// distinct boards. A whiteboard is a `kind = 'whiteboard'` page storing its
+    /// canvas JSON in `content` (empty `{}` for a new board); it stays out of the
+    /// page tree ([`list_pages`](Self::list_pages)) and full-text search but is
+    /// listed by [`list_whiteboards`](Self::list_whiteboards) for the sidebar.
+    pub fn create_whiteboard(&self) -> rusqlite::Result<Page> {
+        let base = "Untitled Whiteboard";
+        let mut title = base.to_string();
+        let mut n = 2;
+        while self.get_page_by_title(&title)?.is_some() {
+            title = format!("{base} {n}");
+            n += 1;
         }
         self.conn.execute(
             "INSERT INTO pages (title, is_journal, kind, content) VALUES (?1, 0, 'whiteboard', '{}')",
@@ -339,11 +334,32 @@ impl Db {
         )?;
         Ok(Page {
             id: self.conn.last_insert_rowid(),
-            title: title.to_string(),
+            title,
             is_journal: false,
             journal_date: None,
             content: "{}".to_string(),
         })
+    }
+
+    /// Every whiteboard, most-recently-updated first, for the sidebar's
+    /// "Whiteboards" section. Content is not loaded (like [`list_pages`]).
+    ///
+    /// [`list_pages`]: Self::list_pages
+    pub fn list_whiteboards(&self) -> rusqlite::Result<Vec<Page>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, is_journal, journal_date FROM pages \
+             WHERE kind = 'whiteboard' ORDER BY updated_at DESC, id DESC",
+        )?;
+        stmt.query_map([], |row| {
+            Ok(Page {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                is_journal: row.get::<_, i64>(2)? != 0,
+                journal_date: row.get(3)?,
+                content: String::new(),
+            })
+        })?
+        .collect()
     }
 
     pub fn get_page(&self, id: i64) -> rusqlite::Result<Option<Page>> {
@@ -910,7 +926,7 @@ mod tests {
     #[test]
     fn whiteboard_cards_link_and_show_as_backlinks() {
         let db = Db::open_in_memory().unwrap();
-        let board = db.get_or_create_whiteboard("Board").unwrap();
+        let board = db.create_whiteboard().unwrap();
         let page = db.get_or_create_page("Target").unwrap();
         assert!(db.is_whiteboard(board.id));
         assert!(!db.is_whiteboard(page.id));
@@ -927,15 +943,21 @@ mod tests {
     }
 
     #[test]
-    fn whiteboards_are_pages_kept_out_of_sidebar_and_search() {
+    fn whiteboards_are_distinct_listed_and_kept_out_of_the_page_tree_and_search() {
         let db = Db::open_in_memory().unwrap();
-        // A new board carries an empty-scene placeholder in its content column.
-        let a = db.get_or_create_whiteboard("Design Board").unwrap();
+        // Each create makes a brand-new board with an auto, unique title and an
+        // empty-scene placeholder in its content column.
+        let a = db.create_whiteboard().unwrap();
         assert_eq!(a.content, "{}");
-        // Reuse is by title, case-insensitively — no duplicate row.
-        let b = db.get_or_create_whiteboard("design board").unwrap();
-        assert_eq!(a.id, b.id);
-        // A board is NOT listed as a page, so it never shows in the sidebar tree.
+        let b = db.create_whiteboard().unwrap();
+        assert_ne!(a.id, b.id, "each board is distinct");
+        assert_ne!(a.title, b.title, "auto-titles are deduped");
+        // Boards show in the Whiteboards section, not the page tree/sidebar tree.
+        let wb = db.list_whiteboards().unwrap();
+        assert!(
+            wb.iter().any(|p| p.id == a.id) && wb.iter().any(|p| p.id == b.id),
+            "both boards should be listed"
+        );
         assert!(
             db.list_pages().unwrap().iter().all(|p| p.id != a.id),
             "whiteboard leaked into the page list"
