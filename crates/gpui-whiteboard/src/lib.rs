@@ -1,29 +1,26 @@
 //! An infinite, pannable/zoomable whiteboard canvas for GPUI.
 //!
-//! Host-agnostic — depends only on `gpui` + `serde`. Modeled on the
-//! `gpui-pdf` stateful-entity pattern: the host builds a [`WhiteboardView`]
-//! from a [`Scene`], stores the entity, and renders it in a tab. This crate
-//! owns the scene model and its (de)serialization; the host owns persistence,
-//! theme, and navigation.
+//! Host-agnostic — depends only on `gpui`, `serde`, and `ttf-parser` (no
+//! `gpui-component`, no native libraries). Two layers: a serializable scene model
+//! ([`Scene`] / [`Element`]) the host persists as opaque JSON, and a
+//! [`WhiteboardView`] entity that renders the board *and* its editing UI (toolbar,
+//! color picker, flyouts, templates gallery, context menu) and drives all
+//! interaction. The host supplies a theme ([`WhiteboardStyle`]) and optional
+//! callbacks (persist on change, open a page, fetch an image bitmap, read/write the
+//! clipboard, store templates); with none installed it's still a working board.
 //!
-//! **Phase 6** (this version): **page-card embeds** — a card tool (▤) drops a
-//! titled card that links to a host page (the page-agnostic crate gets the id +
-//! title via callbacks and delegates picking/opening to the host). Double-click
-//! opens the page; the host indexes a board's cards as links so each page's
-//! backlinks show the board. This version also adds **marquee + multi-select**
-//! (drag a box / shift-click to pick several; move or delete the group) and
-//! **rotation** — a round grip above a single selection spins shapes, lines,
-//! strokes, and text. Text is drawn as **vector outlines** (the `font` module,
-//! via `ttf-parser`) rather than gpui overlay glyphs, so it rotates + scales
-//! with the camera and a host can supply a custom face; page-cards remain
-//! un-rotatable overlays. Earlier phases: pan/zoom + grid, freehand pen,
-//! rect/ellipse/line/arrow, text, and a full select / move / resize / delete /
-//! undo editor — see `docs/whiteboard-architecture.md` in the host repo.
+//! Elements: freehand pen, rect / ellipse / diamond / triangle / rounded-rect /
+//! hexagon / star, line, arrow, text, images, and page-cards — sharing one select /
+//! move / resize / rotate / fill / z-order machinery, plus copy-paste, templates,
+//! and undo/redo. Text renders as **vector outlines** (the `font` module, via
+//! `ttf-parser`) rather than gpui overlay glyphs, so it rotates + scales with the
+//! camera and a host can supply a custom face ([`Font`]). See `README.md` for the
+//! full API and usage; design notes in `docs/whiteboard-architecture.md`.
 //!
 //! Perf note: elements are re-tessellated each paint (as GPUI's own
-//! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is
-//! the planned optimization once boards get large (Phase 6) — deferred so we
-//! don't build it before there's something to measure.
+//! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is the
+//! planned optimization once boards get large — deferred so we don't build it
+//! before there's something to measure.
 
 mod font;
 
@@ -565,7 +562,7 @@ pub struct WhiteboardStyle {
     /// Toolbar / flyout panel background — small pills, so it can be quite glassy.
     pub panel: Hsla,
     /// Background for the larger color-picker panel. Wants to stay readable over
-    /// a busy canvas, so it should be much more opaque than [`panel`].
+    /// a busy canvas, so it should be much more opaque than `panel`.
     pub panel_strong: Hsla,
     /// Active-tool highlight (a subtle fill behind the current tool button).
     pub accent: Hsla,
@@ -605,8 +602,9 @@ pub type DeleteTemplateFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 pub type CopyFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
 
 /// Called by the context-menu **Paste**: the host reads the clipboard and returns
-/// previously copied whiteboard elements (the JSON from [`WhiteboardView::selection_json`]),
-/// or `None` if it holds no board elements. (Keyboard ⌘V is handled host-side.)
+/// previously copied whiteboard elements (the JSON a [`CopyFn`] wrote — same format
+/// as [`SaveTemplateFn`]), or `None` if it holds no board elements. Pass the JSON to
+/// [`WhiteboardView::paste_elements`]. (Keyboard ⌘V is handled internally.)
 pub type PasteFn = Rc<dyn Fn(&mut Window, &mut App) -> Option<String>>;
 
 /// Called each render to fetch the decoded bitmap for an image element's `src`,
@@ -637,8 +635,8 @@ pub struct Template {
 
 impl Template {
     /// Build from the host's stored row. `elements_json` is a serialized
-    /// `Vec<Element>` (see [`WhiteboardView::selection_as_template_json`]);
-    /// malformed JSON yields an empty (still-listable) template.
+    /// `Vec<Element>` (the JSON a [`SaveTemplateFn`] handed the host); malformed
+    /// JSON yields an empty (still-listable) template.
     pub fn from_json(id: i64, name: impl Into<String>, elements_json: &str) -> Self {
         Template {
             id,
@@ -1010,9 +1008,9 @@ impl WhiteboardView {
     }
 
     /// Add an image element referencing `src`, centered at world `(cx_world,
-    /// cy_world)` and sized from its pixel dimensions so the longest edge is
-    /// ~[`IMAGE_PLACE_PX`] on screen (aspect preserved). Like [`add_embed`], the
-    /// host persists afterward (this is called mid-host-update).
+    /// cy_world)` and sized from its pixel dimensions (`px_w`/`px_h`) so the longest
+    /// edge gets a sensible default on-screen size (aspect preserved). Like
+    /// [`add_embed`], the host persists afterward (this is called mid-host-update).
     ///
     /// [`add_embed`]: Self::add_embed
     pub fn add_image_at(
@@ -1350,10 +1348,10 @@ impl WhiteboardView {
         true
     }
 
-    /// Paste elements previously serialized by [`Self::selection_json`] (centered
-    /// in the viewport, selected, fresh ids). Ignores invalid JSON. The host calls
-    /// this for ⌘V when the clipboard holds whiteboard elements rather than an
-    /// image.
+    /// Paste a serialized `Vec<Element>` (the JSON a [`CopyFn`] wrote) onto the
+    /// board — centered in the viewport, selected, with fresh ids. Ignores invalid
+    /// JSON. The host calls this from its [`PasteFn`] when the clipboard holds
+    /// whiteboard elements rather than an image.
     pub fn paste_elements(&mut self, json: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Ok(elems) = serde_json::from_str::<Vec<Element>>(json) {
             self.stamp_elements(&elems, window, cx);
