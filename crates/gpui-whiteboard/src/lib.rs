@@ -3615,8 +3615,13 @@ impl Render for WhiteboardView {
                 .text_size(px(15.0))
                 .text_color(ink)
                 .child(icon);
+            // The hover tint also makes gpui repaint on hover transitions, which
+            // is what lets a tooltip dismiss when the cursor leaves the button
+            // (the canvas doesn't repaint on a bare mouse-move otherwise).
             if t == active {
                 b = b.bg(accent);
+            } else {
+                b = b.hover(|s| s.bg(grid));
             }
             b
         };
@@ -3648,6 +3653,8 @@ impl Render for WhiteboardView {
                 .child(div().text_size(px(8.0)).text_color(text).child("▾"));
             if open_group == Some(g) || g.contains(active) {
                 b = b.bg(accent);
+            } else {
+                b = b.hover(|s| s.bg(grid));
             }
             b
         };
@@ -3686,6 +3693,7 @@ impl Render for WhiteboardView {
                 .items_center()
                 .justify_center()
                 .rounded(px(6.0))
+                .hover(|s| s.bg(grid))
                 .child(svg_icon(key, bytes, ink, 16.0))
         };
         // Color button: a swatch of the current ink that toggles the picker.
@@ -3699,6 +3707,8 @@ impl Render for WhiteboardView {
             .rounded(px(6.0));
         if self.picker.is_some() {
             color_btn = color_btn.bg(accent);
+        } else {
+            color_btn = color_btn.hover(|s| s.bg(grid));
         }
         let color_btn = color_btn
             .child(
@@ -3727,6 +3737,8 @@ impl Render for WhiteboardView {
             .child(svg_icon("wb-icon-templates", TEMPLATES_ICON, ink, 16.0));
         if self.templates_open {
             templates_btn = templates_btn.bg(accent);
+        } else {
+            templates_btn = templates_btn.hover(|s| s.bg(grid));
         }
         let templates_btn = templates_btn
             .tooltip(self.tip("Templates"))
