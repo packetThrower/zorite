@@ -153,6 +153,11 @@ pub enum ElementKind {
     Draw(Stroke),
     Rect(BoxGeom),
     Ellipse(BoxGeom),
+    Diamond(BoxGeom),
+    Triangle(BoxGeom),
+    RoundRect(BoxGeom),
+    Star(BoxGeom),
+    Hexagon(BoxGeom),
     Line(SegGeom),
     Arrow(SegGeom),
     Text(TextGeom),
@@ -286,6 +291,11 @@ pub enum Tool {
     Pen,
     Rect,
     Ellipse,
+    Diamond,
+    Triangle,
+    RoundRect,
+    Star,
+    Hexagon,
     Line,
     Arrow,
     Text,
@@ -304,6 +314,11 @@ impl Tool {
             Tool::Pen => "✎",
             Tool::Rect => "▭",
             Tool::Ellipse => "◯",
+            Tool::Diamond => "◇",
+            Tool::Triangle => "△",
+            Tool::RoundRect => "▢",
+            Tool::Star => "☆",
+            Tool::Hexagon => "⬡",
             Tool::Line => "╱",
             Tool::Arrow => "↗",
             Tool::Text => "T",
@@ -320,6 +335,11 @@ impl Tool {
             Tool::Pen => "Pen (P)",
             Tool::Rect => "Rectangle (R)",
             Tool::Ellipse => "Ellipse (O)",
+            Tool::Diamond => "Diamond (D)",
+            Tool::Triangle => "Triangle (G)",
+            Tool::RoundRect => "Rounded rectangle (U)",
+            Tool::Star => "Star (S)",
+            Tool::Hexagon => "Hexagon (X)",
             Tool::Line => "Line (L)",
             Tool::Arrow => "Arrow (A)",
             Tool::Text => "Text (T)",
@@ -335,6 +355,11 @@ impl Tool {
             "p" => Tool::Pen,
             "r" => Tool::Rect,
             "o" => Tool::Ellipse,
+            "d" => Tool::Diamond,
+            "g" => Tool::Triangle,
+            "u" => Tool::RoundRect,
+            "s" => Tool::Star,
+            "x" => Tool::Hexagon,
             "l" => Tool::Line,
             "a" => Tool::Arrow,
             "t" => Tool::Text,
@@ -354,6 +379,11 @@ impl Tool {
         const PEN: &[u8] = include_bytes!("../assets/icons/pen.svg");
         const RECT: &[u8] = include_bytes!("../assets/icons/rect.svg");
         const ELLIPSE: &[u8] = include_bytes!("../assets/icons/ellipse.svg");
+        const DIAMOND: &[u8] = include_bytes!("../assets/icons/diamond.svg");
+        const TRIANGLE: &[u8] = include_bytes!("../assets/icons/triangle.svg");
+        const ROUND_RECT: &[u8] = include_bytes!("../assets/icons/round-rect.svg");
+        const STAR: &[u8] = include_bytes!("../assets/icons/star.svg");
+        const HEXAGON: &[u8] = include_bytes!("../assets/icons/hexagon.svg");
         const LINE: &[u8] = include_bytes!("../assets/icons/line.svg");
         const ARROW: &[u8] = include_bytes!("../assets/icons/arrow.svg");
         const TEXT: &[u8] = include_bytes!("../assets/icons/text.svg");
@@ -364,6 +394,11 @@ impl Tool {
             Tool::Pen => Some(("wb-icon-pen", PEN)),
             Tool::Rect => Some(("wb-icon-rect", RECT)),
             Tool::Ellipse => Some(("wb-icon-ellipse", ELLIPSE)),
+            Tool::Diamond => Some(("wb-icon-diamond", DIAMOND)),
+            Tool::Triangle => Some(("wb-icon-triangle", TRIANGLE)),
+            Tool::RoundRect => Some(("wb-icon-round-rect", ROUND_RECT)),
+            Tool::Star => Some(("wb-icon-star", STAR)),
+            Tool::Hexagon => Some(("wb-icon-hexagon", HEXAGON)),
             Tool::Line => Some(("wb-icon-line", LINE)),
             Tool::Arrow => Some(("wb-icon-arrow", ARROW)),
             Tool::Text => Some(("wb-icon-text", TEXT)),
@@ -392,7 +427,12 @@ impl ToolGroup {
             ToolGroup::ShapesText => &[
                 Tool::Pen,
                 Tool::Rect,
+                Tool::RoundRect,
                 Tool::Ellipse,
+                Tool::Diamond,
+                Tool::Triangle,
+                Tool::Hexagon,
+                Tool::Star,
                 Tool::Line,
                 Tool::Arrow,
                 Tool::Text,
@@ -1036,7 +1076,7 @@ impl WhiteboardView {
                     PickerTarget::Stroke => e.stroke = color,
                     // Fill only attaches to closed shapes — never lines/strokes.
                     PickerTarget::Fill => {
-                        if matches!(e.kind, ElementKind::Rect(_) | ElementKind::Ellipse(_)) {
+                        if is_closed_shape(&e.kind) {
                             e.fill = color;
                         }
                     }
@@ -1486,27 +1526,27 @@ impl WhiteboardView {
         }
 
         let width = NIB / zoom;
+        // A zero-size box anchored at the press; the move handler grows it.
+        let box0 = BoxGeom {
+            x: p[0],
+            y: p[1],
+            w: 0.0,
+            h: 0.0,
+            width,
+            rotation: 0.0,
+        };
         let kind = match self.tool {
             Tool::Pen => ElementKind::Draw(Stroke {
                 points: vec![p],
                 width,
             }),
-            Tool::Rect => ElementKind::Rect(BoxGeom {
-                x: p[0],
-                y: p[1],
-                w: 0.0,
-                h: 0.0,
-                width,
-                rotation: 0.0,
-            }),
-            Tool::Ellipse => ElementKind::Ellipse(BoxGeom {
-                x: p[0],
-                y: p[1],
-                w: 0.0,
-                h: 0.0,
-                width,
-                rotation: 0.0,
-            }),
+            Tool::Rect => ElementKind::Rect(box0),
+            Tool::Ellipse => ElementKind::Ellipse(box0),
+            Tool::Diamond => ElementKind::Diamond(box0),
+            Tool::Triangle => ElementKind::Triangle(box0),
+            Tool::RoundRect => ElementKind::RoundRect(box0),
+            Tool::Star => ElementKind::Star(box0),
+            Tool::Hexagon => ElementKind::Hexagon(box0),
             Tool::Line => ElementKind::Line(SegGeom {
                 x1: p[0],
                 y1: p[1],
@@ -1580,8 +1620,7 @@ impl WhiteboardView {
                 let id = self.next_id;
                 self.next_id += 1;
                 // Fill applies only to closed shapes.
-                let fill = if matches!(pending.kind, ElementKind::Rect(_) | ElementKind::Ellipse(_))
-                {
+                let fill = if is_closed_shape(&pending.kind) {
                     self.active_fill
                 } else {
                     None
@@ -1835,7 +1874,13 @@ impl WhiteboardView {
                     }
                     s.points.push(cur);
                 }
-                ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+                ElementKind::Rect(b)
+                | ElementKind::Ellipse(b)
+                | ElementKind::Diamond(b)
+                | ElementKind::Triangle(b)
+                | ElementKind::RoundRect(b)
+                | ElementKind::Star(b)
+                | ElementKind::Hexagon(b) => {
                     b.x = anchor[0].min(cur[0]);
                     b.y = anchor[1].min(cur[1]);
                     b.w = (cur[0] - anchor[0]).abs();
@@ -1985,7 +2030,13 @@ impl WhiteboardView {
 fn committable(kind: &ElementKind) -> bool {
     match kind {
         ElementKind::Draw(s) => s.points.len() >= 2,
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => b.w > 1.0 || b.h > 1.0,
+        ElementKind::Rect(b)
+        | ElementKind::Ellipse(b)
+        | ElementKind::Diamond(b)
+        | ElementKind::Triangle(b)
+        | ElementKind::RoundRect(b)
+        | ElementKind::Star(b)
+        | ElementKind::Hexagon(b) => b.w > 1.0 || b.h > 1.0,
         ElementKind::Line(s) | ElementKind::Arrow(s) => {
             let (dx, dy) = (s.x2 - s.x1, s.y2 - s.y1);
             dx * dx + dy * dy > 4.0
@@ -1993,6 +2044,22 @@ fn committable(kind: &ElementKind) -> bool {
         // Text and cards are created on click (not via a drag), never pending.
         ElementKind::Text(_) | ElementKind::Embed(_) => false,
     }
+}
+
+/// A closed shape whose interior can take a fill — every box-like polygon
+/// (rect / rounded-rect / ellipse / diamond / triangle / hexagon / star), but
+/// not open kinds (pen / line / arrow / text / card).
+fn is_closed_shape(kind: &ElementKind) -> bool {
+    matches!(
+        kind,
+        ElementKind::Rect(_)
+            | ElementKind::Ellipse(_)
+            | ElementKind::Diamond(_)
+            | ElementKind::Triangle(_)
+            | ElementKind::RoundRect(_)
+            | ElementKind::Star(_)
+            | ElementKind::Hexagon(_)
+    )
 }
 
 // --- color ----------------------------------------------------------------
@@ -2093,7 +2160,13 @@ fn rotate_pt(x: f32, y: f32, cx: f32, cy: f32, a: f32) -> (f32, f32) {
 /// other kinds. Lets the rotation/selection/resize code treat all three alike.
 fn box_like(kind: &ElementKind) -> Option<(f32, f32, f32, f32, f32)> {
     match kind {
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => Some((b.x, b.y, b.w, b.h, b.rotation)),
+        ElementKind::Rect(b)
+        | ElementKind::Ellipse(b)
+        | ElementKind::Diamond(b)
+        | ElementKind::Triangle(b)
+        | ElementKind::RoundRect(b)
+        | ElementKind::Star(b)
+        | ElementKind::Hexagon(b) => Some((b.x, b.y, b.w, b.h, b.rotation)),
         ElementKind::Text(t) => {
             let (w, h) = text_extent(t);
             Some((t.x, t.y, w, h, t.rotation))
@@ -2158,7 +2231,13 @@ fn snap_angle(abs: f32, shift: bool) -> f32 {
 /// (which have no meaningful single orientation).
 fn reference_angle(kind: &ElementKind) -> Option<f32> {
     match kind {
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => Some(b.rotation),
+        ElementKind::Rect(b)
+        | ElementKind::Ellipse(b)
+        | ElementKind::Diamond(b)
+        | ElementKind::Triangle(b)
+        | ElementKind::RoundRect(b)
+        | ElementKind::Star(b)
+        | ElementKind::Hexagon(b) => Some(b.rotation),
         ElementKind::Text(t) => Some(t.rotation),
         ElementKind::Line(s) | ElementKind::Arrow(s) => Some((s.y2 - s.y1).atan2(s.x2 - s.x1)),
         ElementKind::Draw(_) | ElementKind::Embed(_) => None,
@@ -2179,7 +2258,13 @@ fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
         (nx - w / 2.0, ny - h / 2.0)
     };
     match kind {
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+        ElementKind::Rect(b)
+        | ElementKind::Ellipse(b)
+        | ElementKind::Diamond(b)
+        | ElementKind::Triangle(b)
+        | ElementKind::RoundRect(b)
+        | ElementKind::Star(b)
+        | ElementKind::Hexagon(b) => {
             (b.x, b.y) = orbit(b.x, b.y, b.w, b.h);
             b.rotation += delta;
         }
@@ -2240,8 +2325,15 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
             s.y1.max(s.y2),
         ),
         ElementKind::Embed(em) => (em.x, em.y, em.x + em.w, em.y + em.h),
-        // Handled above.
-        ElementKind::Rect(_) | ElementKind::Ellipse(_) | ElementKind::Text(_) => unreachable!(),
+        // Handled above (all box-like kinds go through `box_like`).
+        ElementKind::Rect(_)
+        | ElementKind::Ellipse(_)
+        | ElementKind::Diamond(_)
+        | ElementKind::Triangle(_)
+        | ElementKind::RoundRect(_)
+        | ElementKind::Star(_)
+        | ElementKind::Hexagon(_)
+        | ElementKind::Text(_) => unreachable!(),
     }
 }
 
@@ -2260,7 +2352,13 @@ fn translate(kind: &mut ElementKind, dx: f32, dy: f32) {
                 p[1] += dy;
             }
         }
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+        ElementKind::Rect(b)
+        | ElementKind::Ellipse(b)
+        | ElementKind::Diamond(b)
+        | ElementKind::Triangle(b)
+        | ElementKind::RoundRect(b)
+        | ElementKind::Star(b)
+        | ElementKind::Hexagon(b) => {
             b.x += dx;
             b.y += dy;
         }
@@ -2374,7 +2472,13 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
                 p[1] = fy(p[1]);
             }
         }
-        ElementKind::Rect(b) | ElementKind::Ellipse(b) => {
+        ElementKind::Rect(b)
+        | ElementKind::Ellipse(b)
+        | ElementKind::Diamond(b)
+        | ElementKind::Triangle(b)
+        | ElementKind::RoundRect(b)
+        | ElementKind::Star(b)
+        | ElementKind::Hexagon(b) => {
             let (x0, x1) = (fx(b.x), fx(b.x + b.w));
             let (y0, y1) = (fy(b.y), fy(b.y + b.h));
             b.x = x0.min(x1);
@@ -2549,6 +2653,17 @@ fn paint_element(
         ElementKind::Draw(s) => paint_stroke(&s.points, s.width, cam, origin, ink, window),
         ElementKind::Rect(b) => paint_rect(b, cam, origin, ink, fill, window),
         ElementKind::Ellipse(b) => paint_ellipse(b, cam, origin, ink, fill, window),
+        ElementKind::Diamond(b) => {
+            paint_box_polygon(b, &DIAMOND_UNIT, cam, origin, ink, fill, window)
+        }
+        ElementKind::Triangle(b) => {
+            paint_box_polygon(b, &TRIANGLE_UNIT, cam, origin, ink, fill, window)
+        }
+        ElementKind::RoundRect(b) => paint_round_rect(b, cam, origin, ink, fill, window),
+        ElementKind::Star(b) => paint_box_polygon(b, &star_unit(), cam, origin, ink, fill, window),
+        ElementKind::Hexagon(b) => {
+            paint_box_polygon(b, &hexagon_unit(), cam, origin, ink, fill, window)
+        }
         ElementKind::Line(s) => paint_segment(s, false, cam, origin, ink, window),
         ElementKind::Arrow(s) => paint_segment(s, true, cam, origin, ink, window),
         // Text and cards are drawn as overlay elements in render(), not here.
@@ -2633,6 +2748,126 @@ fn paint_ellipse(
         pb.cubic_bezier_to(s(cx - rx, cy), s(cx - kx, cy + ry), s(cx - rx, cy + ky));
         pb.cubic_bezier_to(s(cx, cy - ry), s(cx - rx, cy - ky), s(cx - kx, cy - ry));
         pb.cubic_bezier_to(s(cx + rx, cy), s(cx + kx, cy - ry), s(cx + rx, cy - ky));
+        pb.close();
+    };
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    trace(&mut pb);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+}
+
+/// Vertices of box-fitting polygons in box-relative coords: `(±1, ±1)` is the
+/// box edge, `(0, 0)` the center. Scaled to the half-extents, rotated about the
+/// center, and projected by [`paint_box_polygon`].
+const DIAMOND_UNIT: [(f32, f32); 4] = [(0.0, -1.0), (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)];
+const TRIANGLE_UNIT: [(f32, f32); 3] = [(0.0, -1.0), (1.0, 1.0), (-1.0, 1.0)];
+
+/// A 5-point star (outer radius 1, inner 0.382), point-up.
+fn star_unit() -> [(f32, f32); 10] {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    const INNER: f32 = 0.382;
+    let mut pts = [(0.0, 0.0); 10];
+    for (k, p) in pts.iter_mut().enumerate() {
+        let a = -FRAC_PI_2 + k as f32 * (PI / 5.0);
+        let r = if k % 2 == 0 { 1.0 } else { INNER };
+        *p = (a.cos() * r, a.sin() * r);
+    }
+    pts
+}
+
+/// A pointy-top hexagon inscribed in the box's ellipse.
+fn hexagon_unit() -> [(f32, f32); 6] {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let mut pts = [(0.0, 0.0); 6];
+    for (k, p) in pts.iter_mut().enumerate() {
+        let a = -FRAC_PI_2 + k as f32 * (PI / 3.0);
+        *p = (a.cos(), a.sin());
+    }
+    pts
+}
+
+/// Stroke (and optionally fill) a closed polygon whose `unit` vertices are given
+/// in box-relative coords (see [`DIAMOND_UNIT`]). Mirrors [`paint_rect`]: every
+/// vertex is scaled to the half-extents, rotated about the box center, and
+/// projected to screen.
+fn paint_box_polygon(
+    b: &BoxGeom,
+    unit: &[(f32, f32)],
+    cam: Camera,
+    origin: Point<Pixels>,
+    ink: Hsla,
+    fill: Option<Hsla>,
+    window: &mut Window,
+) {
+    let z = cam.zoom.max(MIN_ZOOM);
+    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+    let (rx, ry) = (b.w / 2.0, b.h / 2.0);
+    let s = |u: &(f32, f32)| {
+        let (wx, wy) = rotate_pt(cx + u.0 * rx, cy + u.1 * ry, cx, cy, b.rotation);
+        to_screen(wx, wy, cam, origin)
+    };
+    let trace = |pb: &mut PathBuilder| {
+        let mut it = unit.iter();
+        if let Some(first) = it.next() {
+            pb.move_to(s(first));
+            for u in it {
+                pb.line_to(s(u));
+            }
+            pb.close();
+        }
+    };
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    trace(&mut pb);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+}
+
+/// A rounded rectangle: straight edges joined by quarter-circle corners (radius
+/// = 20% of the shorter side), rotated about the center like [`paint_rect`].
+fn paint_round_rect(
+    b: &BoxGeom,
+    cam: Camera,
+    origin: Point<Pixels>,
+    ink: Hsla,
+    fill: Option<Hsla>,
+    window: &mut Window,
+) {
+    let z = cam.zoom.max(MIN_ZOOM);
+    let (cx, cy) = (b.x + b.w / 2.0, b.y + b.h / 2.0);
+    let r = b.w.abs().min(b.h.abs()) * 0.2;
+    let k = r * 0.552_284_8; // cubic control offset for a quarter circle
+    let s = |wx: f32, wy: f32| {
+        let (px_, py_) = rotate_pt(wx, wy, cx, cy, b.rotation);
+        to_screen(px_, py_, cam, origin)
+    };
+    let (x0, y0, x1, y1) = (b.x, b.y, b.x + b.w, b.y + b.h);
+    let trace = |pb: &mut PathBuilder| {
+        // Clockwise from just past the top-left corner.
+        pb.move_to(s(x0 + r, y0));
+        pb.line_to(s(x1 - r, y0));
+        pb.cubic_bezier_to(s(x1, y0 + r), s(x1 - r + k, y0), s(x1, y0 + r - k));
+        pb.line_to(s(x1, y1 - r));
+        pb.cubic_bezier_to(s(x1 - r, y1), s(x1, y1 - r + k), s(x1 - r + k, y1));
+        pb.line_to(s(x0 + r, y1));
+        pb.cubic_bezier_to(s(x0, y1 - r), s(x0 + r - k, y1), s(x0, y1 - r + k));
+        pb.line_to(s(x0, y0 + r));
+        pb.cubic_bezier_to(s(x0 + r, y0), s(x0, y0 + r - k), s(x0 + r - k, y0));
         pb.close();
     };
     if let Some(fill) = fill {
@@ -3869,5 +4104,48 @@ mod tests {
             width: 1.0,
             rotation: 0.0,
         })));
+    }
+
+    #[test]
+    fn new_box_shapes_share_box_behavior_and_round_trip() {
+        let b = BoxGeom {
+            x: 1.0,
+            y: 2.0,
+            w: 30.0,
+            h: 40.0,
+            width: 2.0,
+            rotation: 0.5,
+        };
+        // (serde tag, kind) — the tag is what gets persisted in JSON.
+        let cases = [
+            ("diamond", ElementKind::Diamond(b)),
+            ("triangle", ElementKind::Triangle(b)),
+            ("round_rect", ElementKind::RoundRect(b)),
+            ("star", ElementKind::Star(b)),
+            ("hexagon", ElementKind::Hexagon(b)),
+        ];
+        for (tag, kind) in cases {
+            // Every new shape is a fillable closed shape, commits like a box, and
+            // flows through the shared `box_like` path (bounds / select / resize /
+            // rotate) just like rect/ellipse.
+            assert!(is_closed_shape(&kind), "{tag} should be fillable");
+            assert!(committable(&kind), "{tag} should commit");
+            assert_eq!(
+                box_like(&kind),
+                Some((1.0, 2.0, 30.0, 40.0, 0.5)),
+                "{tag} box_like"
+            );
+            // Round-trips through JSON under its snake_case tag.
+            let elem = Element {
+                id: 7,
+                kind,
+                stroke: None,
+                fill: None,
+            };
+            let json = serde_json::to_string(&elem).unwrap();
+            assert!(json.contains(tag), "{tag} not in json: {json}");
+            let back: Element = serde_json::from_str(&json).unwrap();
+            assert_eq!(box_like(&back.kind), Some((1.0, 2.0, 30.0, 40.0, 0.5)));
+        }
     }
 }

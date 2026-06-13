@@ -32,7 +32,7 @@ work is collected under [Completed](#completed) at the bottom.
   - [x] **Keyboard shortcuts** — tool keys (H/V/P/R/O/L/A/T), ⌫/Del to delete the selection, ⌘Z / ⌘⇧Z undo-redo, Esc to deselect; the board takes focus on a canvas click, and tooltips show the keys
   - [x] **Toolbar tooltips** — hover label on every tool / action / color button (a self-rendered themed `Tip`, since the bar is icon-only)
   - [x] **Organize the toolbar** — categories on the main bar (`Pan · Select · Color │ Shapes & Text ▾ · Pages & Images ▾ │ Undo · Redo · Delete`); each category button shows its group's active/representative tool + a `▾` and opens a click-to-toggle flyout of that group's tools (picking one activates it + closes); flyout also closes on a canvas press or when the color picker opens
-  - [ ] **More shapes**
+  - [x] **More shapes** — diamond, triangle, rounded rectangle, hexagon, 5-point star. All ride the shared `box_like` machinery (bounds / select / resize / rotate / fill) like rect & ellipse; polygons via a generic `paint_box_polygon`, rounded-rect via `paint_round_rect`. New flyout entries + shortcuts (D / G / U / S / X)
   - [ ] **Picture / image uploads** — drop or paste images onto the board
   - [ ] **Templates** — reusable board templates, selectable by the user
   - [ ] Per-axis **group resize** — side/edge handles to *stretch* a multi-selection (corner handles scale proportionally only today; per-axis is messy with text + rotation, so it's deferred)
