@@ -2643,24 +2643,15 @@ impl Render for WhiteboardView {
         let pending_fill = self.active_fill.map(u32_to_hsla);
         let pending = self.pending.as_ref().map(|p| p.kind.clone());
         // A single selection gets the full box + handles (unless it's the text
-        // being edited — then just the caret); multiple selections get a thin
-        // outline each (no handles); plus the in-progress marquee box.
+        // being edited — then just the caret). A multi-selection shows a single
+        // enclosing group box instead of per-element outlines (one box stays
+        // legible while rotating), with resize corners and — when at least one
+        // member can rotate — a shared rotate grip.
         let single_sel = self
             .selected_single()
             .filter(|id| Some(*id) != self.editing)
             .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
             .map(|e| e.kind.clone());
-        let multi_sel: Vec<ElementKind> = if self.selected.len() > 1 {
-            self.selected
-                .iter()
-                .filter_map(|id| self.scene.elements.iter().find(|e| e.id == *id))
-                .map(|e| e.kind.clone())
-                .collect()
-        } else {
-            Vec::new()
-        };
-        // A multi-selection gets an enclosing box with resize corners, plus a
-        // shared rotate grip when at least one member can rotate.
         let group_sel = (self.selected.len() > 1)
             .then(|| self.selection_bbox())
             .flatten()
@@ -3103,9 +3094,6 @@ impl Render for WhiteboardView {
                         }
                         if let Some(k) = &single_sel {
                             paint_selection(k, cam, bounds.origin, selection, window);
-                        }
-                        for k in &multi_sel {
-                            paint_box_outline(bbox(k), cam, bounds.origin, selection, window);
                         }
                         // Group: an enclosing box with resize corners, plus a
                         // shared rotate grip above it when the group can rotate.
