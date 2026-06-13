@@ -72,8 +72,8 @@ fn filter_chips(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             active,
             cx,
         ))
-        .child(chip("📄 PDFs", Filter::Pdf, c.pdf, active, cx))
-        .child(chip("🖼 Images", Filter::Image, c.image, active, cx))
+        .child(chip("PDFs", Filter::Pdf, c.pdf, active, cx))
+        .child(chip("Images", Filter::Image, c.image, active, cx))
 }
 
 fn chip(
@@ -123,11 +123,11 @@ fn chip_id(filter: Filter) -> &'static str {
 
 fn hit_row(i: usize, hit: &Hit, cx: &mut Context<AppView>) -> impl IntoElement {
     let target = hit.target.clone();
+    // Flat marker for boards (matches the chip); the colored file/image emoji
+    // are dropped — the subtitle already names the kind ("PDF · in …").
     let icon = match hit.kind {
-        Kind::Page => "",
         Kind::Whiteboard => "▦",
-        Kind::Pdf => "📄",
-        Kind::Image => "🖼",
+        Kind::Page | Kind::Pdf | Kind::Image => "",
     };
     div()
         .id(("hit", i))

@@ -36,8 +36,8 @@ use gpui::{
     App, Bounds, Context, CursorStyle, FocusHandle, Hsla, InteractiveElement, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
     PathBuilder, PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, fill, hsla,
-    linear_color_stop, linear_gradient, point, px, rgba, size,
+    SharedString, StatefulInteractiveElement, Styled, TransformationMatrix, Window, canvas, div,
+    fill, hsla, linear_color_stop, linear_gradient, point, px, rgba, size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -309,7 +309,9 @@ impl Tool {
     /// in this crate).
     fn glyph(self) -> &'static str {
         match self {
-            Tool::Pan => "✋",
+            // A dingbat hand (pre-emoji, so it always renders flat/monochrome —
+            // unlike ✋, which macOS re-colors even with a VS15 text request).
+            Tool::Pan => "☞",
             Tool::Select => "↖",
             Tool::Pen => "✎",
             Tool::Rect => "▭",
@@ -320,6 +322,56 @@ impl Tool {
             Tool::Embed => "▤",
         }
     }
+
+    /// The bundled SVG icon for this tool as `(cache-key, bytes)`, or `None` to
+    /// fall back to [`glyph`]. Rendered flat in the theme color via gpui's SVG
+    /// rasterizer (the SVG's own colors are ignored — it's tinted as an alpha
+    /// mask). Lucide, ISC-licensed (see `assets/icons/LICENSE`).
+    ///
+    /// [`glyph`]: Tool::glyph
+    fn icon(self) -> Option<(&'static str, &'static [u8])> {
+        const PAN: &[u8] = include_bytes!("../assets/icons/pan.svg");
+        const SELECT: &[u8] = include_bytes!("../assets/icons/select.svg");
+        const PEN: &[u8] = include_bytes!("../assets/icons/pen.svg");
+        const RECT: &[u8] = include_bytes!("../assets/icons/rect.svg");
+        const ELLIPSE: &[u8] = include_bytes!("../assets/icons/ellipse.svg");
+        const LINE: &[u8] = include_bytes!("../assets/icons/line.svg");
+        const ARROW: &[u8] = include_bytes!("../assets/icons/arrow.svg");
+        const TEXT: &[u8] = include_bytes!("../assets/icons/text.svg");
+        const EMBED: &[u8] = include_bytes!("../assets/icons/embed.svg");
+        match self {
+            Tool::Pan => Some(("wb-icon-pan", PAN)),
+            Tool::Select => Some(("wb-icon-select", SELECT)),
+            Tool::Pen => Some(("wb-icon-pen", PEN)),
+            Tool::Rect => Some(("wb-icon-rect", RECT)),
+            Tool::Ellipse => Some(("wb-icon-ellipse", ELLIPSE)),
+            Tool::Line => Some(("wb-icon-line", LINE)),
+            Tool::Arrow => Some(("wb-icon-arrow", ARROW)),
+            Tool::Text => Some(("wb-icon-text", TEXT)),
+            Tool::Embed => Some(("wb-icon-embed", EMBED)),
+        }
+    }
+}
+
+/// A flat, theme-colored toolbar icon: render the bundled SVG `bytes` (a 16×16
+/// Lucide glyph) tinted to `color` via gpui's rasterizer, in a `size`-px box.
+/// `key` is a stable per-icon cache id.
+fn svg_icon(key: &'static str, bytes: &'static [u8], color: Hsla, sz: f32) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, cx| {
+            let _ = window.paint_svg(
+                bounds,
+                SharedString::from(key),
+                Some(bytes),
+                TransformationMatrix::default(),
+                color,
+                cx,
+            );
+        },
+    )
+    .w(px(sz))
+    .h(px(sz))
 }
 
 /// Theme colors, read at paint time (via [`WhiteboardStyleFn`]) so the board
@@ -2729,6 +2781,12 @@ impl Render for WhiteboardView {
         let active = self.tool;
         let mut tools = Vec::with_capacity(Tool::ALL.len());
         for (i, &t) in Tool::ALL.iter().enumerate() {
+            // A bundled SVG icon (flat, theme-colored) if the tool has one, else
+            // the unicode glyph.
+            let icon: gpui::AnyElement = match t.icon() {
+                Some((key, bytes)) => svg_icon(key, bytes, ink, 16.0).into_any_element(),
+                None => t.glyph().into_any_element(),
+            };
             let mut b = div()
                 .id(("wb-tool", i))
                 .size(px(30.0))
@@ -2738,14 +2796,17 @@ impl Render for WhiteboardView {
                 .rounded(px(6.0))
                 .text_size(px(15.0))
                 .text_color(ink)
-                .child(t.glyph())
+                .child(icon)
                 .on_click(cx.listener(move |this, _ev, _window, cx| this.set_tool(t, cx)));
             if t == active {
                 b = b.bg(accent);
             }
             tools.push(b);
         }
-        let act = |id: usize, glyph: &'static str| {
+        const UNDO_ICON: &[u8] = include_bytes!("../assets/icons/undo.svg");
+        const REDO_ICON: &[u8] = include_bytes!("../assets/icons/redo.svg");
+        const DELETE_ICON: &[u8] = include_bytes!("../assets/icons/delete.svg");
+        let act = |id: usize, key: &'static str, bytes: &'static [u8]| {
             div()
                 .id(("wb-act", id))
                 .size(px(30.0))
@@ -2753,9 +2814,7 @@ impl Render for WhiteboardView {
                 .items_center()
                 .justify_center()
                 .rounded(px(6.0))
-                .text_size(px(15.0))
-                .text_color(ink)
-                .child(glyph)
+                .child(svg_icon(key, bytes, ink, 16.0))
         };
         // Color button: a swatch of the current ink that toggles the picker.
         let cur_swatch = self.active_stroke.map_or(ink, u32_to_hsla);
@@ -2801,14 +2860,14 @@ impl Render for WhiteboardView {
                     .children(tools)
                     .child(div().w(px(7.0)))
                     .child(
-                        act(0, "↶")
+                        act(0, "wb-icon-undo", UNDO_ICON)
                             .on_click(cx.listener(|this, _ev, window, cx| this.undo(window, cx))),
                     )
                     .child(
-                        act(1, "↷")
+                        act(1, "wb-icon-redo", REDO_ICON)
                             .on_click(cx.listener(|this, _ev, window, cx| this.redo(window, cx))),
                     )
-                    .child(act(2, "⌫").on_click(
+                    .child(act(2, "wb-icon-delete", DELETE_ICON).on_click(
                         cx.listener(|this, _ev, window, cx| this.delete_selected(window, cx)),
                     ))
                     .child(div().w(px(7.0)))
