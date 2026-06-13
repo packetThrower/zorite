@@ -412,20 +412,21 @@ impl Tool {
 /// representative when none is active).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ToolGroup {
-    /// Pen, shapes, and text.
-    ShapesText,
+    /// Freehand pen and the closed shapes.
+    Shapes,
+    /// Line and arrow connectors.
+    Lines,
     /// Page-cards (and, later, images).
     PagesImages,
 }
 
 impl ToolGroup {
-    const ALL: [ToolGroup; 2] = [ToolGroup::ShapesText, ToolGroup::PagesImages];
+    const ALL: [ToolGroup; 3] = [ToolGroup::Shapes, ToolGroup::Lines, ToolGroup::PagesImages];
 
     /// The tools shown in this group's flyout.
     fn tools(self) -> &'static [Tool] {
         match self {
-            ToolGroup::ShapesText => &[
-                Tool::Pen,
+            ToolGroup::Shapes => &[
                 Tool::Rect,
                 Tool::RoundRect,
                 Tool::Ellipse,
@@ -433,10 +434,8 @@ impl ToolGroup {
                 Tool::Triangle,
                 Tool::Hexagon,
                 Tool::Star,
-                Tool::Line,
-                Tool::Arrow,
-                Tool::Text,
             ],
+            ToolGroup::Lines => &[Tool::Pen, Tool::Line, Tool::Arrow],
             ToolGroup::PagesImages => &[Tool::Embed],
         }
     }
@@ -448,14 +447,16 @@ impl ToolGroup {
     /// The icon shown on the category button when none of its tools is active.
     fn representative(self) -> Tool {
         match self {
-            ToolGroup::ShapesText => Tool::Rect,
+            ToolGroup::Shapes => Tool::Rect,
+            ToolGroup::Lines => Tool::Line,
             ToolGroup::PagesImages => Tool::Embed,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
-            ToolGroup::ShapesText => "Shapes & text",
+            ToolGroup::Shapes => "Shapes",
+            ToolGroup::Lines => "Lines",
             ToolGroup::PagesImages => "Pages & images",
         }
     }
@@ -3651,8 +3652,9 @@ impl Render for WhiteboardView {
             b
         };
 
-        // The category buttons (one per `ToolGroup`).
-        let mut cats: Vec<gpui::AnyElement> = Vec::with_capacity(ToolGroup::ALL.len());
+        // The category buttons (one per `ToolGroup`), with the standalone Text
+        // tool slotted in right after the Lines group.
+        let mut cats: Vec<gpui::AnyElement> = Vec::with_capacity(ToolGroup::ALL.len() + 1);
         for &g in ToolGroup::ALL.iter() {
             cats.push(
                 cat_btn(g)
@@ -3663,6 +3665,14 @@ impl Render for WhiteboardView {
                     }))
                     .into_any_element(),
             );
+            if g == ToolGroup::Lines {
+                cats.push(
+                    tool_btn(Tool::Text)
+                        .tooltip(self.tip(Tool::Text.label()))
+                        .on_click(cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Text, cx)))
+                        .into_any_element(),
+                );
+            }
         }
 
         const UNDO_ICON: &[u8] = include_bytes!("../assets/icons/undo.svg");
