@@ -33,11 +33,11 @@ use std::rc::Rc;
 pub use font::Font;
 
 use gpui::{
-    App, Bounds, Context, CursorStyle, FocusHandle, Hsla, InteractiveElement, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
-    PathBuilder, PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent,
-    SharedString, StatefulInteractiveElement, Styled, TransformationMatrix, Window, canvas, div,
-    fill, hsla, linear_color_stop, linear_gradient, point, px, rgba, size,
+    AnyView, App, AppContext, Bounds, Context, CursorStyle, FocusHandle, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TransformationMatrix,
+    Window, canvas, div, fill, hsla, linear_color_stop, linear_gradient, point, px, rgba, size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -323,6 +323,21 @@ impl Tool {
         }
     }
 
+    /// A human label for the tooltip (the toolbar is icon-only).
+    fn label(self) -> &'static str {
+        match self {
+            Tool::Pan => "Pan — drag to move the canvas",
+            Tool::Select => "Select",
+            Tool::Pen => "Pen",
+            Tool::Rect => "Rectangle",
+            Tool::Ellipse => "Ellipse",
+            Tool::Line => "Line",
+            Tool::Arrow => "Arrow",
+            Tool::Text => "Text",
+            Tool::Embed => "Page card",
+        }
+    }
+
     /// The bundled SVG icon for this tool as `(cache-key, bytes)`, or `None` to
     /// fall back to [`glyph`]. Rendered flat in the theme color via gpui's SVG
     /// rasterizer (the SVG's own colors are ignored — it's tinted as an alpha
@@ -372,6 +387,35 @@ fn svg_icon(key: &'static str, bytes: &'static [u8], color: Hsla, sz: f32) -> im
     )
     .w(px(sz))
     .h(px(sz))
+}
+
+/// A minimal themed tooltip view. gpui has the `.tooltip()` *hook* but no
+/// tooltip *view* (those live in UI crates this crate doesn't depend on), so —
+/// like `gpui-pdf` — we render our own small label.
+struct Tip {
+    text: SharedString,
+    fg: Hsla,
+    bg: Hsla,
+    border: Hsla,
+}
+
+impl Render for Tip {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        // gpui anchors the tooltip at the cursor; a small transparent top
+        // padding drops the visible box just clear of the hovered button.
+        div().pt(px(16.0)).child(
+            div()
+                .px(px(6.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .border_1()
+                .border_color(self.border)
+                .bg(self.bg)
+                .text_color(self.fg)
+                .text_size(px(11.0))
+                .child(self.text.clone()),
+        )
+    }
 }
 
 /// Theme colors, read at paint time (via [`WhiteboardStyleFn`]) so the board
@@ -639,6 +683,27 @@ impl WhiteboardView {
     pub fn set_font(&mut self, font: Font, cx: &mut Context<Self>) {
         self.font = font;
         cx.notify();
+    }
+
+    /// Build a `.tooltip(..)` closure for a toolbar control — a small themed
+    /// [`Tip`], reading colors through the style closure at show time.
+    fn tip(
+        &self,
+        text: impl Into<SharedString>,
+    ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+        let style_fn = self.style.clone();
+        let text = text.into();
+        move |_window, cx| {
+            let s = style_fn();
+            let text = text.clone();
+            cx.new(move |_| Tip {
+                text,
+                fg: s.ink,
+                bg: s.panel,
+                border: s.grid,
+            })
+            .into()
+        }
     }
 
     /// Insert a page-card at world `(x, y)` and select it. Called by the host
@@ -2797,6 +2862,7 @@ impl Render for WhiteboardView {
                 .text_size(px(15.0))
                 .text_color(ink)
                 .child(icon)
+                .tooltip(self.tip(t.label()))
                 .on_click(cx.listener(move |this, _ev, _window, cx| this.set_tool(t, cx)));
             if t == active {
                 b = b.bg(accent);
@@ -2837,6 +2903,7 @@ impl Render for WhiteboardView {
                     .border_1()
                     .border_color(grid),
             )
+            .tooltip(self.tip("Color"))
             .on_click(cx.listener(|this, _ev, window, cx| {
                 this.focus.focus(window, cx);
                 this.toggle_picker(cx);
@@ -2861,15 +2928,21 @@ impl Render for WhiteboardView {
                     .child(div().w(px(7.0)))
                     .child(
                         act(0, "wb-icon-undo", UNDO_ICON)
+                            .tooltip(self.tip("Undo"))
                             .on_click(cx.listener(|this, _ev, window, cx| this.undo(window, cx))),
                     )
                     .child(
                         act(1, "wb-icon-redo", REDO_ICON)
+                            .tooltip(self.tip("Redo"))
                             .on_click(cx.listener(|this, _ev, window, cx| this.redo(window, cx))),
                     )
-                    .child(act(2, "wb-icon-delete", DELETE_ICON).on_click(
-                        cx.listener(|this, _ev, window, cx| this.delete_selected(window, cx)),
-                    ))
+                    .child(
+                        act(2, "wb-icon-delete", DELETE_ICON)
+                            .tooltip(self.tip("Delete selection"))
+                            .on_click(cx.listener(|this, _ev, window, cx| {
+                                this.delete_selected(window, cx)
+                            })),
+                    )
                     .child(div().w(px(7.0)))
                     .child(color_btn),
             );
