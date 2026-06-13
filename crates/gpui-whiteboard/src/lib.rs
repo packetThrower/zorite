@@ -1487,12 +1487,10 @@ impl WhiteboardView {
             return;
         }
         // Resizing the selection (corner-handle drag).
-        if self.resizing.is_some() {
+        if let Some(r) = self.resizing.as_ref() {
+            let (id, anchor, from, grab, mut kind) =
+                (r.id, r.anchor, r.from, r.grab, r.orig.clone());
             let cur = self.event_to_world(ev.position);
-            let (id, anchor, from, grab, mut kind) = {
-                let r = self.resizing.as_ref().unwrap();
-                (r.id, r.anchor, r.from, r.grab, r.orig.clone())
-            };
             // Where the dragged corner should sit: cursor + the grab offset, so
             // it tracks the cursor without jumping when the drag starts.
             let target = [cur[0] + grab[0], cur[1] + grab[1]];
@@ -1593,8 +1591,10 @@ impl WhiteboardView {
         if self.pending.is_some() {
             let cur = self.event_to_world(ev.position);
             let z = self.scene.camera.zoom.max(MIN_ZOOM);
-            let anchor = self.pending.as_ref().unwrap().anchor;
-            let pending = self.pending.as_mut().unwrap();
+            let Some(pending) = self.pending.as_mut() else {
+                return;
+            };
+            let anchor = pending.anchor;
             match &mut pending.kind {
                 ElementKind::Draw(s) => {
                     if let Some(last) = s.points.last() {
@@ -1724,7 +1724,6 @@ fn committable(kind: &ElementKind) -> bool {
     }
 }
 
-/// An element's world-space bounding box `(min_x, min_y, max_x, max_y)`.
 // --- color ----------------------------------------------------------------
 //
 // Element colors are stored as packed `0xRRGGBBAA` so the scene JSON stays
@@ -1955,6 +1954,7 @@ fn rotate_handle_screen(kind: &ElementKind, cam: Camera, origin: Point<Pixels>) 
     rotate_handle_for_bbox(bbox(kind), cam, origin)
 }
 
+/// An element's world-space bounding box `(min_x, min_y, max_x, max_y)`.
 fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
     // Box-like kinds (rect/ellipse/text): AABB of the (possibly rotated) box.
     if let Some((x, y, w, h, rot)) = box_like(kind) {
