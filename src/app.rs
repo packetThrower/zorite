@@ -275,6 +275,13 @@ pub struct AppView {
     // so the renderer (no `cx`) can read it during paint while methods here drive
     // loads and eviction. See `images::ImageStore`.
     image_store: Rc<RefCell<crate::images::ImageStore>>,
+    // Whiteboard image elements pre-rotated to a quarter turn (gpui can't
+    // transform a raster sprite, so we rotate the pixels). Keyed by (src, degrees)
+    // so two elements sharing a file at different angles each get their own
+    // bitmap instead of evicting each other every frame; freed on view close.
+    // Bounded: at most the 90/180/270 turns actually shown per rotated src.
+    rotated_images:
+        std::collections::HashMap<(SharedString, i32), std::sync::Arc<gpui::RenderImage>>,
     // Rendered `mermaid` diagrams, cached by source text. Shared into the markdown
     // mermaid renderer (no `cx`) so it can read a ready diagram during paint while
     // `ensure_mermaid_loaded` drives the off-thread render. See `mermaid::MermaidStore`.
@@ -502,6 +509,7 @@ impl AppView {
             image_drag: None,
             image_widths: Rc::new(RefCell::new(HashMap::new())),
             image_store: Rc::new(RefCell::new(crate::images::ImageStore::default())),
+            rotated_images: std::collections::HashMap::new(),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
@@ -1824,6 +1832,10 @@ impl AppView {
     fn release_images(&mut self, window: &mut Window, cx: &mut App) {
         self.image_queue.clear();
         self.image_store.borrow_mut().release(window, cx);
+        // Free the pre-rotated whiteboard bitmaps' GPU textures too.
+        for (_, arc) in self.rotated_images.drain() {
+            cx.drop_image(arc, Some(window));
+        }
         // Mermaid bitmaps are per-window and can be several MB each; drop them on
         // view change like images (they re-render off-thread when shown again).
         // Without this, a window that showed the journal once kept its diagrams
@@ -2020,16 +2032,9 @@ impl AppView {
             // (decoding off-thread on the first ask; the decode notifies the
             // AppView, which re-renders the board).
             let w = weak.clone();
-            v.set_on_image(Rc::new(move |src, _window, cx| {
+            v.set_on_image(Rc::new(move |src, rotation, _window, cx| {
                 let app = w.upgrade()?;
-                app.update(cx, |a, cx| {
-                    let src: SharedString = src.to_string().into();
-                    a.ensure_image_loaded(src.clone(), cx);
-                    a.image_store
-                        .borrow()
-                        .get(&src)
-                        .map(gpui::ImageSource::from)
-                })
+                app.update(cx, |a, cx| a.board_image(src, rotation, cx))
             }));
             // Image tool click → file picker → place at the click point.
             let w = weak.clone();
@@ -2167,6 +2172,32 @@ impl AppView {
             });
         })
         .detach();
+    }
+
+    /// Serve an image element's bitmap for the board, rotated to `rotation`
+    /// radians. Upright images come straight from the store; a rotated one is
+    /// pre-rotated once per (src, quarter-turn) and cached (gpui can't transform a
+    /// raster sprite), since a steady angle re-renders every frame.
+    fn board_image(
+        &mut self,
+        src: &str,
+        rotation: f32,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui::ImageSource> {
+        let key: SharedString = src.to_string().into();
+        self.ensure_image_loaded(key.clone(), cx);
+        let base = self.image_store.borrow().get(&key)?;
+        // Snap to a quarter turn (0 / 90 / 180 / 270); upright uses the original.
+        let qdeg = ((rotation.to_degrees().round() as i32).rem_euclid(360) + 45) / 90 % 4 * 90;
+        if qdeg == 0 {
+            return Some(gpui::ImageSource::from(base));
+        }
+        if let Some(arc) = self.rotated_images.get(&(key.clone(), qdeg)) {
+            return Some(gpui::ImageSource::from(arc.clone()));
+        }
+        let rotated = crate::images::rotate_render_image(&base, qdeg)?;
+        self.rotated_images.insert((key, qdeg), rotated.clone());
+        Some(gpui::ImageSource::from(rotated))
     }
 
     /// Persist a whiteboard's canvas JSON and index its page-card embeds as

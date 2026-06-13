@@ -36,9 +36,10 @@ pub use font::Font;
 use gpui::{
     AnyView, App, AppContext, Bounds, Context, CursorStyle, FocusHandle, Hsla, InteractiveElement,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, TransformationMatrix,
-    Window, canvas, div, fill, hsla, linear_color_stop, linear_gradient, point, px, rgba, size,
+    ObjectFit, ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta,
+    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, StyledImage,
+    TransformationMatrix, Window, canvas, div, fill, hsla, linear_color_stop, linear_gradient,
+    point, px, rgba, size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -192,6 +193,10 @@ pub struct ImageGeom {
     pub y: f32,
     pub w: f32,
     pub h: f32,
+    /// Rotation about the image's center, radians. Absent in older boards → 0.
+    /// The host re-rotates the bitmap to match (see [`ImageFn`]).
+    #[serde(default)]
+    pub rotation: f32,
 }
 
 /// A text label: a top-left anchor, its content, and a world-space font size.
@@ -594,10 +599,12 @@ pub type SaveTemplateFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
 /// Called to delete a stored template by its host id (right-click a card).
 pub type DeleteTemplateFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
-/// Called each render to fetch the decoded bitmap for an image element's `src`.
-/// The host serves it from its image cache, decoding off-thread on the first ask
-/// (returning `None` until ready, then re-rendering the board).
-pub type ImageFn = Rc<dyn Fn(&str, &mut Window, &mut App) -> Option<gpui::ImageSource>>;
+/// Called each render to fetch the decoded bitmap for an image element's `src`,
+/// rotated by `rotation` radians (0 = upright). The host serves it from its image
+/// cache, decoding/rotating on demand (returning `None` until ready, then
+/// re-rendering the board); a steady angle hits the cache, so it only re-rotates
+/// when the angle changes.
+pub type ImageFn = Rc<dyn Fn(&str, f32, &mut Window, &mut App) -> Option<gpui::ImageSource>>;
 
 /// Called when the image tool is clicked at world `(x, y)` — the host picks a
 /// file and calls [`WhiteboardView::add_image_at`].
@@ -1007,6 +1014,7 @@ impl WhiteboardView {
                 y: cy_world - h / 2.0,
                 w,
                 h,
+                rotation: 0.0,
             }),
             stroke: None,
             fill: None,
@@ -2620,6 +2628,9 @@ fn box_like(kind: &ElementKind) -> Option<(f32, f32, f32, f32, f32)> {
             let (w, h) = text_extent(t);
             Some((t.x, t.y, w, h, t.rotation))
         }
+        // Images rotate only in quarter turns, so the selection box (and bbox)
+        // snap to 90° too — keeping the box aligned with the rendered bitmap.
+        ElementKind::Image(im) => Some((im.x, im.y, im.w, im.h, snap_quarter(im.rotation))),
         _ => None,
     }
 }
@@ -2688,8 +2699,9 @@ fn reference_angle(kind: &ElementKind) -> Option<f32> {
         | ElementKind::Star(b)
         | ElementKind::Hexagon(b) => Some(b.rotation),
         ElementKind::Text(t) => Some(t.rotation),
+        ElementKind::Image(im) => Some(snap_quarter(im.rotation)),
         ElementKind::Line(s) | ElementKind::Arrow(s) => Some((s.y2 - s.y1).atan2(s.x2 - s.x1)),
-        ElementKind::Draw(_) | ElementKind::Embed(_) | ElementKind::Image(_) => None,
+        ElementKind::Draw(_) | ElementKind::Embed(_) => None,
     }
 }
 
@@ -2733,10 +2745,15 @@ fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
                 (p[0], p[1]) = (x, y);
             }
         }
-        // A card / image can't tilt (it's an overlay), but in a group it orbits
-        // the pivot so the selection moves together.
+        // A card can't tilt (it's an HTML overlay), but in a group it orbits the
+        // pivot so the selection moves together.
         ElementKind::Embed(em) => (em.x, em.y) = orbit(em.x, em.y, em.w, em.h),
-        ElementKind::Image(im) => (im.x, im.y) = orbit(im.x, im.y, im.w, im.h),
+        // An image's center orbits and its angle accumulates (the host re-rotates
+        // the bitmap to match on release).
+        ElementKind::Image(im) => {
+            (im.x, im.y) = orbit(im.x, im.y, im.w, im.h);
+            im.rotation += delta;
+        }
     }
 }
 
@@ -2775,7 +2792,6 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
             s.y1.max(s.y2),
         ),
         ElementKind::Embed(em) => (em.x, em.y, em.x + em.w, em.y + em.h),
-        ElementKind::Image(im) => (im.x, im.y, im.x + im.w, im.y + im.h),
         // Handled above (all box-like kinds go through `box_like`).
         ElementKind::Rect(_)
         | ElementKind::Ellipse(_)
@@ -2784,7 +2800,8 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
         | ElementKind::RoundRect(_)
         | ElementKind::Star(_)
         | ElementKind::Hexagon(_)
-        | ElementKind::Text(_) => unreachable!(),
+        | ElementKind::Text(_)
+        | ElementKind::Image(_) => unreachable!(),
     }
 }
 
@@ -2889,6 +2906,14 @@ fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
 /// the visible dot grid — handy for aligning template layouts.
 fn snap_grid(v: f32) -> f32 {
     (v / GRID).round() * GRID
+}
+
+/// Round an angle (radians) to the nearest quarter turn. Images rotate only in
+/// 90° steps — gpui can't transform a raster sprite, so the host re-rotates the
+/// pixels, and quarter turns keep that exact (no resampling) and cheap.
+fn snap_quarter(rad: f32) -> f32 {
+    let q = std::f32::consts::FRAC_PI_2;
+    (rad / q).round() * q
 }
 
 /// Where a move-drag's primary element should sit: its grab-time top-left
@@ -3679,21 +3704,27 @@ impl Render for WhiteboardView {
         // off-thread and re-renders when ready). Pre-fetched here — outside the
         // overlay closure — so the host callback can borrow `window`/`cx` without
         // clashing with the `self.scene` iteration below.
-        let img_sources: HashMap<String, gpui::ImageSource> = {
-            let srcs: Vec<String> = self
+        // Keyed by element id (not src) so two elements sharing a file but at
+        // different angles don't collide. The rotation is snapped to a quarter
+        // turn (images rotate in 90° steps), so a steady angle hits the host's
+        // cache and only re-rotates as the drag crosses a 90° boundary.
+        let img_sources: HashMap<u64, gpui::ImageSource> = {
+            let items: Vec<(u64, String, f32)> = self
                 .scene
                 .elements
                 .iter()
                 .filter_map(|e| match &e.kind {
-                    ElementKind::Image(im) => Some(im.src.clone()),
+                    ElementKind::Image(im) => {
+                        Some((e.id, im.src.clone(), snap_quarter(im.rotation)))
+                    }
                     _ => None,
                 })
                 .collect();
             let mut map = HashMap::new();
             if let Some(f) = self.on_image.clone() {
-                for src in srcs {
-                    if let Some(s) = f(&src, window, cx) {
-                        map.insert(src, s);
+                for (id, src, rot) in items {
+                    if let Some(s) = f(&src, rot, window, cx) {
+                        map.insert(id, s);
                     }
                 }
             }
@@ -3742,19 +3773,38 @@ impl Render for WhiteboardView {
                                 .child("Double-click to open"),
                         ),
                 ),
-                // Image: the decoded bitmap (when the host has it ready) scaled to
-                // the element box, else a placeholder while it loads.
+                // Image: the decoded bitmap (when the host has it ready), placed
+                // in the element box's quarter-turn-rotated AABB; else a
+                // placeholder while it loads.
                 ElementKind::Image(im) => {
+                    let rot = snap_quarter(im.rotation);
+                    let (bx, by, bw, bh) = if rot.abs() < ROT_EPS {
+                        (im.x, im.y, im.w, im.h)
+                    } else {
+                        let c = box_padded_corners(im.x, im.y, im.w, im.h, rot, 0.0);
+                        let (x0, y0, x1, y1) = aabb(&c);
+                        (x0, y0, x1 - x0, y1 - y0)
+                    };
                     let frame = div()
                         .absolute()
-                        .left(px((im.x - cam.x) * zoom))
-                        .top(px((im.y - cam.y) * zoom))
-                        .w(px(im.w * zoom))
-                        .h(px(im.h * zoom))
+                        .left(px((bx - cam.x) * zoom))
+                        .top(px((by - cam.y) * zoom))
+                        .w(px(bw * zoom))
+                        .h(px(bh * zoom))
                         .overflow_hidden()
                         .rounded(px(2.0));
-                    Some(match img_sources.get(&im.src) {
-                        Some(src) => frame.child(gpui::img(src.clone()).size_full()),
+                    Some(match img_sources.get(&e.id) {
+                        // Set only the width and let gpui derive the height from the
+                        // bitmap's aspect (its `Img` forces an `aspect_ratio` from the
+                        // image, then ignores it unless a dimension is `Auto` — so
+                        // `size_full` makes it overflow the box and clip). The bitmap is
+                        // pre-rotated to the box's quarter-turn aspect, so width alone
+                        // reproduces the rotated AABB exactly. `Contain` guards rounding.
+                        Some(src) => frame.child(
+                            gpui::img(src.clone())
+                                .w(px(bw * zoom))
+                                .object_fit(ObjectFit::Contain),
+                        ),
                         None => frame
                             .bg(panel)
                             .border_1()
@@ -4907,6 +4957,7 @@ mod tests {
             y: 20.0,
             w: 100.0,
             h: 60.0,
+            rotation: 0.0,
         });
         // Bounds = the box; not a fillable closed shape.
         assert_eq!(bbox(&kind), (10.0, 20.0, 110.0, 80.0));

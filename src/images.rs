@@ -211,6 +211,28 @@ pub fn decode_scaled(path: &Path) -> Option<Arc<RenderImage>> {
     Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
 }
 
+/// Rotate a decoded bitmap by a multiple of 90° clockwise — `deg` is rounded to
+/// the nearest quarter-turn. Exact (rows/columns are swapped, no resampling and
+/// no bounding-box growth), so it's cheap and never enlarges the bitmap. gpui
+/// can't transform a raster sprite, so a rotated image is rendered by
+/// pre-rotating its pixels here (cached by the caller). Returns `None` for an
+/// upright turn (the caller serves the original) or if the bytes are missing.
+pub fn rotate_render_image(src: &RenderImage, deg: i32) -> Option<Arc<RenderImage>> {
+    let size = src.size(0);
+    let base = RgbaImage::from_raw(
+        size.width.0 as u32,
+        size.height.0 as u32,
+        src.as_bytes(0)?.to_vec(),
+    )?;
+    let turned = match (deg.rem_euclid(360) + 45) / 90 % 4 {
+        1 => image::imageops::rotate90(&base),
+        2 => image::imageops::rotate180(&base),
+        3 => image::imageops::rotate270(&base),
+        _ => return None, // upright — caller uses the original bitmap
+    };
+    Some(Arc::new(RenderImage::new(vec![Frame::new(turned)])))
+}
+
 /// Downscale `img` so its longest edge is at most [`MAX_IMAGE_EDGE`], then
 /// convert to the BGRA byte order [`RenderImage`] expects. Split out so the
 /// scaling + channel swap are unit-testable without building a `RenderImage`.
@@ -288,5 +310,24 @@ mod tests {
         let out = scale_and_bgra(DynamicImage::ImageRgba8(src));
         assert_eq!((out.width(), out.height()), (2, 1));
         assert_eq!(out.get_pixel(0, 0).0, [30, 20, 10, 255]); // B,G,R,A
+    }
+
+    #[test]
+    fn rotate_quarter_turns_swap_dimensions() {
+        let src = RenderImage::new(vec![Frame::new(RgbaImage::from_pixel(
+            40,
+            20,
+            Rgba([10, 20, 30, 255]),
+        ))]);
+        let dims = |arc: &RenderImage| (arc.size(0).width.0, arc.size(0).height.0);
+        // 90° / 270° swap exactly; 180° keeps the dimensions.
+        assert_eq!(dims(&rotate_render_image(&src, 90).unwrap()), (20, 40));
+        assert_eq!(dims(&rotate_render_image(&src, 180).unwrap()), (40, 20));
+        assert_eq!(dims(&rotate_render_image(&src, 270).unwrap()), (20, 40));
+        // Off-axis angles snap to the nearest quarter turn (no bbox growth).
+        assert_eq!(dims(&rotate_render_image(&src, 80).unwrap()), (20, 40));
+        // An ~upright turn returns None — the caller serves the original.
+        assert!(rotate_render_image(&src, 5).is_none());
+        assert!(rotate_render_image(&src, 0).is_none());
     }
 }
