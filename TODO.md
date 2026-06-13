@@ -29,8 +29,8 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] **Whiteboards** — a freeform spatial canvas (Logseq-style): drop pages/notes and sketch shapes, arrows, and freehand drawings on an infinite, pannable/zoomable board, linkable to pages. A distinct surface from the text journal. Build it as a reusable, host-agnostic **`gpui-whiteboard`** crate (like `gpui-markdown` / `gpui-pdf`). Design: [docs/whiteboard-architecture.md](docs/whiteboard-architecture.md). Follow-ups:
   - [x] **Pan mode** — a dedicated pan tool (✋) that's the default tool; left-drag pans with a grab cursor (double-click recenters, middle-drag still pans)
   - [x] **Multiple page management** — boards are first-class pages now: "New" makes a distinct board (`create_whiteboard`), a "Whiteboards" sidebar section lists them (open / rename / delete / favorite), and they're searchable by title (`wb:` + a Whiteboards chip)
-  - [ ] **Keyboard shortcuts** — for tools and actions (select / pen / shapes / text, delete, undo-redo, zoom, …)
-  - [ ] **Toolbar tooltips** — label each tool and action button on hover
+  - [x] **Keyboard shortcuts** — tool keys (H/V/P/R/O/L/A/T), ⌫/Del to delete the selection, ⌘Z / ⌘⇧Z undo-redo, Esc to deselect; the board takes focus on a canvas click, and tooltips show the keys
+  - [x] **Toolbar tooltips** — hover label on every tool / action / color button (a self-rendered themed `Tip`, since the bar is icon-only)
   - [ ] **Organize the toolbar** — clearer grouping / layout of the tools, color, and actions
   - [ ] **More shapes**
   - [ ] **Picture / image uploads** — drop or paste images onto the board
