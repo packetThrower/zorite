@@ -559,6 +559,38 @@ pub type PlaceEmbedFn = Rc<dyn Fn(f32, f32, &mut Window, &mut App)>;
 /// Called to open a page (double-clicking a card) — the host opens it in a tab.
 pub type OpenPageFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
+/// Called when the user saves the current selection as a template, with the
+/// selected elements serialized (normalized to origin). The host names + stores
+/// it, then feeds the updated list back via [`WhiteboardView::set_templates`].
+pub type SaveTemplateFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+/// Called to delete a stored template by its host id (right-click a card).
+pub type DeleteTemplateFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
+
+/// A reusable group of elements the user can stamp onto a board. Element
+/// positions are normalized so the group's bounding box starts at the origin;
+/// applying re-bases them to the viewport. The host owns persistence and the
+/// `id`; the crate renders the preview + instantiates on click.
+#[derive(Clone, Debug)]
+pub struct Template {
+    pub id: i64,
+    pub name: String,
+    pub elements: Vec<Element>,
+}
+
+impl Template {
+    /// Build from the host's stored row. `elements_json` is a serialized
+    /// `Vec<Element>` (see [`WhiteboardView::selection_as_template_json`]);
+    /// malformed JSON yields an empty (still-listable) template.
+    pub fn from_json(id: i64, name: impl Into<String>, elements_json: &str) -> Self {
+        Template {
+            id,
+            name: name.into(),
+            elements: serde_json::from_str(elements_json).unwrap_or_default(),
+        }
+    }
+}
+
 /// An element being created by the current left-drag.
 struct Pending {
     anchor: [f32; 2],
@@ -664,6 +696,14 @@ pub struct WhiteboardView {
     on_change: Option<ChangeFn>,
     on_place_embed: Option<PlaceEmbedFn>,
     on_open: Option<OpenPageFn>,
+    on_save_template: Option<SaveTemplateFn>,
+    on_delete_template: Option<DeleteTemplateFn>,
+    /// Stored templates, supplied by the host; shown as cards in the Pages &
+    /// Images flyout.
+    templates: Vec<Template>,
+    /// Screen position of an open right-click context menu (a selection's
+    /// "save as template"), or `None`.
+    context_menu: Option<Point<Pixels>>,
     /// The face used to render text as vector outlines. Defaults to the bundled
     /// JetBrains Mono; the host can swap in a custom/user-uploaded font.
     font: Font,
@@ -742,6 +782,10 @@ impl WhiteboardView {
             on_change: None,
             on_place_embed: None,
             on_open: None,
+            on_save_template: None,
+            on_delete_template: None,
+            templates: Vec::new(),
+            context_menu: None,
             font: Font::default(),
             tool: Tool::Pan,
             focus: cx.focus_handle(),
@@ -788,6 +832,23 @@ impl WhiteboardView {
     /// Install the open-page hook (double-click a card).
     pub fn set_on_open(&mut self, f: OpenPageFn) {
         self.on_open = Some(f);
+    }
+
+    /// Install the save-template hook (right-click selection → save).
+    pub fn set_on_save_template(&mut self, f: SaveTemplateFn) {
+        self.on_save_template = Some(f);
+    }
+
+    /// Install the delete-template hook (right-click a template card → delete).
+    pub fn set_on_delete_template(&mut self, f: DeleteTemplateFn) {
+        self.on_delete_template = Some(f);
+    }
+
+    /// Replace the stored templates shown in the Pages & Images flyout. The host
+    /// calls this on open and after any save/delete.
+    pub fn set_templates(&mut self, templates: Vec<Template>, cx: &mut Context<Self>) {
+        self.templates = templates;
+        cx.notify();
     }
 
     /// Swap the font used to render text (e.g. a user-uploaded face). Build one
@@ -991,6 +1052,175 @@ impl WhiteboardView {
         if let Some(f) = self.on_change.clone() {
             f(self.scene.to_json(), window, cx);
         }
+    }
+
+    // --- templates ---------------------------------------------------------
+
+    /// Serialize the current selection as a template body: the selected elements,
+    /// translated so their collective bounding box starts at the origin (so the
+    /// group can be re-based anywhere on apply). `None` if nothing is selected.
+    fn selection_as_template_json(&self) -> Option<String> {
+        let sel: Vec<&Element> = self
+            .scene
+            .elements
+            .iter()
+            .filter(|e| self.selected.contains(&e.id))
+            .collect();
+        if sel.is_empty() {
+            return None;
+        }
+        let (minx, miny) = sel
+            .iter()
+            .fold((f32::INFINITY, f32::INFINITY), |(mx, my), e| {
+                let (x0, y0, ..) = bbox(&e.kind);
+                (mx.min(x0), my.min(y0))
+            });
+        let elems: Vec<Element> = sel
+            .iter()
+            .map(|e| {
+                let mut c = (*e).clone();
+                translate(&mut c.kind, -minx, -miny);
+                c
+            })
+            .collect();
+        serde_json::to_string(&elems).ok()
+    }
+
+    /// Hand the current selection to the host to be saved as a named template.
+    fn save_selection_as_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        if let Some(json) = self.selection_as_template_json()
+            && let Some(f) = self.on_save_template.clone()
+        {
+            f(json, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Stamp template `index` onto the board, centered in the current viewport,
+    /// with fresh ids; the new elements become the selection.
+    fn apply_template(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(elems) = self.templates.get(index).map(|t| t.elements.clone()) else {
+            return;
+        };
+        if elems.is_empty() {
+            return;
+        }
+        self.open_group = None;
+        self.push_undo();
+        // Center the (origin-normalized) group in the viewport.
+        let b = self.bounds.get();
+        let cam = self.scene.camera;
+        let z = cam.zoom.max(MIN_ZOOM);
+        let (tw, th) = elements_extent(&elems);
+        let off = [
+            cam.x + (f32::from(b.size.width) / 2.0) / z - tw / 2.0,
+            cam.y + (f32::from(b.size.height) / 2.0) / z - th / 2.0,
+        ];
+        let mut new_ids = Vec::with_capacity(elems.len());
+        for e in &elems {
+            let mut c = e.clone();
+            translate(&mut c.kind, off[0], off[1]);
+            c.id = self.next_id;
+            self.next_id += 1;
+            new_ids.push(c.id);
+            self.scene.elements.push(c);
+        }
+        self.selected = new_ids;
+        self.tool = Tool::Select;
+        self.dirty = true;
+        self.flush(window, cx);
+        cx.notify();
+    }
+
+    /// Ask the host to delete a stored template (right-click a card). The host
+    /// confirms, removes it, and feeds the updated list back.
+    fn delete_template(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(f) = self.on_delete_template.clone() {
+            f(id, window, cx);
+        }
+    }
+
+    /// A template preview card for the Pages & Images flyout: a scaled mini-paint
+    /// of the template's shapes over its name. Click to stamp it; right-click to
+    /// delete. (Text and page-cards don't appear in the mini-paint — only drawn
+    /// shapes — but they're still placed on apply.)
+    fn template_card(
+        &self,
+        index: usize,
+        ink: Hsla,
+        text: Hsla,
+        grid: Hsla,
+        bg: Hsla,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let t = &self.templates[index];
+        let id = t.id;
+        let name: SharedString = t.name.clone().into();
+        let elems = t.elements.clone();
+        let (tw, th) = elements_extent(&elems);
+        let preview = canvas(
+            |_, _, _| {},
+            move |bounds, _, window: &mut Window, _: &mut App| {
+                let pad = 5.0;
+                let aw = f32::from(bounds.size.width) - 2.0 * pad;
+                let ah = f32::from(bounds.size.height) - 2.0 * pad;
+                if tw <= 0.0 || th <= 0.0 || aw <= 0.0 || ah <= 0.0 {
+                    return;
+                }
+                // Fit the (origin-normalized) template into the card, centered,
+                // never magnifying past 1:1.
+                let scale = (aw / tw).min(ah / th).min(1.0);
+                let ox = (f32::from(bounds.size.width) - tw * scale) / 2.0;
+                let oy = (f32::from(bounds.size.height) - th * scale) / 2.0;
+                let cam = Camera {
+                    x: -ox / scale,
+                    y: -oy / scale,
+                    zoom: scale,
+                };
+                for e in &elems {
+                    let stroke = e.stroke.map_or(ink, u32_to_hsla);
+                    let fill = e.fill.map(u32_to_hsla);
+                    paint_element(&e.kind, cam, bounds.origin, stroke, fill, window);
+                }
+            },
+        )
+        .size_full();
+        div()
+            .id(("wb-template", index))
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(2.0))
+            .p(px(2.0))
+            .rounded(px(6.0))
+            .child(
+                div()
+                    .w(px(80.0))
+                    .h(px(46.0))
+                    .rounded(px(4.0))
+                    .bg(bg)
+                    .border_1()
+                    .border_color(grid)
+                    .child(preview),
+            )
+            .child(
+                div()
+                    .w(px(80.0))
+                    .h(px(13.0))
+                    .overflow_hidden()
+                    .text_size(px(9.0))
+                    .text_color(text)
+                    .child(name),
+            )
+            .on_click(
+                cx.listener(move |this, _ev, window, cx| this.apply_template(index, window, cx)),
+            )
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, _ev, window, cx| this.delete_template(id, window, cx)),
+            )
+            .into_any_element()
     }
 
     // --- color picker ------------------------------------------------------
@@ -1296,6 +1526,12 @@ impl WhiteboardView {
             return;
         }
 
+        // A press dismisses an open right-click menu (its own button is occluded,
+        // so a press reaching here is outside it).
+        if self.context_menu.take().is_some() {
+            cx.notify();
+            return;
+        }
         // A press on the canvas closes an open tool flyout (the flyout itself is
         // occluded, so a press reaching here is outside it).
         if self.open_group.is_some() {
@@ -1661,6 +1897,21 @@ impl WhiteboardView {
             cx.notify();
         }
         self.flush(window, cx);
+    }
+
+    /// Right-click: with a selection (and a host save hook), open a small menu to
+    /// save it as a template; otherwise just dismiss any open menu.
+    fn on_right_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.is_empty() || self.on_save_template.is_none() {
+            self.context_menu = None;
+        } else {
+            let b = self.bounds.get();
+            self.context_menu = Some(point(
+                ev.position.x - b.origin.x,
+                ev.position.y - b.origin.y,
+            ));
+        }
+        cx.notify();
     }
 
     fn on_middle_down(
@@ -2392,6 +2643,29 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
         | ElementKind::Star(_)
         | ElementKind::Hexagon(_)
         | ElementKind::Text(_) => unreachable!(),
+    }
+}
+
+/// The collective bounding-box size `(w, h)` of a group of elements (0×0 if
+/// empty). Used to center a template when it's stamped onto a board.
+fn elements_extent(elems: &[Element]) -> (f32, f32) {
+    let (mut minx, mut miny, mut maxx, mut maxy) = (
+        f32::INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::NEG_INFINITY,
+    );
+    for e in elems {
+        let (x0, y0, x1, y1) = bbox(&e.kind);
+        minx = minx.min(x0);
+        miny = miny.min(y0);
+        maxx = maxx.max(x1);
+        maxy = maxy.max(y1);
+    }
+    if minx.is_finite() {
+        (maxx - minx, maxy - miny)
+    } else {
+        (0.0, 0.0)
     }
 }
 
@@ -3484,6 +3758,26 @@ impl Render for WhiteboardView {
                         .on_click(cx.listener(move |this, _ev, _w, cx| this.set_tool(t, cx))),
                 );
             }
+            // The Pages & Images group also lists saved templates as preview cards
+            // (click to stamp, right-click to delete).
+            if g == ToolGroup::PagesImages {
+                if self.templates.is_empty() {
+                    row = row.child(
+                        div()
+                            .px(px(8.0))
+                            .max_w(px(190.0))
+                            .text_size(px(11.0))
+                            .text_color(text)
+                            .child(
+                                "No templates yet — select shapes, right-click, Save as template",
+                            ),
+                    );
+                } else {
+                    for i in 0..self.templates.len() {
+                        row = row.child(self.template_card(i, ink, text, grid, bg, cx));
+                    }
+                }
+            }
             div()
                 .absolute()
                 .top(px(52.0))
@@ -3492,6 +3786,28 @@ impl Render for WhiteboardView {
                 .flex()
                 .justify_center()
                 .child(row)
+        });
+
+        // Right-click context menu (a selection's "Save as template"), anchored at
+        // the cursor. Occluded so its button doesn't fall through to the canvas;
+        // any other press dismisses it (see `on_left_down`).
+        let menu = self.context_menu.map(|pos| {
+            div().absolute().left(pos.x).top(pos.y).occlude().child(
+                div()
+                    .id("wb-ctx-save-template")
+                    .px(px(10.0))
+                    .py(px(6.0))
+                    .rounded(px(8.0))
+                    .bg(panel)
+                    .border_1()
+                    .border_color(grid)
+                    .text_size(px(12.0))
+                    .text_color(ink)
+                    .child("Save as template")
+                    .on_click(cx.listener(|this, _ev, window, cx| {
+                        this.save_selection_as_template(window, cx)
+                    })),
+            )
         });
 
         // Color picker panel (below the toolbar), built only while open. Not
@@ -3832,6 +4148,7 @@ impl Render for WhiteboardView {
             )
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_left_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_left_up))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_down))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_middle_up))
             .on_mouse_move(cx.listener(Self::on_move))
@@ -3841,6 +4158,7 @@ impl Render for WhiteboardView {
             .children(overlay_divs)
             .child(toolbar)
             .children(flyout)
+            .children(menu)
             .children(picker_panel)
             .child(
                 div()

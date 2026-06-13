@@ -8,7 +8,9 @@
 
 use std::rc::Rc;
 
-pub use gpui_whiteboard::{ElementKind, Scene, WhiteboardStyle, WhiteboardStyleFn, WhiteboardView};
+pub use gpui_whiteboard::{
+    ElementKind, Scene, Template, WhiteboardStyle, WhiteboardStyleFn, WhiteboardView,
+};
 
 use crate::theme;
 

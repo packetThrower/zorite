@@ -2004,8 +2004,37 @@ impl AppView {
                     app.update(cx, |a, cx| a.open_page_id(page_id, window, cx));
                 }
             }));
+            let w = weak.clone();
+            v.set_on_save_template(Rc::new(move |json, window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.save_template_dialog(json, window, cx));
+                }
+            }));
+            let w = weak.clone();
+            v.set_on_delete_template(Rc::new(move |tid, window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.confirm_delete_template(tid, window, cx));
+                }
+            }));
         });
         self.whiteboard_views.insert(id, view);
+        // Seed the new view with the current template list.
+        self.refresh_templates(cx);
+    }
+
+    /// Load templates from the DB and push them into every open board view.
+    fn refresh_templates(&mut self, cx: &mut Context<Self>) {
+        let templates: Vec<crate::whiteboard::Template> = self
+            .db
+            .list_templates()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(tid, name, content)| crate::whiteboard::Template::from_json(tid, name, &content))
+            .collect();
+        for view in self.whiteboard_views.values().cloned().collect::<Vec<_>>() {
+            let templates = templates.clone();
+            view.update(cx, |v, cx| v.set_templates(templates, cx));
+        }
     }
 
     /// Persist a whiteboard's canvas JSON and index its page-card embeds as
@@ -2096,6 +2125,91 @@ impl AppView {
         self.record_recent(page.id);
         self.refresh_sidebar();
         cx.notify();
+    }
+
+    /// Prompt for a name, then persist the selection JSON as a whiteboard
+    /// template (invoked from a board's right-click "Save as template").
+    fn save_template_dialog(&mut self, json: String, window: &mut Window, cx: &mut Context<Self>) {
+        self.new_page_input
+            .update(cx, |s, cx| s.set_value("", window, cx));
+        let input = self.new_page_input.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let input_btn = input.clone();
+            let weak_btn = weak.clone();
+            let json = json.clone();
+            dialog
+                .title("Save as template")
+                .w(px(420.0))
+                .child(Input::new(&input))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("tmpl-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("tmpl-save").primary().label("Save").on_click(
+                            move |_, window, cx| {
+                                let name = input_btn.read(cx).value().trim().to_string();
+                                let name = if name.is_empty() {
+                                    "Untitled template".to_string()
+                                } else {
+                                    name
+                                };
+                                let _ = weak_btn
+                                    .update(cx, |this, cx| this.save_template(&name, &json, cx));
+                                window.close_dialog(cx);
+                            },
+                        )),
+                )
+        });
+    }
+
+    /// Store a template and push the refreshed list to every open board.
+    fn save_template(&mut self, name: &str, json: &str, cx: &mut Context<Self>) {
+        match self.db.create_template(name, json) {
+            Ok(_) => self.refresh_templates(cx),
+            Err(e) => log::error!("save template {name:?}: {e}"),
+        }
+    }
+
+    /// Confirm, then delete a template (invoked from a right-click on its card).
+    fn confirm_delete_template(&mut self, tid: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self
+            .db
+            .list_templates()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|(id, ..)| *id == tid)
+            .map(|(_, name, _)| name)
+            .unwrap_or_else(|| "this template".to_string());
+        let weak = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let weak = weak.clone();
+            dialog
+                .title("Delete template?")
+                .description(SharedString::from(format!(
+                    "“{name}” will be permanently deleted. This can't be undone."
+                )))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Delete")
+                        .ok_variant(ButtonVariant::Danger)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        if let Err(e) = this.db.delete_template(tid) {
+                            log::error!("delete template {tid}: {e}");
+                        } else {
+                            this.refresh_templates(cx);
+                        }
+                    });
+                    true
+                })
+        });
     }
 
     /// Create a new, distinct whiteboard ("Untitled Whiteboard", suffixed if

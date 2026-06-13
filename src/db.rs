@@ -44,7 +44,7 @@ pub struct Db {
 
 /// The newest schema version [`Db::migrate`] upgrades to. Bump this with each new
 /// migration step so [`Db::open`] knows when a pre-migration backup is warranted.
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 /// A failed on-disk database open. Carries the pre-migration backup path (when one
 /// was taken) so the caller can point the user at their recoverable data instead
@@ -241,6 +241,23 @@ impl Db {
             )?;
             tx.commit()?;
         }
+        if version < 7 {
+            // Whiteboard templates: a reusable group of canvas elements, stored
+            // as JSON (a normalized `Vec<Element>` from the gpui-whiteboard
+            // crate). Global — not tied to any one board — and shown as cards in
+            // the board toolbar's Pages & Images flyout.
+            let tx = conn.transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE whiteboard_templates (\
+                    id         INTEGER PRIMARY KEY,\
+                    name       TEXT NOT NULL,\
+                    content    TEXT NOT NULL,\
+                    created_at TEXT NOT NULL DEFAULT (datetime('now'))\
+                 );\
+                 PRAGMA user_version = 7;",
+            )?;
+            tx.commit()?;
+        }
         // Key/value app settings (theme mode, etc.). Idempotent, so no
         // `user_version` bump is needed.
         conn.execute_batch(
@@ -360,6 +377,37 @@ impl Db {
             })
         })?
         .collect()
+    }
+
+    // --- Whiteboard templates ---
+
+    /// Every saved whiteboard template as `(id, name, content_json)`, newest
+    /// first. `content` is a serialized `Vec<Element>` (origin-normalized).
+    pub fn list_templates(&self) -> rusqlite::Result<Vec<(i64, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, content FROM whiteboard_templates \
+             ORDER BY created_at DESC, id DESC",
+        )?;
+        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect()
+    }
+
+    /// Store a new template, returning its id.
+    pub fn create_template(&self, name: &str, content: &str) -> rusqlite::Result<i64> {
+        self.conn.execute(
+            "INSERT INTO whiteboard_templates (name, content) VALUES (?1, ?2)",
+            params![name, content],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Delete a template by id.
+    pub fn delete_template(&self, id: i64) -> rusqlite::Result<()> {
+        self.conn.execute(
+            "DELETE FROM whiteboard_templates WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
     }
 
     pub fn get_page(&self, id: i64) -> rusqlite::Result<Option<Page>> {
@@ -921,6 +969,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n2, 1, "trigram is case-insensitive");
+    }
+
+    #[test]
+    fn whiteboard_templates_crud() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.list_templates().unwrap().is_empty());
+        let a = db.create_template("Grid", "[]").unwrap();
+        let _b = db.create_template("Flow", "[{\"id\":1}]").unwrap();
+        let all = db.list_templates().unwrap();
+        assert_eq!(all.len(), 2);
+        // (id, name, content) round-trips.
+        assert!(
+            all.iter()
+                .any(|(_, n, c)| n == "Flow" && c == "[{\"id\":1}]")
+        );
+        db.delete_template(a).unwrap();
+        let after = db.list_templates().unwrap();
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].1, "Flow");
     }
 
     #[test]
