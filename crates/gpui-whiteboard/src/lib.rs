@@ -681,8 +681,13 @@ pub struct WhiteboardView {
     selected: Vec<u64>,
     /// In-progress marquee box (start, current) in world coords.
     marquee: Option<([f32; 2], [f32; 2])>,
-    /// The last world point of an in-progress move-drag, if any.
+    /// The world point where an in-progress move-drag was grabbed (a *fixed*
+    /// anchor — the move uses the total cursor delta from here, so grid-snapping
+    /// stays cursor-synced and doesn't lose sub-grid motion).
     drag_from: Option<[f32; 2]>,
+    /// The primary (first-selected) element's top-left at move-grab, the
+    /// reference the move drives toward (`move_origin + total_delta`).
+    move_origin: [f32; 2],
     /// Whether the current move-drag has actually moved (undo is pushed once).
     moved: bool,
     /// In-progress corner-resize of the selected box/stroke.
@@ -746,6 +751,7 @@ impl WhiteboardView {
             selected: Vec::new(),
             marquee: None,
             drag_from: None,
+            move_origin: [0.0, 0.0],
             moved: false,
             resizing: None,
             group_resizing: None,
@@ -1510,6 +1516,17 @@ impl WhiteboardView {
                         self.selected = vec![id];
                     }
                     self.drag_from = Some(p);
+                    // Capture the primary element's top-left so the move can drive
+                    // an absolute target (and snap it) without drifting.
+                    self.move_origin = self
+                        .selected
+                        .first()
+                        .and_then(|&pid| self.scene.elements.iter().find(|e| e.id == pid))
+                        .map(|e| {
+                            let (x, y, ..) = bbox(&e.kind);
+                            [x, y]
+                        })
+                        .unwrap_or(p);
                     self.moved = false;
                 }
                 None => {
@@ -1526,16 +1543,24 @@ impl WhiteboardView {
         }
 
         let width = NIB / zoom;
+        // While the snap modifier (Option) is held, start the shape on a grid
+        // line; the move handler snaps the opposite corner / endpoint too.
+        let anchor = if ev.modifiers.alt {
+            [snap_grid(p[0]), snap_grid(p[1])]
+        } else {
+            p
+        };
         // A zero-size box anchored at the press; the move handler grows it.
         let box0 = BoxGeom {
-            x: p[0],
-            y: p[1],
+            x: anchor[0],
+            y: anchor[1],
             w: 0.0,
             h: 0.0,
             width,
             rotation: 0.0,
         };
         let kind = match self.tool {
+            // Freehand keeps the raw point — strokes aren't grid-aligned.
             Tool::Pen => ElementKind::Draw(Stroke {
                 points: vec![p],
                 width,
@@ -1548,23 +1573,23 @@ impl WhiteboardView {
             Tool::Star => ElementKind::Star(box0),
             Tool::Hexagon => ElementKind::Hexagon(box0),
             Tool::Line => ElementKind::Line(SegGeom {
-                x1: p[0],
-                y1: p[1],
-                x2: p[0],
-                y2: p[1],
+                x1: anchor[0],
+                y1: anchor[1],
+                x2: anchor[0],
+                y2: anchor[1],
                 width,
             }),
             Tool::Arrow => ElementKind::Arrow(SegGeom {
-                x1: p[0],
-                y1: p[1],
-                x2: p[0],
-                y2: p[1],
+                x1: anchor[0],
+                y1: anchor[1],
+                x2: anchor[0],
+                y2: anchor[1],
                 width,
             }),
             // These tools don't create a drag-element here (handled earlier).
             Tool::Pan | Tool::Select | Tool::Text | Tool::Embed => return,
         };
-        self.pending = Some(Pending { anchor: p, kind });
+        self.pending = Some(Pending { anchor, kind });
         cx.notify();
     }
 
@@ -1737,7 +1762,10 @@ impl WhiteboardView {
         // its geometry at grab so the scaling never compounds.
         if let Some(gr) = self.group_resizing.take() {
             let cur = self.event_to_world(ev.position);
-            let target = [cur[0] + gr.grab[0], cur[1] + gr.grab[1]];
+            let mut target = [cur[0] + gr.grab[0], cur[1] + gr.grab[1]];
+            if ev.modifiers.alt {
+                target = [snap_grid(target[0]), snap_grid(target[1])];
+            }
             let s = diagonal_scale(gr.anchor, gr.from, target);
             let font = self.font.clone();
             for (id, orig) in &gr.orig {
@@ -1761,8 +1789,12 @@ impl WhiteboardView {
                 (r.id, r.anchor, r.from, r.grab, r.orig.clone());
             let cur = self.event_to_world(ev.position);
             // Where the dragged corner should sit: cursor + the grab offset, so
-            // it tracks the cursor without jumping when the drag starts.
-            let target = [cur[0] + grab[0], cur[1] + grab[1]];
+            // it tracks the cursor without jumping when the drag starts. The snap
+            // modifier (Option) lands that corner on the grid.
+            let mut target = [cur[0] + grab[0], cur[1] + grab[1]];
+            if ev.modifiers.alt {
+                target = [snap_grid(target[0]), snap_grid(target[1])];
+            }
             // Text always scales proportionally (its size is a single font
             // size); Shift does so for shapes; and a *rotated* box-like element
             // must (its anchor is the center, so a uniform scale keeps it correct
@@ -1801,7 +1833,8 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
-        // Dragging a line/arrow endpoint (Shift snaps the angle to 45°).
+        // Dragging a line/arrow endpoint (Shift snaps the angle to 45°, Option
+        // snaps the endpoint to the grid).
         if let Some(ep) = self.endpoint {
             let cur = self.event_to_world(ev.position);
             let shift = ev.modifiers.shift;
@@ -1815,6 +1848,8 @@ impl WhiteboardView {
                 };
                 let (nx, ny) = if shift {
                     snap_45(ox, oy, cur[0], cur[1])
+                } else if ev.modifiers.alt {
+                    (snap_grid(cur[0]), snap_grid(cur[1]))
                 } else {
                     (cur[0], cur[1])
                 };
@@ -1829,10 +1864,27 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
-        // Moving the selection (all selected elements together).
+        // Moving the selection (all selected elements together). The target is
+        // the primary's grab position plus the *total* cursor delta from the
+        // fixed grab anchor; the snap modifier (Option) rounds that target to the
+        // grid. Computing the absolute target each frame (vs. snapping the
+        // per-frame delta) keeps the shape under the cursor and never loses
+        // sub-grid motion — so it moves on every axis, not just one.
         if let Some(from) = self.drag_from {
             let cur = self.event_to_world(ev.position);
-            let (dx, dy) = (cur[0] - from[0], cur[1] - from[1]);
+            let target = move_target(self.move_origin, from, cur, ev.modifiers.alt);
+            // Where the primary sits now → the delta to apply this frame. Every
+            // element kind's bbox-min translates 1:1, so this tracks exactly.
+            let cur_min = self
+                .selected
+                .first()
+                .and_then(|&pid| self.scene.elements.iter().find(|e| e.id == pid))
+                .map(|e| {
+                    let (x, y, ..) = bbox(&e.kind);
+                    [x, y]
+                })
+                .unwrap_or(self.move_origin);
+            let (dx, dy) = (target[0] - cur_min[0], target[1] - cur_min[1]);
             if dx != 0.0 || dy != 0.0 {
                 if !self.moved {
                     self.push_undo();
@@ -1844,7 +1896,6 @@ impl WhiteboardView {
                         translate(&mut e.kind, dx, dy);
                     }
                 }
-                self.drag_from = Some(cur);
                 cx.notify();
             }
             return;
@@ -1864,6 +1915,13 @@ impl WhiteboardView {
                 return;
             };
             let anchor = pending.anchor;
+            // Snap the growing corner / endpoint to the grid while Option is held
+            // (freehand strokes keep the raw point).
+            let c = if ev.modifiers.alt {
+                [snap_grid(cur[0]), snap_grid(cur[1])]
+            } else {
+                cur
+            };
             match &mut pending.kind {
                 ElementKind::Draw(s) => {
                     if let Some(last) = s.points.last() {
@@ -1881,14 +1939,14 @@ impl WhiteboardView {
                 | ElementKind::RoundRect(b)
                 | ElementKind::Star(b)
                 | ElementKind::Hexagon(b) => {
-                    b.x = anchor[0].min(cur[0]);
-                    b.y = anchor[1].min(cur[1]);
-                    b.w = (cur[0] - anchor[0]).abs();
-                    b.h = (cur[1] - anchor[1]).abs();
+                    b.x = anchor[0].min(c[0]);
+                    b.y = anchor[1].min(c[1]);
+                    b.w = (c[0] - anchor[0]).abs();
+                    b.h = (c[1] - anchor[1]).abs();
                 }
                 ElementKind::Line(s) | ElementKind::Arrow(s) => {
-                    s.x2 = cur[0];
-                    s.y2 = cur[1];
+                    s.x2 = c[0];
+                    s.y2 = c[1];
                 }
                 // Text/cards aren't created by dragging, so never pending here.
                 ElementKind::Text(_) | ElementKind::Embed(_) => {}
@@ -2404,6 +2462,30 @@ fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
     let step = std::f32::consts::FRAC_PI_4;
     let ang = (dy.atan2(dx) / step).round() * step;
     (ox + len * ang.cos(), oy + len * ang.sin())
+}
+
+/// Round a world coordinate to the nearest [`GRID`] line. Used while the snap
+/// modifier (Option) is held during create / move / resize so geometry lands on
+/// the visible dot grid — handy for aligning template layouts.
+fn snap_grid(v: f32) -> f32 {
+    (v / GRID).round() * GRID
+}
+
+/// Where a move-drag's primary element should sit: its grab-time top-left
+/// (`origin`) plus the *total* cursor delta since the grab `anchor`, optionally
+/// snapped to the grid. Driving an absolute target from the total delta (rather
+/// than snapping each frame's increment) keeps the shape under the cursor and
+/// lets sub-grid motion accumulate across frames instead of sticking.
+fn move_target(origin: [f32; 2], anchor: [f32; 2], cursor: [f32; 2], snap: bool) -> [f32; 2] {
+    let t = [
+        origin[0] + (cursor[0] - anchor[0]),
+        origin[1] + (cursor[1] - anchor[1]),
+    ];
+    if snap {
+        [snap_grid(t[0]), snap_grid(t[1])]
+    } else {
+        t
+    }
 }
 
 /// The outcome of a key press while editing text.
@@ -3910,6 +3992,48 @@ mod tests {
         let (x, y) = snap_45(0.0, 0.0, 10.0, 1.0);
         assert!(y.abs() < 1e-3);
         assert!((x - 101.0f32.sqrt()).abs() < 1e-2);
+    }
+
+    #[test]
+    fn snap_grid_rounds_to_nearest_line() {
+        // GRID is 24: values round to the nearest multiple, halves away from zero.
+        assert_eq!(snap_grid(0.0), 0.0);
+        assert_eq!(snap_grid(11.0), 0.0);
+        assert_eq!(snap_grid(13.0), GRID);
+        assert_eq!(snap_grid(GRID), GRID);
+        assert_eq!(snap_grid(-13.0), -GRID);
+        assert_eq!(snap_grid(1.5 * GRID), 2.0 * GRID);
+    }
+
+    #[test]
+    fn move_target_drives_an_absolute_snapped_target() {
+        // Origin off-grid (100 % 24 == 4); grab anchor at the cursor's start.
+        let origin = [100.0, 100.0];
+        let anchor = [0.0, 0.0];
+
+        // Free move tracks the cursor exactly on both axes.
+        assert_eq!(
+            move_target(origin, anchor, [37.0, -11.0], false),
+            [137.0, 89.0]
+        );
+
+        // Snapped: the target is `snap(origin + total)`, computed fresh each
+        // frame — never the running position, so it can't stick. A 50,50 total
+        // lands on snap(150) = 144 (150/24 = 6.25 → 6).
+        assert_eq!(
+            move_target(origin, anchor, [50.0, 50.0], true),
+            [144.0, 144.0]
+        );
+
+        // Regression: twelve sub-threshold 4px steps (each < half a grid cell)
+        // must still accumulate across grid lines on BOTH axes — the old logic
+        // snapped each tiny step from the already-snapped spot and stuck.
+        let mut cursor = [0.0, 0.0];
+        for _ in 0..12 {
+            cursor = [cursor[0] + 4.0, cursor[1] + 4.0];
+        }
+        // 48px total → snap(148) = 144 on each axis.
+        assert_eq!(move_target(origin, anchor, cursor, true), [144.0, 144.0]);
     }
 
     #[test]
