@@ -533,8 +533,11 @@ pub struct WhiteboardStyle {
     pub text: Hsla,
     /// Ink (stroke/shape color). Per-element color comes with the color picker.
     pub ink: Hsla,
-    /// Toolbar panel background.
+    /// Toolbar / flyout panel background — small pills, so it can be quite glassy.
     pub panel: Hsla,
+    /// Background for the larger color-picker panel. Wants to stay readable over
+    /// a busy canvas, so it should be much more opaque than [`panel`].
+    pub panel_strong: Hsla,
     /// Active-tool highlight (a subtle fill behind the current tool button).
     pub accent: Hsla,
     /// Selection outline — wants to be clearly visible, so a strong color.
@@ -3452,6 +3455,7 @@ impl Render for WhiteboardView {
             text,
             ink,
             panel,
+            panel_strong,
             accent,
             selection,
             swatches,
@@ -3749,7 +3753,8 @@ impl Render for WhiteboardView {
                 .gap(px(2.0))
                 .p(px(3.0))
                 .rounded(px(9.0))
-                .bg(panel)
+                .bg(panel_strong)
+                .shadow_lg()
                 .occlude();
             for &t in g.tools() {
                 row = row.child(
@@ -3798,7 +3803,8 @@ impl Render for WhiteboardView {
                     .px(px(10.0))
                     .py(px(6.0))
                     .rounded(px(8.0))
-                    .bg(panel)
+                    .bg(panel_strong)
+                    .shadow_lg()
                     .border_1()
                     .border_color(grid)
                     .text_size(px(12.0))
@@ -4064,7 +4070,8 @@ impl Render for WhiteboardView {
                         .gap(px(10.0))
                         .p(px(10.0))
                         .rounded(px(10.0))
-                        .bg(panel)
+                        .bg(panel_strong)
+                        .shadow_lg()
                         .border_1()
                         .border_color(grid)
                         .child(
