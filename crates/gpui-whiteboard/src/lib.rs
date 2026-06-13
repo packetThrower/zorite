@@ -599,6 +599,16 @@ pub type SaveTemplateFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
 /// Called to delete a stored template by its host id (right-click a card).
 pub type DeleteTemplateFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
+/// Called on ⌘C / ⌘X with the selection serialized (same format as
+/// [`SaveTemplateFn`]); the host writes it to the system clipboard. Paste is the
+/// reverse: the host reads the clipboard and calls [`WhiteboardView::paste_elements`].
+pub type CopyFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
+
+/// Called by the context-menu **Paste**: the host reads the clipboard and returns
+/// previously copied whiteboard elements (the JSON from [`WhiteboardView::selection_json`]),
+/// or `None` if it holds no board elements. (Keyboard ⌘V is handled host-side.)
+pub type PasteFn = Rc<dyn Fn(&mut Window, &mut App) -> Option<String>>;
+
 /// Called each render to fetch the decoded bitmap for an image element's `src`,
 /// rotated by `rotation` radians (0 = upright). The host serves it from its image
 /// cache, decoding/rotating on demand (returning `None` until ready, then
@@ -748,6 +758,8 @@ pub struct WhiteboardView {
     on_image: Option<ImageFn>,
     on_place_image: Option<PlaceImageFn>,
     on_drop_files: Option<DropFilesFn>,
+    on_copy: Option<CopyFn>,
+    on_paste: Option<PasteFn>,
     /// Stored templates, supplied by the host; shown as cards in the Pages &
     /// Images flyout.
     templates: Vec<Template>,
@@ -839,6 +851,8 @@ impl WhiteboardView {
             on_image: None,
             on_place_image: None,
             on_drop_files: None,
+            on_copy: None,
+            on_paste: None,
             templates: Vec::new(),
             context_menu: None,
             font: Font::default(),
@@ -913,6 +927,17 @@ impl WhiteboardView {
     /// Install the file-drop hook (files dropped on the canvas).
     pub fn set_on_drop_files(&mut self, f: DropFilesFn) {
         self.on_drop_files = Some(f);
+    }
+
+    /// Install the copy hook (⌘C / ⌘X → write the selection to the clipboard).
+    pub fn set_on_copy(&mut self, f: CopyFn) {
+        self.on_copy = Some(f);
+    }
+
+    /// Install the paste hook (context-menu Paste → read board elements from the
+    /// clipboard). Without it, the Paste menu item is hidden.
+    pub fn set_on_paste(&mut self, f: PasteFn) {
+        self.on_paste = Some(f);
     }
 
     /// Replace the stored templates shown in the Pages & Images flyout. The host
@@ -1224,10 +1249,12 @@ impl WhiteboardView {
 
     // --- templates ---------------------------------------------------------
 
-    /// Serialize the current selection as a template body: the selected elements,
-    /// translated so their collective bounding box starts at the origin (so the
-    /// group can be re-based anywhere on apply). `None` if nothing is selected.
-    fn selection_as_template_json(&self) -> Option<String> {
+    /// Serialize the current selection: the selected elements translated so their
+    /// collective bounding box starts at the origin (so the group can be re-based
+    /// anywhere when applied). `None` if nothing is selected. Used for both saving
+    /// a template and copying to the clipboard — the two share this format, so a
+    /// copied selection can be pasted on any board (see [`Self::paste_elements`]).
+    fn selection_json(&self) -> Option<String> {
         let sel: Vec<&Element> = self
             .scene
             .elements
@@ -1257,7 +1284,7 @@ impl WhiteboardView {
     /// Hand the current selection to the host to be saved as a named template.
     fn save_selection_as_template(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.context_menu = None;
-        if let Some(json) = self.selection_as_template_json()
+        if let Some(json) = self.selection_json()
             && let Some(f) = self.on_save_template.clone()
         {
             f(json, window, cx);
@@ -1271,23 +1298,31 @@ impl WhiteboardView {
         let Some(elems) = self.templates.get(index).map(|t| t.elements.clone()) else {
             return;
         };
+        self.templates_open = false;
+        self.stamp_elements(&elems, window, cx);
+    }
+
+    /// Place `elems` (origin-normalized, as produced by [`Self::selection_json`])
+    /// onto the board, centered in the current viewport with fresh ids; they
+    /// become the new selection. Shared by template apply and clipboard paste.
+    /// No-op for an empty group.
+    fn stamp_elements(&mut self, elems: &[Element], window: &mut Window, cx: &mut Context<Self>) {
         if elems.is_empty() {
             return;
         }
         self.open_group = None;
-        self.templates_open = false;
         self.push_undo();
         // Center the (origin-normalized) group in the viewport.
         let b = self.bounds.get();
         let cam = self.scene.camera;
         let z = cam.zoom.max(MIN_ZOOM);
-        let (tw, th) = elements_extent(&elems);
+        let (tw, th) = elements_extent(elems);
         let off = [
             cam.x + (f32::from(b.size.width) / 2.0) / z - tw / 2.0,
             cam.y + (f32::from(b.size.height) / 2.0) / z - th / 2.0,
         ];
         let mut new_ids = Vec::with_capacity(elems.len());
-        for e in &elems {
+        for e in elems {
             let mut c = e.clone();
             translate(&mut c.kind, off[0], off[1]);
             c.id = self.next_id;
@@ -1300,6 +1335,29 @@ impl WhiteboardView {
         self.dirty = true;
         self.flush(window, cx);
         cx.notify();
+    }
+
+    /// Copy the selection to the clipboard via the host's `on_copy` hook (the
+    /// crate can't touch the system clipboard). Returns whether anything was
+    /// copied. `⌘X` reuses this, then deletes.
+    fn copy_selection(&self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(json) = self.selection_json() else {
+            return false;
+        };
+        if let Some(f) = self.on_copy.clone() {
+            f(json, window, cx);
+        }
+        true
+    }
+
+    /// Paste elements previously serialized by [`Self::selection_json`] (centered
+    /// in the viewport, selected, fresh ids). Ignores invalid JSON. The host calls
+    /// this for ⌘V when the clipboard holds whiteboard elements rather than an
+    /// image.
+    pub fn paste_elements(&mut self, json: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if let Ok(elems) = serde_json::from_str::<Vec<Element>>(json) {
+            self.stamp_elements(&elems, window, cx);
+        }
     }
 
     /// Ask the host to delete a stored template (right-click a card). The host
@@ -2091,7 +2149,9 @@ impl WhiteboardView {
     /// Right-click: with a selection (and a host save hook), open a small menu to
     /// save it as a template; otherwise just dismiss any open menu.
     fn on_right_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected.is_empty() {
+        // Show the menu when there's a selection (copy / cut / z-order / save) or
+        // paste is wired (so you can paste onto empty canvas). Positioned at the click.
+        if self.selected.is_empty() && self.on_paste.is_none() {
             self.context_menu = None;
         } else {
             let b = self.bounds.get();
@@ -2101,6 +2161,26 @@ impl WhiteboardView {
             ));
         }
         cx.notify();
+    }
+
+    /// Paste board elements from the clipboard (via the host's `on_paste` hook),
+    /// centered + selected. Returns whether anything was pasted, so ⌘V can fall
+    /// through to image paste when the clipboard holds no board elements.
+    fn try_paste(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if let Some(f) = self.on_paste.clone()
+            && let Some(json) = f(window, cx)
+        {
+            self.paste_elements(&json, window, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Context-menu Paste.
+    fn paste_from_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.context_menu = None;
+        self.try_paste(window, cx);
     }
 
     fn on_middle_down(
@@ -2455,8 +2535,9 @@ impl WhiteboardView {
 
     /// Handle a board keyboard shortcut (the board has focus and isn't editing
     /// text). Returns whether the key was consumed. Single letters pick a tool;
-    /// ⌫/Del clears the selection's elements; ⌘Z / ⌘⇧Z undo / redo; Esc
-    /// deselects. Other modified chords (⌘W, …) pass through to the host.
+    /// ⌫/Del clears the selection's elements; ⌘Z / ⌘⇧Z undo / redo; ⌘C / ⌘X / ⌘V
+    /// copy / cut / paste; ⌘] / ⌘[ (± ⇧) reorder z-order; Esc deselects. ⌘V with no
+    /// copied elements and other modified chords (⌘W, …) pass through to the host.
     fn handle_shortcut(
         &mut self,
         ev: &KeyDownEvent,
@@ -2491,6 +2572,25 @@ impl WhiteboardView {
             };
             self.reorder_selection(op, window, cx);
             return true;
+        }
+        // Copy / cut the selection to the clipboard (the host's `on_copy` writes
+        // it). ⌘V paste is left to propagate so the host can read the clipboard and
+        // prefer elements over an image. ⌘C/⌘X are consumed even with nothing
+        // selected, so they never fall through to a text copy on the board.
+        if cmd && ks.key == "c" {
+            self.copy_selection(window, cx);
+            return true;
+        }
+        if cmd && ks.key == "x" {
+            if self.copy_selection(window, cx) {
+                self.delete_selected(window, cx);
+            }
+            return true;
+        }
+        if cmd && ks.key == "v" {
+            // Paste copied elements; if the clipboard holds none, fall through so
+            // the host can paste a clipboard image instead.
+            return self.try_paste(window, cx);
         }
         if cmd || ks.modifiers.alt {
             return false;
@@ -4181,76 +4281,97 @@ impl Render for WhiteboardView {
         // Right-click context menu (a selection's "Save as template"), anchored at
         // the cursor. Occluded so its button doesn't fall through to the canvas;
         // any other press dismisses it (see `on_left_down`).
-        let menu = self.context_menu.map(|pos| {
-            // One clickable row; clicking runs `act` and closes the menu.
-            let row = |id: &'static str, label: &'static str, shortcut: &'static str| {
-                div()
-                    .id(id)
+        let menu =
+            self.context_menu.map(|pos| {
+                // One clickable row; clicking runs `act` and closes the menu.
+                let row = |id: &'static str, label: &'static str, shortcut: &'static str| {
+                    div()
+                        .id(id)
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(16.0))
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .mx(px(4.0))
+                        .rounded(px(6.0))
+                        .text_size(px(12.0))
+                        .text_color(ink)
+                        .hover(|s| s.bg(grid))
+                        .child(label)
+                        .child(div().text_size(px(11.0)).text_color(text).child(shortcut))
+                };
+                let divider = || div().my(px(4.0)).mx(px(8.0)).h(px(1.0)).bg(grid);
+                let has_sel = !self.selected.is_empty();
+                let mut panel = div()
+                    .absolute()
+                    .left(pos.x)
+                    .top(pos.y)
+                    .occlude()
+                    .min_w(px(176.0))
+                    .py(px(4.0))
+                    .rounded(px(8.0))
+                    .bg(panel_strong)
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(grid)
                     .flex()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(16.0))
-                    .px(px(10.0))
-                    .py(px(5.0))
-                    .mx(px(4.0))
-                    .rounded(px(6.0))
-                    .text_size(px(12.0))
-                    .text_color(ink)
-                    .hover(|s| s.bg(grid))
-                    .child(label)
-                    .child(div().text_size(px(11.0)).text_color(text).child(shortcut))
-            };
-            let mut panel = div()
-                .absolute()
-                .left(pos.x)
-                .top(pos.y)
-                .occlude()
-                .min_w(px(176.0))
-                .py(px(4.0))
-                .rounded(px(8.0))
-                .bg(panel_strong)
-                .shadow_lg()
-                .border_1()
-                .border_color(grid)
-                .flex()
-                .flex_col()
-                .child(
-                    row("wb-ctx-front", "Bring to Front", "⌘⇧]").on_click(cx.listener(
-                        |this, _ev, window, cx| {
-                            this.context_menu = None;
-                            this.reorder_selection(ZOrder::ToFront, window, cx);
-                        },
-                    )),
-                )
-                .child(
-                    row("wb-ctx-forward", "Bring Forward", "⌘]").on_click(cx.listener(
-                        |this, _ev, window, cx| {
-                            this.context_menu = None;
-                            this.reorder_selection(ZOrder::Forward, window, cx);
-                        },
-                    )),
-                )
-                .child(
-                    row("wb-ctx-backward", "Send Backward", "⌘[").on_click(cx.listener(
-                        |this, _ev, window, cx| {
-                            this.context_menu = None;
-                            this.reorder_selection(ZOrder::Backward, window, cx);
-                        },
-                    )),
-                )
-                .child(
-                    row("wb-ctx-back", "Send to Back", "⌘⇧[").on_click(cx.listener(
-                        |this, _ev, window, cx| {
-                            this.context_menu = None;
-                            this.reorder_selection(ZOrder::ToBack, window, cx);
-                        },
-                    )),
-                );
-            // "Save as template" only when the host wired the callback.
-            if self.on_save_template.is_some() {
-                panel = panel
-                    .child(div().my(px(4.0)).mx(px(8.0)).h(px(1.0)).bg(grid))
-                    .child(
+                    .flex_col();
+                // Z-order + copy / cut act on the selection, so they show only with one.
+                if has_sel {
+                    panel =
+                        panel
+                            .child(row("wb-ctx-front", "Bring to Front", "⌘⇧]").on_click(
+                                cx.listener(|this, _ev, window, cx| {
+                                    this.context_menu = None;
+                                    this.reorder_selection(ZOrder::ToFront, window, cx);
+                                }),
+                            ))
+                            .child(row("wb-ctx-forward", "Bring Forward", "⌘]").on_click(
+                                cx.listener(|this, _ev, window, cx| {
+                                    this.context_menu = None;
+                                    this.reorder_selection(ZOrder::Forward, window, cx);
+                                }),
+                            ))
+                            .child(row("wb-ctx-backward", "Send Backward", "⌘[").on_click(
+                                cx.listener(|this, _ev, window, cx| {
+                                    this.context_menu = None;
+                                    this.reorder_selection(ZOrder::Backward, window, cx);
+                                }),
+                            ))
+                            .child(
+                                row("wb-ctx-back", "Send to Back", "⌘⇧[").on_click(cx.listener(
+                                    |this, _ev, window, cx| {
+                                        this.context_menu = None;
+                                        this.reorder_selection(ZOrder::ToBack, window, cx);
+                                    },
+                                )),
+                            )
+                            .child(divider())
+                            .child(row("wb-ctx-copy", "Copy", "⌘C").on_click(cx.listener(
+                                |this, _ev, window, cx| {
+                                    this.context_menu = None;
+                                    this.copy_selection(window, cx);
+                                },
+                            )))
+                            .child(row("wb-ctx-cut", "Cut", "⌘X").on_click(cx.listener(
+                                |this, _ev, window, cx| {
+                                    this.context_menu = None;
+                                    if this.copy_selection(window, cx) {
+                                        this.delete_selected(window, cx);
+                                    }
+                                },
+                            )));
+                }
+                // Paste shows whenever the host wired it (so it works on empty canvas).
+                if self.on_paste.is_some() {
+                    panel = panel.child(row("wb-ctx-paste", "Paste", "⌘V").on_click(
+                        cx.listener(|this, _ev, window, cx| this.paste_from_menu(window, cx)),
+                    ));
+                }
+                // "Save as template" only with a selection and a wired host callback.
+                if has_sel && self.on_save_template.is_some() {
+                    panel = panel.child(divider()).child(
                         row("wb-ctx-save-template", "Save as template", "").on_click(cx.listener(
                             |this, _ev, window, cx| {
                                 this.context_menu = None;
@@ -4258,9 +4379,9 @@ impl Render for WhiteboardView {
                             },
                         )),
                     );
-            }
-            panel
-        });
+                }
+                panel
+            });
 
         // Templates gallery modal: a dimming scrim (click to dismiss) centering a
         // panel of preview cards. The panel `occlude()`s so clicks on it don't

@@ -17,12 +17,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gpui::{
-    AnyWindowHandle, App, AppContext, Bounds, ClipboardEntry, Context, CursorStyle, Entity,
-    EventEmitter, FocusHandle, Global, ImageFormat, InteractiveElement, IntoElement, MouseButton,
-    MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity, Window,
-    WindowAppearance, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div, point, px,
-    size,
+    AnyWindowHandle, App, AppContext, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle,
+    Entity, EventEmitter, FocusHandle, Global, ImageFormat, InteractiveElement, IntoElement,
+    MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollHandle,
+    SharedString, StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity,
+    Window, WindowAppearance, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div,
+    point, px, size,
 };
 use gpui_component::{
     Root, RopeExt, TitleBar, WindowExt,
@@ -2050,6 +2050,14 @@ impl AppView {
                     app.update(cx, |a, cx| a.drop_files_on_board(id, paths, x, y, cx));
                 }
             }));
+            // ⌘C / ⌘X → put the serialized selection on the system clipboard,
+            // tagged so paste can tell it from arbitrary text (see `on_paste_image`).
+            v.set_on_copy(Rc::new(move |json, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(format!("{WB_CLIP_PREFIX}{json}")));
+            }));
+            // Context-menu Paste → hand back copied board elements from the clipboard
+            // (keyboard ⌘V is routed through `on_paste_image`).
+            v.set_on_paste(Rc::new(|_window, cx| clipboard_board_json(cx)));
         });
         self.whiteboard_views.insert(id, view);
         // Seed the new view with the current template list.
@@ -2688,7 +2696,10 @@ impl AppView {
                     _ => None,
                 })
         };
-        // On a whiteboard, paste an image element at the viewport center.
+        // On a whiteboard, paste a clipboard image at the viewport center. (Copied
+        // whiteboard *elements* are pasted in the crate's ⌘V handler via `on_paste`,
+        // which only consumes the key when the clipboard actually holds elements —
+        // otherwise it falls through here.)
         if let TabKind::Whiteboard(board_id) = self.tabs[self.active].kind {
             let Some((bytes, ext)) = clip_image(cx) else {
                 cx.propagate();
@@ -4647,6 +4658,21 @@ impl Render for AppView {
             // delete-page confirm) stay invisible.
             .children(Root::render_dialog_layer(window, cx))
     }
+}
+
+/// Tag prefixing whiteboard elements written to the system clipboard, so a ⌘V on
+/// a board can tell a copied selection from arbitrary text (and prefer it over a
+/// clipboard image). The remainder is the JSON from `WhiteboardView::selection_json`.
+const WB_CLIP_PREFIX: &str = "zorite-whiteboard-v1\n";
+
+/// Copied whiteboard elements from the clipboard (the JSON after [`WB_CLIP_PREFIX`]),
+/// or `None` if the clipboard holds no board elements. Shared by keyboard paste
+/// ([`AppView::on_paste_image`]) and the context-menu Paste hook.
+fn clipboard_board_json(cx: &App) -> Option<String> {
+    cx.read_from_clipboard()?
+        .text()?
+        .strip_prefix(WB_CLIP_PREFIX)
+        .map(str::to_owned)
 }
 
 /// Map a clipboard image format to a file extension for the saved file.
