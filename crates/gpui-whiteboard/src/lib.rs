@@ -749,6 +749,8 @@ pub struct WhiteboardView {
     picker: Option<Picker>,
     /// The tool category whose flyout is open, if any.
     open_group: Option<ToolGroup>,
+    /// Whether the templates gallery modal is open.
+    templates_open: bool,
     /// In-progress drag inside the open picker.
     picker_drag: Option<PickerDrag>,
     /// Screen bounds of the picker panel and its draggable regions, captured each
@@ -808,6 +810,7 @@ impl WhiteboardView {
             active_fill: None,
             picker: None,
             open_group: None,
+            templates_open: false,
             picker_drag: None,
             picker_bounds: Rc::new(Cell::new(Bounds::default())),
             sv_bounds: Rc::new(Cell::new(Bounds::default())),
@@ -1110,6 +1113,7 @@ impl WhiteboardView {
             return;
         }
         self.open_group = None;
+        self.templates_open = false;
         self.push_undo();
         // Center the (origin-normalized) group in the viewport.
         let b = self.bounds.get();
@@ -1144,10 +1148,10 @@ impl WhiteboardView {
         }
     }
 
-    /// A template preview card for the Pages & Images flyout: a scaled mini-paint
-    /// of the template's shapes over its name. Click to stamp it; right-click to
-    /// delete. (Text and page-cards don't appear in the mini-paint — only drawn
-    /// shapes — but they're still placed on apply.)
+    /// A template preview card for the gallery modal: a scaled mini-paint of the
+    /// template's shapes over its name. Click to stamp it; right-click to delete.
+    /// (Text and page-cards don't appear in the mini-paint — only drawn shapes —
+    /// but they're still placed on apply.)
     fn template_card(
         &self,
         index: usize,
@@ -1165,7 +1169,7 @@ impl WhiteboardView {
         let preview = canvas(
             |_, _, _| {},
             move |bounds, _, window: &mut Window, _: &mut App| {
-                let pad = 5.0;
+                let pad = 8.0;
                 let aw = f32::from(bounds.size.width) - 2.0 * pad;
                 let ah = f32::from(bounds.size.height) - 2.0 * pad;
                 if tw <= 0.0 || th <= 0.0 || aw <= 0.0 || ah <= 0.0 {
@@ -1194,14 +1198,15 @@ impl WhiteboardView {
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(2.0))
-            .p(px(2.0))
-            .rounded(px(6.0))
+            .gap(px(5.0))
+            .p(px(6.0))
+            .rounded(px(8.0))
+            .hover(|s| s.bg(grid))
             .child(
                 div()
-                    .w(px(80.0))
-                    .h(px(46.0))
-                    .rounded(px(4.0))
+                    .w(px(150.0))
+                    .h(px(104.0))
+                    .rounded(px(6.0))
                     .bg(bg)
                     .border_1()
                     .border_color(grid)
@@ -1209,10 +1214,10 @@ impl WhiteboardView {
             )
             .child(
                 div()
-                    .w(px(80.0))
-                    .h(px(13.0))
+                    .w(px(150.0))
+                    .h(px(15.0))
                     .overflow_hidden()
-                    .text_size(px(9.0))
+                    .text_size(px(11.0))
                     .text_color(text)
                     .child(name),
             )
@@ -1262,6 +1267,7 @@ impl WhiteboardView {
     /// stroke color (selection's, else active, else a default).
     fn toggle_picker(&mut self, cx: &mut Context<Self>) {
         self.open_group = None;
+        self.templates_open = false;
         if self.picker.is_some() {
             self.picker = None;
         } else {
@@ -1274,11 +1280,21 @@ impl WhiteboardView {
     /// Closes the color picker so only one popover shows at a time.
     fn toggle_group(&mut self, group: ToolGroup, cx: &mut Context<Self>) {
         self.picker = None;
+        self.templates_open = false;
         self.open_group = if self.open_group == Some(group) {
             None
         } else {
             Some(group)
         };
+        cx.notify();
+    }
+
+    /// Open / close the templates gallery modal (closing the other popovers).
+    fn toggle_templates(&mut self, cx: &mut Context<Self>) {
+        self.picker = None;
+        self.open_group = None;
+        self.context_menu = None;
+        self.templates_open = !self.templates_open;
         cx.notify();
     }
 
@@ -2304,9 +2320,11 @@ impl WhiteboardView {
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        // Escape closes an open color picker (when the board holds focus).
-        if self.picker.is_some() && ev.keystroke.key == "escape" {
+        // Escape closes an open color picker or the templates modal (when the
+        // board holds focus).
+        if ev.keystroke.key == "escape" && (self.picker.is_some() || self.templates_open) {
             self.picker = None;
+            self.templates_open = false;
             cx.notify();
             return;
         }
@@ -3686,6 +3704,26 @@ impl Render for WhiteboardView {
                 this.focus.focus(window, cx);
                 this.toggle_picker(cx);
             }));
+        // Templates button: opens the gallery modal (its own toolbar item, since
+        // a gallery of cards doesn't belong among the tool icons).
+        const TEMPLATES_ICON: &[u8] = include_bytes!("../assets/icons/templates.svg");
+        let mut templates_btn = div()
+            .id("wb-templates")
+            .size(px(30.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0))
+            .child(svg_icon("wb-icon-templates", TEMPLATES_ICON, ink, 16.0));
+        if self.templates_open {
+            templates_btn = templates_btn.bg(accent);
+        }
+        let templates_btn = templates_btn
+            .tooltip(self.tip("Templates"))
+            .on_click(cx.listener(|this, _ev, window, cx| {
+                this.focus.focus(window, cx);
+                this.toggle_templates(cx);
+            }));
         let toolbar = div()
             .absolute()
             .top(px(10.0))
@@ -3721,6 +3759,7 @@ impl Render for WhiteboardView {
                     .child(toolbar_divider(grid))
                     // tool categories (each opens a flyout of its tools)
                     .children(cats)
+                    .child(templates_btn)
                     .child(toolbar_divider(grid))
                     // actions
                     .child(
@@ -3763,26 +3802,6 @@ impl Render for WhiteboardView {
                         .on_click(cx.listener(move |this, _ev, _w, cx| this.set_tool(t, cx))),
                 );
             }
-            // The Pages & Images group also lists saved templates as preview cards
-            // (click to stamp, right-click to delete).
-            if g == ToolGroup::PagesImages {
-                if self.templates.is_empty() {
-                    row = row.child(
-                        div()
-                            .px(px(8.0))
-                            .max_w(px(190.0))
-                            .text_size(px(11.0))
-                            .text_color(text)
-                            .child(
-                                "No templates yet — select shapes, right-click, Save as template",
-                            ),
-                    );
-                } else {
-                    for i in 0..self.templates.len() {
-                        row = row.child(self.template_card(i, ink, text, grid, bg, cx));
-                    }
-                }
-            }
             div()
                 .absolute()
                 .top(px(52.0))
@@ -3814,6 +3833,113 @@ impl Render for WhiteboardView {
                         this.save_selection_as_template(window, cx)
                     })),
             )
+        });
+
+        // Templates gallery modal: a dimming scrim (click to dismiss) centering a
+        // panel of preview cards. The panel `occlude()`s so clicks on it don't
+        // reach the scrim; a card stamps its template and closes (see
+        // `apply_template`), and Escape closes it (see `on_key`).
+        let templates_modal = self.templates_open.then(|| {
+            let body = if self.templates.is_empty() {
+                div()
+                    .flex_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(px(28.0))
+                    .child(
+                        div()
+                            .max_w(px(320.0))
+                            .text_size(px(12.0))
+                            .text_color(text)
+                            .child(
+                                "No templates yet. Select shapes on the canvas, right-click, \
+                                 and choose “Save as template”.",
+                            ),
+                    )
+                    .into_any_element()
+            } else {
+                let mut grid_el = div().flex().flex_wrap().gap(px(8.0)).justify_center();
+                for i in 0..self.templates.len() {
+                    grid_el = grid_el.child(self.template_card(i, ink, text, grid, bg, cx));
+                }
+                div()
+                    .id("wb-tmpl-scroll")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .p(px(12.0))
+                    .child(grid_el)
+                    .into_any_element()
+            };
+            let panel = div()
+                .w(px(540.0))
+                .max_h(px(460.0))
+                .flex()
+                .flex_col()
+                .rounded(px(12.0))
+                .bg(panel_strong)
+                .shadow_lg()
+                .border_1()
+                .border_color(grid)
+                .occlude()
+                // header
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .px(px(14.0))
+                        .py(px(10.0))
+                        .border_b_1()
+                        .border_color(grid)
+                        .child(div().text_size(px(14.0)).text_color(ink).child("Templates"))
+                        .child(
+                            div()
+                                .id("wb-tmpl-close")
+                                .size(px(22.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(6.0))
+                                .text_size(px(15.0))
+                                .text_color(text)
+                                .hover(|s| s.bg(grid))
+                                .child("✕")
+                                .on_click(cx.listener(|this, _ev, _w, cx| {
+                                    this.templates_open = false;
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(body)
+                // footer hint
+                .child(
+                    div()
+                        .px(px(14.0))
+                        .py(px(8.0))
+                        .border_t_1()
+                        .border_color(grid)
+                        .text_size(px(10.0))
+                        .text_color(text)
+                        .child("Click to add · right-click to delete"),
+                );
+            div()
+                .absolute()
+                .size_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(hsla(0.0, 0.0, 0.0, 0.35))
+                .occlude()
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _ev, _w, cx| {
+                        this.templates_open = false;
+                        cx.notify();
+                    }),
+                )
+                .child(panel)
         });
 
         // Color picker panel (below the toolbar), built only while open. Not
@@ -4167,6 +4293,7 @@ impl Render for WhiteboardView {
             .children(flyout)
             .children(menu)
             .children(picker_panel)
+            .children(templates_modal)
             .child(
                 div()
                     .absolute()
