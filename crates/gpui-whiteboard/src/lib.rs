@@ -33,11 +33,11 @@ use std::rc::Rc;
 pub use font::Font;
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Hsla, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder,
-    PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, div, fill, hsla, linear_color_stop,
-    linear_gradient, point, px, rgba, size,
+    App, Bounds, Context, CursorStyle, FocusHandle, Hsla, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement,
+    PathBuilder, PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent,
+    SharedString, StatefulInteractiveElement, Styled, Window, canvas, div, fill, hsla,
+    linear_color_stop, linear_gradient, point, px, rgba, size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -280,6 +280,8 @@ impl Camera {
 /// The active tool. UI state — not part of the persisted scene.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
+    /// Drag to pan the canvas (the default — navigation before drawing).
+    Pan,
     Select,
     Pen,
     Rect,
@@ -291,7 +293,8 @@ pub enum Tool {
 }
 
 impl Tool {
-    const ALL: [Tool; 8] = [
+    const ALL: [Tool; 9] = [
+        Tool::Pan,
         Tool::Select,
         Tool::Pen,
         Tool::Rect,
@@ -306,6 +309,7 @@ impl Tool {
     /// in this crate).
     fn glyph(self) -> &'static str {
         match self {
+            Tool::Pan => "✋",
             Tool::Select => "↖",
             Tool::Pen => "✎",
             Tool::Rect => "▭",
@@ -533,7 +537,7 @@ impl WhiteboardView {
             on_place_embed: None,
             on_open: None,
             font: Font::default(),
-            tool: Tool::Pen,
+            tool: Tool::Pan,
             focus: cx.focus_handle(),
             editing: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
@@ -1137,6 +1141,14 @@ impl WhiteboardView {
             return;
         }
 
+        // Pan tool: a left-drag pans the canvas (the default navigation tool;
+        // double-click above still recenters). Reuses the middle-drag machinery.
+        if self.tool == Tool::Pan {
+            self.panning = true;
+            self.last = ev.position;
+            return;
+        }
+
         if self.tool == Tool::Text {
             // Edit a text under the cursor, else create a new one here.
             if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
@@ -1299,13 +1311,21 @@ impl WhiteboardView {
                 y2: p[1],
                 width,
             }),
-            Tool::Select | Tool::Text | Tool::Embed => return,
+            // These tools don't create a drag-element here (handled earlier).
+            Tool::Pan | Tool::Select | Tool::Text | Tool::Embed => return,
         };
         self.pending = Some(Pending { anchor: p, kind });
         cx.notify();
     }
 
     fn on_left_up(&mut self, _ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // End a Pan-tool drag (left-button pan).
+        if self.panning {
+            self.panning = false;
+            cx.notify();
+            self.flush(window, cx);
+            return;
+        }
         // End a picker drag: the live changes are already applied; just persist.
         if self.picker_drag.take().is_some() {
             self.flush(window, cx);
@@ -3066,11 +3086,22 @@ impl Render for WhiteboardView {
                 )
         });
 
+        // Pan tool shows a grab cursor (closed while dragging) to read as "drag
+        // to move the canvas"; other tools use the default arrow.
+        let board_cursor = if self.panning {
+            CursorStyle::ClosedHand
+        } else if self.tool == Tool::Pan {
+            CursorStyle::OpenHand
+        } else {
+            CursorStyle::Arrow
+        };
+
         div()
             .track_focus(&self.focus)
             .size_full()
             .relative()
             .overflow_hidden()
+            .cursor(board_cursor)
             .child(
                 canvas(
                     move |bounds, _, _| bounds_cell.set(bounds),
