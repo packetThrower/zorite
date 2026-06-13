@@ -65,6 +65,13 @@ fn filter_chips(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .pb_2()
         .child(chip("All", Filter::All, c.total(), active, cx))
         .child(chip("Pages", Filter::Page, c.page, active, cx))
+        .child(chip(
+            "▦ Whiteboards",
+            Filter::Whiteboard,
+            c.whiteboard,
+            active,
+            cx,
+        ))
         .child(chip("📄 PDFs", Filter::Pdf, c.pdf, active, cx))
         .child(chip("🖼 Images", Filter::Image, c.image, active, cx))
 }
@@ -108,6 +115,7 @@ fn chip_id(filter: Filter) -> &'static str {
     match filter {
         Filter::All => "chip-all",
         Filter::Page => "chip-page",
+        Filter::Whiteboard => "chip-whiteboard",
         Filter::Pdf => "chip-pdf",
         Filter::Image => "chip-image",
     }
@@ -117,6 +125,7 @@ fn hit_row(i: usize, hit: &Hit, cx: &mut Context<AppView>) -> impl IntoElement {
     let target = hit.target.clone();
     let icon = match hit.kind {
         Kind::Page => "",
+        Kind::Whiteboard => "▦",
         Kind::Pdf => "📄",
         Kind::Image => "🖼",
     };

@@ -1,6 +1,7 @@
-//! Type-aware global search: pages plus the PDF and image *files* referenced in
-//! them. A `pdf:` / `img:` / `page:` prefix (or the matching results-pane chip)
-//! filters by kind; a bare query returns every kind that matches.
+//! Type-aware global search: pages, whiteboards (by title), plus the PDF and
+//! image *files* referenced in pages. A `pdf:` / `img:` / `page:` / `wb:` prefix
+//! (or the matching results-pane chip) filters by kind; a bare query returns
+//! every kind that matches.
 //!
 //! Files aren't their own rows in the database — they live inside pages as
 //! `[[pdf/x.pdf]]` / `![](images/x.png)` references. So a file search runs the
@@ -20,6 +21,7 @@ pub enum Filter {
     #[default]
     All,
     Page,
+    Whiteboard,
     Pdf,
     Image,
 }
@@ -30,6 +32,7 @@ impl Filter {
         match self {
             Filter::All => "",
             Filter::Page => "page:",
+            Filter::Whiteboard => "wb:",
             Filter::Pdf => "pdf:",
             Filter::Image => "img:",
         }
@@ -40,6 +43,7 @@ impl Filter {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Page,
+    Whiteboard,
     Pdf,
     Image,
 }
@@ -69,13 +73,14 @@ pub struct Hit {
 #[derive(Clone, Copy, Default)]
 pub struct Counts {
     pub page: usize,
+    pub whiteboard: usize,
     pub pdf: usize,
     pub image: usize,
 }
 
 impl Counts {
     pub fn total(&self) -> usize {
-        self.page + self.pdf + self.image
+        self.page + self.whiteboard + self.pdf + self.image
     }
 }
 
@@ -98,6 +103,7 @@ pub fn parse_prefix(query: &str) -> (Filter, String) {
         ("pdf:", Filter::Pdf),
         ("img:", Filter::Image),
         ("page:", Filter::Page),
+        ("wb:", Filter::Whiteboard),
     ] {
         if let Some(rest) = q.strip_prefix(p) {
             return (f, rest.trim().to_string());
@@ -112,10 +118,11 @@ pub fn run(db: &Db, query: &str) -> Results {
     let (filter, term) = parse_prefix(query);
     let mut hits = if term.is_empty() {
         // A bare empty query shows nothing; a type filter with no term browses
-        // every file of that kind from the managed store.
+        // every item of that kind (files from the managed store; all boards).
         match filter {
             Filter::Pdf => all_files(Kind::Pdf),
             Filter::Image => all_files(Kind::Image),
+            Filter::Whiteboard => whiteboard_hits(db, ""),
             _ => Vec::new(),
         }
     } else {
@@ -123,6 +130,7 @@ pub fn run(db: &Db, query: &str) -> Results {
     };
     let counts = Counts {
         page: hits.iter().filter(|h| h.kind == Kind::Page).count(),
+        whiteboard: hits.iter().filter(|h| h.kind == Kind::Whiteboard).count(),
         pdf: hits.iter().filter(|h| h.kind == Kind::Pdf).count(),
         image: hits.iter().filter(|h| h.kind == Kind::Image).count(),
     };
@@ -141,9 +149,29 @@ fn filter_kind(filter: Filter) -> Option<Kind> {
     match filter {
         Filter::All => None,
         Filter::Page => Some(Kind::Page),
+        Filter::Whiteboard => Some(Kind::Whiteboard),
         Filter::Pdf => Some(Kind::Pdf),
         Filter::Image => Some(Kind::Image),
     }
+}
+
+/// Whiteboards whose title contains `needle` (empty → all). Title-only — a
+/// board's content is canvas JSON, not searchable text — so this is a plain
+/// filter over [`Db::list_whiteboards`], newest first, capped at `LIMIT`.
+fn whiteboard_hits(db: &Db, needle: &str) -> Vec<Hit> {
+    let needle = needle.to_lowercase();
+    db.list_whiteboards()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|w| needle.is_empty() || w.title.to_lowercase().contains(&needle))
+        .take(LIMIT as usize)
+        .map(|w| Hit {
+            kind: Kind::Whiteboard,
+            title: w.title,
+            subtitle: "Whiteboard".into(),
+            target: Target::Page(w.id),
+        })
+        .collect()
 }
 
 /// Search pages for `term`, then pull the PDF / image files referenced on each
@@ -200,6 +228,8 @@ fn collect(db: &Db, term: &str) -> Vec<Hit> {
             }
         }
     }
+    // Whiteboards that match by title (their canvas JSON isn't full-text indexed).
+    hits.extend(whiteboard_hits(db, term));
     hits
 }
 
@@ -324,5 +354,31 @@ mod tests {
         assert!(!imgs.hits.is_empty() && imgs.hits.iter().all(|h| h.kind == Kind::Image));
         let pages = run(&db, "page:daily");
         assert!(!pages.hits.is_empty() && pages.hits.iter().all(|h| h.kind == Kind::Page));
+    }
+
+    #[test]
+    fn whiteboards_match_by_title_only() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let board = db.create_whiteboard().unwrap(); // "Untitled Whiteboard"
+        // Even with searchable-looking text in the canvas JSON, only the title
+        // matches — content is never indexed for boards.
+        db.set_page_content(board.id, r#"{"marker":"zphirium"}"#)
+            .unwrap();
+
+        // The auto title contains "whiteboard", so a title term finds it.
+        let r = run(&db, "untitled");
+        assert!(r.counts.whiteboard >= 1, "board counted for the chip");
+        assert!(r.hits.iter().any(|h| h.kind == Kind::Whiteboard));
+        // Content text does NOT surface the board.
+        assert!(
+            run(&db, "zphirium")
+                .hits
+                .iter()
+                .all(|h| h.kind != Kind::Whiteboard)
+        );
+        // `wb:` keeps only boards; with no term it browses them all.
+        let only = run(&db, "wb:untitled");
+        assert!(!only.hits.is_empty() && only.hits.iter().all(|h| h.kind == Kind::Whiteboard));
+        assert!(!run(&db, "wb:").hits.is_empty(), "wb: browses all boards");
     }
 }
