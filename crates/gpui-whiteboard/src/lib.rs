@@ -293,18 +293,6 @@ pub enum Tool {
 }
 
 impl Tool {
-    const ALL: [Tool; 9] = [
-        Tool::Pan,
-        Tool::Select,
-        Tool::Pen,
-        Tool::Rect,
-        Tool::Ellipse,
-        Tool::Line,
-        Tool::Arrow,
-        Tool::Text,
-        Tool::Embed,
-    ];
-
     /// A glyph for the toolbar button (dependency-free; the host has no icon set
     /// in this crate).
     fn glyph(self) -> &'static str {
@@ -384,6 +372,55 @@ impl Tool {
     }
 }
 
+/// A toolbar category whose tools live in a click-to-open flyout, keeping the
+/// main bar trim. The category button shows the active tool of the group (or a
+/// representative when none is active).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ToolGroup {
+    /// Pen, shapes, and text.
+    ShapesText,
+    /// Page-cards (and, later, images).
+    PagesImages,
+}
+
+impl ToolGroup {
+    const ALL: [ToolGroup; 2] = [ToolGroup::ShapesText, ToolGroup::PagesImages];
+
+    /// The tools shown in this group's flyout.
+    fn tools(self) -> &'static [Tool] {
+        match self {
+            ToolGroup::ShapesText => &[
+                Tool::Pen,
+                Tool::Rect,
+                Tool::Ellipse,
+                Tool::Line,
+                Tool::Arrow,
+                Tool::Text,
+            ],
+            ToolGroup::PagesImages => &[Tool::Embed],
+        }
+    }
+
+    fn contains(self, t: Tool) -> bool {
+        self.tools().contains(&t)
+    }
+
+    /// The icon shown on the category button when none of its tools is active.
+    fn representative(self) -> Tool {
+        match self {
+            ToolGroup::ShapesText => Tool::Rect,
+            ToolGroup::PagesImages => Tool::Embed,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ToolGroup::ShapesText => "Shapes & text",
+            ToolGroup::PagesImages => "Pages & images",
+        }
+    }
+}
+
 /// A flat, theme-colored toolbar icon: render the bundled SVG `bytes` (a 16×16
 /// Lucide glyph) tinted to `color` via gpui's rasterizer, in a `size`-px box.
 /// `key` is a stable per-icon cache id.
@@ -403,6 +440,16 @@ fn svg_icon(key: &'static str, bytes: &'static [u8], color: Hsla, sz: f32) -> im
     )
     .w(px(sz))
     .h(px(sz))
+}
+
+/// A hairline vertical divider separating toolbar tool groups.
+fn toolbar_divider(color: Hsla) -> gpui::AnyElement {
+    div()
+        .w(px(1.0))
+        .h(px(16.0))
+        .mx(px(3.0))
+        .bg(color)
+        .into_any_element()
 }
 
 /// A minimal themed tooltip view. gpui has the `.tooltip()` *hook* but no
@@ -612,6 +659,8 @@ pub struct WhiteboardView {
     active_fill: Option<u32>,
     /// Open color picker, if any.
     picker: Option<Picker>,
+    /// The tool category whose flyout is open, if any.
+    open_group: Option<ToolGroup>,
     /// In-progress drag inside the open picker.
     picker_drag: Option<PickerDrag>,
     /// Screen bounds of the picker panel and its draggable regions, captured each
@@ -665,6 +714,7 @@ impl WhiteboardView {
             active_stroke: None,
             active_fill: None,
             picker: None,
+            open_group: None,
             picker_drag: None,
             picker_bounds: Rc::new(Cell::new(Bounds::default())),
             sv_bounds: Rc::new(Cell::new(Bounds::default())),
@@ -805,14 +855,16 @@ impl WhiteboardView {
     }
 
     /// Switch the active drawing tool. Leaving Select clears the selection.
+    /// Always closes an open tool flyout (the tool was just chosen).
     pub fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        self.open_group = None;
         if self.tool != tool {
             self.tool = tool;
             if tool != Tool::Select {
                 self.selected.clear();
             }
-            cx.notify();
         }
+        cx.notify();
     }
 
     /// Reset the viewport to the origin at 100% (also bound to double-click).
@@ -930,11 +982,24 @@ impl WhiteboardView {
     /// Open or close the color picker. Opening seeds the controls from the
     /// stroke color (selection's, else active, else a default).
     fn toggle_picker(&mut self, cx: &mut Context<Self>) {
+        self.open_group = None;
         if self.picker.is_some() {
             self.picker = None;
         } else {
             self.seed_picker(PickerTarget::Stroke);
         }
+        cx.notify();
+    }
+
+    /// Open the given tool category's flyout (or close it if already open).
+    /// Closes the color picker so only one popover shows at a time.
+    fn toggle_group(&mut self, group: ToolGroup, cx: &mut Context<Self>) {
+        self.picker = None;
+        self.open_group = if self.open_group == Some(group) {
+            None
+        } else {
+            Some(group)
+        };
         cx.notify();
     }
 
@@ -1182,6 +1247,14 @@ impl WhiteboardView {
 
     fn on_left_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.panning {
+            return;
+        }
+
+        // A press on the canvas closes an open tool flyout (the flyout itself is
+        // occluded, so a press reaching here is outside it).
+        if self.open_group.is_some() {
+            self.open_group = None;
+            cx.notify();
             return;
         }
 
@@ -2902,19 +2975,24 @@ impl Render for WhiteboardView {
             })
             .collect();
 
-        // Tool palette + actions (top-center). The pill `occlude()`s so clicking
-        // a button doesn't also act on the board beneath it.
+        // Tool palette + actions (top-center). The pill `occlude()`s so a press
+        // on a button doesn't also act on the board beneath it. Layout, left→right:
+        //   pan · select · color │ shapes&text▾ · pages&images▾ │ undo · redo · delete
+        // The two bracketed buttons are categories: clicking one opens a flyout
+        // (built below) of that group's tools, keeping the main bar trim.
         let active = self.tool;
-        let mut tools = Vec::with_capacity(Tool::ALL.len());
-        for (i, &t) in Tool::ALL.iter().enumerate() {
-            // A bundled SVG icon (flat, theme-colored) if the tool has one, else
-            // the unicode glyph.
+        let open_group = self.open_group;
+
+        // A bare tool button (icon + active highlight). The caller attaches the
+        // tooltip and click handler, so this borrows nothing from `self`/`cx` and
+        // can be reused for both the main bar and the flyout.
+        let tool_btn = |t: Tool| {
             let icon: gpui::AnyElement = match t.icon() {
                 Some((key, bytes)) => svg_icon(key, bytes, ink, 16.0).into_any_element(),
                 None => t.glyph().into_any_element(),
             };
             let mut b = div()
-                .id(("wb-tool", i))
+                .id(("wb-tool", t as usize))
                 .size(px(30.0))
                 .flex()
                 .items_center()
@@ -2922,14 +3000,58 @@ impl Render for WhiteboardView {
                 .rounded(px(6.0))
                 .text_size(px(15.0))
                 .text_color(ink)
-                .child(icon)
-                .tooltip(self.tip(t.label()))
-                .on_click(cx.listener(move |this, _ev, _window, cx| this.set_tool(t, cx)));
+                .child(icon);
             if t == active {
                 b = b.bg(accent);
             }
-            tools.push(b);
+            b
+        };
+
+        // A category button: shows the group's active tool (else a representative)
+        // with a ▾ affordance, and highlights while its group owns the active tool
+        // or its flyout is open.
+        let cat_btn = |g: ToolGroup| {
+            let shown = if g.contains(active) {
+                active
+            } else {
+                g.representative()
+            };
+            let icon: gpui::AnyElement = match shown.icon() {
+                Some((key, bytes)) => svg_icon(key, bytes, ink, 16.0).into_any_element(),
+                None => shown.glyph().into_any_element(),
+            };
+            let mut b = div()
+                .id(("wb-group", g as usize))
+                .h(px(30.0))
+                .px(px(6.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(1.0))
+                .rounded(px(6.0))
+                .text_color(ink)
+                .child(icon)
+                .child(div().text_size(px(8.0)).text_color(text).child("▾"));
+            if open_group == Some(g) || g.contains(active) {
+                b = b.bg(accent);
+            }
+            b
+        };
+
+        // The category buttons (one per `ToolGroup`).
+        let mut cats: Vec<gpui::AnyElement> = Vec::with_capacity(ToolGroup::ALL.len());
+        for &g in ToolGroup::ALL.iter() {
+            cats.push(
+                cat_btn(g)
+                    .tooltip(self.tip(g.label()))
+                    .on_click(cx.listener(move |this, _ev, window, cx| {
+                        this.focus.focus(window, cx);
+                        this.toggle_group(g, cx);
+                    }))
+                    .into_any_element(),
+            );
         }
+
         const UNDO_ICON: &[u8] = include_bytes!("../assets/icons/undo.svg");
         const REDO_ICON: &[u8] = include_bytes!("../assets/icons/redo.svg");
         const DELETE_ICON: &[u8] = include_bytes!("../assets/icons/delete.svg");
@@ -2985,8 +3107,27 @@ impl Render for WhiteboardView {
                     .rounded(px(9.0))
                     .bg(panel)
                     .occlude()
-                    .children(tools)
-                    .child(div().w(px(7.0)))
+                    // navigate + color
+                    .child(
+                        tool_btn(Tool::Pan)
+                            .tooltip(self.tip(Tool::Pan.label()))
+                            .on_click(
+                                cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Pan, cx)),
+                            ),
+                    )
+                    .child(
+                        tool_btn(Tool::Select)
+                            .tooltip(self.tip(Tool::Select.label()))
+                            .on_click(
+                                cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Select, cx)),
+                            ),
+                    )
+                    .child(color_btn)
+                    .child(toolbar_divider(grid))
+                    // tool categories (each opens a flyout of its tools)
+                    .children(cats)
+                    .child(toolbar_divider(grid))
+                    // actions
                     .child(
                         act(0, "wb-icon-undo", UNDO_ICON)
                             .tooltip(self.tip("Undo (⌘Z)"))
@@ -3003,10 +3144,38 @@ impl Render for WhiteboardView {
                             .on_click(cx.listener(|this, _ev, window, cx| {
                                 this.delete_selected(window, cx)
                             })),
-                    )
-                    .child(div().w(px(7.0)))
-                    .child(color_btn),
+                    ),
             );
+
+        // Tool-category flyout (centered below the toolbar), built only while a
+        // group is open. Occluded like the main bar; picking a tool activates it
+        // and closes the flyout (via `set_tool`), and a press elsewhere on the
+        // canvas closes it (see `on_left_down`).
+        let flyout = open_group.map(|g| {
+            let mut row = div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .p(px(3.0))
+                .rounded(px(9.0))
+                .bg(panel)
+                .occlude();
+            for &t in g.tools() {
+                row = row.child(
+                    tool_btn(t)
+                        .tooltip(self.tip(t.label()))
+                        .on_click(cx.listener(move |this, _ev, _w, cx| this.set_tool(t, cx))),
+                );
+            }
+            div()
+                .absolute()
+                .top(px(52.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(row)
+        });
 
         // Color picker panel (below the toolbar), built only while open. Not
         // occluded: presses fall through to `on_left_down`, which routes the SV
@@ -3354,6 +3523,7 @@ impl Render for WhiteboardView {
             .on_key_down(cx.listener(Self::on_key))
             .children(overlay_divs)
             .child(toolbar)
+            .children(flyout)
             .children(picker_panel)
             .child(
                 div()

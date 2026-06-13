@@ -31,7 +31,7 @@ work is collected under [Completed](#completed) at the bottom.
   - [x] **Multiple page management** — boards are first-class pages now: "New" makes a distinct board (`create_whiteboard`), a "Whiteboards" sidebar section lists them (open / rename / delete / favorite), and they're searchable by title (`wb:` + a Whiteboards chip)
   - [x] **Keyboard shortcuts** — tool keys (H/V/P/R/O/L/A/T), ⌫/Del to delete the selection, ⌘Z / ⌘⇧Z undo-redo, Esc to deselect; the board takes focus on a canvas click, and tooltips show the keys
   - [x] **Toolbar tooltips** — hover label on every tool / action / color button (a self-rendered themed `Tip`, since the bar is icon-only)
-  - [ ] **Organize the toolbar** — clearer grouping / layout of the tools, color, and actions
+  - [x] **Organize the toolbar** — categories on the main bar (`Pan · Select · Color │ Shapes & Text ▾ · Pages & Images ▾ │ Undo · Redo · Delete`); each category button shows its group's active/representative tool + a `▾` and opens a click-to-toggle flyout of that group's tools (picking one activates it + closes); flyout also closes on a canvas press or when the color picker opens
   - [ ] **More shapes**
   - [ ] **Picture / image uploads** — drop or paste images onto the board
   - [ ] **Templates** — reusable board templates, selectable by the user
