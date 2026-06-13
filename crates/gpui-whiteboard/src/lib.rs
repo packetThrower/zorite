@@ -1166,6 +1166,51 @@ impl WhiteboardView {
         self.flush(window, cx);
     }
 
+    /// Move the selected elements through the paint order (their position in
+    /// `elements`; later = painted on top, so it can cover earlier ones). One step
+    /// or all the way, per `op`. A no-op (already at that edge) leaves undo/redo
+    /// untouched.
+    fn reorder_selection(&mut self, op: ZOrder, window: &mut Window, cx: &mut Context<Self>) {
+        if self.selected.is_empty() {
+            return;
+        }
+        let sel = self.selected.clone();
+        let on = |id: u64| sel.contains(&id);
+        self.push_undo();
+        let before: Vec<u64> = self.scene.elements.iter().map(|e| e.id).collect();
+        let els = &mut self.scene.elements;
+        match op {
+            // Stable partition: the non-selected keep their order and the selected
+            // keep theirs, so a multi-selection moves as a block.
+            ZOrder::ToFront => els.sort_by_key(|e| on(e.id)),
+            ZOrder::ToBack => els.sort_by_key(|e| !on(e.id)),
+            // One step: swap each selected past its adjacent non-selected neighbor,
+            // walking away from the destination edge so an element isn't moved twice
+            // and selected elements don't leapfrog each other.
+            ZOrder::Forward => {
+                for i in (0..els.len().saturating_sub(1)).rev() {
+                    if on(els[i].id) && !on(els[i + 1].id) {
+                        els.swap(i, i + 1);
+                    }
+                }
+            }
+            ZOrder::Backward => {
+                for i in 1..els.len() {
+                    if on(els[i].id) && !on(els[i - 1].id) {
+                        els.swap(i, i - 1);
+                    }
+                }
+            }
+        }
+        if self.scene.elements.iter().map(|e| e.id).eq(before) {
+            self.history.pop(); // nothing moved — drop the speculative snapshot
+            return;
+        }
+        self.dirty = true;
+        cx.notify();
+        self.flush(window, cx);
+    }
+
     /// Flush pending changes through the host's persistence hook.
     fn flush(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.dirty {
@@ -2046,7 +2091,7 @@ impl WhiteboardView {
     /// Right-click: with a selection (and a host save hook), open a small menu to
     /// save it as a template; otherwise just dismiss any open menu.
     fn on_right_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected.is_empty() || self.on_save_template.is_none() {
+        if self.selected.is_empty() {
             self.context_menu = None;
         } else {
             let b = self.bounds.get();
@@ -2428,6 +2473,25 @@ impl WhiteboardView {
             }
             return true;
         }
+        // Z-order: ⌘] / ⌘[ nudge one step, ⌘⇧] / ⌘⇧[ go all the way. Some keymaps
+        // report the shifted bracket as `}` / `{`, so treat that as "all the way"
+        // too. Only consumed when something is selected.
+        let close = ks.key == "]" || ks.key == "}";
+        let open = ks.key == "[" || ks.key == "{";
+        if cmd && (close || open) {
+            if self.selected.is_empty() {
+                return false;
+            }
+            let all_the_way = ks.modifiers.shift || ks.key == "}" || ks.key == "{";
+            let op = match (close, all_the_way) {
+                (true, true) => ZOrder::ToFront,
+                (true, false) => ZOrder::Forward,
+                (false, true) => ZOrder::ToBack,
+                (false, false) => ZOrder::Backward,
+            };
+            self.reorder_selection(op, window, cx);
+            return true;
+        }
         if cmd || ks.modifiers.alt {
             return false;
         }
@@ -2480,6 +2544,16 @@ impl WhiteboardView {
             KeyResult::Pass => cx.propagate(),
         }
     }
+}
+
+/// How [`WhiteboardView::reorder_selection`] moves the selection through the
+/// paint order (`elements` order; later = on top).
+#[derive(Clone, Copy)]
+enum ZOrder {
+    ToFront,
+    Forward,
+    Backward,
+    ToBack,
 }
 
 /// Whether an in-progress element is big enough to keep (a click that doesn't
@@ -3098,6 +3172,34 @@ struct ElemPaint {
     text: Option<TextOutline>,
 }
 
+/// One slice of the board's z-order paint stack. Canvas-drawn elements collect
+/// into a `Band` (one canvas); an image or page-card is an `Overlay` div between
+/// bands. `render` builds these in `elements` order so paint order = z-order,
+/// which lets a shape sit above or below an image. See [`band_canvas`].
+enum Layer {
+    Band(Vec<ElemPaint>),
+    Overlay(gpui::AnyElement),
+}
+
+/// A transparent, full-size canvas painting one run of canvas-drawn elements
+/// (shapes / lines / pen / text) in order. Stacked between [`Layer::Overlay`]
+/// divs so paint order follows the element list.
+fn band_canvas(elems: Vec<ElemPaint>, cam: Camera) -> impl IntoElement {
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            for ep in &elems {
+                match &ep.text {
+                    Some(t) => paint_text(t, cam, bounds.origin, ep.stroke, window),
+                    None => paint_element(&ep.kind, cam, bounds.origin, ep.stroke, ep.fill, window),
+                }
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
 /// A text element's glyph outlines (text-local space) plus placement, captured
 /// for the paint closure to transform (camera + rotation) and fill.
 struct TextOutline {
@@ -3640,70 +3742,10 @@ impl Render for WhiteboardView {
         let zoom = cam.zoom.max(MIN_ZOOM);
         let bounds_cell = self.bounds.clone();
 
-        // One pass over the elements: lay out each text element with the font
-        // (setting its measured extent for selection/hit-test and producing
-        // outline segments) and snapshot each element's resolved colors for the
-        // paint closure. Text becomes vector outlines drawn on the canvas, so it
-        // z-orders with shapes and rotates with them. Re-laid each frame for now;
-        // see the path-cache note at the top.
-        let font = self.font.clone();
-        let editing = self.editing;
-        let elems: Vec<ElemPaint> = self
-            .scene
-            .elements
-            .iter_mut()
-            .map(|e| {
-                let stroke = e.stroke.map_or(ink, u32_to_hsla);
-                let fill = e.fill.map(u32_to_hsla);
-                let text = if let ElementKind::Text(t) = &mut e.kind {
-                    let layout = font.layout(&t.content, t.size);
-                    t.measured_w = layout.width;
-                    t.measured_h = layout.height;
-                    Some(TextOutline {
-                        segs: layout.segs,
-                        x: t.x,
-                        y: t.y,
-                        rotation: t.rotation,
-                        w: layout.width,
-                        h: layout.height,
-                        line_height: layout.line_height,
-                        caret: (editing == Some(e.id)).then_some(layout.caret),
-                    })
-                } else {
-                    None
-                };
-                ElemPaint {
-                    kind: e.kind.clone(),
-                    stroke,
-                    fill,
-                    text,
-                }
-            })
-            .collect();
-        // The in-progress element previews in the current active color / fill.
-        let pending_ink = self.active_stroke.map_or(ink, u32_to_hsla);
-        let pending_fill = self.active_fill.map(u32_to_hsla);
-        let pending = self.pending.as_ref().map(|p| p.kind.clone());
-        // A single selection gets the full box + handles (unless it's the text
-        // being edited — then just the caret). A multi-selection shows a single
-        // enclosing group box instead of per-element outlines (one box stays
-        // legible while rotating), with resize corners and — when at least one
-        // member can rotate — a shared rotate grip.
-        let single_sel = self
-            .selected_single()
-            .filter(|id| Some(*id) != self.editing)
-            .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
-            .map(|e| e.kind.clone());
-        let group_sel = (self.selected.len() > 1)
-            .then(|| self.selection_bbox())
-            .flatten()
-            .map(|bb| (bb, self.group_rotatable()));
-        let marquee = self.marquee;
-
         // Decoded bitmaps for image elements, fetched from the host (which decodes
-        // off-thread and re-renders when ready). Pre-fetched here — outside the
-        // overlay closure — so the host callback can borrow `window`/`cx` without
-        // clashing with the `self.scene` iteration below.
+        // off-thread and re-renders when ready). Pre-fetched here — before the
+        // element walk below — so the host callback can borrow `window`/`cx`
+        // without clashing with the `iter_mut`.
         // Keyed by element id (not src) so two elements sharing a file but at
         // different angles don't collide. The rotation is snapped to a quarter
         // turn (images rotate in 90° steps), so a steady angle hits the host's
@@ -3731,52 +3773,70 @@ impl Render for WhiteboardView {
             map
         };
 
-        // Page-cards and images render as positioned overlay children. Text is
-        // drawn as vector outlines on the canvas, not here.
-        let overlay_divs: Vec<_> = self
-            .scene
-            .elements
-            .iter()
-            .filter_map(|e| match &e.kind {
+        // One ordered pass over the elements, building the paint stack as a list
+        // of layers in `elements` order (later = on top). Canvas-drawn kinds
+        // (shapes / lines / pen / text) accumulate into a "band" canvas; an image
+        // or page-card flushes the band and adds its overlay div, so a shape can
+        // sit above or below an image. Text is laid out here (measured extent for
+        // selection/hit-test + outline segments) so it z-orders and rotates with
+        // shapes. Re-laid each frame for now; see the path-cache note at the top.
+        let font = self.font.clone();
+        let editing = self.editing;
+        let mut layers: Vec<Layer> = Vec::new();
+        let mut band: Vec<ElemPaint> = Vec::new();
+        for e in self.scene.elements.iter_mut() {
+            let id = e.id;
+            let stroke = e.stroke.map_or(ink, u32_to_hsla);
+            let fill = e.fill.map(u32_to_hsla);
+            match &mut e.kind {
                 // Page-card: a titled box (top-aligned header + hint) that links
                 // to a host page. Subtle border — the accent is the selection.
-                ElementKind::Embed(em) => Some(
-                    div()
-                        .absolute()
-                        .left(px((em.x - cam.x) * zoom))
-                        .top(px((em.y - cam.y) * zoom))
-                        .w(px(em.w * zoom))
-                        .h(px(em.h * zoom))
-                        .bg(panel)
-                        .border_1()
-                        .border_color(grid)
-                        .rounded(px(8.0))
-                        .overflow_hidden()
-                        .p(px(10.0 * zoom))
-                        .flex()
-                        .flex_col()
-                        .gap(px(3.0 * zoom))
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(6.0 * zoom))
-                                .text_size(px(14.0 * zoom))
-                                .text_color(ink)
-                                .child(div().text_color(accent).child("▤"))
-                                .child(SharedString::from(em.title.clone())),
-                        )
-                        .child(
-                            div()
-                                .text_size(px(11.0 * zoom))
-                                .text_color(text)
-                                .child("Double-click to open"),
-                        ),
-                ),
+                ElementKind::Embed(em) => {
+                    if !band.is_empty() {
+                        layers.push(Layer::Band(std::mem::take(&mut band)));
+                    }
+                    layers.push(Layer::Overlay(
+                        div()
+                            .absolute()
+                            .left(px((em.x - cam.x) * zoom))
+                            .top(px((em.y - cam.y) * zoom))
+                            .w(px(em.w * zoom))
+                            .h(px(em.h * zoom))
+                            .bg(panel)
+                            .border_1()
+                            .border_color(grid)
+                            .rounded(px(8.0))
+                            .overflow_hidden()
+                            .p(px(10.0 * zoom))
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.0 * zoom))
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(6.0 * zoom))
+                                    .text_size(px(14.0 * zoom))
+                                    .text_color(ink)
+                                    .child(div().text_color(accent).child("▤"))
+                                    .child(SharedString::from(em.title.clone())),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0 * zoom))
+                                    .text_color(text)
+                                    .child("Double-click to open"),
+                            )
+                            .into_any_element(),
+                    ));
+                }
                 // Image: the decoded bitmap (when the host has it ready), placed
                 // in the element box's quarter-turn-rotated AABB; else a
                 // placeholder while it loads.
                 ElementKind::Image(im) => {
+                    if !band.is_empty() {
+                        layers.push(Layer::Band(std::mem::take(&mut band)));
+                    }
                     let rot = snap_quarter(im.rotation);
                     let (bx, by, bw, bh) = if rot.abs() < ROT_EPS {
                         (im.x, im.y, im.w, im.h)
@@ -3793,7 +3853,7 @@ impl Render for WhiteboardView {
                         .h(px(bh * zoom))
                         .overflow_hidden()
                         .rounded(px(2.0));
-                    Some(match img_sources.get(&e.id) {
+                    let el = match img_sources.get(&id) {
                         // Set only the width and let gpui derive the height from the
                         // bitmap's aspect (its `Img` forces an `aspect_ratio` from the
                         // image, then ignores it unless a dimension is `Auto` — so
@@ -3818,11 +3878,60 @@ impl Render for WhiteboardView {
                                     .text_color(text)
                                     .child("Loading…"),
                             ),
-                    })
+                    };
+                    layers.push(Layer::Overlay(el.into_any_element()));
                 }
-                _ => None,
-            })
-            .collect();
+                // Canvas-drawn kinds: shapes / lines / pen / text.
+                kind => {
+                    let text = if let ElementKind::Text(t) = kind {
+                        let layout = font.layout(&t.content, t.size);
+                        t.measured_w = layout.width;
+                        t.measured_h = layout.height;
+                        Some(TextOutline {
+                            segs: layout.segs,
+                            x: t.x,
+                            y: t.y,
+                            rotation: t.rotation,
+                            w: layout.width,
+                            h: layout.height,
+                            line_height: layout.line_height,
+                            caret: (editing == Some(id)).then_some(layout.caret),
+                        })
+                    } else {
+                        None
+                    };
+                    band.push(ElemPaint {
+                        kind: kind.clone(),
+                        stroke,
+                        fill,
+                        text,
+                    });
+                }
+            }
+        }
+        if !band.is_empty() {
+            layers.push(Layer::Band(band));
+        }
+
+        // The in-progress element previews in the current active color / fill.
+        let pending_ink = self.active_stroke.map_or(ink, u32_to_hsla);
+        let pending_fill = self.active_fill.map(u32_to_hsla);
+        let pending = self.pending.as_ref().map(|p| p.kind.clone());
+        // A single selection gets the full box + handles (unless it's the text
+        // being edited — then just the caret). A multi-selection shows a single
+        // enclosing group box instead of per-element outlines (one box stays
+        // legible while rotating), with resize corners and — when at least one
+        // member can rotate — a shared rotate grip.
+        let single_sel = self
+            .selected_single()
+            .filter(|id| Some(*id) != self.editing)
+            .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
+            .map(|e| e.kind.clone());
+        let group_sel = (self.selected.len() > 1)
+            .then(|| self.selection_bbox())
+            .flatten()
+            .map(|bb| (bb, self.group_rotatable()));
+        let marquee = self.marquee;
 
         // Tool palette + actions (top-center). The pill `occlude()`s so a press
         // on a button doesn't also act on the board beneath it. Layout, left→right:
@@ -4073,23 +4182,84 @@ impl Render for WhiteboardView {
         // the cursor. Occluded so its button doesn't fall through to the canvas;
         // any other press dismisses it (see `on_left_down`).
         let menu = self.context_menu.map(|pos| {
-            div().absolute().left(pos.x).top(pos.y).occlude().child(
+            // One clickable row; clicking runs `act` and closes the menu.
+            let row = |id: &'static str, label: &'static str, shortcut: &'static str| {
                 div()
-                    .id("wb-ctx-save-template")
+                    .id(id)
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(16.0))
                     .px(px(10.0))
-                    .py(px(6.0))
-                    .rounded(px(8.0))
-                    .bg(panel_strong)
-                    .shadow_lg()
-                    .border_1()
-                    .border_color(grid)
+                    .py(px(5.0))
+                    .mx(px(4.0))
+                    .rounded(px(6.0))
                     .text_size(px(12.0))
                     .text_color(ink)
-                    .child("Save as template")
-                    .on_click(cx.listener(|this, _ev, window, cx| {
-                        this.save_selection_as_template(window, cx)
-                    })),
-            )
+                    .hover(|s| s.bg(grid))
+                    .child(label)
+                    .child(div().text_size(px(11.0)).text_color(text).child(shortcut))
+            };
+            let mut panel = div()
+                .absolute()
+                .left(pos.x)
+                .top(pos.y)
+                .occlude()
+                .min_w(px(176.0))
+                .py(px(4.0))
+                .rounded(px(8.0))
+                .bg(panel_strong)
+                .shadow_lg()
+                .border_1()
+                .border_color(grid)
+                .flex()
+                .flex_col()
+                .child(
+                    row("wb-ctx-front", "Bring to Front", "⌘⇧]").on_click(cx.listener(
+                        |this, _ev, window, cx| {
+                            this.context_menu = None;
+                            this.reorder_selection(ZOrder::ToFront, window, cx);
+                        },
+                    )),
+                )
+                .child(
+                    row("wb-ctx-forward", "Bring Forward", "⌘]").on_click(cx.listener(
+                        |this, _ev, window, cx| {
+                            this.context_menu = None;
+                            this.reorder_selection(ZOrder::Forward, window, cx);
+                        },
+                    )),
+                )
+                .child(
+                    row("wb-ctx-backward", "Send Backward", "⌘[").on_click(cx.listener(
+                        |this, _ev, window, cx| {
+                            this.context_menu = None;
+                            this.reorder_selection(ZOrder::Backward, window, cx);
+                        },
+                    )),
+                )
+                .child(
+                    row("wb-ctx-back", "Send to Back", "⌘⇧[").on_click(cx.listener(
+                        |this, _ev, window, cx| {
+                            this.context_menu = None;
+                            this.reorder_selection(ZOrder::ToBack, window, cx);
+                        },
+                    )),
+                );
+            // "Save as template" only when the host wired the callback.
+            if self.on_save_template.is_some() {
+                panel = panel
+                    .child(div().my(px(4.0)).mx(px(8.0)).h(px(1.0)).bg(grid))
+                    .child(
+                        row("wb-ctx-save-template", "Save as template", "").on_click(cx.listener(
+                            |this, _ev, window, cx| {
+                                this.context_menu = None;
+                                this.save_selection_as_template(window, cx);
+                            },
+                        )),
+                    );
+            }
+            panel
         });
 
         // Templates gallery modal: a dimming scrim (click to dismiss) centering a
@@ -4481,61 +4651,65 @@ impl Render for WhiteboardView {
             CursorStyle::Arrow
         };
 
+        // The board paints as a stack of layers (back → front): the grid /
+        // background; then the element layers (canvas "bands" interleaved with
+        // image / page-card overlays, in z-order); then a top "chrome" canvas for
+        // the in-progress element, selection box, and marquee — kept above the
+        // content so handles stay visible over images.
+        let board_layer = canvas(
+            move |bounds, _, _| bounds_cell.set(bounds),
+            move |bounds, _, window, _| paint_board(bounds, cam, bg, grid, window),
+        )
+        .absolute()
+        .size_full();
+        let element_layers: Vec<gpui::AnyElement> = layers
+            .into_iter()
+            .map(|l| match l {
+                Layer::Band(es) => band_canvas(es, cam).into_any_element(),
+                Layer::Overlay(el) => el,
+            })
+            .collect();
+        let chrome_layer = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| {
+                if let Some(k) = &pending {
+                    paint_element(k, cam, bounds.origin, pending_ink, pending_fill, window);
+                }
+                if let Some(k) = &single_sel {
+                    paint_selection(k, cam, bounds.origin, selection, window);
+                }
+                // Group: an enclosing box with resize corners, plus a shared
+                // rotate grip above it when the group can rotate.
+                if let Some((bb, can_rotate)) = group_sel {
+                    paint_box_outline(bb, cam, bounds.origin, selection, window);
+                    let tl = to_screen(bb.0, bb.1, cam, bounds.origin);
+                    let br = to_screen(bb.2, bb.3, cam, bounds.origin);
+                    let m = SEL_PAD_PX;
+                    let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
+                    let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
+                    for (hx, hy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                        draw_handle(hx, hy, selection, window);
+                    }
+                    if can_rotate {
+                        let (rx, ry) = rotate_handle_for_bbox(bb, cam, bounds.origin);
+                        draw_rotate_handle(rx, ry, selection, window);
+                    }
+                }
+                if let Some((a, b)) = marquee {
+                    paint_marquee(a, b, cam, bounds.origin, selection, window);
+                }
+            },
+        )
+        .absolute()
+        .size_full();
+
         div()
             .track_focus(&self.focus)
             .size_full()
             .relative()
             .overflow_hidden()
             .cursor(board_cursor)
-            .child(
-                canvas(
-                    move |bounds, _, _| bounds_cell.set(bounds),
-                    move |bounds, _, window, _| {
-                        paint_board(bounds, cam, bg, grid, window);
-                        for ep in &elems {
-                            match &ep.text {
-                                Some(t) => paint_text(t, cam, bounds.origin, ep.stroke, window),
-                                None => paint_element(
-                                    &ep.kind,
-                                    cam,
-                                    bounds.origin,
-                                    ep.stroke,
-                                    ep.fill,
-                                    window,
-                                ),
-                            }
-                        }
-                        if let Some(k) = &pending {
-                            paint_element(k, cam, bounds.origin, pending_ink, pending_fill, window);
-                        }
-                        if let Some(k) = &single_sel {
-                            paint_selection(k, cam, bounds.origin, selection, window);
-                        }
-                        // Group: an enclosing box with resize corners, plus a
-                        // shared rotate grip above it when the group can rotate.
-                        if let Some((bb, can_rotate)) = group_sel {
-                            paint_box_outline(bb, cam, bounds.origin, selection, window);
-                            let tl = to_screen(bb.0, bb.1, cam, bounds.origin);
-                            let br = to_screen(bb.2, bb.3, cam, bounds.origin);
-                            let m = SEL_PAD_PX;
-                            let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
-                            let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
-                            for (hx, hy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
-                                draw_handle(hx, hy, selection, window);
-                            }
-                            if can_rotate {
-                                let (rx, ry) = rotate_handle_for_bbox(bb, cam, bounds.origin);
-                                draw_rotate_handle(rx, ry, selection, window);
-                            }
-                        }
-                        if let Some((a, b)) = marquee {
-                            paint_marquee(a, b, cam, bounds.origin, selection, window);
-                        }
-                    },
-                )
-                .absolute()
-                .size_full(),
-            )
+            .child(board_layer)
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_left_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_left_up))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_down))
@@ -4555,7 +4729,8 @@ impl Render for WhiteboardView {
                     }
                 },
             ))
-            .children(overlay_divs)
+            .children(element_layers)
+            .child(chrome_layer)
             .child(toolbar)
             .children(flyout)
             .children(menu)
