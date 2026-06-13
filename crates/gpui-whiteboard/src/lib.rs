@@ -28,6 +28,7 @@
 mod font;
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 pub use font::Font;
@@ -90,6 +91,8 @@ const TEXT_LINE_H: f32 = 1.3;
 /// Default page-card size at creation, screen px (stored world size is / zoom).
 const EMBED_W: f32 = 210.0;
 const EMBED_H: f32 = 76.0;
+/// Longest edge of a freshly placed image, screen px (aspect preserved).
+const IMAGE_PLACE_PX: f32 = 280.0;
 
 /// The board document: everything persisted for a whiteboard. Owned and
 /// (de)serialized here; the host stores [`Scene::to_json`] opaquely (for zorite,
@@ -162,6 +165,7 @@ pub enum ElementKind {
     Arrow(SegGeom),
     Text(TextGeom),
     Embed(EmbedGeom),
+    Image(ImageGeom),
 }
 
 /// A page-card: a titled box anchored at `(x, y)` that links to a host page
@@ -171,6 +175,19 @@ pub enum ElementKind {
 pub struct EmbedGeom {
     pub page_id: i64,
     pub title: String,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// An image: a box anchored at `(x, y)` referencing a host-managed file (`src`,
+/// e.g. `images/<name>`). The crate is storage-agnostic — the host imports the
+/// file and supplies the decoded bitmap (see [`ImageFn`]); this stores the
+/// reference + geometry and draws it as an overlay.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ImageGeom {
+    pub src: String,
     pub x: f32,
     pub y: f32,
     pub w: f32,
@@ -300,6 +317,7 @@ pub enum Tool {
     Arrow,
     Text,
     Embed,
+    Image,
 }
 
 impl Tool {
@@ -323,6 +341,7 @@ impl Tool {
             Tool::Arrow => "↗",
             Tool::Text => "T",
             Tool::Embed => "▤",
+            Tool::Image => "▦",
         }
     }
 
@@ -344,6 +363,7 @@ impl Tool {
             Tool::Arrow => "Arrow (A)",
             Tool::Text => "Text (T)",
             Tool::Embed => "Page card",
+            Tool::Image => "Image (I) — click to place",
         }
     }
 
@@ -363,6 +383,7 @@ impl Tool {
             "l" => Tool::Line,
             "a" => Tool::Arrow,
             "t" => Tool::Text,
+            "i" => Tool::Image,
             _ => return None,
         })
     }
@@ -388,6 +409,7 @@ impl Tool {
         const ARROW: &[u8] = include_bytes!("../assets/icons/arrow.svg");
         const TEXT: &[u8] = include_bytes!("../assets/icons/text.svg");
         const EMBED: &[u8] = include_bytes!("../assets/icons/embed.svg");
+        const IMAGE: &[u8] = include_bytes!("../assets/icons/image.svg");
         match self {
             Tool::Pan => Some(("wb-icon-pan", PAN)),
             Tool::Select => Some(("wb-icon-select", SELECT)),
@@ -403,6 +425,7 @@ impl Tool {
             Tool::Arrow => Some(("wb-icon-arrow", ARROW)),
             Tool::Text => Some(("wb-icon-text", TEXT)),
             Tool::Embed => Some(("wb-icon-embed", EMBED)),
+            Tool::Image => Some(("wb-icon-image", IMAGE)),
         }
     }
 }
@@ -436,7 +459,7 @@ impl ToolGroup {
                 Tool::Star,
             ],
             ToolGroup::Lines => &[Tool::Pen, Tool::Line, Tool::Arrow],
-            ToolGroup::PagesImages => &[Tool::Embed],
+            ToolGroup::PagesImages => &[Tool::Embed, Tool::Image],
         }
     }
 
@@ -571,6 +594,19 @@ pub type SaveTemplateFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
 /// Called to delete a stored template by its host id (right-click a card).
 pub type DeleteTemplateFn = Rc<dyn Fn(i64, &mut Window, &mut App)>;
 
+/// Called each render to fetch the decoded bitmap for an image element's `src`.
+/// The host serves it from its image cache, decoding off-thread on the first ask
+/// (returning `None` until ready, then re-rendering the board).
+pub type ImageFn = Rc<dyn Fn(&str, &mut Window, &mut App) -> Option<gpui::ImageSource>>;
+
+/// Called when the image tool is clicked at world `(x, y)` — the host picks a
+/// file and calls [`WhiteboardView::add_image_at`].
+pub type PlaceImageFn = Rc<dyn Fn(f32, f32, &mut Window, &mut App)>;
+
+/// Called when files are dropped onto the canvas at world `(x, y)` — the host
+/// imports any images and places them via [`WhiteboardView::add_image_at`].
+pub type DropFilesFn = Rc<dyn Fn(Vec<std::path::PathBuf>, f32, f32, &mut Window, &mut App)>;
+
 /// A reusable group of elements the user can stamp onto a board. Element
 /// positions are normalized so the group's bounding box starts at the origin;
 /// applying re-bases them to the viewport. The host owns persistence and the
@@ -702,6 +738,9 @@ pub struct WhiteboardView {
     on_open: Option<OpenPageFn>,
     on_save_template: Option<SaveTemplateFn>,
     on_delete_template: Option<DeleteTemplateFn>,
+    on_image: Option<ImageFn>,
+    on_place_image: Option<PlaceImageFn>,
+    on_drop_files: Option<DropFilesFn>,
     /// Stored templates, supplied by the host; shown as cards in the Pages &
     /// Images flyout.
     templates: Vec<Template>,
@@ -790,6 +829,9 @@ impl WhiteboardView {
             on_open: None,
             on_save_template: None,
             on_delete_template: None,
+            on_image: None,
+            on_place_image: None,
+            on_drop_files: None,
             templates: Vec::new(),
             context_menu: None,
             font: Font::default(),
@@ -849,6 +891,21 @@ impl WhiteboardView {
     /// Install the delete-template hook (right-click a template card → delete).
     pub fn set_on_delete_template(&mut self, f: DeleteTemplateFn) {
         self.on_delete_template = Some(f);
+    }
+
+    /// Install the image-fetch hook (decoded bitmap for an element's `src`).
+    pub fn set_on_image(&mut self, f: ImageFn) {
+        self.on_image = Some(f);
+    }
+
+    /// Install the place-image hook (image tool click → host file picker).
+    pub fn set_on_place_image(&mut self, f: PlaceImageFn) {
+        self.on_place_image = Some(f);
+    }
+
+    /// Install the file-drop hook (files dropped on the canvas).
+    pub fn set_on_drop_files(&mut self, f: DropFilesFn) {
+        self.on_drop_files = Some(f);
     }
 
     /// Replace the stored templates shown in the Pages & Images flyout. The host
@@ -918,6 +975,57 @@ impl WhiteboardView {
         self.selected = vec![id];
         self.tool = Tool::Select;
         cx.notify();
+    }
+
+    /// Add an image element referencing `src`, centered at world `(cx_world,
+    /// cy_world)` and sized from its pixel dimensions so the longest edge is
+    /// ~[`IMAGE_PLACE_PX`] on screen (aspect preserved). Like [`add_embed`], the
+    /// host persists afterward (this is called mid-host-update).
+    ///
+    /// [`add_embed`]: Self::add_embed
+    pub fn add_image_at(
+        &mut self,
+        src: impl Into<String>,
+        px_w: f32,
+        px_h: f32,
+        cx_world: f32,
+        cy_world: f32,
+        cx: &mut Context<Self>,
+    ) {
+        self.push_undo();
+        let id = self.next_id;
+        self.next_id += 1;
+        let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+        let longest = px_w.max(px_h).max(1.0);
+        let scale = IMAGE_PLACE_PX / longest / zoom;
+        let (w, h) = (px_w * scale, px_h * scale);
+        self.scene.elements.push(Element {
+            id,
+            kind: ElementKind::Image(ImageGeom {
+                src: src.into(),
+                x: cx_world - w / 2.0,
+                y: cy_world - h / 2.0,
+                w,
+                h,
+            }),
+            stroke: None,
+            fill: None,
+        });
+        self.selected = vec![id];
+        self.tool = Tool::Select;
+        cx.notify();
+    }
+
+    /// The world point at the center of the current viewport — where paste drops
+    /// an image (the host has no access to the camera otherwise).
+    pub fn viewport_center(&self) -> [f32; 2] {
+        let b = self.bounds.get();
+        let cam = self.scene.camera;
+        let z = cam.zoom.max(MIN_ZOOM);
+        [
+            cam.x + f32::from(b.size.width) / 2.0 / z,
+            cam.y + f32::from(b.size.height) / 2.0 / z,
+        ]
     }
 
     /// The current board document (for the host to persist).
@@ -1701,6 +1809,14 @@ impl WhiteboardView {
             return;
         }
 
+        if self.tool == Tool::Image {
+            // The host picks an image file, then calls back into `add_image_at`.
+            if let Some(f) = self.on_place_image.clone() {
+                f(p[0], p[1], window, cx);
+            }
+            return;
+        }
+
         if self.tool == Tool::Select {
             // A handle on the current selection takes priority.
             if let Some(grab) = self.handle_hit(ev.position) {
@@ -1843,7 +1959,7 @@ impl WhiteboardView {
                 width,
             }),
             // These tools don't create a drag-element here (handled earlier).
-            Tool::Pan | Tool::Select | Tool::Text | Tool::Embed => return,
+            Tool::Pan | Tool::Select | Tool::Text | Tool::Embed | Tool::Image => return,
         };
         self.pending = Some(Pending { anchor, kind });
         cx.notify();
@@ -2066,14 +2182,16 @@ impl WhiteboardView {
             if ev.modifiers.alt {
                 target = [snap_grid(target[0]), snap_grid(target[1])];
             }
-            // Text always scales proportionally (its size is a single font
-            // size); Shift does so for shapes; and a *rotated* box-like element
-            // must (its anchor is the center, so a uniform scale keeps it correct
-            // under rotation). Both use the diagonal projection so the corner
-            // tracks the cursor at the right rate. Free resize is per-axis.
+            // Text and images always scale proportionally (text is a single font
+            // size; an image would distort otherwise); Shift does so for shapes;
+            // and a *rotated* box-like element must (its anchor is the center, so
+            // a uniform scale keeps it correct under rotation). Both use the
+            // diagonal projection so the corner tracks the cursor at the right
+            // rate. Free resize is per-axis.
             let rotated = box_like(&kind).is_some_and(|(.., r)| r.abs() > ROT_EPS);
-            let proportional =
-                ev.modifiers.shift || rotated || matches!(kind, ElementKind::Text(_));
+            let proportional = ev.modifiers.shift
+                || rotated
+                || matches!(kind, ElementKind::Text(_) | ElementKind::Image(_));
             let (sx, sy) = if proportional {
                 let s = diagonal_scale(anchor, from, target);
                 (s, s)
@@ -2219,8 +2337,8 @@ impl WhiteboardView {
                     s.x2 = c[0];
                     s.y2 = c[1];
                 }
-                // Text/cards aren't created by dragging, so never pending here.
-                ElementKind::Text(_) | ElementKind::Embed(_) => {}
+                // Text/cards/images aren't created by dragging, never pending here.
+                ElementKind::Text(_) | ElementKind::Embed(_) | ElementKind::Image(_) => {}
             }
             cx.notify();
             return;
@@ -2372,8 +2490,8 @@ fn committable(kind: &ElementKind) -> bool {
             let (dx, dy) = (s.x2 - s.x1, s.y2 - s.y1);
             dx * dx + dy * dy > 4.0
         }
-        // Text and cards are created on click (not via a drag), never pending.
-        ElementKind::Text(_) | ElementKind::Embed(_) => false,
+        // Text / cards / images are placed on click (not via a drag), never pending.
+        ElementKind::Text(_) | ElementKind::Embed(_) | ElementKind::Image(_) => false,
     }
 }
 
@@ -2571,7 +2689,7 @@ fn reference_angle(kind: &ElementKind) -> Option<f32> {
         | ElementKind::Hexagon(b) => Some(b.rotation),
         ElementKind::Text(t) => Some(t.rotation),
         ElementKind::Line(s) | ElementKind::Arrow(s) => Some((s.y2 - s.y1).atan2(s.x2 - s.x1)),
-        ElementKind::Draw(_) | ElementKind::Embed(_) => None,
+        ElementKind::Draw(_) | ElementKind::Embed(_) | ElementKind::Image(_) => None,
     }
 }
 
@@ -2615,9 +2733,10 @@ fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
                 (p[0], p[1]) = (x, y);
             }
         }
-        // A card can't tilt (it's an HTML overlay), but in a group it orbits the
-        // pivot so the selection moves together.
+        // A card / image can't tilt (it's an overlay), but in a group it orbits
+        // the pivot so the selection moves together.
         ElementKind::Embed(em) => (em.x, em.y) = orbit(em.x, em.y, em.w, em.h),
+        ElementKind::Image(im) => (im.x, im.y) = orbit(im.x, im.y, im.w, im.h),
     }
 }
 
@@ -2656,6 +2775,7 @@ fn bbox(kind: &ElementKind) -> (f32, f32, f32, f32) {
             s.y1.max(s.y2),
         ),
         ElementKind::Embed(em) => (em.x, em.y, em.x + em.w, em.y + em.h),
+        ElementKind::Image(im) => (im.x, im.y, im.x + im.w, im.y + im.h),
         // Handled above (all box-like kinds go through `box_like`).
         ElementKind::Rect(_)
         | ElementKind::Ellipse(_)
@@ -2729,6 +2849,10 @@ fn translate(kind: &mut ElementKind, dx: f32, dy: f32) {
         ElementKind::Embed(em) => {
             em.x += dx;
             em.y += dy;
+        }
+        ElementKind::Image(im) => {
+            im.x += dx;
+            im.y += dy;
         }
     }
 }
@@ -2884,6 +3008,14 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
             em.w = (x1 - x0).abs();
             em.y = y0.min(y1);
             em.h = (y1 - y0).abs();
+        }
+        ElementKind::Image(im) => {
+            let (x0, x1) = (fx(im.x), fx(im.x + im.w));
+            let (y0, y1) = (fy(im.y), fy(im.y + im.h));
+            im.x = x0.min(x1);
+            im.w = (x1 - x0).abs();
+            im.y = y0.min(y1);
+            im.h = (y1 - y0).abs();
         }
     }
 }
@@ -3044,8 +3176,8 @@ fn paint_element(
         }
         ElementKind::Line(s) => paint_segment(s, false, cam, origin, ink, window),
         ElementKind::Arrow(s) => paint_segment(s, true, cam, origin, ink, window),
-        // Text and cards are drawn as overlay elements in render(), not here.
-        ElementKind::Text(_) | ElementKind::Embed(_) => {}
+        // Text / cards / images are drawn as overlay elements in render(), not here.
+        ElementKind::Text(_) | ElementKind::Embed(_) | ElementKind::Image(_) => {}
     }
 }
 
@@ -3467,7 +3599,7 @@ fn paint_marquee(
 }
 
 impl Render for WhiteboardView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let WhiteboardStyle {
             bg,
             grid,
@@ -3543,8 +3675,33 @@ impl Render for WhiteboardView {
             .map(|bb| (bb, self.group_rotatable()));
         let marquee = self.marquee;
 
-        // Page-cards render as positioned overlay children (host-styled boxes).
-        // Text is no longer a div — it's drawn as vector outlines on the canvas.
+        // Decoded bitmaps for image elements, fetched from the host (which decodes
+        // off-thread and re-renders when ready). Pre-fetched here — outside the
+        // overlay closure — so the host callback can borrow `window`/`cx` without
+        // clashing with the `self.scene` iteration below.
+        let img_sources: HashMap<String, gpui::ImageSource> = {
+            let srcs: Vec<String> = self
+                .scene
+                .elements
+                .iter()
+                .filter_map(|e| match &e.kind {
+                    ElementKind::Image(im) => Some(im.src.clone()),
+                    _ => None,
+                })
+                .collect();
+            let mut map = HashMap::new();
+            if let Some(f) = self.on_image.clone() {
+                for src in srcs {
+                    if let Some(s) = f(&src, window, cx) {
+                        map.insert(src, s);
+                    }
+                }
+            }
+            map
+        };
+
+        // Page-cards and images render as positioned overlay children. Text is
+        // drawn as vector outlines on the canvas, not here.
         let overlay_divs: Vec<_> = self
             .scene
             .elements
@@ -3585,6 +3742,34 @@ impl Render for WhiteboardView {
                                 .child("Double-click to open"),
                         ),
                 ),
+                // Image: the decoded bitmap (when the host has it ready) scaled to
+                // the element box, else a placeholder while it loads.
+                ElementKind::Image(im) => {
+                    let frame = div()
+                        .absolute()
+                        .left(px((im.x - cam.x) * zoom))
+                        .top(px((im.y - cam.y) * zoom))
+                        .w(px(im.w * zoom))
+                        .h(px(im.h * zoom))
+                        .overflow_hidden()
+                        .rounded(px(2.0));
+                    Some(match img_sources.get(&im.src) {
+                        Some(src) => frame.child(gpui::img(src.clone()).size_full()),
+                        None => frame
+                            .bg(panel)
+                            .border_1()
+                            .border_color(grid)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                div()
+                                    .text_size(px(11.0 * zoom))
+                                    .text_color(text)
+                                    .child("Loading…"),
+                            ),
+                    })
+                }
                 _ => None,
             })
             .collect();
@@ -4310,6 +4495,16 @@ impl Render for WhiteboardView {
             .on_scroll_wheel(cx.listener(Self::on_scroll))
             .on_pinch(cx.listener(Self::on_pinch))
             .on_key_down(cx.listener(Self::on_key))
+            // Files dragged from the OS land as `ExternalPaths`; hand them to the
+            // host (which imports any images) at the drop point.
+            .on_drop::<gpui::ExternalPaths>(cx.listener(
+                |this, paths: &gpui::ExternalPaths, window, cx| {
+                    if let Some(f) = this.on_drop_files.clone() {
+                        let w = this.event_to_world(window.mouse_position());
+                        f(paths.paths().to_vec(), w[0], w[1], window, cx);
+                    }
+                },
+            ))
             .children(overlay_divs)
             .child(toolbar)
             .children(flyout)
@@ -4702,6 +4897,35 @@ mod tests {
             width: 1.0,
             rotation: 0.0,
         })));
+    }
+
+    #[test]
+    fn image_round_trips_and_behaves_like_a_box() {
+        let kind = ElementKind::Image(ImageGeom {
+            src: "images/x.png".into(),
+            x: 10.0,
+            y: 20.0,
+            w: 100.0,
+            h: 60.0,
+        });
+        // Bounds = the box; not a fillable closed shape.
+        assert_eq!(bbox(&kind), (10.0, 20.0, 110.0, 80.0));
+        assert!(!is_closed_shape(&kind));
+        // Round-trips through JSON under the "image" tag, keeping its src.
+        let elem = Element {
+            id: 1,
+            kind,
+            stroke: None,
+            fill: None,
+        };
+        let json = serde_json::to_string(&elem).unwrap();
+        assert!(json.contains("\"image\""), "{json}");
+        assert!(json.contains("images/x.png"));
+        let mut back = serde_json::from_str::<Element>(&json).unwrap().kind;
+        assert_eq!(bbox(&back), (10.0, 20.0, 110.0, 80.0));
+        // Translates like the other box kinds.
+        translate(&mut back, 5.0, -3.0);
+        assert_eq!(bbox(&back), (15.0, 17.0, 115.0, 77.0));
     }
 
     #[test]

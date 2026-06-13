@@ -2016,6 +2016,35 @@ impl AppView {
                     app.update(cx, |a, cx| a.confirm_delete_template(tid, window, cx));
                 }
             }));
+            // Serve a decoded bitmap for an image element from the shared store
+            // (decoding off-thread on the first ask; the decode notifies the
+            // AppView, which re-renders the board).
+            let w = weak.clone();
+            v.set_on_image(Rc::new(move |src, _window, cx| {
+                let app = w.upgrade()?;
+                app.update(cx, |a, cx| {
+                    let src: SharedString = src.to_string().into();
+                    a.ensure_image_loaded(src.clone(), cx);
+                    a.image_store
+                        .borrow()
+                        .get(&src)
+                        .map(gpui::ImageSource::from)
+                })
+            }));
+            // Image tool click → file picker → place at the click point.
+            let w = weak.clone();
+            v.set_on_place_image(Rc::new(move |x, y, window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.pick_image_for_board(id, x, y, window, cx));
+                }
+            }));
+            // Files dropped on the canvas → import the images, place at the drop.
+            let w = weak.clone();
+            v.set_on_drop_files(Rc::new(move |paths, x, y, _window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.drop_files_on_board(id, paths, x, y, cx));
+                }
+            }));
         });
         self.whiteboard_views.insert(id, view);
         // Seed the new view with the current template list.
@@ -2035,6 +2064,109 @@ impl AppView {
             let templates = templates.clone();
             view.update(cx, |v, cx| v.set_templates(templates, cx));
         }
+    }
+
+    /// Image tool click on board `board_id` at world `(x, y)`: pick a file, then
+    /// import + place it.
+    fn pick_image_for_board(
+        &mut self,
+        board_id: i64,
+        x: f32,
+        y: f32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Place".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.place_image_file_on_board(board_id, path, x, y, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Files dropped on board `board_id` at world `(x, y)`: import each supported
+    /// image and place it, nudging successive drops so they don't fully overlap.
+    fn drop_files_on_board(
+        &mut self,
+        board_id: i64,
+        paths: Vec<PathBuf>,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let mut n = 0.0;
+        for path in paths {
+            if crate::images::is_supported(&path) {
+                self.place_image_file_on_board(board_id, path, x + n * 16.0, y + n * 16.0, cx);
+                n += 1.0;
+            }
+        }
+    }
+
+    /// Copy an image file into the managed images dir, then place it on the board.
+    fn place_image_file_on_board(
+        &mut self,
+        board_id: i64,
+        path: PathBuf,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::images::import_file(&path) {
+            Ok(rel) => self.add_image_to_board(board_id, rel.into(), x, y, cx),
+            Err(e) => log::error!("import image {}: {e}", path.display()),
+        }
+    }
+
+    /// Decode `src` (off-thread) to learn its pixel size, cache the bitmap, then
+    /// add an image element centered at world `(x, y)` and persist the board.
+    fn add_image_to_board(
+        &mut self,
+        board_id: i64,
+        src: SharedString,
+        x: f32,
+        y: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(path) = crate::paths::resolve_local(&src) else {
+            return;
+        };
+        cx.spawn(async move |this, cx| {
+            let decoded = cx
+                .background_executor()
+                .spawn(async move { crate::images::decode_scaled(&path) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                let Some(img) = decoded else {
+                    log::error!("decode image {src}");
+                    return;
+                };
+                let size = img.size(0);
+                let (pw, ph) = (size.width.0 as f32, size.height.0 as f32);
+                this.image_store.borrow_mut().finish(src.clone(), Some(img));
+                if let Some(view) = this.whiteboard_views.get(&board_id).cloned() {
+                    let json = view.update(cx, |v, cx| {
+                        v.add_image_at(src.to_string(), pw, ph, x, y, cx);
+                        v.scene().to_json()
+                    });
+                    this.save_board(board_id, &json);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Persist a whiteboard's canvas JSON and index its page-card embeds as
@@ -2514,19 +2646,40 @@ impl AppView {
     /// focused, save it and insert a reference. Otherwise propagate so
     /// gpui-component's normal text paste runs.
     fn on_paste_image(&mut self, _: &PasteImage, window: &mut Window, cx: &mut Context<Self>) {
+        let clip_image = |cx: &mut Context<Self>| {
+            cx.read_from_clipboard()?
+                .entries()
+                .iter()
+                .find_map(|e| match e {
+                    ClipboardEntry::Image(img) => {
+                        Some((img.bytes().to_vec(), clipboard_ext(img.format())))
+                    }
+                    _ => None,
+                })
+        };
+        // On a whiteboard, paste an image element at the viewport center.
+        if let TabKind::Whiteboard(board_id) = self.tabs[self.active].kind {
+            let Some((bytes, ext)) = clip_image(cx) else {
+                cx.propagate();
+                return;
+            };
+            match crate::images::import_bytes(&bytes, ext) {
+                Ok(rel) => {
+                    if let Some(view) = self.whiteboard_views.get(&board_id).cloned() {
+                        let c = view.read(cx).viewport_center();
+                        self.add_image_to_board(board_id, rel.into(), c[0], c[1], cx);
+                    }
+                }
+                Err(e) => log::error!("save pasted image: {e}"),
+            }
+            return;
+        }
+        // Otherwise: a focused day/page editor inserts an inline markdown image.
         let Some(target) = self.focused_editor_target() else {
             cx.propagate();
             return;
         };
-        let Some(item) = cx.read_from_clipboard() else {
-            cx.propagate();
-            return;
-        };
-        let image = item.entries().iter().find_map(|e| match e {
-            ClipboardEntry::Image(img) => Some((img.bytes().to_vec(), clipboard_ext(img.format()))),
-            _ => None,
-        });
-        let Some((bytes, ext)) = image else {
+        let Some((bytes, ext)) = clip_image(cx) else {
             cx.propagate();
             return;
         };
