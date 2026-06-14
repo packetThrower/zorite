@@ -64,26 +64,20 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
     }
 
     // Whiteboards: every board, shown flat (a distinct surface from the notes
-    // tree). Always-present header carries a `+` to create a new board.
+    // tree). New boards are created from the `+`-style button in the top toolbar.
     let mut wb_rows: Vec<AnyElement> = Vec::with_capacity(app.whiteboards.len());
     for page in &app.whiteboards {
         wb_rows.push(whiteboard_row(page, app, window, cx));
     }
 
     // Collapsible section headers (a click toggles; the rows are hidden when
-    // collapsed). The Whiteboards header carries the `+` to create a board.
+    // collapsed).
     let fav_collapsed = app.is_section_collapsed("favorites");
     let wb_collapsed = app.is_section_collapsed("whiteboards");
     let recent_collapsed = app.is_section_collapsed("recent");
-    let fav_header = section_header("Favorites", "favorites", fav_collapsed, None, cx);
-    let wb_header = section_header(
-        "Whiteboards",
-        "whiteboards",
-        wb_collapsed,
-        Some(new_whiteboard_icon(cx).into_any_element()),
-        cx,
-    );
-    let recent_header = section_header("Recent", "recent", recent_collapsed, None, cx);
+    let fav_header = section_header("Favorites", "favorites", fav_collapsed, cx);
+    let wb_header = section_header("Whiteboards", "whiteboards", wb_collapsed, cx);
+    let recent_header = section_header("Recent", "recent", recent_collapsed, cx);
 
     div()
         .w(px(240.0))
@@ -119,6 +113,7 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                                 .items_center()
                                 .gap_1()
                                 .child(new_page_icon(cx))
+                                .child(new_whiteboard_icon(cx))
                                 .child(date_icon(cx))
                                 .child(settings_gear(cx)),
                         ),
@@ -215,7 +210,7 @@ fn collapsed_rail(cx: &mut Context<AppView>) -> impl IntoElement {
 
 /// Shared styling for the square sidebar icon buttons. The caller chains
 /// `.on_click(...)`.
-fn icon_btn(id: &'static str, icon: IconName) -> Stateful<Div> {
+fn icon_btn(id: &'static str, icon: impl Into<Icon>) -> Stateful<Div> {
     div()
         .id(id)
         .flex_shrink_0()
@@ -258,11 +253,13 @@ fn date_icon(cx: &mut Context<AppView>) -> impl IntoElement {
 /// The "new page" plus button, next to the calendar. Dispatches `NewPage`, which
 /// prompts for a title (same path as the pages-area right-click "New page" menu).
 fn new_page_icon(cx: &mut Context<AppView>) -> impl IntoElement {
-    icon_btn("new-page", IconName::Plus).on_click(cx.listener(
-        |_this: &mut AppView, _: &ClickEvent, window, cx| {
-            window.dispatch_action(Box::new(NewPage), cx);
-        },
-    ))
+    icon_btn("new-page", IconName::Plus)
+        .on_click(
+            cx.listener(|_this: &mut AppView, _: &ClickEvent, window, cx| {
+                window.dispatch_action(Box::new(NewPage), cx);
+            }),
+        )
+        .tooltip(|window, cx| Tooltip::new("New page").build(window, cx))
 }
 
 /// The settings gear. Opens the Settings window (deferred — opening a window
@@ -484,16 +481,20 @@ fn whiteboard_row(
     with_page_menu(row, page.id, title, app.is_favorite(page.id), cx)
 }
 
-/// The `+` in the Whiteboards section header — creates a new board. Acts on press
-/// and stops propagation so it doesn't also toggle the section's collapse.
+/// The "new whiteboard" button in the sidebar's top toolbar — the Lucide
+/// `clipboard-plus` icon (bundled in `assets/icons`, served by the app's asset
+/// source), labelled by a tooltip.
 fn new_whiteboard_icon(cx: &mut Context<AppView>) -> impl IntoElement {
-    icon_btn("new-whiteboard", IconName::Plus).on_mouse_down(
-        MouseButton::Left,
-        cx.listener(|this: &mut AppView, _, window, cx| {
-            cx.stop_propagation();
+    icon_btn(
+        "new-whiteboard",
+        Icon::empty().path("icons/clipboard-plus.svg"),
+    )
+    .on_click(
+        cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
             this.new_whiteboard(window, cx);
         }),
     )
+    .tooltip(|window, cx| Tooltip::new("New whiteboard").build(window, cx))
 }
 
 /// Shared styling for a clickable sidebar page row (the caller chains `on_click`,
@@ -607,15 +608,13 @@ fn with_page_menu(
     .into_any_element()
 }
 
-/// A collapsible section header: the uppercase title, a hairline rule, an optional
-/// trailing action (e.g. the Whiteboards `+`), and a disclosure chevron at the
-/// right end of the rule. Clicking the header toggles section `key`; the action
-/// stops propagation so it doesn't also toggle.
+/// A collapsible section header: the uppercase title, a hairline rule, and a
+/// disclosure chevron at the right end of the rule. Clicking the header toggles
+/// section `key`.
 fn section_header(
     title: &str,
     key: &'static str,
     collapsed: bool,
-    action: Option<AnyElement>,
     cx: &mut Context<AppView>,
 ) -> AnyElement {
     let chev = if collapsed {
@@ -643,7 +642,6 @@ fn section_header(
         )
         // A hairline rule fills the rest of the row, separating the groups.
         .child(div().flex_1().h(px(1.0)).bg(theme::divider()))
-        .children(action)
         // The disclosure chevron, at the right end of the rule.
         .child(
             div()

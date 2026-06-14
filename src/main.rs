@@ -29,11 +29,35 @@ mod theme;
 mod ui;
 mod whiteboard;
 
+use std::borrow::Cow;
+
 use gpui::{
-    App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowDecorations, WindowOptions, px,
-    size,
+    App, AppContext, AssetSource, Bounds, Result, SharedString, TitlebarOptions, WindowBounds,
+    WindowDecorations, WindowOptions, px, size,
 };
 use gpui_component::{Root, TitleBar};
+
+/// The app's asset source: serves our bundled custom icons (Lucide faces not in
+/// the gpui-component set) and delegates everything else to gpui-component's
+/// embedded assets.
+struct Assets;
+
+/// Lucide `clipboard-plus` (not packaged by gpui-component), served at the same
+/// `icons/<name>.svg` path scheme so [`gpui_component::Icon::path`] can use it.
+const CLIPBOARD_PLUS: &[u8] = include_bytes!("../assets/icons/clipboard-plus.svg");
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        if path == "icons/clipboard-plus.svg" {
+            return Ok(Some(Cow::Borrowed(CLIPBOARD_PLUS)));
+        }
+        gpui_component_assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        gpui_component_assets::Assets.list(path)
+    }
+}
 
 use app::{
     AppView, DocSignal, GlobalAppWindows, GlobalDocSignal, GlobalDraggingTab, GlobalDropTarget,
@@ -43,7 +67,7 @@ use app::{
 fn main() {
     env_logger::init();
 
-    let application = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let application = gpui_platform::application().with_assets(Assets);
     application.run(|cx: &mut App| {
         gpui_component::init(cx);
         // Slash-menu keys (up/down/enter/escape, gated on the menu being open)
