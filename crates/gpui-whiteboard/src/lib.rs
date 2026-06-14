@@ -681,24 +681,26 @@ struct Pending {
     kind: ElementKind,
 }
 
-/// An in-progress corner-resize of a selected box/stroke.
+/// An in-progress resize of a single selected element by one of its handles.
 struct Resizing {
     id: u64,
-    /// The fixed (opposite) corner, world space.
+    /// Which handle is being dragged (corner = free/proportional, edge = one axis).
+    handle: ResizeHandle,
+    /// The fixed (opposite) corner/edge the scale is about, world space.
     anchor: [f32; 2],
-    /// The dragged corner's original position, world space.
+    /// The dragged handle's original position, world space.
     from: [f32; 2],
-    /// World offset from the cursor to the dragged corner at grab time, kept so
-    /// the corner tracks the cursor 1:1 (no jump on grab).
+    /// World offset from the cursor to the dragged handle at grab time, kept so
+    /// it tracks the cursor 1:1 (no jump on grab).
     grab: [f32; 2],
     /// The element's geometry at the start of the resize.
     orig: ElementKind,
 }
 
-/// Which group-bounds handle drives a [`GroupResizing`]: a corner (proportional,
-/// both axes locked together) or an edge midpoint (one axis only).
+/// Which handle drives a resize ([`Resizing`] or [`GroupResizing`]): a corner
+/// (both axes together) or an edge midpoint (one axis only).
 #[derive(Clone, Copy)]
-enum GroupHandle {
+enum ResizeHandle {
     /// A corner grip — uniform scale about the opposite corner.
     Corner,
     /// A left/right edge grip — scales x only, about the opposite edge.
@@ -713,7 +715,7 @@ enum GroupHandle {
 /// edge. Each member is scaled from its geometry at grab so it never compounds.
 struct GroupResizing {
     /// Which handle is being dragged (corner = both axes, edge = one).
-    handle: GroupHandle,
+    handle: ResizeHandle,
     /// The fixed point the scale is about, world space (opposite corner/edge).
     anchor: [f32; 2],
     /// The dragged handle's original position, world space.
@@ -1831,7 +1833,7 @@ impl WhiteboardView {
                 if near(wc[i].0, wc[i].1, off[i].0, off[i].1) {
                     let opp = wc[3 - i];
                     return Some(HandleGrab::GroupCorner(GroupResizing {
-                        handle: GroupHandle::Corner,
+                        handle: ResizeHandle::Corner,
                         anchor: [opp.0, opp.1],
                         from: [wc[i].0, wc[i].1],
                         grab: [wc[i].0 - cursor[0], wc[i].1 - cursor[1]],
@@ -1844,25 +1846,25 @@ impl WhiteboardView {
             let (mx, my) = ((bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0);
             let edges = [
                 (
-                    GroupHandle::EdgeX,
+                    ResizeHandle::EdgeX,
                     [bb.0, my],
                     (-SEL_PAD_PX, 0.0),
                     [bb.2, my],
                 ),
                 (
-                    GroupHandle::EdgeX,
+                    ResizeHandle::EdgeX,
                     [bb.2, my],
                     (SEL_PAD_PX, 0.0),
                     [bb.0, my],
                 ),
                 (
-                    GroupHandle::EdgeY,
+                    ResizeHandle::EdgeY,
                     [mx, bb.1],
                     (0.0, -SEL_PAD_PX),
                     [mx, bb.3],
                 ),
                 (
-                    GroupHandle::EdgeY,
+                    ResizeHandle::EdgeY,
                     [mx, bb.3],
                     (0.0, SEL_PAD_PX),
                     [mx, bb.1],
@@ -1918,11 +1920,31 @@ impl WhiteboardView {
                     let anchor = if rotated { center } else { cu[(i + 2) % 4] };
                     return Some(HandleGrab::Corner(Resizing {
                         id,
+                        handle: ResizeHandle::Corner,
                         anchor,
                         from: cu[i],
                         grab: [cu[i][0] - cursor[0], cu[i][1] - cursor[1]],
                         orig: kind.clone(),
                     }));
+                }
+            }
+            // Edge midpoints stretch one axis. Offered only upright (a rotated
+            // box's edges aren't world-axis-aligned) and not for text — a single
+            // font size can't stretch one axis, so its edges would just duplicate
+            // the proportional corners.
+            if !rotated && !matches!(kind, ElementKind::Text(_)) {
+                let mid = |a: [f32; 2], b: [f32; 2]| [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                if let Some(r) = self.edge_handle_hit(
+                    id,
+                    kind,
+                    &near,
+                    cursor,
+                    mid(cu[0], cu[1]),
+                    mid(cu[1], cu[2]),
+                    mid(cu[2], cu[3]),
+                    mid(cu[3], cu[0]),
+                ) {
+                    return Some(r);
                 }
             }
             return None;
@@ -1942,9 +1964,57 @@ impl WhiteboardView {
                 let opp = wc[3 - i];
                 return Some(HandleGrab::Corner(Resizing {
                     id,
+                    handle: ResizeHandle::Corner,
                     anchor: [opp.0, opp.1],
                     from: [wc[i].0, wc[i].1],
                     grab: [wc[i].0 - cursor[0], wc[i].1 - cursor[1]],
+                    orig: kind.clone(),
+                }));
+            }
+        }
+        // Edge midpoints stretch one axis (these kinds are always upright).
+        let (mx, my) = ((bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0);
+        self.edge_handle_hit(
+            id,
+            kind,
+            &near,
+            cursor,
+            [mx, bb.1],
+            [bb.2, my],
+            [mx, bb.3],
+            [bb.0, my],
+        )
+    }
+
+    /// Shared edge-handle hit-test for a single element: the four edge midpoints
+    /// (`top`/`right`/`bottom`/`left`, world space) each stretch one axis about the
+    /// opposite edge. `near` is the caller's screen-space proximity test.
+    #[allow(clippy::too_many_arguments)]
+    fn edge_handle_hit(
+        &self,
+        id: u64,
+        kind: &ElementKind,
+        near: &dyn Fn(f32, f32, f32, f32) -> bool,
+        cursor: [f32; 2],
+        top: [f32; 2],
+        right: [f32; 2],
+        bottom: [f32; 2],
+        left: [f32; 2],
+    ) -> Option<HandleGrab> {
+        let edges = [
+            (ResizeHandle::EdgeY, top, (0.0, -SEL_PAD_PX), bottom),
+            (ResizeHandle::EdgeY, bottom, (0.0, SEL_PAD_PX), top),
+            (ResizeHandle::EdgeX, right, (SEL_PAD_PX, 0.0), left),
+            (ResizeHandle::EdgeX, left, (-SEL_PAD_PX, 0.0), right),
+        ];
+        for (handle, from, (ox, oy), anchor) in edges {
+            if near(from[0], from[1], ox, oy) {
+                return Some(HandleGrab::Corner(Resizing {
+                    id,
+                    handle,
+                    anchor,
+                    from,
+                    grab: [from[0] - cursor[0], from[1] - cursor[1]],
                     orig: kind.clone(),
                 }));
             }
@@ -2545,12 +2615,12 @@ impl WhiteboardView {
             // A corner scales both axes together (proportional); an edge stretches
             // just its own axis, the other held at 1.
             let (sx, sy) = match gr.handle {
-                GroupHandle::Corner => {
+                ResizeHandle::Corner => {
                     let s = diagonal_scale(gr.anchor, gr.from, target);
                     (s, s)
                 }
-                GroupHandle::EdgeX => (axis_scale(gr.anchor[0], gr.from[0], target[0]), 1.0),
-                GroupHandle::EdgeY => (1.0, axis_scale(gr.anchor[1], gr.from[1], target[1])),
+                ResizeHandle::EdgeX => (axis_scale(gr.anchor[0], gr.from[0], target[0]), 1.0),
+                ResizeHandle::EdgeY => (1.0, axis_scale(gr.anchor[1], gr.from[1], target[1])),
             };
             let font = self.font.clone();
             for (id, orig) in &gr.orig {
@@ -2568,43 +2638,44 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
-        // Resizing the selection (corner-handle drag).
+        // Resizing the selection (corner- or edge-handle drag).
         if let Some(r) = self.resizing.as_ref() {
-            let (id, anchor, from, grab, mut kind) =
-                (r.id, r.anchor, r.from, r.grab, r.orig.clone());
+            let (id, handle, anchor, from, grab, mut kind) =
+                (r.id, r.handle, r.anchor, r.from, r.grab, r.orig.clone());
             let cur = self.event_to_world(ev.position);
-            // Where the dragged corner should sit: cursor + the grab offset, so
-            // it tracks the cursor without jumping when the drag starts. The snap
-            // modifier (Option) lands that corner on the grid.
+            // Where the dragged handle should sit: cursor + the grab offset, so it
+            // tracks the cursor without jumping when the drag starts. The snap
+            // modifier (Option) lands it on the grid.
             let mut target = [cur[0] + grab[0], cur[1] + grab[1]];
             if ev.modifiers.alt {
                 target = [snap_grid(target[0]), snap_grid(target[1])];
             }
-            // Text and images always scale proportionally (text is a single font
-            // size; an image would distort otherwise); Shift does so for shapes;
-            // and a *rotated* box-like element must (its anchor is the center, so
-            // a uniform scale keeps it correct under rotation). Both use the
-            // diagonal projection so the corner tracks the cursor at the right
-            // rate. Free resize is per-axis.
-            let rotated = box_like(&kind).is_some_and(|(.., r)| r.abs() > ROT_EPS);
-            let proportional = ev.modifiers.shift
-                || rotated
-                || matches!(kind, ElementKind::Text(_) | ElementKind::Image(_));
-            let (sx, sy) = if proportional {
-                let s = diagonal_scale(anchor, from, target);
-                (s, s)
-            } else {
-                let sx = if (from[0] - anchor[0]).abs() > 1e-3 {
-                    (target[0] - anchor[0]) / (from[0] - anchor[0])
-                } else {
-                    1.0
-                };
-                let sy = if (from[1] - anchor[1]).abs() > 1e-3 {
-                    (target[1] - anchor[1]) / (from[1] - anchor[1])
-                } else {
-                    1.0
-                };
-                (sx, sy)
+            let (sx, sy) = match handle {
+                // An edge grip stretches just its axis (the explicit per-axis ask,
+                // so it overrides the proportional defaults — even for text/image).
+                ResizeHandle::EdgeX => (axis_scale(anchor[0], from[0], target[0]), 1.0),
+                ResizeHandle::EdgeY => (1.0, axis_scale(anchor[1], from[1], target[1])),
+                // A corner: text and images scale proportionally (text is a single
+                // font size; an image would distort otherwise); Shift does so for
+                // shapes; and a *rotated* box-like element must (its anchor is the
+                // center, so a uniform scale keeps it correct under rotation). All
+                // use the diagonal projection so the corner tracks the cursor at the
+                // right rate. Otherwise free resize is per-axis.
+                ResizeHandle::Corner => {
+                    let rotated = box_like(&kind).is_some_and(|(.., r)| r.abs() > ROT_EPS);
+                    let proportional = ev.modifiers.shift
+                        || rotated
+                        || matches!(kind, ElementKind::Text(_) | ElementKind::Image(_));
+                    if proportional {
+                        let s = diagonal_scale(anchor, from, target);
+                        (s, s)
+                    } else {
+                        (
+                            axis_scale(anchor[0], from[0], target[0]),
+                            axis_scale(anchor[1], from[1], target[1]),
+                        )
+                    }
+                }
             };
             resize_about(&mut kind, anchor[0], anchor[1], sx, sy);
             let font = self.font.clone();
@@ -4009,9 +4080,9 @@ fn paint_selection(
         draw_rotate_handle(rx, ry, color, window);
         return;
     }
-    // Box-like (rect/ellipse/text): the (possibly rotated) box outline + a
-    // rotate grip. Corner resize handles show only when upright — a rotated box
-    // hides them (rotated-frame resize is out of scope).
+    // Box-like (rect/ellipse/text): the (possibly rotated) box outline, four
+    // corner handles, and a rotate grip. Edge-midpoint handles (per-axis stretch)
+    // show only when upright — a rotated box's edges aren't world-axis-aligned.
     if let Some((x, y, w, h, rot)) = box_like(kind) {
         let z = cam.zoom.max(MIN_ZOOM);
         let s = box_padded_corners(x, y, w, h, rot, SEL_PAD_PX / z)
@@ -4027,6 +4098,22 @@ fn paint_selection(
         }
         for p in &s {
             draw_handle(f32::from(p.x), f32::from(p.y), color, window);
+        }
+        if rot.abs() <= ROT_EPS && !matches!(kind, ElementKind::Text(_)) {
+            let mid = |a: Point<Pixels>, b: Point<Pixels>| {
+                (
+                    (f32::from(a.x) + f32::from(b.x)) / 2.0,
+                    (f32::from(a.y) + f32::from(b.y)) / 2.0,
+                )
+            };
+            for (hx, hy) in [
+                mid(s[0], s[1]),
+                mid(s[1], s[2]),
+                mid(s[2], s[3]),
+                mid(s[3], s[0]),
+            ] {
+                draw_handle(hx, hy, color, window);
+            }
         }
         let (rx, ry) = rotate_handle_screen(kind, cam, origin);
         draw_rotate_handle(rx, ry, color, window);
@@ -4049,7 +4136,17 @@ fn paint_selection(
     if let Ok(path) = pb.build() {
         window.paint_path(path, color);
     }
-    for (hx, hy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+    let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    for (hx, hy) in [
+        (x0, y0),
+        (x1, y0),
+        (x0, y1),
+        (x1, y1),
+        (mx, y0),
+        (x1, my),
+        (mx, y1),
+        (x0, my),
+    ] {
         draw_handle(hx, hy, color, window);
     }
     if rotatable(kind) {
