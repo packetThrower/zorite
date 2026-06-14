@@ -9,6 +9,64 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+The curated view of everything that has landed since `0.1.0-beta.2`; this
+becomes the `[0.1.0]` stable entry at tag time.
+
+### Added
+
+- **Whiteboards** — a new freeform infinite-canvas surface (the
+  `gpui-whiteboard` crate): pan/zoom, a freehand pen, shapes (rectangle,
+  ellipse, line, arrow, diamond, triangle, rounded-rectangle, star, hexagon),
+  on-canvas text that edits like a real text field, dropped/pasted images
+  (rotatable in 90° steps), and **page-card embeds** that link to notes.
+  Select, move, resize, and rotate one element or a multi-selection;
+  per-element colour, fill, gradient, and opacity; stroke thickness; z-order
+  (bring to front / send to back); snap-to-grid; and copy/cut/paste across
+  boards and windows. **Reusable templates** (save a selection, stamp it from a
+  modal gallery). Boards are first-class pages with their own **Whiteboards**
+  sidebar section, searchable by title (`wb:` + a filter chip); the toolbar is
+  movable and category-grouped, with tooltips, keyboard shortcuts, and optional
+  per-board fonts.
+- **Logseq import** — `File → Import from Logseq…` brings a graph's `pages/`,
+  `journals/`, and assets into Zorite (namespaces, task markers, properties,
+  aliases, `{{embed}}`/`((block-ref))`, and `hls__*` PDF-highlight pages all
+  handled), plus **whiteboards** (tldraw boards → native Zorite boards, images
+  and all) and **favorites**. Built as an extensible reader/engine split so
+  other sources can be added.
+- **Mermaid diagrams** — fenced `mermaid` code blocks render as themed,
+  pure-Rust diagrams; click one to expand it in a lightbox.
+- **Find in page** — search the rendered note text with match highlighting, a
+  running count, and scroll-to-match.
+- **Click-to-caret editing** — click anywhere on a rendered page (or
+  right-click → **Edit**) to drop straight into edit mode with the caret at the
+  click.
+- **Favorites** — pin any page to a **Favorites** group in the sidebar
+  (right-click → *Add to favorites*); persists across launches.
+- **Tab tear-off** — drag a tab to reorder it, move it to another window, or
+  tear it off into a brand-new window, with live cross-window content sync.
+- **Type-aware search** — results span pages, PDF and image files, and
+  whiteboards, filterable by kind.
+- A **GPL-3.0** `LICENSE`.
+
+### Changed
+
+- The product is now styled **Zorite** (binaries and identifiers stay lowercase
+  `zorite`).
+- The journal feed **loads lazily** and frees off-screen image and diagram
+  bitmaps, keeping long feeds responsive.
+- Sidebar polish: **collapsible sections** and namespace nodes, vertical indent
+  guides for nested pages, and accented section headers with a hairline rule.
+- (Windows) the title-bar light/dark toggle now works and sits opposite the
+  window controls.
+
+### Fixed
+
+- Clicking a link in a rendered note is no longer swallowed by click-to-edit.
+- The slash-command menu scrolls without scrolling the page behind it, and its
+  items are clickable (not Enter-only).
+- Mermaid lightbox: a tighter hit-box and **Esc** to close.
+- Logseq import splits glued image runs so each renders as its own block image.
+
 ## [0.1.0-beta.2] - 2026-06-08
 
 ### Added
