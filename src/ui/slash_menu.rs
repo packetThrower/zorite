@@ -19,6 +19,10 @@ pub fn render(slash: &Slash) -> impl IntoElement {
         // long) and scroll the overflow rather than spilling off-window.
         .max_h(px(280.0))
         .overflow_y_scroll()
+        // Occlude so the wheel scrolls the menu, not the page beneath it: without
+        // this the scroll bled through to the page on Windows, and on Linux the
+        // menu never became the scroll target so it didn't scroll at all.
+        .occlude()
         .bg(theme::bg_sidebar())
         .border_1()
         .border_color(theme::border_subtle())
