@@ -680,15 +680,30 @@ struct Resizing {
     orig: ElementKind,
 }
 
-/// An in-progress proportional resize of a multi-selection by a corner of its
-/// (axis-aligned) group bounds. Every member scales uniformly about the opposite
-/// corner, so the group grows/shrinks as one.
+/// Which group-bounds handle drives a [`GroupResizing`]: a corner (proportional,
+/// both axes locked together) or an edge midpoint (one axis only).
+#[derive(Clone, Copy)]
+enum GroupHandle {
+    /// A corner grip — uniform scale about the opposite corner.
+    Corner,
+    /// A left/right edge grip — scales x only, about the opposite edge.
+    EdgeX,
+    /// A top/bottom edge grip — scales y only, about the opposite edge.
+    EdgeY,
+}
+
+/// An in-progress resize of a multi-selection by a handle of its (axis-aligned)
+/// group bounds. A corner scales uniformly about the opposite corner (the group
+/// grows as one); an edge midpoint stretches a single axis about the opposite
+/// edge. Each member is scaled from its geometry at grab so it never compounds.
 struct GroupResizing {
-    /// The fixed opposite corner of the group bounds, world space.
+    /// Which handle is being dragged (corner = both axes, edge = one).
+    handle: GroupHandle,
+    /// The fixed point the scale is about, world space (opposite corner/edge).
     anchor: [f32; 2],
-    /// The dragged corner's original position, world space.
+    /// The dragged handle's original position, world space.
     from: [f32; 2],
-    /// Cursor → dragged-corner offset at grab (1:1 tracking, no jump).
+    /// Cursor → dragged-handle offset at grab (1:1 tracking, no jump).
     grab: [f32; 2],
     /// Each selected element's id + geometry at the start of the resize.
     orig: Vec<(u64, ElementKind)>,
@@ -1761,21 +1776,63 @@ impl WhiteboardView {
                 (-SEL_PAD_PX, SEL_PAD_PX),
                 (SEL_PAD_PX, SEL_PAD_PX),
             ];
+            let collect_orig = || -> Vec<(u64, ElementKind)> {
+                self.scene
+                    .elements
+                    .iter()
+                    .filter(|e| self.is_selected(e.id))
+                    .map(|e| (e.id, e.kind.clone()))
+                    .collect()
+            };
             for i in 0..4 {
                 if near(wc[i].0, wc[i].1, off[i].0, off[i].1) {
                     let opp = wc[3 - i];
-                    let orig = self
-                        .scene
-                        .elements
-                        .iter()
-                        .filter(|e| self.is_selected(e.id))
-                        .map(|e| (e.id, e.kind.clone()))
-                        .collect();
                     return Some(HandleGrab::GroupCorner(GroupResizing {
+                        handle: GroupHandle::Corner,
                         anchor: [opp.0, opp.1],
                         from: [wc[i].0, wc[i].1],
                         grab: [wc[i].0 - cursor[0], wc[i].1 - cursor[1]],
-                        orig,
+                        orig: collect_orig(),
+                    }));
+                }
+            }
+            // Edge midpoints stretch one axis (per-axis group resize), each about
+            // the opposite edge: a left/right grip scales x, a top/bottom grip y.
+            let (mx, my) = ((bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0);
+            let edges = [
+                (
+                    GroupHandle::EdgeX,
+                    [bb.0, my],
+                    (-SEL_PAD_PX, 0.0),
+                    [bb.2, my],
+                ),
+                (
+                    GroupHandle::EdgeX,
+                    [bb.2, my],
+                    (SEL_PAD_PX, 0.0),
+                    [bb.0, my],
+                ),
+                (
+                    GroupHandle::EdgeY,
+                    [mx, bb.1],
+                    (0.0, -SEL_PAD_PX),
+                    [mx, bb.3],
+                ),
+                (
+                    GroupHandle::EdgeY,
+                    [mx, bb.3],
+                    (0.0, SEL_PAD_PX),
+                    [mx, bb.1],
+                ),
+            ];
+            for (handle, from, (ox, oy), anchor) in edges {
+                if near(from[0], from[1], ox, oy) {
+                    return Some(HandleGrab::GroupCorner(GroupResizing {
+                        handle,
+                        anchor,
+                        from,
+                        grab: [from[0] - cursor[0], from[1] - cursor[1]],
+                        orig: collect_orig(),
                     }));
                 }
             }
@@ -2436,11 +2493,20 @@ impl WhiteboardView {
             if ev.modifiers.alt {
                 target = [snap_grid(target[0]), snap_grid(target[1])];
             }
-            let s = diagonal_scale(gr.anchor, gr.from, target);
+            // A corner scales both axes together (proportional); an edge stretches
+            // just its own axis, the other held at 1.
+            let (sx, sy) = match gr.handle {
+                GroupHandle::Corner => {
+                    let s = diagonal_scale(gr.anchor, gr.from, target);
+                    (s, s)
+                }
+                GroupHandle::EdgeX => (axis_scale(gr.anchor[0], gr.from[0], target[0]), 1.0),
+                GroupHandle::EdgeY => (1.0, axis_scale(gr.anchor[1], gr.from[1], target[1])),
+            };
             let font = self.font.clone();
             for (id, orig) in &gr.orig {
                 let mut kind = orig.clone();
-                resize_about(&mut kind, gr.anchor[0], gr.anchor[1], s, s);
+                resize_about(&mut kind, gr.anchor[0], gr.anchor[1], sx, sy);
                 if let ElementKind::Text(t) = &mut kind {
                     let (w, h) = font.measure(&t.content, t.size);
                     (t.measured_w, t.measured_h) = (w, h);
@@ -3229,6 +3295,17 @@ fn diagonal_scale(anchor: [f32; 2], from: [f32; 2], target: [f32; 2]) -> f32 {
     (c[0] * d[0] + c[1] * d[1]) / dd
 }
 
+/// Scale factor along one axis: how far `target` sits from `anchor` relative to
+/// `from` (per-axis edge group resize). Degenerate (`anchor == from`) → 1.0.
+fn axis_scale(anchor: f32, from: f32, target: f32) -> f32 {
+    let d = from - anchor;
+    if d.abs() < 1e-6 {
+        1.0
+    } else {
+        (target - anchor) / d
+    }
+}
+
 /// Snap target `(tx, ty)` so its angle from `(ox, oy)` is a multiple of 45°,
 /// preserving the distance (the line-drawing constraint for endpoint drags).
 fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
@@ -3361,11 +3438,13 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
             s.y2 = fy(s.y2);
         }
         ElementKind::Text(t) => {
-            // Callers pass a uniform factor for text (sx == sy), so position
-            // scales uniformly and the font size by that magnitude.
+            // Position follows the (possibly per-axis) scale, but a glyph has a
+            // single size — never stretched. The geometric mean keeps a
+            // proportional resize (sx == sy) exact and an edge drag uniform
+            // (scaling by the average of the two factors).
             t.x = fx(t.x);
             t.y = fy(t.y);
-            t.size = (t.size * sx.abs()).max(0.5);
+            t.size = (t.size * (sx.abs() * sy.abs()).sqrt()).max(0.5);
         }
         ElementKind::Embed(em) => {
             let (x0, x1) = (fx(em.x), fx(em.x + em.w));
@@ -5195,7 +5274,19 @@ impl Render for WhiteboardView {
                     let m = SEL_PAD_PX;
                     let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
                     let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
-                    for (hx, hy) in [(x0, y0), (x1, y0), (x0, y1), (x1, y1)] {
+                    // Four corners (proportional) plus four edge midpoints (per-axis
+                    // stretch). The midpoints align with `handle_hit`'s edge grips.
+                    let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+                    for (hx, hy) in [
+                        (x0, y0),
+                        (x1, y0),
+                        (x0, y1),
+                        (x1, y1),
+                        (mx, y0),
+                        (mx, y1),
+                        (x0, my),
+                        (x1, my),
+                    ] {
                         draw_handle(hx, hy, selection, window);
                     }
                     if can_rotate {
@@ -5458,6 +5549,53 @@ mod tests {
                 assert_eq!((b.w, b.h), (40.0, 40.0));
             }
             other => panic!("expected rect, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn axis_scale_measures_one_axis_about_the_anchor() {
+        // `target` twice as far from the anchor as `from` → 2×.
+        assert!((axis_scale(0.0, 10.0, 20.0) - 2.0).abs() < 1e-4);
+        // Halfway back toward the anchor → 0.5×.
+        assert!((axis_scale(0.0, 10.0, 5.0) - 0.5).abs() < 1e-4);
+        // Degenerate (anchor == from) → 1.0, no divide-by-zero.
+        assert!((axis_scale(7.0, 7.0, 99.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn per_axis_resize_stretches_one_axis_and_keeps_text_uniform() {
+        // A rect stretched on x only (sx=2, sy=1): width doubles, height holds.
+        let mut k = ElementKind::Rect(BoxGeom {
+            x: 10.0,
+            y: 10.0,
+            w: 20.0,
+            h: 20.0,
+            width: 1.0,
+            rotation: 0.0,
+        });
+        resize_about(&mut k, 10.0, 10.0, 2.0, 1.0);
+        match k {
+            ElementKind::Rect(b) => {
+                assert_eq!((b.x, b.y), (10.0, 10.0));
+                assert_eq!((b.w, b.h), (40.0, 20.0));
+            }
+            other => panic!("expected rect, got {other:?}"),
+        }
+        // Text under a per-axis (4×, 1×) stretch keeps a single size: the geometric
+        // mean (sqrt(4) = 2×), never distorted to the raw 4× horizontal factor.
+        let mut t = ElementKind::Text(TextGeom {
+            x: 0.0,
+            y: 0.0,
+            content: "hi".into(),
+            size: 10.0,
+            rotation: 0.0,
+            measured_w: 0.0,
+            measured_h: 0.0,
+        });
+        resize_about(&mut t, 0.0, 0.0, 4.0, 1.0);
+        match t {
+            ElementKind::Text(t) => assert!((t.size - 20.0).abs() < 1e-3, "{}", t.size),
+            other => panic!("expected text, got {other:?}"),
         }
     }
 

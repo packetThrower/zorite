@@ -276,7 +276,7 @@ The view handles these when it has focus (it focuses on a canvas click):
 | scroll · pinch | zoom |
 | hold `⌥` while dragging | snap to the grid |
 | click / shift-click / marquee-drag (Select tool) | select one / add / box-select |
-| drag a handle · the round grip above a selection | resize · rotate |
+| drag a handle · the round grip above a selection | resize (corners scale; a group's edge handles stretch one axis) · rotate |
 | double-click a page-card | open its page (via `OpenPageFn`) |
 | right-click | context menu (z-order, copy/cut/paste, save as template) |
 
