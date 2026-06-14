@@ -59,6 +59,11 @@ const NIB: f32 = 2.5;
 /// Stroke-thickness presets (screen px) offered by the toolbar thickness flyout.
 /// `NIB` (the default) is one of them.
 const WIDTH_PRESETS: [f32; 5] = [1.0, 2.5, 4.0, 6.0, 9.0];
+/// Range (screen px) of the custom-width slider in the thickness flyout.
+const WIDTH_MIN: f32 = 1.0;
+const WIDTH_MAX: f32 = 20.0;
+/// Slider track width, px (matches the preset row: 5 × 30 + gaps).
+const WIDTH_SLIDER_W: f32 = 156.0;
 /// Minimum on-screen gap between recorded freehand points (input thinning).
 const MIN_POINT_PX: f32 = 2.0;
 /// Hit-test tolerance around an element's bounds, in screen px.
@@ -745,6 +750,8 @@ enum PickerDrag {
     Hue,
     /// The alpha (opacity) strip.
     Alpha,
+    /// The thickness flyout's custom-width slider.
+    Width,
 }
 
 /// The whiteboard view entity. The host holds it in an `Entity<WhiteboardView>`
@@ -825,6 +832,10 @@ pub struct WhiteboardView {
     sv_bounds: Rc<Cell<Bounds<Pixels>>>,
     hue_bounds: Rc<Cell<Bounds<Pixels>>>,
     alpha_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Screen bounds of the thickness flyout panel and its width slider (captured
+    /// each paint), so a press can route to the slider or dismiss the flyout.
+    width_panel_bounds: Rc<Cell<Bounds<Pixels>>>,
+    width_bounds: Rc<Cell<Bounds<Pixels>>>,
     /// Undo / redo stacks of scene snapshots.
     history: Vec<Scene>,
     redo: Vec<Scene>,
@@ -889,6 +900,8 @@ impl WhiteboardView {
             sv_bounds: Rc::new(Cell::new(Bounds::default())),
             hue_bounds: Rc::new(Cell::new(Bounds::default())),
             alpha_bounds: Rc::new(Cell::new(Bounds::default())),
+            width_panel_bounds: Rc::new(Cell::new(Bounds::default())),
+            width_bounds: Rc::new(Cell::new(Bounds::default())),
             history: Vec::new(),
             redo: Vec::new(),
             panning: false,
@@ -1516,25 +1529,39 @@ impl WhiteboardView {
         cx.notify();
     }
 
-    /// Set the active stroke thickness (screen px) for new elements, and apply it
-    /// to the selection. A discrete action (unlike the picker's live drag), so it
-    /// pushes undo and flushes when it changes the scene. Closes the flyout.
-    fn set_width(&mut self, w: f32, window: &mut Window, cx: &mut Context<Self>) {
-        self.width_open = false;
+    /// Set the active stroke thickness (screen px) for new elements and apply it to
+    /// the selection, *without* undo/flush — used for live slider drags (undo is
+    /// pushed at drag start, flush on release, like the color strips).
+    fn set_width_live(&mut self, w: f32, cx: &mut Context<Self>) {
         self.active_width = w;
         if !self.selected.is_empty() {
             let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
             let sel = self.selected.clone();
-            self.push_undo();
             for e in self.scene.elements.iter_mut() {
                 if sel.contains(&e.id) {
                     set_kind_width(&mut e.kind, w / zoom);
                 }
             }
             self.dirty = true;
-            self.flush(window, cx);
         }
         cx.notify();
+    }
+
+    /// A discrete thickness choice (a preset swatch): pushes undo, applies, and
+    /// flushes, then closes the flyout.
+    fn set_width(&mut self, w: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.width_open = false;
+        if !self.selected.is_empty() {
+            self.push_undo();
+        }
+        self.set_width_live(w, cx);
+        self.flush(window, cx);
+    }
+
+    /// Map a 0..1 slider fraction to a width (screen px), snapped to 0.5px steps.
+    fn width_from_frac(frac: f32) -> f32 {
+        let w = WIDTH_MIN + frac.clamp(0.0, 1.0) * (WIDTH_MAX - WIDTH_MIN);
+        (w * 2.0).round() / 2.0
     }
 
     /// Open the given tool category's flyout (or close it if already open).
@@ -1821,8 +1848,24 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
-        // Same for the thickness flyout (also occluded).
+        // The thickness flyout: a press on its slider starts a width drag; a press
+        // elsewhere on the panel is consumed (presets fire via their own `on_click`);
+        // a press outside dismisses it. The panel isn't occluded so drags reach here,
+        // like the color picker.
         if self.width_open {
+            let pos = ev.position;
+            if self.width_bounds.get().contains(&pos) {
+                if !self.selected.is_empty() {
+                    self.push_undo();
+                }
+                self.picker_drag = Some(PickerDrag::Width);
+                let w = Self::width_from_frac(self.frac_x(self.width_bounds.get(), pos));
+                self.set_width_live(w, cx);
+                return;
+            }
+            if self.width_panel_bounds.get().contains(&pos) {
+                return;
+            }
             self.width_open = false;
             cx.notify();
             return;
@@ -2262,9 +2305,15 @@ impl WhiteboardView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
-        // Dragging inside the color picker (SV square, hue strip, alpha strip).
+        // Dragging inside the color picker (SV square, hue strip, alpha strip) or
+        // the thickness flyout's width slider.
         if let Some(drag) = self.picker_drag {
             let pos = ev.position;
+            if drag == PickerDrag::Width {
+                let w = Self::width_from_frac(self.frac_x(self.width_bounds.get(), pos));
+                self.set_width_live(w, cx);
+                return;
+            }
             match drag {
                 PickerDrag::Sv => {
                     let (s, v) = self.sv_from_pos(pos);
@@ -2284,6 +2333,7 @@ impl WhiteboardView {
                         p.a = a;
                     }
                 }
+                PickerDrag::Width => unreachable!("handled above"),
             }
             if let Some(c) = self.picker_u32() {
                 self.set_color_live(Some(c), cx);
@@ -4372,19 +4422,17 @@ impl Render for WhiteboardView {
                 .child(row)
         });
 
-        // Thickness flyout (centered below the toolbar): one swatch per preset
-        // weight, the active one highlighted. Picking applies to new elements and
-        // the selection (`set_width`); a canvas press closes it (see `on_left_down`).
+        // Thickness flyout (centered below the toolbar): a row of preset weights
+        // (the active one highlighted) over a slider for any custom width. Presets
+        // fire via `on_click`; the slider drags via `on_left_down`/`on_move` (so the
+        // panel is *not* occluded — presses fall through, like the color picker).
+        // A press outside the panel dismisses it (see `on_left_down`).
+        let width_cell = self.width_bounds.clone();
+        let width_panel_cell = self.width_panel_bounds.clone();
+        let width_frac =
+            ((self.active_width - WIDTH_MIN) / (WIDTH_MAX - WIDTH_MIN)).clamp(0.0, 1.0);
         let width_flyout = self.width_open.then(|| {
-            let mut row = div()
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .p(px(3.0))
-                .rounded(px(9.0))
-                .bg(panel_strong)
-                .shadow_lg()
-                .occlude();
+            let mut presets = div().flex().items_center().gap(px(2.0));
             for (i, w) in WIDTH_PRESETS.into_iter().enumerate() {
                 let active = (self.active_width - w).abs() < 0.01;
                 let mut opt = div()
@@ -4399,7 +4447,7 @@ impl Render for WhiteboardView {
                 } else {
                     opt = opt.hover(|s| s.bg(grid));
                 }
-                row = row.child(
+                presets = presets.child(
                     opt.child(
                         div()
                             .w(px(18.0))
@@ -4412,6 +4460,55 @@ impl Render for WhiteboardView {
                     ),
                 );
             }
+            // The custom-width slider: a bar whose height *is* the current weight,
+            // with a thumb at the value. Dragging it lands in `on_left_down`/`on_move`.
+            let slider = div()
+                .relative()
+                .w(px(WIDTH_SLIDER_W))
+                .h(px(WIDTH_MAX + 6.0))
+                .flex()
+                .items_center()
+                .child(
+                    canvas(move |b, _, _| width_cell.set(b), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+                .child(
+                    div()
+                        .w_full()
+                        .h(px(self.active_width.clamp(1.0, WIDTH_MAX)))
+                        .rounded_full()
+                        .bg(cur_swatch),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(width_frac * WIDTH_SLIDER_W - 1.5))
+                        .w(px(3.0))
+                        .rounded(px(2.0))
+                        .bg(hsla(0.0, 0.0, 1.0, 1.0))
+                        .border_1()
+                        .border_color(hsla(0.0, 0.0, 0.0, 0.45)),
+                );
+            let panel = div()
+                .relative()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.0))
+                .p(px(6.0))
+                .rounded(px(9.0))
+                .bg(panel_strong)
+                .shadow_lg()
+                .child(
+                    canvas(move |b, _, _| width_panel_cell.set(b), |_, _, _, _| {})
+                        .absolute()
+                        .size_full(),
+                )
+                .child(presets)
+                .child(slider);
             div()
                 .absolute()
                 .top(px(52.0))
@@ -4419,7 +4516,7 @@ impl Render for WhiteboardView {
                 .right_0()
                 .flex()
                 .justify_center()
-                .child(row)
+                .child(panel)
         });
 
         // Right-click context menu (a selection's "Save as template"), anchored at
