@@ -1,15 +1,17 @@
-//! The slash-command popup list (keyboard-driven; rendered as an anchored
-//! overlay by `AppView`).
+//! The slash-command popup list, rendered as an anchored overlay by `AppView`.
+//! Keyboard-driven (arrows + Enter) and mouse-driven (hover highlights a row,
+//! click accepts it).
 
 use gpui::{
-    InteractiveElement, IntoElement, ParentElement, StatefulInteractiveElement, Styled, div,
-    prelude::FluentBuilder as _, px,
+    Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
 };
 
+use crate::app::AppView;
 use crate::slash::{ItemKind, Slash};
 use crate::theme;
 
-pub fn render(slash: &Slash) -> impl IntoElement {
+pub fn render(slash: &Slash, cx: &mut Context<AppView>) -> impl IntoElement {
     let items = &slash.items;
 
     let mut col = div()
@@ -57,10 +59,25 @@ pub fn render(slash: &Slash) -> impl IntoElement {
                 .items_center()
                 .justify_between()
                 .gap_4()
+                .cursor_pointer()
                 .when(selected, |d| {
                     d.bg(theme::accent_tint()).text_color(theme::text_primary())
                 })
                 .when(!selected, |d| d.text_color(theme::text_secondary()))
+                // Hover moves the keyboard selection to this row, so the one
+                // highlight is what both a click and Enter accept.
+                .on_mouse_move(cx.listener(move |this, _, _window, cx| {
+                    this.slash_hover(i, cx);
+                }))
+                // Mouse-DOWN (not click) + stop_propagation: accept before the press
+                // can blur the editor, so the insertion lands and focus stays put.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        cx.stop_propagation();
+                        this.click_slash(i, window, cx);
+                    }),
+                )
                 .child(item.label.clone())
                 .when(is_category, |d| {
                     d.child(div().text_color(theme::text_tertiary()).child("›"))

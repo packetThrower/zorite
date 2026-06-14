@@ -1564,6 +1564,29 @@ impl AppView {
         }
     }
 
+    /// Hovering a slash-menu item moves the selection to it, so the highlighted
+    /// row is the one both a click and Enter accept.
+    pub fn slash_hover(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(s) = self.slash.as_mut()
+            && i < s.items.len()
+            && s.selected != i
+        {
+            s.selected = i;
+            cx.notify();
+        }
+    }
+
+    /// Click a slash-menu item: select it, then accept like Enter. Driven from the
+    /// menu's `on_mouse_down` (which stops propagation) so it fires before the press
+    /// can blur the editor — the insertion lands and focus stays put.
+    pub fn click_slash(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        match self.slash.as_mut() {
+            Some(s) if i < s.items.len() => s.selected = i,
+            _ => return,
+        }
+        self.confirm_slash(window, cx);
+    }
+
     /// Switch the open menu to a level (root or a submenu) and rebuild it.
     fn enter_slash_category(&mut self, level: SlashLevel, cx: &mut Context<Self>) {
         let Some((query, target, start, caret)) = self
@@ -4503,7 +4526,7 @@ impl Render for AppView {
                 gpui::anchored()
                     .position(s.caret.bottom_left())
                     .snap_to_window()
-                    .child(ui::slash_menu::render(s)),
+                    .child(ui::slash_menu::render(s, cx)),
             )
             .into_any_element()
         });
