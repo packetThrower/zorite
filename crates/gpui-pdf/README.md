@@ -18,7 +18,8 @@ scrolling, rendering, and memory on its own.
   one-pager.
 - **Zoom & navigation, no flicker.** Built-in zoom (− / + / reset and ⌘=/⌘-/⌘0) and
   navigation (‹ / › with a click-to-edit page counter you can type a number into,
-  plus PageUp / PageDown / Home / End). On a zoom or quality change the page never
+  plus PageUp / PageDown / Home / End, and a floating scroll-to-top button that
+  appears once you've scrolled down). On a zoom or quality change the page never
   blanks — the current bitmap stays on screen (rescaled) until the crisp re-render
   lands. The nearest pages render first.
 - **DPI-aware, host-settable quality.** Pages rasterize at the display's pixel ratio

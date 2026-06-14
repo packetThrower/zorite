@@ -2088,6 +2088,36 @@ impl Render for PdfView {
                 )
         });
 
+        // "Scroll to top": a floating button over the page area, shown once scrolled
+        // down past half a viewport. Jumps to the document top (also bound to Home).
+        let scroll_top_btn = {
+            let viewport_h = f32::from(self.scroll.bounds().size.height);
+            let scroll_y = f32::from(-self.scroll.offset().y).max(0.0);
+            (viewport_h > 1.0 && scroll_y > viewport_h * 0.5).then(|| {
+                div()
+                    .id("pdf-scroll-top")
+                    .absolute()
+                    .bottom(px(16.0))
+                    .right(px(SCROLLBAR_W + 10.0))
+                    .size(px(34.0))
+                    .rounded(px(17.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(16.0))
+                    .bg(style.bg)
+                    .text_color(style.header_fg)
+                    .border_1()
+                    .border_color(style.border)
+                    .shadow_md()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(style.placeholder_bg))
+                    .child("↑")
+                    .tooltip(self.tip("Scroll to top (Home)"))
+                    .on_click(cx.listener(|this, _, _window, cx| this.go_to_page(0, cx)))
+            })
+        };
+
         // Table-of-contents panel: a scrollable, indented outline; click an entry to
         // jump to its page. Built only when toggled open + the PDF has an outline.
         let toc_panel = (self.toc_open && self.has_outline()).then(|| {
@@ -2171,7 +2201,8 @@ impl Render for PdfView {
                                     }))
                                     .children(slots),
                             )
-                            .children(scrollbar),
+                            .children(scrollbar)
+                            .children(scroll_top_btn),
                     ),
             )
             .into_any_element()
