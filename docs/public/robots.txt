@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://packetthrower.github.io/zorite/sitemap-index.xml

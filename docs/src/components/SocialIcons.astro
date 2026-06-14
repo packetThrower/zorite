@@ -1,0 +1,47 @@
+---
+// Override of Starlight's SocialIcons component. Renders two
+// quick-access pills on the left — a "← packetThrower" back-link
+// to the parent landing page, then a "Docs" pill to /install/ —
+// then defers to Starlight's default rendering (the GitHub icon,
+// etc.) for the rest. Wraps rather than re-implements so future
+// Starlight versions that change the social-icon pipeline still
+// work — we only own the `.bd-nav-pill` extras.
+//
+// The back-link is an absolute URL on purpose: Astro's configured
+// `base` is `/zorite/`, so a relative `/` would resolve to
+// `/zorite/` (this site's own root). The absolute form skips the
+// base prefix and reaches the actual parent at
+// https://packetthrower.github.io/.
+import Default from '@astrojs/starlight/components/SocialIcons.astro';
+---
+
+<a class="bd-nav-pill sl-flex" href="https://packetthrower.github.io/">
+	<span aria-hidden="true">←</span> packetThrower
+</a>
+
+<a class="bd-nav-pill sl-flex" href="/zorite/install/">
+	Docs
+</a>
+
+<Default {...Astro.props}><slot /></Default>
+
+<style>
+	.bd-nav-pill {
+		align-items: center;
+		gap: 0.4em;
+		padding: 0.35em 0.85em;
+		border-radius: 999px;
+		font-size: 0.88rem;
+		font-weight: 500;
+		text-decoration: none;
+		color: var(--sl-color-text);
+		box-shadow: inset 0 0 0 1px var(--sl-color-hairline);
+		transition:
+			color 140ms ease,
+			box-shadow 140ms ease;
+	}
+	.bd-nav-pill:hover {
+		color: var(--sl-color-text-accent);
+		box-shadow: inset 0 0 0 1px var(--sl-color-text-accent);
+	}
+</style>

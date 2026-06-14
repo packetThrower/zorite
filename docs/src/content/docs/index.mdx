@@ -1,0 +1,131 @@
+---
+title: Zorite
+description: A local-first, Logseq-style daily journal for the desktop — with a Word-like typing experience. Linked Markdown notes, embedded PDFs, freeform whiteboards, and full-text search, all in a local SQLite database. No cloud, no account.
+template: splash
+hero:
+  tagline: A local-first daily journal with a Word-like typing experience. Linked notes, embedded PDFs, freeform whiteboards, and search across everything — no cloud, no account.
+  actions:
+    - text: Install for your platform
+      link: /zorite/install/
+      icon: right-arrow
+      variant: primary
+    - text: View on GitHub
+      link: https://github.com/packetThrower/zorite
+      icon: external
+      variant: secondary
+# JSON-LD SoftwareApplication schema. Lets Google render rich
+# results on the homepage — operating-system list, free-of-cost
+# offer, install link, screenshot. Only attached to index because
+# inner pages aren't really application surfaces in the
+# schema.org sense.
+head:
+  - tag: script
+    attrs:
+      type: application/ld+json
+    content: |
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "Zorite",
+        "applicationCategory": "ProductivityApplication",
+        "applicationSubCategory": "Note-taking",
+        "operatingSystem": "macOS, Windows, Linux",
+        "description": "A local-first, Logseq-style daily journal for the desktop with a Word-like typing experience. Linked Markdown notes, embedded PDFs, freeform whiteboards, and full-text search, all in a local SQLite database.",
+        "url": "https://packetthrower.github.io/zorite/",
+        "downloadUrl": "https://github.com/packetThrower/zorite/releases/latest",
+        "license": "https://github.com/packetThrower/zorite/blob/main/LICENSE",
+        "image": "https://packetthrower.github.io/zorite/og-image.png",
+        "screenshot": "https://packetthrower.github.io/zorite/screenshots/zorite-macos-dark.png",
+        "author": {
+          "@type": "Person",
+          "name": "Will Lehnertz",
+          "url": "https://github.com/packetThrower"
+        },
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "softwareHelp": {
+          "@type": "CreativeWork",
+          "url": "https://packetthrower.github.io/zorite/install/"
+        }
+      }
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+## What it is
+
+Zorite is a daily journal for your desktop. It works like Logseq — every day is
+a page, notes link to each other, and everything is searchable — but you type
+into it like a Word document, not an outliner. Each line is just editable
+Markdown: click in to edit the raw text, click away and it re-renders.
+
+Your notes are Markdown rows in a local SQLite database; images and PDFs live
+beside it as files. There's no cloud and no account — everything stays on your
+machine. Built in Rust with [gpui](https://www.gpui.rs/) (Zed's GPU-accelerated
+UI framework), it stays immediate even with tens of thousands of pages.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-macos-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-macos-dark.png"
+    alt="Zorite — a linked note with sub-pages and backlinks, the Favorites and Whiteboards sidebar, and multiple open tabs"
+  />
+</picture>
+
+## What you get
+
+<CardGrid>
+  <Card title="Journal & pages" icon="document">
+    An infinite, reverse-chronological feed of days. `[[wiki-links]]`, `#tags`,
+    and backlinks; `Foo::Bar` namespaces and sub-pages; a `/` command palette
+    and templates. [Journal & pages](/zorite/usage/journal/).
+  </Card>
+  <Card title="Whiteboards" icon="pencil">
+    A freeform infinite canvas alongside the text journal — pen, shapes, text,
+    images, and page-card embeds, with reusable templates.
+    [Whiteboards](/zorite/usage/whiteboards/).
+  </Card>
+  <Card title="PDF viewer" icon="open-book">
+    Link or drop a PDF to open it in a page-virtualized viewer: zoom, a TOC,
+    drag-to-highlight markup, and password-protected files.
+    [PDF & images](/zorite/usage/pdf/).
+  </Card>
+  <Card title="Full-text search" icon="magnifier">
+    A trigram FTS5 index over titles and content, with type-aware results for
+    pages, PDFs, images, and whiteboards. [Search](/zorite/usage/search/).
+  </Card>
+  <Card title="Import from Logseq" icon="random">
+    Bring in a Logseq graph — pages, journals, assets, namespaces, tasks,
+    aliases, whiteboards, and favorites.
+    [Import from Logseq](/zorite/usage/import/).
+  </Card>
+  <Card title="Cross-platform" icon="laptop">
+    macOS, Windows, and Linux from a single Rust binary. GPU-accelerated, native
+    title-bar treatment per platform. [Requirements](/zorite/reference/requirements/).
+  </Card>
+</CardGrid>
+
+## Get started
+
+<CardGrid>
+  <Card title="Install" icon="rocket">
+    Homebrew, winget, Scoop, and direct downloads. Package managers land with
+    the first stable release; betas are on the Releases page.
+    [Install instructions](/zorite/install/).
+  </Card>
+  <Card title="Write your journal" icon="pencil">
+    Click into today, type Markdown, link pages with `[[…]]`, and let backlinks
+    build themselves. [Journal & pages](/zorite/usage/journal/).
+  </Card>
+  <Card title="Annotate PDFs" icon="open-book">
+    Drop a PDF onto a note, then drag to highlight and jump between your note and
+    the page. [PDF & images](/zorite/usage/pdf/).
+  </Card>
+  <Card title="Make it yours" icon="setting">
+    Pick a built-in theme, choose Light / Dark / Auto, or drop in a custom
+    `.json` theme. [Themes](/zorite/customize/themes/).
+  </Card>
+</CardGrid>

@@ -1,0 +1,10 @@
+allowBuilds:
+  esbuild: true
+  sharp: true
+
+overrides:
+  # devalue <= 5.8.0 has a DoS via sparse-array deserialization
+  # (GHSA-77vg-94rm-hx3p); 5.8.1 is the fix. devalue is a transitive
+  # dep of astro, which allows ^5.6.3 — so we floor it here. Safe to
+  # drop once astro's own dependency range moves past 5.8.0.
+  devalue: '>=5.8.1'

@@ -45,9 +45,9 @@ Developed in close collaboration with Claude (Anthropic).
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/zorite-macos-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/screenshots/zorite-macos-light.png">
-    <img src="docs/screenshots/zorite-macos-dark.png" alt="Zorite — a linked note with sub-pages and backlinks, the Favorites and Whiteboards sidebar, and multiple open tabs" width="820">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/public/screenshots/zorite-macos-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/public/screenshots/zorite-macos-light.png">
+    <img src="docs/public/screenshots/zorite-macos-dark.png" alt="Zorite — a linked note with sub-pages and backlinks, the Favorites and Whiteboards sidebar, and multiple open tabs" width="820">
   </picture>
 </p>
 

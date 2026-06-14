@@ -1,0 +1,202 @@
+/* Fonts — variable Fraunces (display), variable Plex Sans (body), Plex Mono (code).
+   Same stack as packetthrower.github.io and PortFinder docs so the three sites
+   read as a coherent family. */
+@import '@fontsource-variable/fraunces';
+@import '@fontsource-variable/ibm-plex-sans';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@import '@fontsource/ibm-plex-mono/600.css';
+
+/*
+ * Palette derived from the PortFinder + Baudrun icons:
+ *   navy gradient   #2e4368 → #162237 → #04080e
+ *   amber pin       #fff2c4 → #f0c060 → #a87420 → #5a3a10
+ *   bezel highlight #e8ecf0
+ *
+ * Strategy from the design brief: Restrained on inner pages
+ * (cool-paper neutrals + amber accent ≤10%), Drenched on the
+ * landing hero (full navy ground for one screen-height moment).
+ *
+ * Token names use the `pt-` prefix (packetThrower) since the palette
+ * is shared across both projects.
+ */
+
+:root {
+	/* Brand */
+	--pt-navy-900: #04080e;
+	--pt-navy-800: #0c1420;
+	--pt-navy-700: #162237;
+	--pt-navy-600: #1f3052;
+	--pt-navy-500: #2e4368;
+	--pt-navy-400: #4a608a;
+	--pt-navy-300: #7e8fac;
+
+	--pt-amber-100: #fff7dd;
+	--pt-amber-200: #fff2c4;
+	--pt-amber-300: #f5d68b;
+	--pt-amber-400: #f0c060;
+	--pt-amber-500: #d49b3a;
+	--pt-amber-600: #a87420;
+	--pt-amber-700: #5a3a10;
+
+	/* Cool-paper neutrals — slight chroma toward navy. */
+	--pt-paper-50:  #fafbfd;
+	--pt-paper-100: #f3f5f9;
+	--pt-paper-200: #e7eaf1;
+	--pt-paper-300: #d3d8e1;
+	--pt-paper-400: #aab1c0;
+	--pt-paper-500: #6e7689;
+	--pt-paper-600: #4d5566;
+	--pt-paper-700: #2f3645;
+	--pt-paper-800: #1a2030;
+	--pt-paper-900: #0f1422;
+}
+
+/*
+ * Token convention (matching Starlight's defaults):
+ *   - Dark mode: gray-1 → gray-6 runs lightest → darkest, white = light text, black = dark bg.
+ *   - Light mode: gray-1 → gray-7 runs darkest → lightest, white = dark text, black = light bg.
+ * Override the ramp + accent + bg/nav; let Starlight's defaults map text/hairline tokens off them.
+ */
+
+/* Dark theme (default) — navy ground, cream ink, amber accent. */
+:root {
+	--sl-color-accent-low: var(--pt-navy-700);
+	--sl-color-accent: var(--pt-amber-500);
+	--sl-color-accent-high: var(--pt-amber-200);
+
+	--sl-color-white: var(--pt-paper-50);
+	--sl-color-gray-1: var(--pt-paper-100);
+	--sl-color-gray-2: var(--pt-paper-300);
+	--sl-color-gray-3: var(--pt-paper-400);
+	--sl-color-gray-4: var(--pt-paper-500);
+	--sl-color-gray-5: var(--pt-navy-500);
+	--sl-color-gray-6: var(--pt-navy-700);
+	--sl-color-black: var(--pt-navy-900);
+
+	--sl-color-bg: var(--pt-navy-800);
+	--sl-color-bg-nav: var(--pt-navy-700);
+	--sl-color-bg-sidebar: var(--pt-navy-800);
+}
+
+/* Light theme — cool paper, navy ink, amber accent. */
+:root[data-theme='light'] {
+	--sl-color-accent-low: var(--pt-amber-200);
+	--sl-color-accent: var(--pt-amber-600);
+	--sl-color-accent-high: var(--pt-amber-700);
+
+	--sl-color-white: var(--pt-navy-900);
+	--sl-color-gray-1: var(--pt-navy-700);
+	--sl-color-gray-2: var(--pt-paper-700);
+	--sl-color-gray-3: var(--pt-paper-500);
+	--sl-color-gray-4: var(--pt-paper-400);
+	--sl-color-gray-5: var(--pt-paper-300);
+	--sl-color-gray-6: var(--pt-paper-200);
+	--sl-color-gray-7: var(--pt-paper-100);
+	--sl-color-black: var(--pt-paper-50);
+
+	--sl-color-bg: var(--pt-paper-50);
+	--sl-color-bg-nav: var(--pt-paper-100);
+	--sl-color-bg-sidebar: var(--pt-paper-50);
+}
+
+/* Typography — Fraunces for display, Plex Sans for body, Plex Mono for code. */
+:root {
+	--sl-font: 'IBM Plex Sans Variable', system-ui, sans-serif;
+	--sl-font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Display register — h1/h2 on content pages get the serif. h3+ stay sans for density. */
+.sl-markdown-content :is(h1, h2),
+h1.hero-title,
+.hero h1 {
+	font-family: 'Fraunces Variable', 'Fraunces', Georgia, serif;
+	font-variation-settings: 'opsz' 144, 'SOFT' 50, 'WONK' 0;
+	font-weight: 600;
+	letter-spacing: -0.01em;
+}
+
+.sl-markdown-content h1 {
+	font-size: clamp(2rem, 1.5rem + 1.5vw, 2.75rem);
+	line-height: 1.1;
+}
+
+.sl-markdown-content h2 {
+	font-size: clamp(1.4rem, 1.2rem + 0.6vw, 1.75rem);
+	line-height: 1.2;
+	margin-top: 2.5rem;
+}
+
+/* Tabular numerals everywhere numbers carry meaning. */
+.sl-markdown-content :is(table, code, kbd, pre) {
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: 'tnum' 1, 'cv02' 1, 'cv03' 1;
+}
+
+/* Code blocks — Plex Mono, slightly denser, custom amber inline-code chip. */
+.sl-markdown-content :not(pre) > code {
+	background: var(--sl-color-accent-low);
+	color: var(--sl-color-text-accent);
+	border-radius: 4px;
+	padding: 0.1em 0.35em;
+	font-size: 0.92em;
+}
+
+/* Tables — quiet hairlines, monospaced cells where data is dense. */
+.sl-markdown-content table {
+	font-size: 0.94rem;
+}
+
+.sl-markdown-content table th {
+	background: var(--sl-color-bg-nav);
+	font-weight: 600;
+	letter-spacing: 0.01em;
+}
+
+/* Links — amber underline on hover, no rude blue. */
+.sl-markdown-content a:not(.not-content *) {
+	color: var(--sl-color-text-accent);
+	text-decoration-color: color-mix(in oklch, currentColor 35%, transparent);
+	text-underline-offset: 0.2em;
+	transition: text-decoration-color 120ms ease;
+}
+
+.sl-markdown-content a:not(.not-content *):hover {
+	text-decoration-color: currentColor;
+}
+
+/* Site logo — let it own its space. */
+.site-title img {
+	height: 28px;
+	width: 28px;
+}
+
+/* <details> blocks — quieter. */
+.sl-markdown-content details {
+	border: 1px solid var(--sl-color-hairline);
+	border-radius: 8px;
+	padding: 0.5rem 1rem;
+	margin: 1rem 0;
+	background: var(--sl-color-bg-nav);
+}
+
+.sl-markdown-content details > summary {
+	cursor: pointer;
+	font-weight: 500;
+	padding: 0.25rem 0;
+	color: var(--sl-color-text-accent);
+}
+
+.sl-markdown-content details[open] > summary {
+	margin-bottom: 0.75rem;
+	border-bottom: 1px solid var(--sl-color-hairline);
+}
+
+/* Reduced-motion respect. */
+@media (prefers-reduced-motion: reduce) {
+	*, *::before, *::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}

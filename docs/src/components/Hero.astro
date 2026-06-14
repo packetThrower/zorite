@@ -1,0 +1,199 @@
+---
+// Custom hero — overrides Starlight's default. Drenched navy ground spanning
+// the first viewport, identical in light and dark mode (the hero is its own
+// thing, per the design brief). Reads page frontmatter for tagline and CTAs.
+// Mirrors the PortFinder docs Hero so the two project sites read as a family.
+import { Icon } from '@astrojs/starlight/components';
+import iconImage from '../assets/icon.svg';
+
+const { entry } = Astro.locals.starlightRoute;
+const { hero = {}, title: pageTitle } = entry.data;
+const { title = pageTitle, tagline, actions = [] } = hero;
+
+// Show the screenshot-tour text link only on the homepage hero.
+// On the 404 hero a "see screenshots" link would be confusing —
+// the user already missed the page they were looking for. URL
+// check rather than `entry.id` because Starlight 0.38's entry
+// IDs don't include the file extension reliably across content
+// loaders.
+const path = Astro.url.pathname.replace(/\/+$/, '');
+const isHomepage = path === '/zorite' || path === '';
+---
+
+<section class="bd-hero">
+	<div class="bd-hero-inner">
+		<img
+			class="bd-hero-icon"
+			src={iconImage.src}
+			alt=""
+			width="180"
+			height="180"
+			loading="eager"
+			decoding="sync"
+		/>
+		<h1 class="bd-hero-title">{title}</h1>
+		{tagline && <p class="bd-hero-tagline">{tagline}</p>}
+		{actions.length > 0 && (
+			<div class="bd-hero-actions">
+				{actions.map((action) => (
+					<a
+						href={action.link}
+						class:list={['bd-hero-cta', `bd-hero-cta--${action.variant ?? 'primary'}`]}
+					>
+						<span>{action.text}</span>
+						{action.icon && <Icon name={action.icon} size="1em" />}
+					</a>
+				))}
+			</div>
+		)}
+		{isHomepage && (
+			<a class="bd-hero-tour" href="/zorite/usage/whiteboards/">
+				See the screenshot tour
+			</a>
+		)}
+	</div>
+	<div class="bd-hero-glow" aria-hidden="true"></div>
+</section>
+
+<style>
+	.bd-hero {
+		position: relative;
+		isolation: isolate;
+		margin: -1.5rem -1.5rem 2.5rem;
+		padding: clamp(3rem, 8vw, 6rem) clamp(1.5rem, 4vw, 3rem);
+		min-height: min(72vh, 640px);
+		display: grid;
+		place-items: center;
+		text-align: center;
+		overflow: hidden;
+		background:
+			radial-gradient(ellipse at top, var(--pt-navy-500) 0%, var(--pt-navy-700) 45%, var(--pt-navy-900) 100%);
+		color: var(--pt-paper-100);
+		border-radius: 0;
+	}
+
+	@media (min-width: 50rem) {
+		.bd-hero {
+			margin-left: -3rem;
+			margin-right: -3rem;
+			border-radius: 12px;
+		}
+	}
+
+	.bd-hero-inner {
+		position: relative;
+		z-index: 1;
+		max-width: 44rem;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		gap: 1.25rem;
+	}
+
+	.bd-hero-icon {
+		filter: drop-shadow(0 18px 40px rgba(4, 8, 14, 0.45));
+	}
+
+	.bd-hero-title {
+		font-family: 'Fraunces Variable', 'Fraunces', Georgia, serif;
+		font-variation-settings: 'opsz' 144, 'SOFT' 50, 'WONK' 1;
+		font-weight: 600;
+		font-size: clamp(2.75rem, 1.8rem + 4.5vw, 5rem);
+		line-height: 0.95;
+		letter-spacing: -0.025em;
+		color: var(--pt-paper-50);
+		margin: 0;
+	}
+
+	.bd-hero-tagline {
+		font-size: clamp(1.05rem, 0.95rem + 0.4vw, 1.25rem);
+		line-height: 1.45;
+		color: color-mix(in oklch, var(--pt-paper-100) 88%, transparent);
+		max-width: 32rem;
+		margin: 0;
+	}
+
+	.bd-hero-actions {
+		display: flex;
+		flex-wrap: wrap;
+		justify-content: center;
+		gap: 0.75rem;
+		margin-top: 0.5rem;
+	}
+
+	.bd-hero-cta {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.5em;
+		padding: 0.7em 1.4em;
+		border-radius: 999px;
+		font-weight: 500;
+		font-size: 0.95rem;
+		letter-spacing: 0.005em;
+		text-decoration: none;
+		transition: transform 140ms ease, background 140ms ease, color 140ms ease, box-shadow 140ms ease;
+	}
+
+	.bd-hero-cta--primary {
+		background: var(--pt-amber-400);
+		color: var(--pt-navy-900);
+		box-shadow: 0 8px 20px -8px rgba(240, 192, 96, 0.6);
+	}
+
+	.bd-hero-cta--primary:hover {
+		background: var(--pt-amber-300);
+		transform: translateY(-1px);
+	}
+
+	.bd-hero-cta--secondary,
+	.bd-hero-cta--minimal {
+		background: transparent;
+		color: var(--pt-paper-100);
+		box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--pt-paper-100) 30%, transparent);
+	}
+
+	.bd-hero-cta--secondary:hover,
+	.bd-hero-cta--minimal:hover {
+		background: color-mix(in oklch, var(--pt-paper-100) 8%, transparent);
+		box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--pt-paper-100) 50%, transparent);
+	}
+
+	/* Subtle text link below the CTA buttons — points at the
+	   screenshot tour. No pill / button styling: the brief was "just
+	   the words" so it reads as a soft secondary affordance, not a
+	   third button. */
+	.bd-hero-tour {
+		display: inline-block;
+		margin-top: 0.4rem;
+		font-size: 0.92rem;
+		color: color-mix(in oklch, var(--pt-paper-100) 75%, transparent);
+		text-decoration: none;
+		border-bottom: 1px solid color-mix(in oklch, var(--pt-paper-100) 25%, transparent);
+		padding-bottom: 1px;
+		transition: color 140ms ease, border-color 140ms ease;
+	}
+	.bd-hero-tour:hover {
+		color: var(--pt-amber-300);
+		border-bottom-color: var(--pt-amber-300);
+	}
+
+	/* Subtle amber glow drifting behind the icon — reads as warmth, not decoration. */
+	.bd-hero-glow {
+		position: absolute;
+		inset: auto auto -20% 50%;
+		width: min(80vw, 720px);
+		aspect-ratio: 1.4;
+		transform: translateX(-50%);
+		background: radial-gradient(circle, color-mix(in oklch, var(--pt-amber-500) 35%, transparent) 0%, transparent 60%);
+		filter: blur(40px);
+		opacity: 0.45;
+		z-index: 0;
+		pointer-events: none;
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.bd-hero-cta {
+			transition: none;
+		}
+	}
+</style>

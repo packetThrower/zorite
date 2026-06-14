@@ -1,0 +1,18 @@
+# Astro build output + caches
+dist/
+.astro/
+
+# Synced from CHANGELOG.md by scripts/sync-changelog.mjs at build time;
+# regenerated reproducibly so we don't track it.
+src/content/docs/changelog.md
+
+# Node
+node_modules/
+.pnpm-store/
+.npm/
+
+# Editor scratch
+.vscode/
+.idea/
+*.tmp
+*.log

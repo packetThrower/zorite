@@ -1,4 +1,12 @@
-# Bundled icons (Lucide)
+---
+title: Bundled icons
+description: The Lucide icons bundled into Zorite's UI as gpui-component IconName variants — a developer reference.
+---
+
+:::note
+A developer reference for building on Zorite's UI — the Lucide icon set bundled
+through gpui-component.
+:::
 
 gpui-component bundles the icon set below and exposes each one as an
 `IconName` variant. The icons are [**Lucide**](https://lucide.dev/icons/)
