@@ -518,13 +518,15 @@ fn svg_icon(key: &'static str, bytes: &'static [u8], color: Hsla, sz: f32) -> im
 }
 
 /// A hairline vertical divider separating toolbar tool groups.
-fn toolbar_divider(color: Hsla) -> gpui::AnyElement {
-    div()
-        .w(px(1.0))
-        .h(px(16.0))
-        .mx(px(3.0))
-        .bg(color)
-        .into_any_element()
+fn toolbar_divider(color: Hsla, vertical: bool) -> gpui::AnyElement {
+    let d = div().bg(color);
+    // A row's dividers are vertical bars; a column's are horizontal.
+    if vertical {
+        d.h(px(1.0)).w(px(16.0)).my(px(3.0))
+    } else {
+        d.w(px(1.0)).h(px(16.0)).mx(px(3.0))
+    }
+    .into_any_element()
 }
 
 /// A minimal themed tooltip view. gpui has the `.tooltip()` *hook* but no
@@ -651,10 +653,12 @@ pub enum FontPick {
 /// it, the Font toolbar button is hidden.
 pub type PickFontFn = Rc<dyn Fn(FontPick, &mut Window, &mut App)>;
 
-/// Called when the toolbar is dragged (or reset), with its new board-relative
-/// top-left (`None` = default top-center). The host persists it and feeds it back
-/// via [`WhiteboardView::set_toolbar_pos`]. Without it, the position is per-session.
-pub type MoveToolbarFn = Rc<dyn Fn(Option<(f32, f32)>, &mut Window, &mut App)>;
+/// Called when the toolbar is moved, reset, or re-oriented, with its new
+/// board-relative top-left (`None` = default top-center) and whether it's vertical.
+/// The host persists both and feeds them back via [`WhiteboardView::set_toolbar_pos`]
+/// / [`set_toolbar_vertical`](WhiteboardView::set_toolbar_vertical). Without it, the
+/// layout is per-session.
+pub type MoveToolbarFn = Rc<dyn Fn(Option<(f32, f32)>, bool, &mut Window, &mut App)>;
 
 /// A reusable group of elements the user can stamp onto a board. Element
 /// positions are normalized so the group's bounding box starts at the origin;
@@ -901,6 +905,9 @@ pub struct WhiteboardView {
     /// The toolbar's board-relative top-left when the user has dragged it; `None`
     /// keeps the default top-center. Persisted by the host.
     toolbar_pos: Option<(f32, f32)>,
+    /// Whether the toolbar is laid out vertically (a column) rather than as a row.
+    /// Toggled with `R` while dragging it; persisted by the host.
+    toolbar_vertical: bool,
     /// In-progress toolbar drag: the (pill origin − cursor) offset, board-relative.
     toolbar_drag: Option<(f32, f32)>,
     /// Undo / redo stacks of scene snapshots.
@@ -980,6 +987,7 @@ impl WhiteboardView {
             toolbar_bounds: Rc::new(Cell::new(Bounds::default())),
             toolbar_grip_bounds: Rc::new(Cell::new(Bounds::default())),
             toolbar_pos: None,
+            toolbar_vertical: false,
             toolbar_drag: None,
             history: Vec::new(),
             redo: Vec::new(),
@@ -1065,6 +1073,23 @@ impl WhiteboardView {
         cx.notify();
     }
 
+    /// Set the toolbar orientation (vertical = a column). The host pushes the
+    /// persisted value on open and after a change.
+    pub fn set_toolbar_vertical(&mut self, vertical: bool, cx: &mut Context<Self>) {
+        self.toolbar_vertical = vertical;
+        cx.notify();
+    }
+
+    /// Flip the toolbar orientation (row ↔ column) and persist. Bound to `R` while
+    /// the bar is being dragged.
+    fn toggle_toolbar_orientation(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.toolbar_vertical = !self.toolbar_vertical;
+        if let Some(f) = self.on_move_toolbar.clone() {
+            f(self.toolbar_pos, self.toolbar_vertical, window, cx);
+        }
+        cx.notify();
+    }
+
     /// Clamp a board-relative toolbar top-left so the pill stays fully on-board.
     fn clamp_toolbar(&self, x: f32, y: f32) -> (f32, f32) {
         let board = self.bounds.get().size;
@@ -1087,7 +1112,7 @@ impl WhiteboardView {
             self.toolbar_drag = None;
             self.toolbar_pos = None;
             if let Some(f) = self.on_move_toolbar.clone() {
-                f(None, window, cx);
+                f(None, self.toolbar_vertical, window, cx);
             }
             cx.notify();
             return;
@@ -1099,6 +1124,8 @@ impl WhiteboardView {
         self.font_open = false;
         self.templates_open = false;
         self.context_menu = None;
+        // Take focus so `R` (flip orientation) reaches the key handler mid-drag.
+        self.focus.focus(window, cx);
         let pill = self.toolbar_bounds.get().origin;
         self.toolbar_drag = Some((
             f32::from(pill.x) - f32::from(p.x),
@@ -1125,7 +1152,7 @@ impl WhiteboardView {
             return;
         }
         if let Some(f) = self.on_move_toolbar.clone() {
-            f(self.toolbar_pos, window, cx);
+            f(self.toolbar_pos, self.toolbar_vertical, window, cx);
         }
     }
 
@@ -3329,6 +3356,16 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
+        // While dragging the toolbar, `R` flips its orientation (row ↔ column);
+        // other keys are swallowed so they can't change tools mid-drag.
+        if self.toolbar_drag.is_some() {
+            let ks = &ev.keystroke;
+            if ks.key == "r" && !(ks.modifiers.platform || ks.modifiers.control || ks.modifiers.alt)
+            {
+                self.toggle_toolbar_orientation(window, cx);
+            }
+            return;
+        }
         // Not editing text → keys are board shortcuts (tools, delete, undo/redo).
         if self.editing.is_none() {
             if !self.handle_shortcut(ev, window, cx) {
@@ -5063,6 +5100,7 @@ impl Render for WhiteboardView {
         // still fire their own clicks.
         let grip_cell = self.toolbar_grip_bounds.clone();
         let pill_cell = self.toolbar_bounds.clone();
+        let vertical = self.toolbar_vertical;
         let dot_row = move || {
             div()
                 .flex()
@@ -5080,7 +5118,7 @@ impl Render for WhiteboardView {
             .px(px(4.0))
             .h(px(30.0))
             .cursor(CursorStyle::OpenHand)
-            .tooltip(self.tip("Drag to move · double-click to reset"))
+            .tooltip(self.tip("Drag to move · Tap R to flip · double-click to reset"))
             .child(
                 canvas(move |b, _, _| grip_cell.set(b), |_, _, _, _| {})
                     .absolute()
@@ -5089,21 +5127,25 @@ impl Render for WhiteboardView {
             .child(dot_row())
             .child(dot_row())
             .child(dot_row());
-        let pill = div()
+        let mut pill = div()
             .relative()
             .flex()
             .items_center()
             .gap(px(2.0))
             .p(px(3.0))
             .rounded(px(9.0))
-            .bg(panel)
+            .bg(panel);
+        if vertical {
+            pill = pill.flex_col();
+        }
+        let pill = pill
             .child(
                 canvas(move |b, _, _| pill_cell.set(b), |_, _, _, _| {})
                     .absolute()
                     .size_full(),
             )
             .child(grip)
-            .child(toolbar_divider(grid))
+            .child(toolbar_divider(grid, vertical))
             // navigate + color
             .child(
                 tool_btn(Tool::Pan)
@@ -5118,11 +5160,11 @@ impl Render for WhiteboardView {
             .child(color_btn)
             .child(width_btn)
             .children(font_btn)
-            .child(toolbar_divider(grid))
+            .child(toolbar_divider(grid, vertical))
             // tool categories (each opens a flyout of its tools)
             .children(cats)
             .child(templates_btn)
-            .child(toolbar_divider(grid))
+            .child(toolbar_divider(grid, vertical))
             // actions
             .child(
                 act(0, "wb-icon-undo", UNDO_ICON)
@@ -5156,19 +5198,33 @@ impl Render for WhiteboardView {
                 .justify_center()
                 .child(pill),
         };
-        // Flyouts / picker hang under the toolbar: centered below the default
-        // top-center bar, or just under its top-left once it's been dragged (42px
-        // matches the default 10→52 gap). Call `.child(panel)` on the result.
+        // Flyouts / picker hang off the toolbar: under a horizontal bar (centered
+        // by default, else under its top-left — 42px matches the 10→52 gap), or to
+        // the right of a vertical bar (anchored to its captured bounds, so it works
+        // whether centered or dragged). Call `.child(panel)` on the result.
+        let pill_b = self.toolbar_bounds.get();
+        let board_o = self.bounds.get().origin;
+        let pill_top = f32::from(pill_b.origin.y) - f32::from(board_o.y);
+        let pill_right =
+            f32::from(pill_b.origin.x) - f32::from(board_o.x) + f32::from(pill_b.size.width);
+        let has_bounds = f32::from(pill_b.size.width) > 1.0;
         let popover_anchor = move || -> Div {
-            match tb_pos {
-                Some((x, y)) => div().absolute().left(px(x)).top(px(y + 42.0)),
-                None => div()
+            if vertical && has_bounds {
+                div()
                     .absolute()
-                    .top(px(52.0))
-                    .left_0()
-                    .right_0()
-                    .flex()
-                    .justify_center(),
+                    .left(px(pill_right + 6.0))
+                    .top(px(pill_top))
+            } else {
+                match tb_pos {
+                    Some((x, y)) => div().absolute().left(px(x)).top(px(y + 42.0)),
+                    None => div()
+                        .absolute()
+                        .top(px(52.0))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center(),
+                }
             }
         };
 
