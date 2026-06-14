@@ -54,7 +54,11 @@ const DOT: f32 = 2.0;
 const LINE_PX: f32 = 16.0;
 /// Pen nib in screen px. A stored width is world-space (`NIB / zoom` at draw
 /// time) so strokes/shapes feel like a constant nib yet scale with the content.
+/// Also the default of [`WhiteboardView::active_width`].
 const NIB: f32 = 2.5;
+/// Stroke-thickness presets (screen px) offered by the toolbar thickness flyout.
+/// `NIB` (the default) is one of them.
+const WIDTH_PRESETS: [f32; 5] = [1.0, 2.5, 4.0, 6.0, 9.0];
 /// Minimum on-screen gap between recorded freehand points (input thinning).
 const MIN_POINT_PX: f32 = 2.0;
 /// Hit-test tolerance around an element's bounds, in screen px.
@@ -802,10 +806,15 @@ pub struct WhiteboardView {
     active_stroke: Option<u32>,
     /// Current fill for new shapes (`None` = unfilled).
     active_fill: Option<u32>,
+    /// Current stroke thickness for new elements, in screen px (stored world-space
+    /// as `active_width / zoom`, like [`NIB`]). Defaults to `NIB`.
+    active_width: f32,
     /// Open color picker, if any.
     picker: Option<Picker>,
     /// The tool category whose flyout is open, if any.
     open_group: Option<ToolGroup>,
+    /// Whether the thickness-preset flyout is open.
+    width_open: bool,
     /// Whether the templates gallery modal is open.
     templates_open: bool,
     /// In-progress drag inside the open picker.
@@ -870,8 +879,10 @@ impl WhiteboardView {
             rotating: None,
             active_stroke: None,
             active_fill: None,
+            active_width: NIB,
             picker: None,
             open_group: None,
+            width_open: false,
             templates_open: false,
             picker_drag: None,
             picker_bounds: Rc::new(Cell::new(Bounds::default())),
@@ -1486,10 +1497,42 @@ impl WhiteboardView {
     fn toggle_picker(&mut self, cx: &mut Context<Self>) {
         self.open_group = None;
         self.templates_open = false;
+        self.width_open = false;
         if self.picker.is_some() {
             self.picker = None;
         } else {
             self.seed_picker(PickerTarget::Stroke);
+        }
+        cx.notify();
+    }
+
+    /// Open / close the thickness-preset flyout (closing the other popovers).
+    fn toggle_width(&mut self, cx: &mut Context<Self>) {
+        self.picker = None;
+        self.open_group = None;
+        self.templates_open = false;
+        self.context_menu = None;
+        self.width_open = !self.width_open;
+        cx.notify();
+    }
+
+    /// Set the active stroke thickness (screen px) for new elements, and apply it
+    /// to the selection. A discrete action (unlike the picker's live drag), so it
+    /// pushes undo and flushes when it changes the scene. Closes the flyout.
+    fn set_width(&mut self, w: f32, window: &mut Window, cx: &mut Context<Self>) {
+        self.width_open = false;
+        self.active_width = w;
+        if !self.selected.is_empty() {
+            let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+            let sel = self.selected.clone();
+            self.push_undo();
+            for e in self.scene.elements.iter_mut() {
+                if sel.contains(&e.id) {
+                    set_kind_width(&mut e.kind, w / zoom);
+                }
+            }
+            self.dirty = true;
+            self.flush(window, cx);
         }
         cx.notify();
     }
@@ -1499,6 +1542,7 @@ impl WhiteboardView {
     fn toggle_group(&mut self, group: ToolGroup, cx: &mut Context<Self>) {
         self.picker = None;
         self.templates_open = false;
+        self.width_open = false;
         self.open_group = if self.open_group == Some(group) {
             None
         } else {
@@ -1511,6 +1555,7 @@ impl WhiteboardView {
     fn toggle_templates(&mut self, cx: &mut Context<Self>) {
         self.picker = None;
         self.open_group = None;
+        self.width_open = false;
         self.context_menu = None;
         self.templates_open = !self.templates_open;
         cx.notify();
@@ -1776,6 +1821,12 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
+        // Same for the thickness flyout (also occluded).
+        if self.width_open {
+            self.width_open = false;
+            cx.notify();
+            return;
+        }
 
         // The color picker takes input priority while open. Its draggable regions
         // (SV square, hue strip) start a drag here; presses on the rest of the
@@ -2023,7 +2074,7 @@ impl WhiteboardView {
             return;
         }
 
-        let width = NIB / zoom;
+        let width = self.active_width / zoom;
         // While the snap modifier (Option) is held, start the shape on a grid
         // line; the move handler snaps the opposite corner / endpoint too.
         let anchor = if ev.modifiers.alt {
@@ -2689,6 +2740,23 @@ fn is_closed_shape(kind: &ElementKind) -> bool {
             | ElementKind::Star(_)
             | ElementKind::Hexagon(_)
     )
+}
+
+/// Set the stroke width (world-space) on kinds that have one — pen / box-like
+/// shapes / lines / arrows. A no-op for text, page-cards, and images.
+fn set_kind_width(kind: &mut ElementKind, w: f32) {
+    match kind {
+        ElementKind::Draw(s) => s.width = w,
+        ElementKind::Rect(b)
+        | ElementKind::Ellipse(b)
+        | ElementKind::Diamond(b)
+        | ElementKind::Triangle(b)
+        | ElementKind::RoundRect(b)
+        | ElementKind::Star(b)
+        | ElementKind::Hexagon(b) => b.width = w,
+        ElementKind::Line(s) | ElementKind::Arrow(s) => s.width = w,
+        ElementKind::Text(_) | ElementKind::Embed(_) | ElementKind::Image(_) => {}
+    }
 }
 
 // --- color ----------------------------------------------------------------
@@ -4166,6 +4234,33 @@ impl Render for WhiteboardView {
                 this.focus.focus(window, cx);
                 this.toggle_picker(cx);
             }));
+        // Thickness button: a bar of the current stroke weight (in the current ink)
+        // that toggles the thickness flyout — sits next to color.
+        let mut width_btn = div()
+            .id("wb-width")
+            .size(px(30.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.0));
+        if self.width_open {
+            width_btn = width_btn.bg(accent);
+        } else {
+            width_btn = width_btn.hover(|s| s.bg(grid));
+        }
+        let width_btn = width_btn
+            .child(
+                div()
+                    .w(px(16.0))
+                    .h(px(self.active_width.clamp(1.0, 8.0)))
+                    .rounded_full()
+                    .bg(cur_swatch),
+            )
+            .tooltip(self.tip("Thickness"))
+            .on_click(cx.listener(|this, _ev, window, cx| {
+                this.focus.focus(window, cx);
+                this.toggle_width(cx);
+            }));
         // Templates button: opens the gallery modal (its own toolbar item, since
         // a gallery of cards doesn't belong among the tool icons).
         const TEMPLATES_ICON: &[u8] = include_bytes!("../assets/icons/templates.svg");
@@ -4220,6 +4315,7 @@ impl Render for WhiteboardView {
                             ),
                     )
                     .child(color_btn)
+                    .child(width_btn)
                     .child(toolbar_divider(grid))
                     // tool categories (each opens a flyout of its tools)
                     .children(cats)
@@ -4264,6 +4360,56 @@ impl Render for WhiteboardView {
                     tool_btn(t)
                         .tooltip(self.tip(t.label()))
                         .on_click(cx.listener(move |this, _ev, _w, cx| this.set_tool(t, cx))),
+                );
+            }
+            div()
+                .absolute()
+                .top(px(52.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(row)
+        });
+
+        // Thickness flyout (centered below the toolbar): one swatch per preset
+        // weight, the active one highlighted. Picking applies to new elements and
+        // the selection (`set_width`); a canvas press closes it (see `on_left_down`).
+        let width_flyout = self.width_open.then(|| {
+            let mut row = div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .p(px(3.0))
+                .rounded(px(9.0))
+                .bg(panel_strong)
+                .shadow_lg()
+                .occlude();
+            for (i, w) in WIDTH_PRESETS.into_iter().enumerate() {
+                let active = (self.active_width - w).abs() < 0.01;
+                let mut opt = div()
+                    .id(("wb-width-opt", i))
+                    .size(px(30.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0));
+                if active {
+                    opt = opt.bg(accent);
+                } else {
+                    opt = opt.hover(|s| s.bg(grid));
+                }
+                row = row.child(
+                    opt.child(
+                        div()
+                            .w(px(18.0))
+                            .h(px(w.clamp(1.0, 9.0)))
+                            .rounded_full()
+                            .bg(cur_swatch),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _ev, window, cx| this.set_width(w, window, cx)),
+                    ),
                 );
             }
             div()
@@ -4852,6 +4998,7 @@ impl Render for WhiteboardView {
             .child(chrome_layer)
             .child(toolbar)
             .children(flyout)
+            .children(width_flyout)
             .children(menu)
             .children(picker_panel)
             .children(templates_modal)
