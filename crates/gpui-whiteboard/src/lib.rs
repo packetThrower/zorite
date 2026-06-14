@@ -616,6 +616,11 @@ pub type CopyFn = Rc<dyn Fn(String, &mut Window, &mut App)>;
 /// [`WhiteboardView::paste_elements`]. (Keyboard ⌘V is handled internally.)
 pub type PasteFn = Rc<dyn Fn(&mut Window, &mut App) -> Option<String>>;
 
+/// Called when the user's saved-color palette changes (a swatch added or removed),
+/// with the full list (packed `0xRRGGBBAA`). The host persists it and feeds it back
+/// via [`WhiteboardView::set_saved_colors`]. Without it, the palette is per-session.
+pub type SavedColorsFn = Rc<dyn Fn(Vec<u32>, &mut Window, &mut App)>;
+
 /// Called each render to fetch the decoded bitmap for an image element's `src`,
 /// rotated by `rotation` radians (0 = upright). The host serves it from its image
 /// cache, decoding/rotating on demand (returning `None` until ready, then
@@ -769,6 +774,10 @@ pub struct WhiteboardView {
     on_drop_files: Option<DropFilesFn>,
     on_copy: Option<CopyFn>,
     on_paste: Option<PasteFn>,
+    on_save_colors: Option<SavedColorsFn>,
+    /// The user's saved colors (packed `0xRRGGBBAA`), shown in the picker's palette.
+    /// Supplied + persisted by the host (see [`SavedColorsFn`]).
+    saved_colors: Vec<u32>,
     /// Stored templates, supplied by the host; shown as cards in the Pages &
     /// Images flyout.
     templates: Vec<Template>,
@@ -871,6 +880,8 @@ impl WhiteboardView {
             on_drop_files: None,
             on_copy: None,
             on_paste: None,
+            on_save_colors: None,
+            saved_colors: Vec::new(),
             templates: Vec::new(),
             context_menu: None,
             font: Font::default(),
@@ -960,6 +971,41 @@ impl WhiteboardView {
     /// clipboard). Without it, the Paste menu item is hidden.
     pub fn set_on_paste(&mut self, f: PasteFn) {
         self.on_paste = Some(f);
+    }
+
+    /// Install the saved-colors hook (the palette changed → host persists it).
+    pub fn set_on_save_colors(&mut self, f: SavedColorsFn) {
+        self.on_save_colors = Some(f);
+    }
+
+    /// Replace the user's saved-color palette (the host pushes the persisted list
+    /// on open and after a change).
+    pub fn set_saved_colors(&mut self, colors: Vec<u32>, cx: &mut Context<Self>) {
+        self.saved_colors = colors;
+        cx.notify();
+    }
+
+    /// Save the picker's current color to the palette (the `+` in the picker),
+    /// then notify the host to persist. Ignores duplicates.
+    fn save_current_color(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(c) = self.picker_u32()
+            && !self.saved_colors.contains(&c)
+        {
+            self.saved_colors.push(c);
+            if let Some(f) = self.on_save_colors.clone() {
+                f(self.saved_colors.clone(), window, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// Remove a saved color from the palette (right-click a swatch), then persist.
+    fn remove_saved_color(&mut self, c: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.saved_colors.retain(|&x| x != c);
+        if let Some(f) = self.on_save_colors.clone() {
+            f(self.saved_colors.clone(), window, cx);
+        }
+        cx.notify();
     }
 
     /// Replace the stored templates shown in the Pages & Images flyout. The host
@@ -2241,6 +2287,11 @@ impl WhiteboardView {
     /// Right-click: with a selection (and a host save hook), open a small menu to
     /// save it as a template; otherwise just dismiss any open menu.
     fn on_right_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // A right-click inside the open color picker (e.g. removing a saved swatch)
+        // shouldn't also open the board context menu.
+        if self.picker.is_some() && self.picker_bounds.get().contains(&ev.position) {
+            return;
+        }
         // Show the menu when there's a selection (copy / cut / z-order / save) or
         // paste is wired (so you can paste onto empty canvas). Positioned at the click.
         if self.selected.is_empty() && self.on_paste.is_none() {
@@ -4968,7 +5019,106 @@ impl Render for WhiteboardView {
                         })),
                 );
             }
+            // Theme swatches, kept on one line. Its width (`n` swatches of 20px +
+            // 6px gaps) sets the panel width, and the Saved column is sized to the
+            // space it leaves beside the controls — so the panel crops to this row
+            // (no dead space) and saved colors wrap rather than run off the edge.
+            let theme_row_w = (swatch_views.len() as f32 * 26.0 - 6.0).max(0.0);
+            let saved_col_w = (theme_row_w - SV_W - 12.0).max(64.0);
             let swatch_grid = div().flex().flex_wrap().gap(px(6.0)).children(swatch_views);
+
+            // The gradient controls (the swatch row spans the full panel below).
+            let controls_col = div()
+                .flex()
+                .flex_col()
+                .gap(px(10.0))
+                .child(tabs)
+                .child(sv_square)
+                .child(hue_strip)
+                .child(alpha_strip)
+                .child(info_row);
+
+            // The user's saved palette: the right column (filling the dead space). A
+            // `+` saves the current color; each swatch applies on click, removes on
+            // right-click. Persisted by the host via `on_save_colors`.
+            let mut saved_grid = div().flex().flex_wrap().gap(px(6.0));
+            if self.saved_colors.is_empty() {
+                saved_grid = saved_grid.child(
+                    div()
+                        .w_full()
+                        .text_size(px(11.0))
+                        .text_color(text)
+                        .child("Tap + to save a color"),
+                );
+            } else {
+                for (i, &c) in self.saved_colors.iter().enumerate() {
+                    saved_grid = saved_grid.child(
+                        div()
+                            .id(("wb-saved", i))
+                            .size(px(20.0))
+                            .rounded(px(4.0))
+                            .bg(u32_to_hsla(c))
+                            .border_1()
+                            .border_color(grid)
+                            .tooltip(self.tip("Click to use · right-click to remove"))
+                            .on_click(cx.listener(move |this, _ev, window, cx| {
+                                this.pick_color(Some(c), window, cx)
+                            }))
+                            .on_mouse_down(
+                                MouseButton::Right,
+                                cx.listener(move |this, _ev, window, cx| {
+                                    this.remove_saved_color(c, window, cx)
+                                }),
+                            ),
+                    );
+                }
+            }
+            // Sized to the space the one-line swatch row leaves beside the controls,
+            // so the panel crops to that row (no dead space) and the saved swatches
+            // wrap within this column instead of forming one long row.
+            let saved_col = div()
+                .flex()
+                .flex_col()
+                .flex_none()
+                .w(px(saved_col_w))
+                .gap(px(8.0))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child(div().text_size(px(11.0)).text_color(text).child("Saved"))
+                        .child(
+                            div()
+                                .id("wb-save-color")
+                                .size(px(20.0))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded(px(4.0))
+                                .border_1()
+                                .border_color(grid)
+                                .text_size(px(14.0))
+                                .text_color(ink)
+                                .hover(|s| s.bg(grid))
+                                .child("+")
+                                .tooltip(self.tip("Save current color"))
+                                .on_click(cx.listener(|this, _ev, window, cx| {
+                                    this.save_current_color(window, cx)
+                                })),
+                        ),
+                )
+                .child(saved_grid);
+
+            // Top: the gradient controls with the Saved palette beside them (in the
+            // space the one-line swatch row leaves free). Swatch row spans below.
+            let top_row = div()
+                .flex()
+                .flex_row()
+                .items_start()
+                .gap(px(12.0))
+                .child(controls_col)
+                .child(saved_col);
 
             div()
                 .absolute()
@@ -4994,11 +5144,7 @@ impl Render for WhiteboardView {
                                 .absolute()
                                 .size_full(),
                         )
-                        .child(tabs)
-                        .child(sv_square)
-                        .child(hue_strip)
-                        .child(alpha_strip)
-                        .child(info_row)
+                        .child(top_row)
                         .child(swatch_grid),
                 )
         });

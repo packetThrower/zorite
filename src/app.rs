@@ -1997,7 +1997,8 @@ impl AppView {
         // Persist edits (strokes, camera) back to the board's page row; pick a
         // page for a placed card; open a page when a card is double-clicked.
         let weak = cx.entity().downgrade();
-        view.update(cx, |v, _| {
+        let saved_colors = self.saved_colors_list();
+        view.update(cx, |v, cx| {
             let w = weak.clone();
             v.set_on_change(Rc::new(move |json, _window, cx| {
                 if let Some(app) = w.upgrade() {
@@ -2058,10 +2059,48 @@ impl AppView {
             // Context-menu Paste → hand back copied board elements from the clipboard
             // (keyboard ⌘V is routed through `on_paste_image`).
             v.set_on_paste(Rc::new(|_window, cx| clipboard_board_json(cx)));
+            // Saved-color palette: seed from settings, persist + sync on change.
+            v.set_saved_colors(saved_colors, cx);
+            let w = weak.clone();
+            v.set_on_save_colors(Rc::new(move |colors, _window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.persist_saved_colors(colors, cx));
+                }
+            }));
         });
         self.whiteboard_views.insert(id, view);
         // Seed the new view with the current template list.
         self.refresh_templates(cx);
+    }
+
+    /// The user's saved whiteboard colors (packed `0xRRGGBBAA`), from settings.
+    fn saved_colors_list(&self) -> Vec<u32> {
+        self.db
+            .get_setting("whiteboard_swatches")
+            .map(|s| s.split(',').filter_map(|t| t.parse::<u32>().ok()).collect())
+            .unwrap_or_default()
+    }
+
+    /// Persist the saved-color palette and push it to every open board view.
+    fn persist_saved_colors(&mut self, colors: Vec<u32>, cx: &mut Context<Self>) {
+        let s = colors
+            .iter()
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Err(e) = self.db.set_setting("whiteboard_swatches", &s) {
+            log::error!("save whiteboard colors: {e}");
+        }
+        // Defer the view sync: this runs from inside a board view's own update
+        // (the picker's `+` / a removed swatch), so pushing back into that same
+        // view now would re-enter it and panic.
+        let views: Vec<_> = self.whiteboard_views.values().cloned().collect();
+        cx.defer(move |cx| {
+            for view in &views {
+                let colors = colors.clone();
+                view.update(cx, |v, cx| v.set_saved_colors(colors, cx));
+            }
+        });
     }
 
     /// Load templates from the DB and push them into every open board view.
