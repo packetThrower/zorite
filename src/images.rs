@@ -44,6 +44,12 @@ pub fn import_pdf(src: &Path) -> std::io::Result<String> {
     import_into(src, &paths::pdf_dir(), "pdf", "pdf")
 }
 
+/// Copy an external font file into the fonts dir; return its `fonts/<name>`
+/// reference (a whiteboard's chosen face, resolved against the data dir).
+pub fn import_font(src: &Path) -> std::io::Result<String> {
+    import_into(src, &paths::fonts_dir(), "fonts", "ttf")
+}
+
 /// Copy `src` into `dir`, giving it a unique, sanitized name; return the relative
 /// `<rel_prefix>/<name>` reference. `default_ext` is used if `src` has none.
 fn import_into(

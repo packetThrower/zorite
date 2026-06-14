@@ -1998,6 +1998,7 @@ impl AppView {
         // page for a placed card; open a page when a card is double-clicked.
         let weak = cx.entity().downgrade();
         let saved_colors = self.saved_colors_list();
+        let board_font = self.board_font(id);
         view.update(cx, |v, cx| {
             let w = weak.clone();
             v.set_on_change(Rc::new(move |json, _window, cx| {
@@ -2065,6 +2066,17 @@ impl AppView {
             v.set_on_save_colors(Rc::new(move |colors, _window, cx| {
                 if let Some(app) = w.upgrade() {
                     app.update(cx, |a, cx| a.persist_saved_colors(colors, cx));
+                }
+            }));
+            // Per-board font: apply the persisted face (if any) and wire the
+            // Font flyout (upload / revert to default).
+            if let Some(font) = board_font {
+                v.set_font(font, cx);
+            }
+            let w = weak.clone();
+            v.set_on_pick_font(Rc::new(move |pick, window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.choose_board_font(id, pick, window, cx));
                 }
             }));
         });
@@ -2219,6 +2231,92 @@ impl AppView {
             });
         })
         .detach();
+    }
+
+    /// The Font flyout fired for a board: upload a face from disk, or revert to
+    /// the bundled default. Each board keeps its own face (see [`board_font_key`]).
+    fn choose_board_font(
+        &mut self,
+        board_id: i64,
+        pick: crate::whiteboard::FontPick,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match pick {
+            crate::whiteboard::FontPick::Default => {
+                let _ = self.db.set_setting(&board_font_key(board_id), "");
+                if let Some(view) = self.whiteboard_views.get(&board_id).cloned() {
+                    view.update(cx, |v, cx| {
+                        v.set_font(crate::whiteboard::Font::default(), cx)
+                    });
+                }
+            }
+            crate::whiteboard::FontPick::Upload => {
+                let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: false,
+                    prompt: Some("Use font".into()),
+                });
+                cx.spawn_in(window, async move |this, cx| {
+                    let Ok(Ok(Some(paths))) = rx.await else {
+                        return;
+                    };
+                    let Some(path) = paths.into_iter().next() else {
+                        return;
+                    };
+                    let _ = this.update(cx, |this, cx| {
+                        this.apply_board_font_file(board_id, path, cx);
+                    });
+                })
+                .detach();
+            }
+        }
+    }
+
+    /// Validate a picked font file, copy it into the managed `fonts/` dir, persist
+    /// the per-board choice, and apply it to the live view. A file that isn't a
+    /// usable face is rejected (and logged) before anything is stored.
+    fn apply_board_font_file(&mut self, board_id: i64, path: PathBuf, cx: &mut Context<Self>) {
+        let Ok(bytes) = std::fs::read(&path) else {
+            log::error!("read font {}", path.display());
+            return;
+        };
+        if crate::whiteboard::Font::from_bytes(bytes, 0).is_none() {
+            log::warn!("not a usable font: {}", path.display());
+            return;
+        }
+        let rel = match crate::images::import_font(&path) {
+            Ok(rel) => rel,
+            Err(e) => {
+                log::error!("import font {}: {e}", path.display());
+                return;
+            }
+        };
+        let _ = self.db.set_setting(&board_font_key(board_id), &rel);
+        self.apply_board_font(board_id, cx);
+    }
+
+    /// Load a board's persisted face (if any) and push it to the live view. A
+    /// missing/empty ref or an unreadable/invalid file leaves the default in place.
+    fn apply_board_font(&self, board_id: i64, cx: &mut Context<Self>) {
+        if let (Some(font), Some(view)) = (
+            self.board_font(board_id),
+            self.whiteboard_views.get(&board_id).cloned(),
+        ) {
+            view.update(cx, |v, cx| v.set_font(font, cx));
+        }
+    }
+
+    /// Build a board's persisted face from settings, or `None` for the default.
+    fn board_font(&self, board_id: i64) -> Option<crate::whiteboard::Font> {
+        let rel = self.db.get_setting(&board_font_key(board_id))?;
+        if rel.is_empty() {
+            return None;
+        }
+        let abs = crate::paths::resolve_local(&rel)?;
+        let bytes = std::fs::read(&abs).ok()?;
+        crate::whiteboard::Font::from_bytes(bytes, 0)
     }
 
     /// Serve an image element's bitmap for the board, rotated to `rotation`
@@ -4703,6 +4801,12 @@ impl Render for AppView {
 /// a board can tell a copied selection from arbitrary text (and prefer it over a
 /// clipboard image). The remainder is the JSON from `WhiteboardView::selection_json`.
 const WB_CLIP_PREFIX: &str = "zorite-whiteboard-v1\n";
+
+/// Settings key holding a board's chosen text face (a `fonts/<name>` ref, or empty
+/// for the bundled default). Per-board, so each whiteboard keeps its own font.
+fn board_font_key(board_id: i64) -> String {
+    format!("whiteboard_font_{board_id}")
+}
 
 /// Copied whiteboard elements from the clipboard (the JSON after [`WB_CLIP_PREFIX`]),
 /// or `None` if the clipboard holds no board elements. Shared by keyboard paste

@@ -636,6 +636,21 @@ pub type PlaceImageFn = Rc<dyn Fn(f32, f32, &mut Window, &mut App)>;
 /// imports any images and places them via [`WhiteboardView::add_image_at`].
 pub type DropFilesFn = Rc<dyn Fn(Vec<std::path::PathBuf>, f32, f32, &mut Window, &mut App)>;
 
+/// Which face the Font flyout offers — upload one from disk or revert to the
+/// bundled default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontPick {
+    /// Pick a `.ttf`/`.otf` from disk (the host shows the file dialog).
+    Upload,
+    /// Revert to the bundled default face.
+    Default,
+}
+
+/// Called when the user picks from the Font flyout. The host loads the face and
+/// calls [`WhiteboardView::set_font`] (and persists the per-board choice). Without
+/// it, the Font toolbar button is hidden.
+pub type PickFontFn = Rc<dyn Fn(FontPick, &mut Window, &mut App)>;
+
 /// A reusable group of elements the user can stamp onto a board. Element
 /// positions are normalized so the group's bounding box starts at the origin;
 /// applying re-bases them to the viewport. The host owns persistence and the
@@ -790,6 +805,7 @@ pub struct WhiteboardView {
     on_copy: Option<CopyFn>,
     on_paste: Option<PasteFn>,
     on_save_colors: Option<SavedColorsFn>,
+    on_pick_font: Option<PickFontFn>,
     /// The user's saved colors (packed `0xRRGGBBAA`), shown in the picker's palette.
     /// Supplied + persisted by the host (see [`SavedColorsFn`]).
     saved_colors: Vec<u32>,
@@ -846,6 +862,8 @@ pub struct WhiteboardView {
     open_group: Option<ToolGroup>,
     /// Whether the thickness-preset flyout is open.
     width_open: bool,
+    /// Whether the font flyout (upload / default) is open.
+    font_open: bool,
     /// Whether the templates gallery modal is open.
     templates_open: bool,
     /// In-progress drag inside the open picker.
@@ -896,6 +914,7 @@ impl WhiteboardView {
             on_copy: None,
             on_paste: None,
             on_save_colors: None,
+            on_pick_font: None,
             saved_colors: Vec::new(),
             templates: Vec::new(),
             context_menu: None,
@@ -920,6 +939,7 @@ impl WhiteboardView {
             picker: None,
             open_group: None,
             width_open: false,
+            font_open: false,
             templates_open: false,
             picker_drag: None,
             picker_bounds: Rc::new(Cell::new(Bounds::default())),
@@ -991,6 +1011,13 @@ impl WhiteboardView {
     /// Install the saved-colors hook (the palette changed → host persists it).
     pub fn set_on_save_colors(&mut self, f: SavedColorsFn) {
         self.on_save_colors = Some(f);
+    }
+
+    /// Install the font-picker hook (the Font toolbar button). Without it, the
+    /// Font button is hidden. The host shows the file dialog, builds the face, and
+    /// calls [`set_font`](Self::set_font).
+    pub fn set_on_pick_font(&mut self, f: PickFontFn) {
+        self.on_pick_font = Some(f);
     }
 
     /// Replace the user's saved-color palette (the host pushes the persisted list
@@ -1572,6 +1599,7 @@ impl WhiteboardView {
         self.open_group = None;
         self.templates_open = false;
         self.width_open = false;
+        self.font_open = false;
         if self.picker.is_some() {
             self.picker = None;
         } else {
@@ -1586,6 +1614,7 @@ impl WhiteboardView {
         self.open_group = None;
         self.templates_open = false;
         self.context_menu = None;
+        self.font_open = false;
         self.width_open = !self.width_open;
         cx.notify();
     }
@@ -1631,6 +1660,7 @@ impl WhiteboardView {
         self.picker = None;
         self.templates_open = false;
         self.width_open = false;
+        self.font_open = false;
         self.open_group = if self.open_group == Some(group) {
             None
         } else {
@@ -1645,7 +1675,20 @@ impl WhiteboardView {
         self.open_group = None;
         self.width_open = false;
         self.context_menu = None;
+        self.font_open = false;
         self.templates_open = !self.templates_open;
+        cx.notify();
+    }
+
+    /// Open / close the font flyout (upload a face / revert to default), closing
+    /// the other popovers.
+    fn toggle_font(&mut self, cx: &mut Context<Self>) {
+        self.picker = None;
+        self.open_group = None;
+        self.width_open = false;
+        self.templates_open = false;
+        self.context_menu = None;
+        self.font_open = !self.font_open;
         cx.notify();
     }
 
@@ -1948,6 +1991,12 @@ impl WhiteboardView {
         // occluded, so a press reaching here is outside it).
         if self.open_group.is_some() {
             self.open_group = None;
+            cx.notify();
+            return;
+        }
+        // Same for the font flyout (occluded; a press here is outside it).
+        if self.font_open {
+            self.font_open = false;
             cx.notify();
             return;
         }
@@ -4441,6 +4490,28 @@ impl Render for WhiteboardView {
                 this.focus.focus(window, cx);
                 this.toggle_width(cx);
             }));
+        // Font button: a per-board text face ("Aa"); opens a small flyout to upload
+        // a `.ttf`/`.otf` or revert to the default. Hidden without a host hook.
+        let font_btn = self.on_pick_font.is_some().then(|| {
+            let mut b = div()
+                .id("wb-font")
+                .size(px(30.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0));
+            if self.font_open {
+                b = b.bg(accent);
+            } else {
+                b = b.hover(|s| s.bg(grid));
+            }
+            b.child(div().text_size(px(15.0)).text_color(ink).child("Aa"))
+                .tooltip(self.tip("Font"))
+                .on_click(cx.listener(|this, _ev, window, cx| {
+                    this.focus.focus(window, cx);
+                    this.toggle_font(cx);
+                }))
+        });
         // Templates button: opens the gallery modal (its own toolbar item, since
         // a gallery of cards doesn't belong among the tool icons).
         const TEMPLATES_ICON: &[u8] = include_bytes!("../assets/icons/templates.svg");
@@ -4496,6 +4567,7 @@ impl Render for WhiteboardView {
                     )
                     .child(color_btn)
                     .child(width_btn)
+                    .children(font_btn)
                     .child(toolbar_divider(grid))
                     // tool categories (each opens a flyout of its tools)
                     .children(cats)
@@ -4639,6 +4711,61 @@ impl Render for WhiteboardView {
                 )
                 .child(presets)
                 .child(slider);
+            div()
+                .absolute()
+                .top(px(52.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(panel)
+        });
+
+        // Font flyout: upload a `.ttf`/`.otf`, or revert to the bundled default.
+        // Occluded (a press outside dismisses it via `on_left_down`); each row fires
+        // the host hook, which loads the face and calls `set_font` for this board.
+        let font_flyout = (self.font_open && self.on_pick_font.is_some()).then(|| {
+            let row = |id: &'static str, label: &'static str| {
+                div()
+                    .id(id)
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .mx(px(4.0))
+                    .rounded(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(ink)
+                    .hover(|s| s.bg(grid))
+                    .child(label)
+            };
+            let panel = div()
+                .occlude()
+                .py(px(4.0))
+                .min_w(px(168.0))
+                .rounded(px(9.0))
+                .bg(panel_strong)
+                .shadow_lg()
+                .border_1()
+                .border_color(grid)
+                .flex()
+                .flex_col()
+                .child(row("wb-font-upload", "Upload font…").on_click(cx.listener(
+                    |this, _ev, window, cx| {
+                        this.font_open = false;
+                        if let Some(f) = this.on_pick_font.clone() {
+                            f(FontPick::Upload, window, cx);
+                        }
+                        cx.notify();
+                    },
+                )))
+                .child(row("wb-font-default", "Use default").on_click(cx.listener(
+                    |this, _ev, window, cx| {
+                        this.font_open = false;
+                        if let Some(f) = this.on_pick_font.clone() {
+                            f(FontPick::Default, window, cx);
+                        }
+                        cx.notify();
+                    },
+                )));
             div()
                 .absolute()
                 .top(px(52.0))
@@ -5333,6 +5460,7 @@ impl Render for WhiteboardView {
             .child(toolbar)
             .children(flyout)
             .children(width_flyout)
+            .children(font_flyout)
             .children(menu)
             .children(picker_panel)
             .children(templates_modal)

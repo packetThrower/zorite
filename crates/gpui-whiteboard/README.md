@@ -165,7 +165,10 @@ Coordinates passed to hooks are **world-space** (see [`Camera`]).
 | `set_on_paste` | `PasteFn` = `Fn(&mut Window, &mut App) -> Option<String>` | the context-menu **Paste** | read the clipboard; return previously copied board JSON, or `None` |
 | `set_on_save_template` | `SaveTemplateFn` = `Fn(String, &mut Window, &mut App)` | the user saves a selection as a template | name + store it, then feed the list back via `set_templates` |
 | `set_on_delete_template` | `DeleteTemplateFn` = `Fn(i64, &mut Window, &mut App)` | a template card is right-clicked → delete | remove it (by id), then `set_templates` |
+| `set_on_save_colors` | `SavedColorsFn` = `Fn(Vec<u32>, &mut Window, &mut App)` | the user adds/removes a swatch in the picker's **Saved** palette | persist the packed `0xRRGGBBAA` list, then push it back via `set_saved_colors` |
+| `set_on_pick_font` | `PickFontFn` = `Fn(FontPick, &mut Window, &mut App)` | the **Aa** Font flyout's *Upload* / *Use default* is clicked | load the `.ttf`/`.otf` (or the default) and call `set_font` — and persist the per-board choice |
 | `set_templates` | `fn(&mut self, Vec<Template>, &mut Context<Self>)` | — | push the current template list (on open and after any save/delete) |
+| `set_saved_colors` | `fn(&mut self, Vec<u32>, &mut Context<Self>)` | — | push the user's saved-color palette (on open and after a change) |
 | `set_font` | `fn(&mut self, Font, &mut Context<Self>)` | — | swap the text face (see [Custom fonts](#custom-fonts)) |
 
 > **Image & clipboard flow.** Images aren't stored in the scene — only a `src`
@@ -250,7 +253,7 @@ impl Template {
 ### Custom fonts
 
 Text is drawn from glyph outlines, so any TrueType/OpenType face works. The default is
-bundled (JetBrains Mono, OFL); swap one in with `set_font`:
+bundled (JetBrains Mono, OFL); swap one in directly with `set_font`:
 
 ```rust
 use gpui_whiteboard::Font;
@@ -259,6 +262,12 @@ if let Some(face) = Font::from_bytes(ttf_bytes, /* face index */ 0) {
 }
 // Font::default() is the bundled face.
 ```
+
+For a user-facing picker, install `set_on_pick_font`: the toolbar then shows an **Aa**
+button whose flyout offers *Upload font…* and *Use default*. The crate hands you a
+`FontPick` (`Upload` / `Default`); you run the file dialog, build the face, call
+`set_font`, and persist the choice however you like (the host app keeps one face per
+board, restored on reopen).
 
 ## Keyboard & mouse
 

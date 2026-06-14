@@ -75,6 +75,12 @@ pub fn pdf_dir() -> PathBuf {
     data_dir().join("pdf")
 }
 
+/// Directory for user-uploaded whiteboard fonts. A board's chosen face is stored
+/// relatively (`fonts/<name>`), resolved against [`data_dir`].
+pub fn fonts_dir() -> PathBuf {
+    data_dir().join("fonts")
+}
+
 /// Resolve a markdown image/file `src` to a local filesystem path, cross-platform.
 ///
 /// - `http(s)://` → `None` (remote, not a local file).
