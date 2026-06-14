@@ -18,6 +18,7 @@
 //! 3. Run the bundle through [`write_bundle`]. Done — collisions, link
 //!    indexing, aliases, assets, and the summary all come with it.
 
+mod edn;
 pub mod logseq;
 
 use std::collections::HashSet;
@@ -32,6 +33,13 @@ pub struct ImportBundle {
     pub pages: Vec<ImportPage>,
     pub days: Vec<ImportDay>,
     pub assets: Vec<AssetCopy>,
+    /// Assets held as bytes (decoded base64 whiteboard images); see [`AssetBytes`].
+    pub asset_bytes: Vec<AssetBytes>,
+    /// Whiteboards to create (each a converted scene; see [`ImportWhiteboard`]).
+    pub whiteboards: Vec<ImportWhiteboard>,
+    /// Page titles to mark as favorites (matched to imported pages/whiteboards by
+    /// title; an unmatched one is skipped).
+    pub favorites: Vec<String>,
     /// Non-fatal problems found while reading (missing assets, …).
     pub warnings: Vec<String>,
 }
@@ -54,11 +62,26 @@ pub struct ImportDay {
     pub content: String,
 }
 
+/// A whiteboard to create, with its scene already converted to Zorite JSON.
+pub struct ImportWhiteboard {
+    pub title: String,
+    /// `gpui_whiteboard::Scene` JSON for the `kind = 'whiteboard'` page content.
+    pub scene_json: String,
+}
+
 /// An asset file to copy into the managed stores.
 pub struct AssetCopy {
     pub src: PathBuf,
     /// Data-dir-relative destination, e.g. `images/x.png` or `pdf/x.pdf` —
     /// the same string the imported markdown references.
+    pub managed: String,
+}
+
+/// An asset the reader already holds as bytes (e.g. a base64 image decoded out of
+/// a whiteboard `.edn`), to write into the managed stores.
+pub struct AssetBytes {
+    pub bytes: Vec<u8>,
+    /// Data-dir-relative destination, e.g. `images/wb-<id>.png`.
     pub managed: String,
 }
 
@@ -69,6 +92,10 @@ pub struct Summary {
     pub journals: usize,
     pub highlight_pages: usize,
     pub assets_copied: usize,
+    /// Whiteboards created from the source.
+    pub whiteboards: usize,
+    /// Imported favorites newly added to the sidebar's Favorites list.
+    pub favorites: usize,
     /// Pages/days that already had content; the import appended below it.
     pub appended: Vec<String>,
     /// Non-fatal problems (missing assets, unparseable files, …).
@@ -129,6 +156,71 @@ pub fn write_bundle(
                 .push(format!("copy {}: {e}", copy.src.display())),
         }
     }
+
+    // Byte assets (decoded whiteboard images): same dedup/skip-existing policy,
+    // written from memory rather than copied from a source file.
+    for asset in &bundle.asset_bytes {
+        if !seen.insert(&asset.managed) {
+            continue;
+        }
+        let dest = data_dir.join(&asset.managed);
+        if dest.exists() {
+            continue;
+        }
+        if let Some(dir) = dest.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match std::fs::write(&dest, &asset.bytes) {
+            Ok(()) => summary.assets_copied += 1,
+            Err(e) => summary
+                .warnings
+                .push(format!("write {}: {e}", asset.managed)),
+        }
+    }
+
+    // Whiteboards: create each converted board (named, deduped). Done before
+    // favorites so a favorited whiteboard can resolve to it by title.
+    for wb in &bundle.whiteboards {
+        match db.create_whiteboard_with(&wb.title, &wb.scene_json) {
+            Ok(_) => summary.whiteboards += 1,
+            Err(e) => summary
+                .warnings
+                .push(format!("create whiteboard {}: {e}", wb.title)),
+        }
+    }
+
+    // Favorites: resolve each imported favorite title to its (now-written) page
+    // id and merge into the persisted `favorites` list, keeping existing ones in
+    // order. A title that didn't import (e.g. a whiteboard) is noted, not fatal.
+    if !bundle.favorites.is_empty() {
+        let mut ids: Vec<i64> = db
+            .get_setting("favorites")
+            .map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect())
+            .unwrap_or_default();
+        for title in &bundle.favorites {
+            match db.get_page_by_title(title) {
+                Ok(Some(p)) => {
+                    if !ids.contains(&p.id) {
+                        ids.push(p.id);
+                        summary.favorites += 1;
+                    }
+                }
+                Ok(None) => summary
+                    .warnings
+                    .push(format!("favorite not imported, skipped: {title}")),
+                Err(e) => summary.warnings.push(format!("favorite {title}: {e}")),
+            }
+        }
+        let csv = ids
+            .iter()
+            .map(|i| i.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        if let Err(e) = db.set_setting("favorites", &csv) {
+            summary.warnings.push(format!("save favorites: {e}"));
+        }
+    }
+
     summary.warnings.dedup();
     Ok(summary)
 }
@@ -226,18 +318,39 @@ mod tests {
                     managed: "images/pic.png".into(),
                 },
             ],
+            // A decoded whiteboard image, written from bytes.
+            asset_bytes: vec![AssetBytes {
+                bytes: b"\x89PNG".to_vec(),
+                managed: "images/wb-1.png".into(),
+            }],
+            whiteboards: vec![ImportWhiteboard {
+                title: "Sketch".into(),
+                scene_json: "{}".into(),
+            }],
+            favorites: vec!["Projects::Lab".into()],
             warnings: vec!["reader warning".into()],
         };
 
         let db = Db::open_in_memory().unwrap();
         let summary = write_bundle(&db, &dir, bundle, |_, _| {}).unwrap();
         assert_eq!((summary.pages, summary.journals), (1, 1));
-        assert_eq!(summary.assets_copied, 1);
+        // One file copy (deduped) + one byte asset written.
+        assert_eq!(summary.assets_copied, 2);
+        assert_eq!(
+            std::fs::read(dir.join("images/wb-1.png")).unwrap(),
+            b"\x89PNG"
+        );
         assert_eq!(summary.warnings, vec!["reader warning".to_string()]);
         assert!(dir.join("images/pic.png").is_file());
 
         let page = db.get_page_by_title("Projects::Lab").unwrap().unwrap();
         assert_eq!(db.get_page_aliases(page.id).unwrap(), vec!["lab"]);
+        // The favorite resolved to the imported page id and was persisted.
+        assert_eq!(summary.favorites, 1);
+        assert_eq!(db.get_setting("favorites").unwrap(), page.id.to_string());
+        // The whiteboard was created.
+        assert_eq!(summary.whiteboards, 1);
+        assert!(db.get_page_by_title("Sketch").unwrap().is_some());
         // Real links indexed; the pdf jump-link did NOT become a page.
         assert!(db.get_page_by_title("Other").unwrap().is_some());
         assert!(db.get_page_by_title("pdf/x.pdf#p1|↗").unwrap().is_none());

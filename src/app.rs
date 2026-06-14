@@ -1417,6 +1417,8 @@ impl AppView {
     fn refresh_sidebar(&mut self) {
         self.pages = self.db.list_pages().unwrap_or_default();
         self.whiteboards = self.db.list_whiteboards().unwrap_or_default();
+        // An import can add favorites; pick them up so they show without a relaunch.
+        self.favorites = self.load_favorites();
         self.templates = self
             .db
             .get_page_by_title(slash::TEMPLATES_PAGE)
@@ -4273,8 +4275,14 @@ impl AppView {
             let (title, lines) = match &result {
                 Ok(s) => {
                     let mut lines = vec![format!(
-                        "{} pages, {} journal days, {} PDF-highlight pages; {} assets copied.",
-                        s.pages, s.journals, s.highlight_pages, s.assets_copied
+                        "{} pages, {} journal days, {} PDF-highlight pages, \
+                         {} whiteboards; {} assets copied; {} favorites.",
+                        s.pages,
+                        s.journals,
+                        s.highlight_pages,
+                        s.whiteboards,
+                        s.assets_copied,
+                        s.favorites
                     )];
                     if !s.appended.is_empty() {
                         lines.push(format!(

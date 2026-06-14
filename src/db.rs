@@ -358,6 +358,29 @@ impl Db {
         })
     }
 
+    /// Create a whiteboard with a given `title` (deduped if taken) and scene
+    /// `content` — used by the importer. Like [`create_whiteboard`](Self::create_whiteboard)
+    /// but named and pre-filled.
+    pub fn create_whiteboard_with(&self, title: &str, content: &str) -> rusqlite::Result<Page> {
+        let mut t = title.to_string();
+        let mut n = 2;
+        while self.get_page_by_title(&t)?.is_some() {
+            t = format!("{title} {n}");
+            n += 1;
+        }
+        self.conn.execute(
+            "INSERT INTO pages (title, is_journal, kind, content) VALUES (?1, 0, 'whiteboard', ?2)",
+            params![t, content],
+        )?;
+        Ok(Page {
+            id: self.conn.last_insert_rowid(),
+            title: t,
+            is_journal: false,
+            journal_date: None,
+            content: content.to_string(),
+        })
+    }
+
     /// Every whiteboard, most-recently-updated first, for the sidebar's
     /// "Whiteboards" section. Content is not loaded (like [`list_pages`]).
     ///
