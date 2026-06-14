@@ -4774,52 +4774,49 @@ impl Render for AppView {
                     this.focus_global_search(window, cx)
                 }),
             )
-            .child(
-                TitleBar::new().child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .w_full()
-                        .child(
-                            div()
-                                .px_2()
-                                .text_size(px(13.0))
-                                .text_color(theme::text_secondary())
-                                .child("Zorite"),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(2.0))
-                                .mr_2()
-                                // The settings gear lives in the sidebar (next to
-                                // search); the title bar keeps just the theme toggle.
-                                .child(
-                                    div()
-                                        .id("theme-toggle")
-                                        .px_2()
-                                        .py_1()
-                                        .rounded(px(6.0))
-                                        .text_size(px(12.0))
-                                        .text_color(theme::text_secondary())
-                                        .cursor_pointer()
-                                        .hover(|h| {
-                                            h.bg(theme::hover()).text_color(theme::text_primary())
-                                        })
-                                        .child(self.mode.label())
-                                        .on_click(cx.listener(
-                                            |this: &mut AppView, _, window, cx| {
-                                                this.cycle_theme_mode(window, cx);
-                                            },
-                                        )),
-                                ),
-                        ),
-                ),
-            )
+            .child(TitleBar::new().child({
+                // The settings gear lives in the sidebar (next to search); the
+                // title bar keeps just the theme toggle.
+                //
+                // `.occlude()` is load-bearing on Windows: the title bar's content
+                // is one big window "Drag" region, so a plain button there reads as
+                // the OS caption and the click becomes a window-drag (the toggle
+                // appeared dead, stuck on Auto). Occluding the toggle removes the
+                // drag hitbox under it, so the OS hit-test returns client area and
+                // the click lands. Harmless on macOS.
+                let toggle = div()
+                    .id("theme-toggle")
+                    .occlude()
+                    .px_2()
+                    .py_1()
+                    .rounded(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(theme::text_secondary())
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+                    .child(self.mode.label())
+                    .on_click(cx.listener(|this: &mut AppView, _, window, cx| {
+                        this.cycle_theme_mode(window, cx);
+                    }));
+                let label = div()
+                    .px_2()
+                    .text_size(px(13.0))
+                    .text_color(theme::text_secondary())
+                    .child("Zorite");
+                let row = div().flex().flex_row().items_center().w_full();
+                // Put the toggle opposite the platform's window controls: right on
+                // macOS (traffic lights sit left), left on Windows/Linux (min /
+                // max / close sit right).
+                if cfg!(target_os = "macos") {
+                    row.justify_between()
+                        .child(label)
+                        .child(div().mr_2().child(toggle))
+                } else {
+                    row.child(div().ml_1().mr_2().child(toggle))
+                        .child(label)
+                        .child(div().flex_1())
+                }
+            }))
             .child(
                 div()
                     .flex_1()
