@@ -334,6 +334,9 @@ pub struct AppView {
     /// Namespace nodes (by full path) collapsed in the sidebar tree — their
     /// descendants are hidden. Persisted across launches.
     pub collapsed_nodes: HashSet<String>,
+    /// Sidebar sections (by key — `favorites` / `whiteboards` / `recent`) collapsed
+    /// to just their header. Persisted across launches.
+    pub collapsed_sections: HashSet<String>,
     /// The current global-search results (pages + referenced PDF/image files),
     /// kind-filtered, with per-kind counts for the results-pane chips.
     pub search: crate::search::Results,
@@ -529,6 +532,7 @@ impl AppView {
             recent_pages: Vec::new(),
             favorites: Vec::new(),
             collapsed_nodes: HashSet::new(),
+            collapsed_sections: HashSet::new(),
             search: crate::search::Results::default(),
             slash: None,
             templates: Vec::new(),
@@ -556,6 +560,7 @@ impl AppView {
         this.recent_pages = this.load_recent_pages();
         this.favorites = this.load_favorites();
         this.collapsed_nodes = this.load_collapsed();
+        this.collapsed_sections = this.load_collapsed_sections();
         // Load user themes on top of the built-ins, then apply the saved
         // (or default) skin + mode before the first paint.
         this.skins.extend(skins::load_user_skins());
@@ -972,6 +977,41 @@ impl AppView {
             .join("\n");
         if let Err(e) = self.db.set_setting("collapsed_nodes", &data) {
             log::error!("save collapsed nodes: {e}");
+        }
+        cx.notify();
+    }
+
+    /// Load the persisted collapsed sidebar sections (newline-separated keys).
+    fn load_collapsed_sections(&self) -> HashSet<String> {
+        self.db
+            .get_setting("collapsed_sections")
+            .map(|s| {
+                s.split('\n')
+                    .filter(|x| !x.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether the sidebar section `key` is collapsed (its rows hidden).
+    pub fn is_section_collapsed(&self, key: &str) -> bool {
+        self.collapsed_sections.contains(key)
+    }
+
+    /// Collapse / expand a sidebar section (its header chevron) and persist.
+    pub fn toggle_section(&mut self, key: &str, cx: &mut Context<Self>) {
+        if !self.collapsed_sections.remove(key) {
+            self.collapsed_sections.insert(key.to_string());
+        }
+        let data = self
+            .collapsed_sections
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Err(e) = self.db.set_setting("collapsed_sections", &data) {
+            log::error!("save collapsed sections: {e}");
         }
         cx.notify();
     }

@@ -70,6 +70,21 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
         wb_rows.push(whiteboard_row(page, app, window, cx));
     }
 
+    // Collapsible section headers (a click toggles; the rows are hidden when
+    // collapsed). The Whiteboards header carries the `+` to create a board.
+    let fav_collapsed = app.is_section_collapsed("favorites");
+    let wb_collapsed = app.is_section_collapsed("whiteboards");
+    let recent_collapsed = app.is_section_collapsed("recent");
+    let fav_header = section_header("Favorites", "favorites", fav_collapsed, None, cx);
+    let wb_header = section_header(
+        "Whiteboards",
+        "whiteboards",
+        wb_collapsed,
+        Some(new_whiteboard_icon(cx).into_any_element()),
+        cx,
+    );
+    let recent_header = section_header("Recent", "recent", recent_collapsed, None, cx);
+
     div()
         .w(px(240.0))
         .h_full()
@@ -139,40 +154,26 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                         .flex_col()
                         .child(journal_row(app.is_journal_view(), cx))
                         .when(!fav_rows.is_empty(), |this| {
-                            this.child(section_label("Favorites")).children(fav_rows)
-                        })
-                        .child(
-                            // Whiteboards header — a section label with a trailing
-                            // `+` that creates a new board.
-                            div()
-                                .px_2()
-                                .pt_4()
-                                .pb_1()
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap_2()
-                                .child(
-                                    div()
-                                        .flex_shrink_0()
-                                        .text_size(px(11.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(theme::accent())
-                                        .child("WHITEBOARDS"),
-                                )
-                                .child(div().flex_1().h(px(1.0)).bg(theme::divider()))
-                                .child(new_whiteboard_icon(cx)),
-                        )
-                        .children(wb_rows)
-                        .child(section_label("Recent"))
-                        .when(no_pages, |this| {
-                            this.child(empty_hint(if app.pages.is_empty() {
-                                "No pages yet — right-click below to add one"
+                            let this = this.child(fav_header);
+                            if fav_collapsed {
+                                this
                             } else {
-                                "No recent pages"
-                            }))
+                                this.children(fav_rows)
+                            }
                         })
-                        .children(page_rows),
+                        .child(wb_header)
+                        .when(!wb_collapsed, |this| this.children(wb_rows))
+                        .child(recent_header)
+                        .when(!recent_collapsed, |this| {
+                            this.when(no_pages, |t| {
+                                t.child(empty_hint(if app.pages.is_empty() {
+                                    "No pages yet — right-click below to add one"
+                                } else {
+                                    "No recent pages"
+                                }))
+                            })
+                            .children(page_rows)
+                        }),
                 )
                 .child(
                     // The empty area below the list is right-clickable for
@@ -483,13 +484,16 @@ fn whiteboard_row(
     with_page_menu(row, page.id, title, app.is_favorite(page.id), cx)
 }
 
-/// The `+` in the Whiteboards section header — creates a new board.
+/// The `+` in the Whiteboards section header — creates a new board. Acts on press
+/// and stops propagation so it doesn't also toggle the section's collapse.
 fn new_whiteboard_icon(cx: &mut Context<AppView>) -> impl IntoElement {
-    icon_btn("new-whiteboard", IconName::Plus).on_click(cx.listener(
-        |this: &mut AppView, _: &ClickEvent, window, cx| {
+    icon_btn("new-whiteboard", IconName::Plus).on_mouse_down(
+        MouseButton::Left,
+        cx.listener(|this: &mut AppView, _, window, cx| {
+            cx.stop_propagation();
             this.new_whiteboard(window, cx);
-        },
-    ))
+        }),
+    )
 }
 
 /// Shared styling for a clickable sidebar page row (the caller chains `on_click`,
@@ -603,8 +607,24 @@ fn with_page_menu(
     .into_any_element()
 }
 
-fn section_label(text: &str) -> impl IntoElement {
+/// A collapsible section header: the uppercase title, a hairline rule, an optional
+/// trailing action (e.g. the Whiteboards `+`), and a disclosure chevron at the
+/// right end of the rule. Clicking the header toggles section `key`; the action
+/// stops propagation so it doesn't also toggle.
+fn section_header(
+    title: &str,
+    key: &'static str,
+    collapsed: bool,
+    action: Option<AnyElement>,
+    cx: &mut Context<AppView>,
+) -> AnyElement {
+    let chev = if collapsed {
+        IconName::ChevronRight
+    } else {
+        IconName::ChevronDown
+    };
     div()
+        .id(SharedString::from(format!("sec:{key}")))
         .px_2()
         .pt_4()
         .pb_1()
@@ -612,16 +632,31 @@ fn section_label(text: &str) -> impl IntoElement {
         .flex_row()
         .items_center()
         .gap_2()
+        .cursor_pointer()
         .child(
             div()
                 .flex_shrink_0()
                 .text_size(px(11.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(theme::accent())
-                .child(text.to_uppercase()),
+                .child(title.to_uppercase()),
         )
         // A hairline rule fills the rest of the row, separating the groups.
         .child(div().flex_1().h(px(1.0)).bg(theme::divider()))
+        .children(action)
+        // The disclosure chevron, at the right end of the rule.
+        .child(
+            div()
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .text_color(theme::text_tertiary())
+                .child(Icon::new(chev).with_size(px(12.0))),
+        )
+        .on_click(
+            cx.listener(move |this: &mut AppView, _, _window, cx| this.toggle_section(key, cx)),
+        )
+        .into_any_element()
 }
 
 fn empty_hint(text: &str) -> impl IntoElement {
