@@ -825,6 +825,13 @@ pub struct WhiteboardView {
     focus: FocusHandle,
     /// The text element currently being edited (Text tool / double-click).
     editing: Option<u64>,
+    /// Caret position (byte offset into the editing text's content).
+    caret: usize,
+    /// The fixed end of the text selection (byte offset); `== caret` means no
+    /// selection, just the caret.
+    sel_anchor: usize,
+    /// A click-drag text selection is in progress (extends the selection on move).
+    text_selecting: bool,
     /// Canvas bounds in window coords, captured each paint so input handlers can
     /// map window-relative event positions into the board.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -924,6 +931,9 @@ impl WhiteboardView {
             tool: Tool::Pan,
             focus: cx.focus_handle(),
             editing: None,
+            caret: 0,
+            sel_anchor: 0,
+            text_selecting: false,
             bounds: Rc::new(Cell::new(Bounds::default())),
             pending: None,
             selected: Vec::new(),
@@ -2156,20 +2166,25 @@ impl WhiteboardView {
         let p = self.event_to_world(ev.position);
         let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
 
-        // Any click first commits an in-progress text edit.
-        if self.editing.is_some() {
+        // A press inside the text being edited drives its caret / selection (no
+        // commit). A press anywhere else commits the edit, then falls through.
+        if let Some(id) = self.editing {
+            if self.point_in_editing_text(id, p) {
+                self.place_caret_from_click(id, p, ev, window, cx);
+                return;
+            }
             self.commit_text(window, cx);
         }
 
         if ev.click_count >= 2 {
             self.pending = None;
             if self.tool == Tool::Select {
-                // Double-click a text element re-opens it for editing.
+                // Double-click a text element re-opens it for editing, selecting
+                // the word under the cursor.
                 if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
                     self.selected = vec![id];
                     self.editing = Some(id);
-                    self.focus.focus(window, cx);
-                    cx.notify();
+                    self.place_caret_from_click(id, p, ev, window, cx);
                     return;
                 }
                 // Double-click a page-card opens its page.
@@ -2195,10 +2210,11 @@ impl WhiteboardView {
         }
 
         if self.tool == Tool::Text {
-            // Edit a text under the cursor, else create a new one here.
+            // Edit a text under the cursor (caret at the click), else create one.
             if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
                 self.selected = vec![id];
                 self.editing = Some(id);
+                self.place_caret_from_click(id, p, ev, window, cx);
             } else {
                 self.push_undo();
                 let id = self.next_id;
@@ -2218,11 +2234,10 @@ impl WhiteboardView {
                     fill: None,
                 });
                 self.selected = vec![id];
-                self.editing = Some(id);
+                self.begin_text_edit(id, 0, window, cx);
                 self.dirty = true;
+                cx.notify();
             }
-            self.focus.focus(window, cx);
-            cx.notify();
             return;
         }
 
@@ -2391,6 +2406,11 @@ impl WhiteboardView {
     }
 
     fn on_left_up(&mut self, _ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // End a text-selection drag (the selection is applied live in `on_move`).
+        if self.text_selecting {
+            self.text_selecting = false;
+            return;
+        }
         // End a Pan-tool drag (left-button pan).
         if self.panning {
             self.panning = false;
@@ -2532,6 +2552,17 @@ impl WhiteboardView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Extending a text selection by dragging — the caret tracks the cursor
+        // while the anchor stays put.
+        if self.text_selecting
+            && let Some(id) = self.editing
+            && let Some(t) = self.editing_text(id)
+        {
+            let local = text_local(&t, self.event_to_world(ev.position));
+            self.caret = self.font.index_at(&t.content, t.size, local);
+            cx.notify();
+            return;
+        }
         // Dragging inside the color picker (SV square, hue strip, alpha strip) or
         // the thickness flyout's width slider.
         if let Some(drag) = self.picker_drag {
@@ -2852,8 +2883,232 @@ impl WhiteboardView {
         (f32::from(p.x - o.x), f32::from(p.y - o.y))
     }
 
+    /// A clone of the text element being edited (its content + size + placement).
+    fn editing_text(&self, id: u64) -> Option<TextGeom> {
+        self.scene
+            .elements
+            .iter()
+            .find(|e| e.id == id)
+            .and_then(|e| {
+                if let ElementKind::Text(t) = &e.kind {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// The selection as an ordered byte range `[start, end)` (empty when the caret
+    /// and anchor coincide).
+    fn sel_range(&self) -> (usize, usize) {
+        (
+            self.caret.min(self.sel_anchor),
+            self.caret.max(self.sel_anchor),
+        )
+    }
+
+    /// Move the caret to byte offset `to`; unless `extend` (Shift), collapse the
+    /// selection there too.
+    fn move_caret(&mut self, to: usize, extend: bool, cx: &mut Context<Self>) {
+        self.caret = to;
+        if !extend {
+            self.sel_anchor = to;
+        }
+        cx.notify();
+    }
+
+    /// Replace the editing text's `[s, e)` with `ins`, landing the caret just after
+    /// it (collapsed). The single mutation point for typing, deletion, and paste.
+    fn replace_range(&mut self, id: u64, s: usize, e: usize, ins: &str, cx: &mut Context<Self>) {
+        if let Some(el) = self.scene.elements.iter_mut().find(|el| el.id == id)
+            && let ElementKind::Text(t) = &mut el.kind
+        {
+            t.content.replace_range(s..e, ins);
+            self.caret = s + ins.len();
+            self.sel_anchor = self.caret;
+            self.dirty = true;
+            cx.notify();
+        }
+    }
+
+    /// Replace the current selection (or insert at the caret) with `ins`.
+    fn replace_selection(&mut self, id: u64, ins: &str, cx: &mut Context<Self>) {
+        let (s, e) = self.sel_range();
+        self.replace_range(id, s, e, ins, cx);
+    }
+
+    /// The caret offset one line up (`dir = -1`) or down (`dir = 1`), keeping the
+    /// current column (x). Clamps at the first / last line.
+    fn caret_vertical(&self, content: &str, size: f32, dir: i32) -> usize {
+        let pos = self.font.caret_pos(content, size, self.caret);
+        let lh = self.font.measure("", size).1.max(1.0);
+        // Aim mid-target-line so `index_at`'s floor lands on it despite rounding.
+        let y = (pos[1] + dir as f32 * lh + lh * 0.5).max(0.0);
+        self.font.index_at(content, size, [pos[0], y])
+    }
+
+    /// Apply one key press while editing text: caret navigation (arrows / Home /
+    /// End, ⇧ extends), selection (⌘A, click-drag set elsewhere), clipboard
+    /// (⌘C/X/V on the system clipboard), and insertion / deletion. Escape commits.
+    fn text_edit_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(id) = self.editing else {
+            return;
+        };
+        let Some(t) = self.editing_text(id) else {
+            self.commit_text(window, cx);
+            return;
+        };
+        let (content, size) = (t.content, t.size);
+        // Keep the caret/anchor valid against the live content (defensive).
+        self.caret = floor_boundary(&content, self.caret);
+        self.sel_anchor = floor_boundary(&content, self.sel_anchor);
+        let ks = &ev.keystroke;
+        let cmd = ks.modifiers.platform || ks.modifiers.control;
+        let shift = ks.modifiers.shift;
+
+        if ks.key == "escape" {
+            self.commit_text(window, cx);
+            return;
+        }
+        if cmd {
+            match ks.key.as_str() {
+                "a" => {
+                    self.sel_anchor = 0;
+                    self.caret = content.len();
+                    cx.notify();
+                }
+                "c" | "x" => {
+                    let (s, e) = self.sel_range();
+                    if s < e {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                            content[s..e].into(),
+                        ));
+                        if ks.key == "x" {
+                            self.replace_range(id, s, e, "", cx);
+                        }
+                    }
+                }
+                "v" => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) {
+                        self.replace_selection(id, &text, cx);
+                    }
+                }
+                _ => cx.propagate(), // ⌘Z / ⌘W / … belong to the host
+            }
+            return;
+        }
+
+        match ks.key.as_str() {
+            "left" => {
+                let (s, e) = self.sel_range();
+                let to = if !shift && s < e {
+                    s
+                } else {
+                    caret_left(&content, self.caret)
+                };
+                self.move_caret(to, shift, cx);
+            }
+            "right" => {
+                let (s, e) = self.sel_range();
+                let to = if !shift && s < e {
+                    e
+                } else {
+                    caret_right(&content, self.caret)
+                };
+                self.move_caret(to, shift, cx);
+            }
+            "up" => {
+                let to = self.caret_vertical(&content, size, -1);
+                self.move_caret(to, shift, cx);
+            }
+            "down" => {
+                let to = self.caret_vertical(&content, size, 1);
+                self.move_caret(to, shift, cx);
+            }
+            "home" => self.move_caret(line_start(&content, self.caret), shift, cx),
+            "end" => self.move_caret(line_end(&content, self.caret), shift, cx),
+            "backspace" => {
+                let (s, e) = self.sel_range();
+                if s < e {
+                    self.replace_range(id, s, e, "", cx);
+                } else if self.caret > 0 {
+                    self.replace_range(id, caret_left(&content, self.caret), self.caret, "", cx);
+                }
+            }
+            "delete" => {
+                let (s, e) = self.sel_range();
+                if s < e {
+                    self.replace_range(id, s, e, "", cx);
+                } else if self.caret < content.len() {
+                    self.replace_range(id, self.caret, caret_right(&content, self.caret), "", cx);
+                }
+            }
+            "enter" => self.replace_selection(id, "\n", cx),
+            "tab" => cx.propagate(),
+            _ => match ks.key_char.as_deref() {
+                Some(c) if c.chars().next().is_some_and(|ch| !ch.is_control()) => {
+                    self.replace_selection(id, c, cx);
+                }
+                _ => cx.propagate(),
+            },
+        }
+    }
+
+    /// Enter edit mode on text `id`, placing the caret at byte offset `at`.
+    fn begin_text_edit(&mut self, id: u64, at: usize, window: &mut Window, cx: &mut Context<Self>) {
+        self.editing = Some(id);
+        self.caret = at;
+        self.sel_anchor = at;
+        self.focus.focus(window, cx);
+    }
+
+    /// Whether world point `p` lands on the text being edited (its padded bounds).
+    fn point_in_editing_text(&self, id: u64, p: [f32; 2]) -> bool {
+        let pad = SELECT_PAD / self.scene.camera.zoom.max(MIN_ZOOM);
+        self.scene
+            .elements
+            .iter()
+            .find(|e| e.id == id)
+            .is_some_and(|e| {
+                let (x0, y0, x1, y1) = bbox(&e.kind);
+                p[0] >= x0 - pad && p[0] <= x1 + pad && p[1] >= y0 - pad && p[1] <= y1 + pad
+            })
+    }
+
+    /// A press inside the text being edited: place the caret at the nearest letter,
+    /// extend on Shift, select the word on a double-click, else start a drag-select.
+    fn place_caret_from_click(
+        &mut self,
+        id: u64,
+        p: [f32; 2],
+        ev: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(t) = self.editing_text(id) else {
+            return;
+        };
+        let local = text_local(&t, p);
+        let idx = self.font.index_at(&t.content, t.size, local);
+        if ev.click_count >= 2 {
+            let (s, e) = word_range(&t.content, idx);
+            self.sel_anchor = s;
+            self.caret = e;
+            self.text_selecting = false;
+        } else {
+            self.caret = idx;
+            if !ev.modifiers.shift {
+                self.sel_anchor = idx;
+            }
+            self.text_selecting = true;
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     /// Finish editing the current text element, dropping it if it's empty.
     fn commit_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.text_selecting = false;
         let Some(id) = self.editing.take() else {
             return;
         };
@@ -2956,29 +3211,14 @@ impl WhiteboardView {
             return;
         }
         // Not editing text → keys are board shortcuts (tools, delete, undo/redo).
-        let Some(id) = self.editing else {
+        if self.editing.is_none() {
             if !self.handle_shortcut(ev, window, cx) {
                 cx.propagate();
             }
             return;
-        };
-        let ks = &ev.keystroke;
-        let cmd = ks.modifiers.platform || ks.modifiers.control;
-        let res = if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == id)
-            && let ElementKind::Text(t) = &mut e.kind
-        {
-            text_key(&mut t.content, &ks.key, ks.key_char.as_deref(), cmd)
-        } else {
-            KeyResult::Commit
-        };
-        match res {
-            KeyResult::Edited => {
-                self.dirty = true;
-                cx.notify();
-            }
-            KeyResult::Commit => self.commit_text(window, cx),
-            KeyResult::Pass => cx.propagate(),
         }
+        // Editing → full text-box key handling (caret, selection, edit, clipboard).
+        self.text_edit_key(ev, window, cx);
     }
 }
 
@@ -3426,6 +3666,74 @@ fn axis_scale(anchor: f32, from: f32, target: f32) -> f32 {
     }
 }
 
+// --- Text-editing string navigation (byte offsets into the content) ---
+
+/// The previous char boundary before byte offset `at` (0 at the start).
+fn caret_left(content: &str, at: usize) -> usize {
+    content[..at.min(content.len())]
+        .chars()
+        .next_back()
+        .map_or(0, |c| at - c.len_utf8())
+}
+
+/// The next char boundary after byte offset `at` (clamped to the end).
+fn caret_right(content: &str, at: usize) -> usize {
+    content[at.min(content.len())..]
+        .chars()
+        .next()
+        .map_or(content.len(), |c| at + c.len_utf8())
+}
+
+/// Start of the line holding `at` (just past the previous '\n', else 0).
+fn line_start(content: &str, at: usize) -> usize {
+    content[..at.min(content.len())]
+        .rfind('\n')
+        .map_or(0, |i| i + 1)
+}
+
+/// End of the line holding `at` (just before the next '\n', else the end).
+fn line_end(content: &str, at: usize) -> usize {
+    let at = at.min(content.len());
+    content[at..].find('\n').map_or(content.len(), |i| at + i)
+}
+
+/// Round `idx` down to the nearest char boundary (clamped to the length), so a
+/// stale offset can never split a multi-byte char and panic.
+fn floor_boundary(content: &str, idx: usize) -> usize {
+    let mut i = idx.min(content.len());
+    while i > 0 && !content.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// The word (run of alphanumerics / `_`) around `at`, as a `[start, end)` range —
+/// for double-click selection. Empty when `at` isn't on a word char.
+fn word_range(content: &str, at: usize) -> (usize, usize) {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let at = floor_boundary(content, at);
+    let start = content[..at]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map_or(at, |(i, _)| i);
+    let end = content[at..]
+        .char_indices()
+        .take_while(|(_, c)| is_word(*c))
+        .last()
+        .map_or(at, |(i, c)| at + i + c.len_utf8());
+    (start, end)
+}
+
+/// World point → text-local space (origin at the block's top-left), undoing the
+/// text's rotation about its center so a click maps to the right glyph.
+fn text_local(t: &TextGeom, p: [f32; 2]) -> [f32; 2] {
+    let (cx, cy) = (t.x + t.measured_w / 2.0, t.y + t.measured_h / 2.0);
+    let (rx, ry) = rotate_pt(p[0], p[1], cx, cy, -t.rotation);
+    [rx - t.x, ry - t.y]
+}
+
 /// Snap target `(tx, ty)` so its angle from `(ox, oy)` is a multiple of 45°,
 /// preserving the distance (the line-drawing constraint for endpoint drags).
 fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
@@ -3468,40 +3776,6 @@ fn move_target(origin: [f32; 2], anchor: [f32; 2], cursor: [f32; 2], snap: bool)
         [snap_grid(t[0]), snap_grid(t[1])]
     } else {
         t
-    }
-}
-
-/// The outcome of a key press while editing text.
-enum KeyResult {
-    Edited,
-    Commit,
-    Pass,
-}
-
-/// Apply one key press to a text buffer. Basic editing only: printable input
-/// (incl. space), Enter (newline), and Backspace; Escape commits; modified
-/// chords pass through. No IME composition or mid-string cursor yet.
-fn text_key(content: &mut String, key: &str, key_char: Option<&str>, cmd: bool) -> KeyResult {
-    if cmd {
-        return KeyResult::Pass;
-    }
-    match key {
-        "escape" => KeyResult::Commit,
-        "enter" => {
-            content.push('\n');
-            KeyResult::Edited
-        }
-        "backspace" => {
-            content.pop();
-            KeyResult::Edited
-        }
-        _ => match key_char {
-            Some(c) if c.chars().next().is_some_and(|ch| !ch.is_control()) => {
-                content.push_str(c);
-                KeyResult::Edited
-            }
-            _ => KeyResult::Pass,
-        },
     }
 }
 
@@ -3678,6 +3952,10 @@ struct TextOutline {
     line_height: f32,
     /// Caret's text-local top, when this text is being edited.
     caret: Option<[f32; 2]>,
+    /// Selection highlight rects (text-local `[x, y, w, h]`), when editing.
+    selection: Vec<[f32; 4]>,
+    /// Fill color for the selection highlight.
+    sel_color: Hsla,
 }
 
 /// Paint a text element's vector outlines (and, when editing, its caret). Local
@@ -3703,6 +3981,20 @@ fn paint_text(
             px(f32::from(a.y) + (f32::from(b.y) - f32::from(a.y)) * 2.0 / 3.0),
         )
     };
+    // Selection highlight first (behind the glyphs), each text-local rect
+    // transformed like the outlines so it follows the text's rotation.
+    for r in &t.selection {
+        let (x, y, w, h) = (r[0], r[1], r[2], r[3]);
+        let mut pb = PathBuilder::fill();
+        pb.move_to(tf([x, y]));
+        pb.line_to(tf([x + w, y]));
+        pb.line_to(tf([x + w, y + h]));
+        pb.line_to(tf([x, y + h]));
+        pb.close();
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, t.sel_color);
+        }
+    }
     if !t.segs.is_empty() {
         let mut pb = PathBuilder::fill();
         let mut cur = point(px(0.0), px(0.0));
@@ -4274,6 +4566,9 @@ impl Render for WhiteboardView {
         // shapes. Re-laid each frame for now; see the path-cache note at the top.
         let font = self.font.clone();
         let editing = self.editing;
+        let (caret_at, sel_anchor) = (self.caret, self.sel_anchor);
+        // A translucent accent fills the selected glyphs (kept readable).
+        let sel_fill = gpui::hsla(selection.h, selection.s, selection.l, 0.30);
         let mut layers: Vec<Layer> = Vec::new();
         let mut band: Vec<ElemPaint> = Vec::new();
         for e in self.scene.elements.iter_mut() {
@@ -4379,6 +4674,16 @@ impl Render for WhiteboardView {
                         let layout = font.layout(&t.content, t.size);
                         t.measured_w = layout.width;
                         t.measured_h = layout.height;
+                        // While editing: the caret at its byte offset and the
+                        // selection rects (both text-local).
+                        let active = editing == Some(id);
+                        let caret = active.then(|| font.caret_pos(&t.content, t.size, caret_at));
+                        let (s, e) = (caret_at.min(sel_anchor), caret_at.max(sel_anchor));
+                        let selection = if active {
+                            font.selection_rects(&t.content, t.size, s, e)
+                        } else {
+                            Vec::new()
+                        };
                         Some(TextOutline {
                             segs: layout.segs,
                             x: t.x,
@@ -4387,7 +4692,9 @@ impl Render for WhiteboardView {
                             w: layout.width,
                             h: layout.height,
                             line_height: layout.line_height,
-                            caret: (editing == Some(id)).then_some(layout.caret),
+                            caret,
+                            selection,
+                            sel_color: sel_fill,
                         })
                     } else {
                         None
@@ -5940,28 +6247,34 @@ mod tests {
     }
 
     #[test]
-    fn text_key_handles_basic_editing() {
-        let mut s = String::new();
-        assert!(matches!(
-            text_key(&mut s, "h", Some("h"), false),
-            KeyResult::Edited
-        ));
-        text_key(&mut s, "i", Some("i"), false);
-        text_key(&mut s, "space", Some(" "), false);
-        assert_eq!(s, "hi ");
-        text_key(&mut s, "enter", None, false);
-        text_key(&mut s, "backspace", None, false);
-        assert_eq!(s, "hi ");
-        // ⌘/Ctrl chords pass through; Escape commits — neither types.
-        assert!(matches!(
-            text_key(&mut s, "a", Some("a"), true),
-            KeyResult::Pass
-        ));
-        assert!(matches!(
-            text_key(&mut s, "escape", None, false),
-            KeyResult::Commit
-        ));
-        assert_eq!(s, "hi ");
+    fn caret_navigation_walks_chars_and_lines() {
+        // Multi-byte: "é" is 2 bytes, so caret steps by whole chars, never panics.
+        let s = "aébc";
+        assert_eq!(caret_right(s, 0), 1); // past 'a'
+        assert_eq!(caret_right(s, 1), 3); // past 'é' (2 bytes)
+        assert_eq!(caret_left(s, 3), 1); // back over 'é'
+        assert_eq!(caret_left(s, 0), 0); // clamps at start
+        assert_eq!(caret_right(s, s.len()), s.len()); // clamps at end
+        // Line edges around a newline.
+        let m = "ab\ncde";
+        assert_eq!(line_start(m, 5), 3); // within "cde" → after the '\n'
+        assert_eq!(line_end(m, 0), 2); // end of "ab" (before '\n')
+        assert_eq!(line_start(m, 1), 0);
+        assert_eq!(line_end(m, 4), m.len());
+        // floor_boundary never splits a char.
+        assert_eq!(floor_boundary(s, 2), 1); // mid-'é' → its start
+        assert_eq!(floor_boundary(s, 99), s.len());
+    }
+
+    #[test]
+    fn word_range_selects_the_word_under_the_caret() {
+        let s = "foo bar_baz qux";
+        assert_eq!(word_range(s, 1), (0, 3)); // inside "foo"
+        assert_eq!(word_range(s, 7), (4, 11)); // "bar_baz" (underscore is a word char)
+        // At a word/space boundary the adjacent word wins (caret just after "foo").
+        assert_eq!(word_range(s, 3), (0, 3));
+        // Between two spaces → empty (no word under the caret).
+        assert_eq!(word_range("a  b", 2), (2, 2));
     }
 
     #[test]

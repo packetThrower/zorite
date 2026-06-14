@@ -287,7 +287,12 @@ The view handles these when it has focus (it focuses on a canvas click):
 | click / shift-click / marquee-drag (Select tool) | select one / add / box-select |
 | drag a handle · the round grip above a selection | resize (corners scale; edge handles stretch one axis, on a single element or a group) · rotate |
 | double-click a page-card | open its page (via `OpenPageFn`) |
+| double-click text · `T`-click text | edit it — click a letter for the caret, drag / double-click to select |
 | right-click | context menu (z-order, copy/cut/paste, save as template) |
+
+While editing a text element it behaves like a normal text field: click to place the
+caret, click-drag or double-click to select, arrows / Home / End (⇧ extends), ⌘A, and
+⌘C / ⌘X / ⌘V on the system clipboard; Esc (or a click away) commits.
 
 ## Persistence
 
