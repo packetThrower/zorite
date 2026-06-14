@@ -288,6 +288,7 @@ The view handles these when it has focus (it focuses on a canvas click):
 | drag a handle · the round grip above a selection | resize (corners scale; edge handles stretch one axis, on a single element or a group) · rotate |
 | double-click a page-card | open its page (via `OpenPageFn`) |
 | double-click text · `T`-click text | edit it — click a letter for the caret, drag / double-click to select |
+| drag the dotted grip (left of the toolbar) | move the toolbar (double-click the grip resets it) |
 | right-click | context menu (z-order, copy/cut/paste, save as template) |
 
 While editing a text element it behaves like a normal text field: click to place the

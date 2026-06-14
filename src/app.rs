@@ -1999,6 +1999,7 @@ impl AppView {
         let weak = cx.entity().downgrade();
         let saved_colors = self.saved_colors_list();
         let board_font = self.board_font(id);
+        let toolbar_pos = self.saved_toolbar_pos();
         view.update(cx, |v, cx| {
             let w = weak.clone();
             v.set_on_change(Rc::new(move |json, _window, cx| {
@@ -2079,6 +2080,14 @@ impl AppView {
                     app.update(cx, |a, cx| a.choose_board_font(id, pick, window, cx));
                 }
             }));
+            // Movable toolbar: apply the persisted position and persist on change.
+            v.set_toolbar_pos(toolbar_pos, cx);
+            let w = weak.clone();
+            v.set_on_move_toolbar(Rc::new(move |pos, _window, cx| {
+                if let Some(app) = w.upgrade() {
+                    app.update(cx, |a, cx| a.persist_toolbar_pos(pos, cx));
+                }
+            }));
         });
         self.whiteboard_views.insert(id, view);
         // Seed the new view with the current template list.
@@ -2111,6 +2120,29 @@ impl AppView {
             for view in &views {
                 let colors = colors.clone();
                 view.update(cx, |v, cx| v.set_saved_colors(colors, cx));
+            }
+        });
+    }
+
+    /// The persisted whiteboard toolbar position (`"x,y"` in settings), or `None`
+    /// for the default top-center. Global (the same position for every board).
+    fn saved_toolbar_pos(&self) -> Option<(f32, f32)> {
+        let s = self.db.get_setting("whiteboard_toolbar_pos")?;
+        let (a, b) = s.split_once(',')?;
+        Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+    }
+
+    /// Persist the toolbar position and push it to every open board.
+    fn persist_toolbar_pos(&mut self, pos: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        let s = pos.map_or(String::new(), |(x, y)| format!("{x},{y}"));
+        if let Err(e) = self.db.set_setting("whiteboard_toolbar_pos", &s) {
+            log::error!("save whiteboard toolbar pos: {e}");
+        }
+        // Defer the view sync (this runs inside the dragging view's own update).
+        let views: Vec<_> = self.whiteboard_views.values().cloned().collect();
+        cx.defer(move |cx| {
+            for view in &views {
+                view.update(cx, |v, cx| v.set_toolbar_pos(pos, cx));
             }
         });
     }

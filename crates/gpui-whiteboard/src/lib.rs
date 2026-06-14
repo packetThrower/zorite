@@ -31,10 +31,10 @@ use std::rc::Rc;
 pub use font::Font;
 
 use gpui::{
-    AnyView, App, AppContext, Bounds, Context, CursorStyle, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta,
-    ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, StyledImage,
+    AnyView, App, AppContext, Bounds, Context, CursorStyle, Div, FocusHandle, Hsla,
+    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ObjectFit, ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render, Rgba,
+    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, StyledImage,
     TransformationMatrix, Window, canvas, div, fill, hsla, linear_color_stop, linear_gradient,
     point, px, rgba, size,
 };
@@ -651,6 +651,11 @@ pub enum FontPick {
 /// it, the Font toolbar button is hidden.
 pub type PickFontFn = Rc<dyn Fn(FontPick, &mut Window, &mut App)>;
 
+/// Called when the toolbar is dragged (or reset), with its new board-relative
+/// top-left (`None` = default top-center). The host persists it and feeds it back
+/// via [`WhiteboardView::set_toolbar_pos`]. Without it, the position is per-session.
+pub type MoveToolbarFn = Rc<dyn Fn(Option<(f32, f32)>, &mut Window, &mut App)>;
+
 /// A reusable group of elements the user can stamp onto a board. Element
 /// positions are normalized so the group's bounding box starts at the origin;
 /// applying re-bases them to the viewport. The host owns persistence and the
@@ -808,6 +813,7 @@ pub struct WhiteboardView {
     on_paste: Option<PasteFn>,
     on_save_colors: Option<SavedColorsFn>,
     on_pick_font: Option<PickFontFn>,
+    on_move_toolbar: Option<MoveToolbarFn>,
     /// The user's saved colors (packed `0xRRGGBBAA`), shown in the picker's palette.
     /// Supplied + persisted by the host (see [`SavedColorsFn`]).
     saved_colors: Vec<u32>,
@@ -887,6 +893,16 @@ pub struct WhiteboardView {
     /// each paint), so a press can route to the slider or dismiss the flyout.
     width_panel_bounds: Rc<Cell<Bounds<Pixels>>>,
     width_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Screen bounds of the toolbar pill and its drag grip (captured each paint),
+    /// so a press routes to a drag (grip) or is consumed (pill) — the pill isn't
+    /// occluded, like the picker.
+    toolbar_bounds: Rc<Cell<Bounds<Pixels>>>,
+    toolbar_grip_bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The toolbar's board-relative top-left when the user has dragged it; `None`
+    /// keeps the default top-center. Persisted by the host.
+    toolbar_pos: Option<(f32, f32)>,
+    /// In-progress toolbar drag: the (pill origin − cursor) offset, board-relative.
+    toolbar_drag: Option<(f32, f32)>,
     /// Undo / redo stacks of scene snapshots.
     history: Vec<Scene>,
     redo: Vec<Scene>,
@@ -924,6 +940,7 @@ impl WhiteboardView {
             on_paste: None,
             on_save_colors: None,
             on_pick_font: None,
+            on_move_toolbar: None,
             saved_colors: Vec::new(),
             templates: Vec::new(),
             context_menu: None,
@@ -960,6 +977,10 @@ impl WhiteboardView {
             alpha_bounds: Rc::new(Cell::new(Bounds::default())),
             width_panel_bounds: Rc::new(Cell::new(Bounds::default())),
             width_bounds: Rc::new(Cell::new(Bounds::default())),
+            toolbar_bounds: Rc::new(Cell::new(Bounds::default())),
+            toolbar_grip_bounds: Rc::new(Cell::new(Bounds::default())),
+            toolbar_pos: None,
+            toolbar_drag: None,
             history: Vec::new(),
             redo: Vec::new(),
             panning: false,
@@ -1030,6 +1051,82 @@ impl WhiteboardView {
     /// calls [`set_font`](Self::set_font).
     pub fn set_on_pick_font(&mut self, f: PickFontFn) {
         self.on_pick_font = Some(f);
+    }
+
+    /// Install the toolbar-moved hook (the host persists the new position).
+    pub fn set_on_move_toolbar(&mut self, f: MoveToolbarFn) {
+        self.on_move_toolbar = Some(f);
+    }
+
+    /// Set the toolbar's board-relative top-left (`None` = default top-center). The
+    /// host pushes the persisted position on open and after a change.
+    pub fn set_toolbar_pos(&mut self, pos: Option<(f32, f32)>, cx: &mut Context<Self>) {
+        self.toolbar_pos = pos;
+        cx.notify();
+    }
+
+    /// Clamp a board-relative toolbar top-left so the pill stays fully on-board.
+    fn clamp_toolbar(&self, x: f32, y: f32) -> (f32, f32) {
+        let board = self.bounds.get().size;
+        let pill = self.toolbar_bounds.get().size;
+        let maxx = (f32::from(board.width) - f32::from(pill.width)).max(0.0);
+        let maxy = (f32::from(board.height) - f32::from(pill.height)).max(0.0);
+        (x.clamp(0.0, maxx), y.clamp(0.0, maxy))
+    }
+
+    /// Start dragging the toolbar from a grip press (window coords). A double-click
+    /// resets it to the default top-center.
+    fn start_toolbar_drag(
+        &mut self,
+        p: Point<Pixels>,
+        double: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if double {
+            self.toolbar_drag = None;
+            self.toolbar_pos = None;
+            if let Some(f) = self.on_move_toolbar.clone() {
+                f(None, window, cx);
+            }
+            cx.notify();
+            return;
+        }
+        // Close any popover so it doesn't trail the bar while it's dragged.
+        self.picker = None;
+        self.open_group = None;
+        self.width_open = false;
+        self.font_open = false;
+        self.templates_open = false;
+        self.context_menu = None;
+        let pill = self.toolbar_bounds.get().origin;
+        self.toolbar_drag = Some((
+            f32::from(pill.x) - f32::from(p.x),
+            f32::from(pill.y) - f32::from(p.y),
+        ));
+        cx.notify();
+    }
+
+    /// Update the toolbar position while dragging (window-coords cursor).
+    fn drag_toolbar(&mut self, p: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((ox, oy)) = self.toolbar_drag else {
+            return;
+        };
+        let board = self.bounds.get().origin;
+        let x = f32::from(p.x) + ox - f32::from(board.x);
+        let y = f32::from(p.y) + oy - f32::from(board.y);
+        self.toolbar_pos = Some(self.clamp_toolbar(x, y));
+        cx.notify();
+    }
+
+    /// Finish a toolbar drag and persist the new position.
+    fn commit_toolbar_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.toolbar_drag.take().is_none() {
+            return;
+        }
+        if let Some(f) = self.on_move_toolbar.clone() {
+            f(self.toolbar_pos, window, cx);
+        }
     }
 
     /// Replace the user's saved-color palette (the host pushes the persisted list
@@ -2061,6 +2158,18 @@ impl WhiteboardView {
             return;
         }
 
+        // The draggable toolbar (its pill isn't occluded — like the picker): a
+        // press on the grip starts a drag (double-click resets to top-center); a
+        // press anywhere else on the pill is consumed so its buttons handle their
+        // own clicks. Both must be caught before any canvas logic below.
+        if self.toolbar_grip_bounds.get().contains(&ev.position) {
+            self.start_toolbar_drag(ev.position, ev.click_count >= 2, window, cx);
+            return;
+        }
+        if self.toolbar_bounds.get().contains(&ev.position) {
+            return;
+        }
+
         // A press dismisses an open right-click menu (its own button is occluded,
         // so a press reaching here is outside it).
         if self.context_menu.take().is_some() {
@@ -2406,6 +2515,11 @@ impl WhiteboardView {
     }
 
     fn on_left_up(&mut self, _ev: &MouseUpEvent, window: &mut Window, cx: &mut Context<Self>) {
+        // Finish a toolbar drag (persist the new position).
+        if self.toolbar_drag.is_some() {
+            self.commit_toolbar_drag(window, cx);
+            return;
+        }
         // End a text-selection drag (the selection is applied live in `on_move`).
         if self.text_selecting {
             self.text_selecting = false;
@@ -2552,6 +2666,11 @@ impl WhiteboardView {
     }
 
     fn on_move(&mut self, ev: &MouseMoveEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Dragging the toolbar (its pill follows the cursor).
+        if self.toolbar_drag.is_some() {
+            self.drag_toolbar(ev.position, cx);
+            return;
+        }
         // Extending a text selection by dragging — the caret tracks the cursor
         // while the anchor stays put.
         if self.text_selecting
@@ -4938,64 +5057,120 @@ impl Render for WhiteboardView {
                 this.focus.focus(window, cx);
                 this.toggle_templates(cx);
             }));
-        let toolbar = div()
-            .absolute()
-            .top(px(10.0))
-            .left_0()
-            .right_0()
+        // Dotted drag grip + bounds capture so the toolbar can be moved. The pill
+        // is NOT occluded (like the color picker): a grip press starts a drag and a
+        // press elsewhere on the pill is consumed in `on_left_down`, so the buttons
+        // still fire their own clicks.
+        let grip_cell = self.toolbar_grip_bounds.clone();
+        let pill_cell = self.toolbar_bounds.clone();
+        let dot_row = move || {
+            div()
+                .flex()
+                .gap(px(3.0))
+                .child(div().size(px(2.5)).rounded_full().bg(text))
+                .child(div().size(px(2.5)).rounded_full().bg(text))
+        };
+        let grip = div()
+            .id("wb-grip")
+            .relative()
             .flex()
+            .flex_col()
             .justify_center()
+            .gap(px(3.0))
+            .px(px(4.0))
+            .h(px(30.0))
+            .cursor(CursorStyle::OpenHand)
+            .tooltip(self.tip("Drag to move · double-click to reset"))
             .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .p(px(3.0))
-                    .rounded(px(9.0))
-                    .bg(panel)
-                    .occlude()
-                    // navigate + color
-                    .child(
-                        tool_btn(Tool::Pan)
-                            .tooltip(self.tip(Tool::Pan.label()))
-                            .on_click(
-                                cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Pan, cx)),
-                            ),
-                    )
-                    .child(
-                        tool_btn(Tool::Select)
-                            .tooltip(self.tip(Tool::Select.label()))
-                            .on_click(
-                                cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Select, cx)),
-                            ),
-                    )
-                    .child(color_btn)
-                    .child(width_btn)
-                    .children(font_btn)
-                    .child(toolbar_divider(grid))
-                    // tool categories (each opens a flyout of its tools)
-                    .children(cats)
-                    .child(templates_btn)
-                    .child(toolbar_divider(grid))
-                    // actions
-                    .child(
-                        act(0, "wb-icon-undo", UNDO_ICON)
-                            .tooltip(self.tip("Undo (⌘Z)"))
-                            .on_click(cx.listener(|this, _ev, window, cx| this.undo(window, cx))),
-                    )
-                    .child(
-                        act(1, "wb-icon-redo", REDO_ICON)
-                            .tooltip(self.tip("Redo (⌘⇧Z)"))
-                            .on_click(cx.listener(|this, _ev, window, cx| this.redo(window, cx))),
-                    )
-                    .child(
-                        act(2, "wb-icon-delete", DELETE_ICON)
-                            .tooltip(self.tip("Delete selection (⌫)"))
-                            .on_click(cx.listener(|this, _ev, window, cx| {
-                                this.delete_selected(window, cx)
-                            })),
+                canvas(move |b, _, _| grip_cell.set(b), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(dot_row())
+            .child(dot_row())
+            .child(dot_row());
+        let pill = div()
+            .relative()
+            .flex()
+            .items_center()
+            .gap(px(2.0))
+            .p(px(3.0))
+            .rounded(px(9.0))
+            .bg(panel)
+            .child(
+                canvas(move |b, _, _| pill_cell.set(b), |_, _, _, _| {})
+                    .absolute()
+                    .size_full(),
+            )
+            .child(grip)
+            .child(toolbar_divider(grid))
+            // navigate + color
+            .child(
+                tool_btn(Tool::Pan)
+                    .tooltip(self.tip(Tool::Pan.label()))
+                    .on_click(cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Pan, cx))),
+            )
+            .child(
+                tool_btn(Tool::Select)
+                    .tooltip(self.tip(Tool::Select.label()))
+                    .on_click(cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Select, cx))),
+            )
+            .child(color_btn)
+            .child(width_btn)
+            .children(font_btn)
+            .child(toolbar_divider(grid))
+            // tool categories (each opens a flyout of its tools)
+            .children(cats)
+            .child(templates_btn)
+            .child(toolbar_divider(grid))
+            // actions
+            .child(
+                act(0, "wb-icon-undo", UNDO_ICON)
+                    .tooltip(self.tip("Undo (⌘Z)"))
+                    .on_click(cx.listener(|this, _ev, window, cx| this.undo(window, cx))),
+            )
+            .child(
+                act(1, "wb-icon-redo", REDO_ICON)
+                    .tooltip(self.tip("Redo (⌘⇧Z)"))
+                    .on_click(cx.listener(|this, _ev, window, cx| this.redo(window, cx))),
+            )
+            .child(
+                act(2, "wb-icon-delete", DELETE_ICON)
+                    .tooltip(self.tip("Delete selection (⌫)"))
+                    .on_click(
+                        cx.listener(|this, _ev, window, cx| this.delete_selected(window, cx)),
                     ),
             );
+        // Default top-center; once dragged, an absolute board-relative position
+        // (clamped to the board each paint, so a position persisted under a larger
+        // window can't strand the bar — and its grip — off-screen).
+        let tb_pos = self.toolbar_pos.map(|(x, y)| self.clamp_toolbar(x, y));
+        let toolbar = match tb_pos {
+            Some((x, y)) => div().absolute().left(px(x)).top(px(y)).child(pill),
+            None => div()
+                .absolute()
+                .top(px(10.0))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(pill),
+        };
+        // Flyouts / picker hang under the toolbar: centered below the default
+        // top-center bar, or just under its top-left once it's been dragged (42px
+        // matches the default 10→52 gap). Call `.child(panel)` on the result.
+        let popover_anchor = move || -> Div {
+            match tb_pos {
+                Some((x, y)) => div().absolute().left(px(x)).top(px(y + 42.0)),
+                None => div()
+                    .absolute()
+                    .top(px(52.0))
+                    .left_0()
+                    .right_0()
+                    .flex()
+                    .justify_center(),
+            }
+        };
 
         // Tool-category flyout (centered below the toolbar), built only while a
         // group is open. Occluded like the main bar; picking a tool activates it
@@ -5018,14 +5193,7 @@ impl Render for WhiteboardView {
                         .on_click(cx.listener(move |this, _ev, _w, cx| this.set_tool(t, cx))),
                 );
             }
-            div()
-                .absolute()
-                .top(px(52.0))
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(row)
+            popover_anchor().child(row)
         });
 
         // Thickness flyout (centered below the toolbar): a row of preset weights
@@ -5115,14 +5283,7 @@ impl Render for WhiteboardView {
                 )
                 .child(presets)
                 .child(slider);
-            div()
-                .absolute()
-                .top(px(52.0))
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(panel)
+            popover_anchor().child(panel)
         });
 
         // Font flyout: upload a `.ttf`/`.otf`, or revert to the bundled default.
@@ -5170,14 +5331,7 @@ impl Render for WhiteboardView {
                         cx.notify();
                     },
                 )));
-            div()
-                .absolute()
-                .top(px(52.0))
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(panel)
+            popover_anchor().child(panel)
         });
 
         // Right-click context menu (a selection's "Save as template"), anchored at
@@ -5730,33 +5884,26 @@ impl Render for WhiteboardView {
                 .child(controls_col)
                 .child(saved_col);
 
-            div()
-                .absolute()
-                .top(px(52.0))
-                .left_0()
-                .right_0()
-                .flex()
-                .justify_center()
-                .child(
-                    div()
-                        .relative()
-                        .flex()
-                        .flex_col()
-                        .gap(px(10.0))
-                        .p(px(10.0))
-                        .rounded(px(10.0))
-                        .bg(panel_strong)
-                        .shadow_lg()
-                        .border_1()
-                        .border_color(grid)
-                        .child(
-                            canvas(move |b, _, _| panel_cell.set(b), |_, _, _, _| {})
-                                .absolute()
-                                .size_full(),
-                        )
-                        .child(top_row)
-                        .child(swatch_grid),
-                )
+            popover_anchor().child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.0))
+                    .p(px(10.0))
+                    .rounded(px(10.0))
+                    .bg(panel_strong)
+                    .shadow_lg()
+                    .border_1()
+                    .border_color(grid)
+                    .child(
+                        canvas(move |b, _, _| panel_cell.set(b), |_, _, _, _| {})
+                            .absolute()
+                            .size_full(),
+                    )
+                    .child(top_row)
+                    .child(swatch_grid),
+            )
         });
 
         // Pan tool shows a grab cursor (closed while dragging) to read as "drag
