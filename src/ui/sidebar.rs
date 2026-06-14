@@ -253,7 +253,7 @@ fn date_icon(cx: &mut Context<AppView>) -> impl IntoElement {
 /// The "new page" plus button, next to the calendar. Dispatches `NewPage`, which
 /// prompts for a title (same path as the pages-area right-click "New page" menu).
 fn new_page_icon(cx: &mut Context<AppView>) -> impl IntoElement {
-    icon_btn("new-page", IconName::Plus)
+    icon_btn("new-page", Icon::empty().path("icons/sticky-note-plus.svg"))
         .on_click(
             cx.listener(|_this: &mut AppView, _: &ClickEvent, window, cx| {
                 window.dispatch_action(Box::new(NewPage), cx);

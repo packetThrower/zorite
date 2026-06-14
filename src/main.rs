@@ -42,16 +42,22 @@ use gpui_component::{Root, TitleBar};
 /// embedded assets.
 struct Assets;
 
-/// Lucide `clipboard-plus` (not packaged by gpui-component), served at the same
-/// `icons/<name>.svg` path scheme so [`gpui_component::Icon::path`] can use it.
+// Lucide faces not packaged by gpui-component, served at the same
+// `icons/<name>.svg` scheme so [`gpui_component::Icon::path`] can use them.
 const CLIPBOARD_PLUS: &[u8] = include_bytes!("../assets/icons/clipboard-plus.svg");
+const STICKY_NOTE_PLUS: &[u8] = include_bytes!("../assets/icons/sticky-note-plus.svg");
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
-        if path == "icons/clipboard-plus.svg" {
-            return Ok(Some(Cow::Borrowed(CLIPBOARD_PLUS)));
+        let custom = match path {
+            "icons/clipboard-plus.svg" => Some(CLIPBOARD_PLUS),
+            "icons/sticky-note-plus.svg" => Some(STICKY_NOTE_PLUS),
+            _ => None,
+        };
+        match custom {
+            Some(bytes) => Ok(Some(Cow::Borrowed(bytes))),
+            None => gpui_component_assets::Assets.load(path),
         }
-        gpui_component_assets::Assets.load(path)
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
