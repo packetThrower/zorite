@@ -13,3 +13,7 @@
 # A local Logseq graph used to exercise the importer (real notes — never commit).
 /Logseq/
 /logseq/
+# The full Lucide icon set fetched by scripts/fetch-lucide.sh for dev use; debug
+# builds load any icon from here. Only the icons we actually ship get bundled
+# (committed) under assets/icons/ and compiled in.
+/assets/icons/lucide/

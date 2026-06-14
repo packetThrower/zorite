@@ -49,15 +49,32 @@ const STICKY_NOTE_PLUS: &[u8] = include_bytes!("../assets/icons/sticky-note-plus
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
+        // Icons compiled into the binary (the ones we actually ship).
         let custom = match path {
             "icons/clipboard-plus.svg" => Some(CLIPBOARD_PLUS),
             "icons/sticky-note-plus.svg" => Some(STICKY_NOTE_PLUS),
             _ => None,
         };
-        match custom {
-            Some(bytes) => Ok(Some(Cow::Borrowed(bytes))),
-            None => gpui_component_assets::Assets.load(path),
+        if let Some(bytes) = custom {
+            return Ok(Some(Cow::Borrowed(bytes)));
         }
+        let delegated = gpui_component_assets::Assets.load(path);
+        if matches!(delegated, Ok(Some(_))) {
+            return delegated;
+        }
+        // Dev convenience: serve any Lucide icon from the on-disk set fetched by
+        // `scripts/fetch-lucide.sh`, so new faces can be tried without bundling.
+        // Debug builds only — release ships just the embedded + compiled-in icons.
+        #[cfg(debug_assertions)]
+        if let Some(name) = path.strip_prefix("icons/") {
+            let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("assets/icons/lucide")
+                .join(name);
+            if let Ok(bytes) = std::fs::read(p) {
+                return Ok(Some(Cow::Owned(bytes)));
+            }
+        }
+        delegated
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
@@ -126,4 +143,26 @@ fn main() {
         }
         cx.activate(true);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::AssetSource;
+
+    #[test]
+    fn asset_source_serves_bundled_and_dev_icons() {
+        // The icons compiled into the binary always resolve.
+        assert!(Assets.load("icons/clipboard-plus.svg").unwrap().is_some());
+        assert!(Assets.load("icons/sticky-note-plus.svg").unwrap().is_some());
+        // The debug-only disk fallback serves any Lucide icon once
+        // `scripts/fetch-lucide.sh` has populated the set (skipped if not, e.g. CI).
+        // `map-pin` is in Lucide but not the embedded subset, so it exercises it.
+        let fetched = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("assets/icons/lucide/map-pin.svg")
+            .exists();
+        if fetched {
+            assert!(Assets.load("icons/map-pin.svg").unwrap().is_some());
+        }
+    }
 }
