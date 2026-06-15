@@ -9,6 +9,18 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-06-15
+
+### Fixed
+
+- **Windows: the app exited with an error where no graphics display was
+  available** — headless or RDP sessions, and the winget validator's sandbox.
+  GPUI couldn't initialize its DirectX renderer (the desktop compositor was
+  unreachable), so the process exited non-zero. Zorite now probes for a graphics
+  adapter at startup and, when none is usable, shows an explanatory dialog and
+  exits cleanly instead of erroring out. No effect on a normal desktop; macOS
+  and Linux were unaffected.
+
 ## [0.1.1] - 2026-06-15
 
 ### Fixed
@@ -146,7 +158,8 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
-[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/packetThrower/zorite/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/packetThrower/zorite/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.2...v0.1.0
 [0.1.0-beta.2]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.1...v0.1.0-beta.2

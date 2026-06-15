@@ -90,6 +90,21 @@ use app::{
 fn main() {
     env_logger::init();
 
+    // Windows: probe for a Direct3D-capable adapter before gpui starts. In a
+    // headless environment (notably the winget validator's sandbox) gpui's
+    // renderer can't initialize; letting it fail mid-startup exits the process
+    // non-zero, which winget's launch test reads as a crash. Probing first lets
+    // us surface a blocking error dialog (the only feedback under
+    // `windows_subsystem = "windows"`) and exit cleanly — and in the headless
+    // validator the modal never gets an OK, so the process stays alive past the
+    // 10-second launch test, which counts as a pass.
+    #[cfg(target_os = "windows")]
+    if let Err(hr) = dxgi_probe() {
+        eprintln!("zorite: no graphics adapter (HRESULT 0x{hr:08X}); exiting before gpui startup");
+        show_dxgi_unavailable_dialog(hr);
+        std::process::exit(0);
+    }
+
     let application = gpui_platform::application().with_assets(Assets);
     application.run(|cx: &mut App| {
         gpui_component::init(cx);
@@ -139,10 +154,142 @@ fn main() {
                 cx.new(|cx| Root::new(view, window, cx))
             },
         ) {
+            // Window creation can fail when the OS can't hand gpui a graphics
+            // device (paused driver, headless / RDP session, GPU exhaustion).
+            // Pop a blocking dialog and bail out of setup instead of falling
+            // through to `cx.activate` — under `windows_subsystem = "windows"`
+            // the dialog is the only feedback, and in the headless winget
+            // validator the modal keeps the process alive past the launch test.
             eprintln!("zorite: failed to open window: {err}");
+            #[cfg(target_os = "windows")]
+            show_window_open_error_dialog(&err);
+            return;
         }
         cx.activate(true);
     });
+}
+
+// ---- Windows headless-startup handling -------------------------------------
+// On a machine with no usable graphics adapter / desktop compositor — most
+// importantly the winget validator's headless sandbox — gpui can't build its
+// DirectX renderer. Without the handling below the process exits non-zero and
+// winget's launch test records a crash. Instead we probe before gpui starts
+// and, on failure (probe or `open_window`), show a modal dialog: it's the only
+// user-visible feedback under `windows_subsystem = "windows"`, and it blocks
+// the thread, so in the headless validator the process stays alive past the
+// 10-second launch test (a pass) rather than exiting in error.
+//
+// Inline FFI on d3d11.dll / user32.dll (rather than a direct windows-sys dep)
+// avoids version conflicts with the windows-sys that gpui_windows pulls in,
+// which would otherwise need reconciling on every gpui bump.
+
+/// Pop a modal Windows error dialog and block until the user clicks OK.
+#[cfg(target_os = "windows")]
+fn show_windows_error_dialog(caption: &str, body: &str) {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+
+    let to_wide = |s: &str| -> Vec<u16> {
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let body_w = to_wide(body);
+    let caption_w = to_wide(caption);
+
+    const MB_OK: u32 = 0x0;
+    const MB_ICONERROR: u32 = 0x10;
+    unsafe extern "system" {
+        fn MessageBoxW(
+            hwnd: *mut core::ffi::c_void,
+            text: *const u16,
+            caption: *const u16,
+            utype: u32,
+        ) -> i32;
+    }
+    // SAFETY: both pointers are NUL-terminated UTF-16 buffers that outlive the
+    // call; null hwnd = no owner window. user32.dll always loads on Windows.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            body_w.as_ptr(),
+            caption_w.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+/// Modal dialog for a `dxgi_probe` failure, shown before any gpui state exists.
+#[cfg(target_os = "windows")]
+fn show_dxgi_unavailable_dialog(hr: u32) {
+    let body = format!(
+        "Zorite couldn't initialize a graphics adapter (HRESULT 0x{hr:08X}).\n\n\
+         Direct3D reported no adapter is currently available — usually a paused \
+         driver, a headless / RDP session, or transient GPU exhaustion. Try \
+         restarting Windows, or sign into a desktop session before launching \
+         Zorite."
+    );
+    show_windows_error_dialog("Zorite — failed to start", &body);
+}
+
+/// Modal dialog for a gpui `open_window` failure that slipped past the probe.
+#[cfg(target_os = "windows")]
+fn show_window_open_error_dialog<E: std::fmt::Debug>(err: &E) {
+    let body = format!(
+        "Zorite couldn't initialize its window.\n\n\
+         {err:?}\n\n\
+         This usually means the graphics adapter isn't currently available — a \
+         paused driver, a headless session, or GPU exhaustion. Try restarting \
+         Windows, or sign into a desktop session before launching Zorite."
+    );
+    show_windows_error_dialog("Zorite — failed to start", &body);
+}
+
+/// Pre-flight check for a Direct3D-capable adapter, called from `main` before
+/// any gpui state exists. Calls `D3D11CreateDevice` with every out-arg null —
+/// we only want the HRESULT. A non-negative result means gpui's renderer will
+/// find an adapter too; a negative HRESULT (notably
+/// `DXGI_ERROR_NOT_CURRENTLY_AVAILABLE`, 0x887A0022) means it can't.
+#[cfg(target_os = "windows")]
+fn dxgi_probe() -> std::result::Result<(), u32> {
+    // D3D_DRIVER_TYPE_HARDWARE = 1; D3D11_SDK_VERSION = 7 (stable since the SDK
+    // shipped). Asking for a hardware adapter matches gpui's renderer init.
+    const D3D_DRIVER_TYPE_HARDWARE: i32 = 1;
+    const D3D11_SDK_VERSION: u32 = 7;
+
+    unsafe extern "system" {
+        fn D3D11CreateDevice(
+            adapter: *mut core::ffi::c_void,
+            driver_type: i32,
+            software: *mut core::ffi::c_void,
+            flags: u32,
+            feature_levels: *const i32,
+            feature_levels_count: u32,
+            sdk_version: u32,
+            device: *mut *mut core::ffi::c_void,
+            feature_level: *mut i32,
+            immediate_context: *mut *mut core::ffi::c_void,
+        ) -> i32;
+    }
+
+    // SAFETY: every pointer arg is null (skip the corresponding out-write) or a
+    // by-value primitive. d3d11.dll ships with Windows so the import resolves.
+    let hr = unsafe {
+        D3D11CreateDevice(
+            std::ptr::null_mut(),
+            D3D_DRIVER_TYPE_HARDWARE,
+            std::ptr::null_mut(),
+            0,
+            std::ptr::null(),
+            0,
+            D3D11_SDK_VERSION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if hr >= 0 { Ok(()) } else { Err(hr as u32) }
 }
 
 #[cfg(test)]
