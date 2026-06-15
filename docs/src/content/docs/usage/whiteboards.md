@@ -5,8 +5,7 @@ description: 'The freeform infinite canvas — pen, shapes, text, images, and pa
 
 Whiteboards are a freeform infinite canvas that lives alongside the text
 journal. They're first-class pages — each board has a title, its own sidebar
-section, and shows up in search — so a sketch is just as much a part of your
-notes as a written page.
+section, and shows up in search.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-whiteboard-light.png" />

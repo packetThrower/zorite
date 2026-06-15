@@ -23,12 +23,11 @@ converts them to native notes.
 | Favorites | Your Favorites group |
 
 Namespaces, tasks, properties, aliases, embeds, block-refs, and the special
-`hls__*` highlight pages are all handled, so a graph comes across as working
-linked notes rather than a pile of raw Markdown.
+`hls__*` highlight pages are all handled, so the graph lands as working notes,
+not raw Markdown.
 
 ## Collision policy
 
 Import is **non-destructive**. Existing content is kept — if a page with the
 same name already exists, the import **appends** to it rather than overwriting.
-You can run the import without worrying that it will clobber notes you've already
-written in Zorite.
+Run it as often as you like — it won't clobber notes you've already written.

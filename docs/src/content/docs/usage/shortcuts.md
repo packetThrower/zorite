@@ -3,10 +3,8 @@ title: Keyboard shortcuts
 description: 'Keyboard shortcuts in Zorite — new tab, new window, close tab, tab switching, settings, find in page, global search, and the slash command palette.'
 ---
 
-Zorite's shortcuts use one binding that's correct on every OS: the modifier
-shown as **⌘** below is **Cmd** on macOS and **Ctrl** on Windows and Linux.
-Because every app-wide chord uses a modifier, none of them collide with plain
-text input.
+One binding works on every OS: the modifier shown as **⌘** below is **Cmd** on
+macOS and **Ctrl** on Windows and Linux.
 
 ## App-wide
 

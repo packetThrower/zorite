@@ -3,20 +3,20 @@ title: Journal & pages
 description: 'The daily-journal feed, click-to-edit Markdown, wiki-links and backlinks, tags, namespaces and sub-pages, aliases, the slash command palette, templates, and auto-pairing.'
 ---
 
-The journal is the heart of Zorite: an infinite, reverse-chronological stream of
-days, today on top, older days lazy-loaded as you scroll. Each day is a single
+The journal is an infinite, reverse-chronological stream of days — today on top,
+older days lazy-loaded as you scroll. Each day is a single
 Markdown document — there's no "filling out a form" feel, just editable text.
 
 ## The daily feed
 
 Open Zorite and you land on the journal. Scroll down and previous days load on
 demand; the feed never ends. The journal is the pinned first tab, so it's always
-one click away no matter what else you have open.
+one click away.
 
 Each day is one Markdown document. To edit it, click in (or right-click →
 **Edit**) to switch that day to its raw text; click away and it re-renders.
-Clicking the rendered page drops the caret exactly where you clicked, so editing
-feels like a word processor, not a sequence of bullet points.
+Clicking the rendered page drops the caret where you clicked — it edits like a
+word processor, not an outliner.
 
 ![Editing a journal day — raw Markdown on click, rendered on click-away](/zorite/screenshots/zorite-edit-dark.png)
 
@@ -25,8 +25,7 @@ feels like a word processor, not a sequence of bullet points.
 Any note can link to any other with `[[wiki-links]]`. In the rendered view a
 wiki-link is clickable; following one navigates to that page, **creating it** if
 it doesn't exist yet. The reverse direction is automatic: every page shows a
-**Linked References** panel listing the places that link to it, so structure
-emerges from your writing rather than from manual filing.
+**Linked References** panel listing the places that link to it.
 
 `#tags` work the same way — clickable in the rendered view, each one its own
 page with its own backlinks.
@@ -35,8 +34,8 @@ page with its own backlinks.
 
 Name a page with `::` to nest it. A page called `Projects::Tasks` lives under
 `Projects`: the sidebar shows the namespace tree, and each page lists its
-sub-pages. Namespaces are just naming — you don't move files around, you name
-the page and the hierarchy follows.
+sub-pages. Namespaces are just naming — there are no folders to move things
+between.
 
 ## Aliases
 

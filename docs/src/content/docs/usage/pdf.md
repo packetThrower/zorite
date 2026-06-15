@@ -3,9 +3,9 @@ title: PDF & images
 description: 'Link or drop PDFs into the page-virtualized viewer — zoom, navigation, a TOC, drag-to-highlight markup with note↔PDF jump links, and password-protected files. Plus inline images you can paste, drop, and resize.'
 ---
 
-Zorite keeps your reference material next to your notes. Link a PDF with a
-wiki-link or drop one onto a note and it opens in a dedicated viewer tab; paste
-or drag an image into a note and it renders inline.
+Reference material lives next to your notes. Link a PDF with a wiki-link or drop
+one onto a note and it opens in a dedicated viewer tab; paste or drag an image
+into a note and it renders inline.
 
 ## PDFs
 
@@ -27,15 +27,14 @@ and scrolled-away pages free both their memory *and* their GPU texture. An
 800-page document stays light. Rendering is DPI-aware, so pages stay crisp on
 high-resolution displays.
 
-You get **zoom**, **page navigation**, and a **table of contents** for jumping
-around a long document.
+Zoom, page navigation, and a table of contents for jumping around a long
+document.
 
 ### Highlight markup
 
 **Drag to highlight** a passage in a PDF. Each highlight becomes a markup with
 **note↔PDF jump links**: follow it from your note to land on the right page, or
-from the PDF back to where you wrote about it. Annotation and reading stay
-linked.
+from the PDF back to where you wrote about it.
 
 ### Password-protected PDFs
 
@@ -53,7 +52,7 @@ crate.
 
 `![](path-or-url)` images render for real in your notes. To add one, **paste**
 or **drag-and-drop** a file — it's copied into the data directory's `images/`
-folder so your note keeps working no matter where the original came from.
+folder, so the note doesn't depend on where the original lived.
 
 Drag the corner handle to **resize** an image; the new size is saved back into
 the Markdown as `{width=N}`, so it stays the size you set the next time the note

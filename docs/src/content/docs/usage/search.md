@@ -4,8 +4,8 @@ description: 'Full-text trigram search across titles and content, with type-awar
 ---
 
 Search in Zorite is a trigram FTS5 index over the titles and content of your
-notes. It stays fast no matter how much you've written — around a tenth of a
-millisecond per keystroke whether you have a thousand pages or fifty thousand.
+notes. It stays fast as your notes grow — about a tenth of a millisecond per
+keystroke at fifty thousand pages.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-search-light.png" />
@@ -18,8 +18,8 @@ millisecond per keystroke whether you have a thousand pages or fifty thousand.
 ## Type-aware results
 
 Results aren't just pages. They also surface the **PDF and image files** and the
-**whiteboards** referenced in your notes, so a search for a topic turns up the
-diagram you sketched and the paper you annotated alongside the pages you wrote.
+**whiteboards** referenced in your notes — so a search turns up the diagram you
+sketched and the PDF you annotated, not just pages.
 
 ## Filtering
 
