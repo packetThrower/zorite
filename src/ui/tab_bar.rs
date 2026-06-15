@@ -21,37 +21,45 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .selected_index(app.active);
 
     for (i, tab) in app.tabs.iter().enumerate() {
-        // The tab's label hosts a right-click "Open in new window" menu. The
-        // gpui-component `ContextMenu` can't be attached to a `Tab` directly
-        // (`TabBar::child` wants `Into<Tab>`, but `context_menu` returns a
-        // wrapper), so it lives on the tab's child element. Right-click also
-        // records which tab is the target.
         let kind = tab.kind.clone();
         let title = tab.title.clone();
         // Cap the label: a long name (e.g. a PDF filename) is ellipsized, with the
         // full title in a tooltip. A "(highlights)" tab keeps that suffix visible.
         let (display, truncated) = tab_label(&title);
-        let mut label = div()
+        // The visible text is set via `Tab::label` so the overflow dropdown — which
+        // builds its menu from each tab's `label` — shows the real title instead of
+        // "Unnamed". The right-click "Open in new window" menu + the truncation
+        // tooltip can't ride a bare `Tab` (`context_menu` returns a wrapper that
+        // isn't `Into<Tab>`), so they live on a transparent overlay child that
+        // covers the label. The close × (suffix) sits outside it, and a left-click
+        // bubbles through to the tab's `on_click`.
+        let mut overlay = div()
             .id(("tab-label", i))
+            .absolute()
+            .left_0()
+            .right_0()
+            .top_0()
+            .bottom_0()
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this: &mut AppView, _ev, _window, _cx| {
                     this.set_context_target(kind.clone());
                 }),
-            )
-            .child(display);
+            );
         if truncated {
             let full = title.clone();
-            label = label.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
+            overlay =
+                overlay.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
         }
-        let label = label.context_menu(|menu, _window, _cx| {
+        let overlay = overlay.context_menu(|menu, _window, _cx| {
             menu.menu("Open in new window", Box::new(OpenInNewWindow))
         });
-        let mut t = Tab::new().child(label).on_click(cx.listener(
-            move |this: &mut AppView, _ev, window, cx| {
+        let mut t = Tab::new()
+            .label(display)
+            .child(overlay)
+            .on_click(cx.listener(move |this: &mut AppView, _ev, window, cx| {
                 this.activate_tab(i, window, cx);
-            },
-        ));
+            }));
         // The pinned Journal (index 0) has no close × and isn't draggable. Every
         // other tab can be dragged to reorder (drop on another tab) or torn off
         // into a new window (drop in the content area).
