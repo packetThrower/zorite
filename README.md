@@ -194,6 +194,13 @@ scoop install zorite                                # stable
 scoop install zorite-prerelease                     # pre-release
 ```
 
+<!-- WINGET-PENDING: remove this note once microsoft/winget-pkgs#387921 merges -->
+> [!WARNING]
+> **winget is pending review.** The `packetThrower.Zorite` manifest is in Microsoft's
+> [winget-pkgs review queue](https://github.com/microsoft/winget-pkgs/pull/387921) and isn't
+> live yet — `winget install` will work once it's merged. Until then, use Scoop or a direct
+> download on Windows.
+
 winget carries **stable only**; for pre-release builds on Windows use Scoop or
 the [Releases](https://github.com/packetThrower/zorite/releases) page directly.
 Linux users grab the matching `.deb` / `.rpm` / `.AppImage` / `.pkg.tar.zst`
