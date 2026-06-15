@@ -9,8 +9,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
-The curated view of everything that has landed since `0.1.0-beta.2`; this
-becomes the `[0.1.0]` stable entry at tag time.
+## [0.1.0] - 2026-06-14
+
+First stable release. The highlights since `0.1.0-beta.2`:
 
 ### Added
 
@@ -135,6 +136,7 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
-[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.2...HEAD
+[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.2...v0.1.0
 [0.1.0-beta.2]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.1...v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/packetThrower/zorite/releases/tag/v0.1.0-beta.1
