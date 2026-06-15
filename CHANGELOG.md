@@ -9,7 +9,17 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
-## [0.1.0] - 2026-06-14
+## [0.1.1] - 2026-06-15
+
+### Fixed
+
+- **Windows: the app would not launch on a clean install.** The build linked
+  the Microsoft Visual C++ runtime (`VCRUNTIME140.dll`) dynamically, so on a
+  machine without the VC++ Redistributable `zorite.exe` exited immediately with
+  `0xC0000135` (`STATUS_DLL_NOT_FOUND`) — no window, no error dialog from the
+  app. The C runtime is now statically linked (`+crt-static`), so the binary is
+  self-contained. This affected every Windows install path (the installer, the
+  `.msi`, Scoop, and direct downloads); macOS and Linux were unaffected.
 
 First stable release. The highlights since `0.1.0-beta.2`:
 
@@ -136,7 +146,8 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
-[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/packetThrower/zorite/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.2...v0.1.0
 [0.1.0-beta.2]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.1...v0.1.0-beta.2
 [0.1.0-beta.1]: https://github.com/packetThrower/zorite/releases/tag/v0.1.0-beta.1

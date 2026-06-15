@@ -1,0 +1,21 @@
+# Static-link the MSVC C runtime into zorite.exe on Windows builds.
+#
+# Without this, the Rust + MSVC toolchain emits a binary that dynamically
+# links against VCRUNTIME140.dll (the Visual C++ 2015+ Redistributable).
+# That DLL is *not* present on a freshly-imaged Windows machine — including
+# the winget validator's sandbox image, which is exactly what failed the
+# v0.1.0 submission (microsoft/winget-pkgs#387921): the installed exe was
+# launched and exited immediately with -1073741515 = 0xC0000135 =
+# STATUS_DLL_NOT_FOUND, raised by the Windows loader before any Rust code
+# runs. The same trap hits any user on a clean Windows install who runs the
+# installer or .msi directly — a "VCRUNTIME140.dll was not found" dialog with
+# no recovery hint.
+#
+# `+crt-static` rolls the CRT into zorite.exe (~200 KB binary growth), making
+# it wholly self-contained at the C-runtime layer: no vcredist install step,
+# no winget `Dependencies` manifest entry, no DLL hunt on stripped-down images.
+#
+# The `target_env = "msvc"` guard means a MinGW-toolchain build (which we don't
+# ship, but a contributor might run locally) is unaffected.
+[target.'cfg(all(target_os = "windows", target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]
