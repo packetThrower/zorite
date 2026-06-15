@@ -319,6 +319,8 @@ jobs:
         shell: cmd
         run: cargo packager --release -f nsis
 
+      # `-p zorite` selects the app package: cargo-wix refuses to guess in
+      # a workspace ("Workspace detected. Please pass a package name").
       # `--no-build` reuses cargo-packager's just-built binary at
       # `target/release/zorite.exe` instead of compiling a second
       # time. `--nocapture` streams candle/light output so a WiX
@@ -327,7 +329,7 @@ jobs:
       - name: Build .msi (cargo-wix, stable tags only)
         if: ${{ !contains(env.EFFECTIVE_VERSION, '-') }}
         shell: cmd
-        run: cargo wix --no-build --nocapture
+        run: cargo wix -p zorite --no-build --nocapture
 
       - name: Stage artifacts
         shell: pwsh
