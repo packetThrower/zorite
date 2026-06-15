@@ -13,12 +13,18 @@ Open Zorite and you land on the journal. Scroll down and previous days load on
 demand; the feed never ends. The journal is the pinned first tab, so it's always
 one click away.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-journal-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-journal-dark.png"
+    alt="The Zorite journal — a reverse-chronological feed of daily Markdown pages"
+  />
+</picture>
+
 Each day is one Markdown document. To edit it, click in (or right-click →
 **Edit**) to switch that day to its raw text; click away and it re-renders.
 Clicking the rendered page drops the caret where you clicked — it edits like a
 word processor, not an outliner.
-
-![Editing a journal day — raw Markdown on click, rendered on click-away](/zorite/screenshots/zorite-edit-dark.png)
 
 ## Pages, wiki-links, and backlinks
 
@@ -95,7 +101,13 @@ lists, quotes, tables, ~~strikethrough~~, and `<mark>` highlights. **Mermaid
 diagrams** (flowchart, sequence, class) render pure-Rust, themed to your skin;
 click one to expand it.
 
-![A note with a rendered Mermaid diagram](/zorite/screenshots/zorite-mermaid-dark.png)
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-mermaid-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-mermaid-dark.png"
+    alt="A note with a rendered Mermaid diagram"
+  />
+</picture>
 
 **Find in page** searches the rendered text of the current note, with a
 highlight and a match count — see [Search](/zorite/usage/search/).

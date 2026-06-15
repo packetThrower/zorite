@@ -44,6 +44,14 @@ Click into a note to edit its raw Markdown; click away (or press `Esc` out of th
 slash menu and click out) to re-render. `⌘V` / `Ctrl+V` pastes an image from the
 clipboard if there is one, and otherwise pastes text as usual.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-edit-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-edit-dark.png"
+    alt="A journal day in edit mode — raw Markdown on click, rendered on click-away"
+  />
+</picture>
+
 ## Mouse
 
 A few things are mouse-driven rather than keyboard-bound:
