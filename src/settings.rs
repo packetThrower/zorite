@@ -450,18 +450,22 @@ impl Render for SettingsView {
                                     ("Close tab", vec![keys::MOD, "W"]),
                                     ("Next tab", vec![keys::CTRL, "Tab"]),
                                     ("Previous tab", vec![keys::CTRL, keys::SHIFT, "Tab"]),
-                                    ("Open settings", vec![keys::MOD, ","]),
-                                    ("Quit", vec![keys::MOD, "Q"]),
-                                ];
-                                let edit_rows: Vec<(&str, Vec<&str>)> = vec![
-                                    ("Indent / nest list item", vec!["Tab"]),
-                                    ("Outdent", vec![keys::SHIFT, "Tab"]),
-                                    ("Find in note", vec![keys::MOD, "F"]),
+                                    ("Find in page", vec![keys::MOD, "F"]),
                                     ("Search all notes", vec![keys::MOD, keys::SHIFT, "F"]),
                                     (
                                         "Fit oversized images to view",
                                         vec![keys::MOD, keys::SHIFT, "I"],
                                     ),
+                                    ("Open settings", vec![keys::MOD, ","]),
+                                    ("Quit", vec![keys::MOD, "Q"]),
+                                ];
+                                let edit_rows: Vec<(&str, Vec<&str>)> = vec![
+                                    ("Open the slash command menu", vec!["/"]),
+                                    ("Move up / down in the menu", vec!["↑", "↓"]),
+                                    ("Insert the selected item", vec!["Enter"]),
+                                    ("Close the slash menu", vec!["Esc"]),
+                                    ("Indent / nest list item", vec!["Tab"]),
+                                    ("Outdent", vec![keys::SHIFT, "Tab"]),
                                     ("Copy", vec![keys::MOD, "C"]),
                                     ("Cut", vec![keys::MOD, "X"]),
                                     ("Paste", vec![keys::MOD, "V"]),
@@ -469,18 +473,76 @@ impl Render for SettingsView {
                                     ("Redo", keys::redo()),
                                     ("Select all", vec![keys::MOD, "A"]),
                                 ];
+                                let wb_tool_rows: Vec<(&str, Vec<&str>)> = vec![
+                                    ("Select", vec!["V"]),
+                                    ("Pan", vec!["H"]),
+                                    ("Pen", vec!["P"]),
+                                    ("Rectangle", vec!["R"]),
+                                    ("Ellipse", vec!["O"]),
+                                    ("Diamond", vec!["D"]),
+                                    ("Triangle", vec!["G"]),
+                                    ("Rounded rectangle", vec!["U"]),
+                                    ("Star", vec!["S"]),
+                                    ("Hexagon", vec!["X"]),
+                                    ("Line", vec!["L"]),
+                                    ("Arrow", vec!["A"]),
+                                    ("Text", vec!["T"]),
+                                    ("Image", vec!["I"]),
+                                ];
+                                let wb_edit_rows: Vec<(&str, Vec<&str>)> = vec![
+                                    ("Undo", vec![keys::MOD, "Z"]),
+                                    ("Redo", keys::redo()),
+                                    ("Copy", vec![keys::MOD, "C"]),
+                                    ("Cut", vec![keys::MOD, "X"]),
+                                    ("Paste", vec![keys::MOD, "V"]),
+                                    ("Bring forward", vec![keys::MOD, "]"]),
+                                    ("Bring to front", vec![keys::MOD, keys::SHIFT, "]"]),
+                                    ("Send backward", vec![keys::MOD, "["]),
+                                    ("Send to back", vec![keys::MOD, keys::SHIFT, "["]),
+                                    ("Delete selection", vec!["Delete"]),
+                                    ("Deselect", vec!["Esc"]),
+                                ];
+                                let pdf_rows: Vec<(&str, Vec<&str>)> = vec![
+                                    ("Next page", vec!["PageDown"]),
+                                    ("Previous page", vec!["PageUp"]),
+                                    ("First page", vec!["Home"]),
+                                    ("Last page", vec!["End"]),
+                                    ("Zoom in", vec![keys::MOD, "="]),
+                                    ("Zoom out", vec![keys::MOD, "−"]),
+                                    ("Reset zoom", vec![keys::MOD, "0"]),
+                                    ("Find", vec![keys::MOD, "F"]),
+                                    ("Next match", vec![keys::MOD, "G"]),
+                                    ("Previous match", vec![keys::MOD, keys::SHIFT, "G"]),
+                                    ("Toggle highlight mode", vec![keys::MOD, keys::SHIFT, "H"]),
+                                    ("Go to page", vec![keys::MOD, keys::ALT, "G"]),
+                                ];
                                 content
                                     .child(card_list(
                                         "Application",
-                                        "Window and tab commands. ⌘ on macOS, Ctrl on \
-                                             Windows and Linux.",
+                                        "App-wide commands — they work anywhere. ⌘ on macOS, \
+                                             Ctrl on Windows and Linux.",
                                         app_rows,
                                     ))
                                     .child(card_list(
                                         "Editing",
-                                        "Standard text shortcuts, available while a note is \
+                                        "The slash menu and text shortcuts, while a note is \
                                              focused.",
                                         edit_rows,
+                                    ))
+                                    .child(card_list(
+                                        "Whiteboard tools",
+                                        "Press a letter to pick a tool while a board is focused.",
+                                        wb_tool_rows,
+                                    ))
+                                    .child(card_list(
+                                        "Whiteboard editing",
+                                        "Acting on the selection while a board is focused.",
+                                        wb_edit_rows,
+                                    ))
+                                    .child(card_list(
+                                        "PDF viewer",
+                                        "While a PDF tab is focused.",
+                                        pdf_rows,
                                     ))
                             }
                         }
@@ -599,6 +661,7 @@ mod keys {
     pub const MOD: &str = "⌘";
     pub const CTRL: &str = "⌃";
     pub const SHIFT: &str = "⇧";
+    pub const ALT: &str = "⌥";
     pub fn redo() -> Vec<&'static str> {
         vec![MOD, SHIFT, "Z"]
     }
@@ -608,6 +671,7 @@ mod keys {
     pub const MOD: &str = "Ctrl";
     pub const CTRL: &str = "Ctrl";
     pub const SHIFT: &str = "Shift";
+    pub const ALT: &str = "Alt";
     pub fn redo() -> Vec<&'static str> {
         vec!["Ctrl", "Y"]
     }

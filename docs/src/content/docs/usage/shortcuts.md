@@ -1,6 +1,6 @@
 ---
 title: Keyboard shortcuts
-description: 'Keyboard shortcuts in Zorite — new tab, new window, close tab, tab switching, settings, find in page, global search, and the slash command palette.'
+description: 'Keyboard shortcuts in Zorite — new tab, new window, close tab, tab switching, settings, find in page, search all notes, and the slash command menu.'
 ---
 
 One binding works on every OS: the modifier shown as **⌘** below is **Cmd** on
@@ -15,13 +15,13 @@ macOS and **Ctrl** on Windows and Linux.
 | Close tab | `⌘W` | `Ctrl+W` |
 | Next tab | `Ctrl+Tab` | `Ctrl+Tab` |
 | Previous tab | `Ctrl+Shift+Tab` | `Ctrl+Shift+Tab` |
-| Settings | `⌘,` | `Ctrl+,` |
 | Find in page | `⌘F` | `Ctrl+F` |
-| Global search | `⌘⇧F` | `Ctrl+Shift+F` |
-| Fit over-wide images to view | `⌘⇧I` | `Ctrl+Shift+I` |
-| Quit Zorite | `⌘Q` | `Ctrl+Q` |
+| Search all notes | `⌘⇧F` | `Ctrl+Shift+F` |
+| Fit oversized images to view | `⌘⇧I` | `Ctrl+Shift+I` |
+| Open settings | `⌘,` | `Ctrl+,` |
+| Quit | `⌘Q` | `Ctrl+Q` |
 
-**Find in page** searches the current page's rendered text; **global search**
+**Find in page** searches the current page's rendered text; **Search all notes**
 opens the note-wide search (see [Search](/zorite/usage/search/)). PDF tabs keep
 their own find — `⌘F` inside a PDF searches that document.
 
@@ -32,13 +32,18 @@ The tab-switch chords are `Ctrl+Tab` / `Ctrl+Shift+Tab` on every platform
 
 | Action | Key |
 |---|---|
-| Open the slash command palette | `/` |
-| Move up / down in the slash menu | `↑` / `↓` |
-| Insert the selected slash item | `Enter` |
+| Open the slash command menu | `/` |
+| Move up / down in the menu | `↑` / `↓` |
+| Insert the selected item | `Enter` |
 | Close the slash menu | `Esc` |
-| Indent the current list line | `Tab` |
-| Outdent the current list line | `Shift+Tab` |
+| Indent / nest list item | `Tab` |
+| Outdent | `Shift+Tab` |
+| Copy | `⌘C` / `Ctrl+C` |
+| Cut | `⌘X` / `Ctrl+X` |
 | Paste (image-aware) | `⌘V` / `Ctrl+V` |
+| Undo | `⌘Z` / `Ctrl+Z` |
+| Redo | `⌘⇧Z` / `Ctrl+Y` |
+| Select all | `⌘A` / `Ctrl+A` |
 
 Click into a note to edit its raw Markdown; click away (or press `Esc` out of the
 slash menu and click out) to re-render. `⌘V` / `Ctrl+V` pastes an image from the
@@ -51,6 +56,56 @@ clipboard if there is one, and otherwise pastes text as usual.
     alt="A journal day in edit mode — raw Markdown on click, rendered on click-away"
   />
 </picture>
+
+## Whiteboard
+
+These work while a board tab is focused. A single letter picks a tool; the
+editing chords act on the current selection.
+
+### Tools
+
+| Tool | Key | | Tool | Key |
+|---|---|---|---|---|
+| Select | `V` | | Star | `S` |
+| Pan | `H` | | Hexagon | `X` |
+| Pen | `P` | | Line | `L` |
+| Rectangle | `R` | | Arrow | `A` |
+| Ellipse | `O` | | Text | `T` |
+| Diamond | `D` | | Image | `I` |
+| Triangle | `G` | | Rounded rectangle | `U` |
+
+### Editing
+
+| Action | Key |
+|---|---|
+| Undo | `⌘Z` / `Ctrl+Z` |
+| Redo | `⌘⇧Z` / `Ctrl+Y` |
+| Copy / Cut / Paste | `⌘C` · `⌘X` · `⌘V` |
+| Bring forward / to front | `⌘]` / `⌘⇧]` |
+| Send backward / to back | `⌘[` / `⌘⇧[` |
+| Delete selection | `Delete` / `Backspace` |
+| Deselect | `Esc` |
+
+Hold **Option / Alt** while dragging to snap to the grid, and **Shift** while
+rotating to snap to 45°.
+
+## PDF viewer
+
+These work while a PDF tab is focused.
+
+| Action | Key |
+|---|---|
+| Next / previous page | `PageDown` / `PageUp` |
+| First / last page | `Home` / `End` |
+| Zoom in / out | `⌘=` / `⌘−` |
+| Reset zoom | `⌘0` |
+| Find in PDF | `⌘F` |
+| Next / previous match | `⌘G` / `⌘⇧G` |
+| Go to page… | `⌘⌥G` |
+| Toggle highlight mode | `⌘⇧H` |
+
+A PDF's own find (`⌘F`) is separate from the note-wide search — see
+[Search](/zorite/usage/search/).
 
 ## Mouse
 
