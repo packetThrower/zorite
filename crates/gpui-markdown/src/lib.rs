@@ -322,6 +322,7 @@ impl RenderOnce for MarkdownView {
             current_match: self.current_match,
             match_ix: 0,
             on_click_source: self.on_click_source,
+            suppress_heading_top: false,
         };
 
         let mut col = div()
@@ -370,6 +371,10 @@ struct Ctx {
     current_match: usize,
     match_ix: usize,
     on_click_source: Option<ClickSourceHandler>,
+    /// Set while rendering a list item's first block: drops a leading heading's
+    /// top margin so the bullet marker lines up with the heading text instead of
+    /// floating above it.
+    suppress_heading_top: bool,
 }
 
 // --- Block rendering ---
@@ -413,12 +418,16 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             let color = ctx.style.heading_color;
             // Extra room above a heading so a new section separates from the text
             // before it (on top of the inter-block gap); bigger headings get more.
-            let top = px(match h.depth {
-                1 => 16.0,
-                2 => 12.0,
-                3 => 8.0,
-                _ => 6.0,
-            });
+            let top = if ctx.suppress_heading_top {
+                px(0.0)
+            } else {
+                px(match h.depth {
+                    1 => 16.0,
+                    2 => 12.0,
+                    3 => 8.0,
+                    _ => 6.0,
+                })
+            };
             Some(
                 div()
                     .mt(top)
@@ -654,13 +663,18 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
         };
 
         let mut content = div().flex().flex_col().gap(px(4.0));
-        for child in &li.children {
+        for (ci, child) in li.children.iter().enumerate() {
             match child {
                 mdast::Node::List(sub) => content = content.child(render_list(sub, ctx, depth + 1)),
                 other => {
+                    // Drop a leading heading's top margin so the bullet lines up
+                    // with the heading; later blocks in the item keep theirs.
+                    let prev = ctx.suppress_heading_top;
+                    ctx.suppress_heading_top = ci == 0;
                     if let Some(el) = render_block(other, ctx) {
                         content = content.child(el);
                     }
+                    ctx.suppress_heading_top = prev;
                 }
             }
         }
