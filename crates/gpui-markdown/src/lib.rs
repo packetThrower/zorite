@@ -379,6 +379,18 @@ struct Ctx {
 
 // --- Block rendering ---
 
+/// Font-size multiplier for a heading of the given depth (h1 largest, h6 = body).
+fn heading_scale(depth: u8) -> f32 {
+    match depth {
+        1 => 1.8,
+        2 => 1.5,
+        3 => 1.3,
+        4 => 1.15,
+        5 => 1.05,
+        _ => 1.0,
+    }
+}
+
 fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
     match node {
         mdast::Node::Paragraph(p) => {
@@ -406,14 +418,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             Some(inline_element(&p.children, ctx))
         }
         mdast::Node::Heading(h) => {
-            let scale = match h.depth {
-                1 => 1.8,
-                2 => 1.5,
-                3 => 1.3,
-                4 => 1.15,
-                5 => 1.05,
-                _ => 1.0,
-            };
+            let scale = heading_scale(h.depth);
             let size = px(f32::from(ctx.style.text_size) * scale);
             let color = ctx.style.heading_color;
             // Extra room above a heading so a new section separates from the text
@@ -679,6 +684,16 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
             }
         }
 
+        // If the item leads with a heading, nudge the bullet down to the
+        // heading's optical center. Both lines use gpui's default phi line
+        // height, so the heading's line is taller by base * phi * (scale - 1);
+        // half that gap re-centers the (top-aligned) bullet on the heading.
+        let lead_scale = match li.children.first() {
+            Some(mdast::Node::Heading(h)) => heading_scale(h.depth),
+            _ => 1.0,
+        };
+        let marker_top = px(f32::from(ctx.style.text_size) * (lead_scale - 1.0) * 1.618_034 / 2.0);
+
         col = col.child(
             div()
                 .flex()
@@ -688,6 +703,7 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
                 .child(
                     div()
                         .flex_shrink_0()
+                        .pt(marker_top)
                         .text_color(ctx.style.muted_color)
                         .child(marker),
                 )
