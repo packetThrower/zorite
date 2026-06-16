@@ -109,7 +109,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         div()
             .id("tab-bar-end")
             .h_full()
-            .flex_grow()
+            .flex_grow(1.0)
             .min_w(px(40.0))
             .drag_over::<TabDrag>(|style, _drag, _window, _cx| {
                 style.border_l_2().border_color(theme::accent())

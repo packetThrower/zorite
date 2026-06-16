@@ -75,12 +75,12 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
 # Widget library. Pinned to a git rev because the crates.io release
 # targets a different gpui than our git pin; the git tip pins gpui with
 # no rev so Cargo unifies it against ours.
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "2d2524d89efc47270e9a0ee18f10fa72cd573eff" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
 
 # Lucide icon SVGs. Without `.with_assets(Assets)` at startup, every
 # gpui-component icon renders as an empty rect. Pin to the same rev so
 # the icon set tracks the `IconName` enum in gpui-component.
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "2d2524d89efc47270e9a0ee18f10fa72cd573eff" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
 
 # Parse `file://` URLs into filesystem paths correctly across platforms (Windows
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.

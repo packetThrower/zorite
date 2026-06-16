@@ -1192,8 +1192,8 @@ impl AppView {
             |this: &mut AppView, _st, ev: &InputEvent, _window, cx| match ev {
                 InputEvent::Change => this.recompute_page_find(cx),
                 // Enter steps to the next match, Shift+Enter to the previous.
-                InputEvent::PressEnter { secondary } => {
-                    this.page_find_step(if *secondary { -1 } else { 1 }, cx)
+                InputEvent::PressEnter { shift, .. } => {
+                    this.page_find_step(if *shift { -1 } else { 1 }, cx)
                 }
                 _ => {}
             },
