@@ -181,9 +181,11 @@ On macOS and Windows, the package managers track the latest stable tag and get
 you past the first-launch Gatekeeper / SmartScreen warnings.
 
 ```sh
-# macOS — Homebrew
-brew install --cask packetThrower/tap/zorite        # stable
-brew install --cask packetThrower/tap/zorite@alpha  # pre-release
+# macOS — Homebrew (6.0.0+ requires trusting the tap before installing)
+brew tap packetThrower/tap
+brew trust packetThrower/tap
+brew install --cask zorite                          # stable
+brew install --cask zorite@alpha                    # pre-release
 
 # Windows — winget (Microsoft's package manager, preinstalled)
 winget install packetThrower.Zorite                 # or: winget install zorite

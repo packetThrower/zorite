@@ -19,12 +19,21 @@ from source live in [Requirements](/zorite/reference/requirements/).
 ## macOS (Homebrew)
 
 The tap [`packetThrower/tap`](https://github.com/packetThrower/homebrew-tap)
-ships a `zorite` cask (stable) and a `zorite@alpha` cask (pre-release):
+ships a `zorite` cask (stable) and a `zorite@alpha` cask (pre-release). As of
+[Homebrew 6.0.0](https://brew.sh/2026/06/11/homebrew-6.0.0/) (June 2026),
+third-party taps must be **trusted** before Homebrew runs their code, so tap and
+trust it first:
 
 ```sh
-brew install --cask packetThrower/tap/zorite        # stable
-brew install --cask packetThrower/tap/zorite@alpha  # pre-release
+brew tap packetThrower/tap
+brew trust packetThrower/tap         # trust the tap (Homebrew 6.0.0+)
+brew install --cask zorite           # stable
+brew install --cask zorite@alpha     # pre-release
 ```
+
+To trust only the cask you're installing rather than the whole tap, use
+`brew trust --cask packetThrower/tap/zorite` in place of `brew trust packetThrower/tap`.
+See Homebrew's [Tap Trust](https://docs.brew.sh/Tap-Trust) docs for the details.
 
 The cask handles the macOS quarantine attribute for you, so the app launches
 without the right-click → **Open** prompt that a direct download needs. Zorite's
