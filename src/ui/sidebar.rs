@@ -156,8 +156,16 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                                 this.children(fav_rows)
                             }
                         })
-                        .child(wb_header)
-                        .when(!wb_collapsed, |this| this.children(wb_rows))
+                        // The Whiteboards section stays hidden until at least one
+                        // board exists (same as Favorites) — no empty header.
+                        .when(!wb_rows.is_empty(), |this| {
+                            let this = this.child(wb_header);
+                            if wb_collapsed {
+                                this
+                            } else {
+                                this.children(wb_rows)
+                            }
+                        })
                         .child(recent_header)
                         .when(!recent_collapsed, |this| {
                             this.when(no_pages, |t| {
