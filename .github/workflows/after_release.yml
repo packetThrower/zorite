@@ -104,11 +104,19 @@ jobs:
       # (the malformed manifest evidently doesn't validate on komac's
       # pre-submission check). MSI-only matches what the manifest
       # template declares (`InstallerType: wix`).
+      #
+      # x64-only (the amd64 MSI, not arm64): winget's arm64 validator
+      # cannot validate this GPUI app — its sandbox has no usable
+      # desktop/DWM, so the launch test exits non-zero
+      # (Validation-Executable-Error) and the PR won't auto-merge. We
+      # therefore submit only the x64 MSI; arm64 Windows users get it via
+      # emulation (winget falls back to x64) or the native build on the
+      # Releases page / Scoop. Same x64-only stance as packetThrower.Baudrun.
       - name: Open winget-pkgs PR
         uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5 # v2
         with:
           identifier: packetThrower.Zorite
           release-tag: ${{ github.event.release.tag_name || inputs.tag_name }}
           max-versions-to-keep: 5
-          installers-regex: '\.msi$'
+          installers-regex: '_amd64_en-US\.msi$'
           token: ${{ secrets.WINGET_TOKEN }}
