@@ -28,6 +28,7 @@ mod skins;
 mod slash;
 mod theme;
 mod ui;
+mod updater;
 mod whiteboard;
 
 use std::borrow::Cow;
@@ -131,6 +132,9 @@ fn main() {
         cx.set_global(GlobalDraggingTab::default());
         cx.set_global(GlobalDropTarget::default());
         cx.set_global(GlobalAppWindows::default());
+        // Empty starter state for the boot-time update check; filled in by the
+        // background task spawned in `open_main_window` once it resolves.
+        cx.set_global(updater::UpdateState::default());
 
         // If a data move was scheduled (the user changed the data location),
         // run it behind a progress window before opening the main window;
@@ -180,6 +184,14 @@ fn open_main_window(cx: &mut App) {
         return;
     }
     cx.activate(true);
+
+    // Boot-time update check — detection only, on the background pool. Reads the
+    // user's prefs read-only (the DB was just created/migrated by the window we
+    // opened above); respects the "Automatically check for updates" opt-out.
+    let (check, prerelease) = db::read_update_prefs(&paths::db_path());
+    if check {
+        updater::spawn_check(prerelease, cx);
+    }
 }
 
 /// Run a scheduled data move behind a small progress window, then open the main

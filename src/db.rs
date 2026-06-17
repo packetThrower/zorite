@@ -41,6 +41,33 @@ pub fn read_theme(path: &Path) -> (Option<String>, Option<String>) {
     (read("theme_skin"), read("theme_mode"))
 }
 
+/// Read the update-check preferences from a database file, read-only. Used by
+/// the boot check before the app's main DB handle is wired. Defaults:
+/// auto-check on, pre-releases off. Best-effort — defaults if unreadable.
+pub fn read_update_prefs(path: &Path) -> (bool, bool) {
+    let Ok(conn) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return (true, false);
+    };
+    let read = |key: &str| {
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    };
+    let check = read("check_updates").map(|v| v != "0").unwrap_or(true);
+    let prerelease = read("include_prerelease")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    (check, prerelease)
+}
+
 /// Fresh-install schema (applied when `user_version` is 0).
 const SCHEMA_V2: &str = r#"
 CREATE TABLE pages (

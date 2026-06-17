@@ -83,6 +83,7 @@ enum Tab {
     Pdf,
     Markdown,
     Keyboard,
+    Updates,
 }
 
 pub struct SettingsView {
@@ -93,6 +94,8 @@ pub struct SettingsView {
     indent_select: Entity<SelectState<Vec<Opt>>>,
     date_format_select: Entity<SelectState<Vec<Opt>>>,
     time_format_select: Entity<SelectState<Vec<Opt>>>,
+    check_updates_select: Entity<SelectState<Vec<Opt>>>,
+    prerelease_select: Entity<SelectState<Vec<Opt>>>,
     /// The selected left-nav category.
     tab: Tab,
     _subs: Vec<Subscription>,
@@ -224,6 +227,48 @@ impl SettingsView {
             },
         ));
 
+        // Updates pane: On/Off selects for the auto-check + pre-release prefs.
+        let on_off = || vec![Opt::new("on", "On"), Opt::new("off", "Off")];
+        let cur_check = app
+            .upgrade()
+            .map(|a| a.read(cx).check_updates())
+            .unwrap_or(true);
+        let check_updates_select =
+            make_select(on_off(), if cur_check { "on" } else { "off" }, window, cx);
+        subs.push(cx.subscribe_in(
+            &check_updates_select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Some(app) = this.app.upgrade()
+                {
+                    let on = id == "on";
+                    app.update(cx, |a, _cx| a.set_check_updates(on));
+                    cx.notify();
+                }
+            },
+        ));
+
+        let cur_pre = app
+            .upgrade()
+            .map(|a| a.read(cx).include_prerelease())
+            .unwrap_or(false);
+        let prerelease_select =
+            make_select(on_off(), if cur_pre { "on" } else { "off" }, window, cx);
+        subs.push(cx.subscribe_in(
+            &prerelease_select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Some(app) = this.app.upgrade()
+                {
+                    let on = id == "on";
+                    app.update(cx, |a, cx| a.set_include_prerelease(on, cx));
+                    cx.notify();
+                }
+            },
+        ));
+
         Self {
             app,
             theme_select,
@@ -232,8 +277,17 @@ impl SettingsView {
             indent_select,
             date_format_select,
             time_format_select,
+            check_updates_select,
+            prerelease_select,
             tab: Tab::Appearance,
             _subs: subs,
+        }
+    }
+
+    /// Re-run the update check now (Settings → Updates → "Check now").
+    fn check_for_updates(&self, cx: &mut Context<Self>) {
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |a, cx| a.check_for_updates_now(cx));
         }
     }
 
@@ -537,6 +591,79 @@ impl Render for SettingsView {
                     }),
             );
 
+        // Updates pane: current version, the available-update banner (read from
+        // the `updater::UpdateState` global), and View-release / Check-now.
+        let available = cx
+            .try_global::<crate::updater::UpdateState>()
+            .and_then(|u| u.available.clone());
+        let cur_version = env!("CARGO_PKG_VERSION");
+        let updates_control = {
+            let mut col = div().flex().flex_col().gap(px(10.0)).child(
+                div()
+                    .text_size(px(13.0))
+                    .text_color(theme::text_secondary())
+                    .child(format!("Current version: v{cur_version}")),
+            );
+            if let Some(a) = &available {
+                let url = a.html_url.clone();
+                col = col.child(
+                    div()
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(theme::accent())
+                        .child(format!("Update available: v{}", a.version)),
+                );
+                // A short preview of the release notes; the full notes are on the
+                // release page behind "View release".
+                let notes = a.notes.trim();
+                if !notes.is_empty() {
+                    let mut preview: String = notes.chars().take(280).collect();
+                    if notes.chars().count() > 280 {
+                        preview.push('…');
+                    }
+                    col = col.child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme::text_tertiary())
+                            .child(preview),
+                    );
+                }
+                col = col.child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .gap(px(8.0))
+                        .child(text_button(
+                            "updates-view",
+                            "View release",
+                            cx,
+                            move |_this, _w, _cx| open_url(&url),
+                        ))
+                        .child(text_button(
+                            "updates-check",
+                            "Check now",
+                            cx,
+                            |this, _w, cx| this.check_for_updates(cx),
+                        )),
+                );
+            } else {
+                col = col
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(theme::text_tertiary())
+                            .child("You're on the latest version."),
+                    )
+                    .child(text_button(
+                        "updates-check",
+                        "Check now",
+                        cx,
+                        |this, _w, cx| this.check_for_updates(cx),
+                    ));
+            }
+            col
+        };
+
         div()
             .flex()
             .flex_col()
@@ -733,6 +860,25 @@ impl Render for SettingsView {
                                         pdf_rows,
                                     ))
                             }
+                            Tab::Updates => content
+                                .child(card(
+                                    "Software updates",
+                                    "Zorite checks GitHub for newer releases at startup. It never \
+                                         installs automatically — you review and download from the \
+                                         release page.",
+                                    updates_control,
+                                ))
+                                .child(card(
+                                    "Automatically check for updates",
+                                    "Check for a newer version each time Zorite starts.",
+                                    Select::new(&self.check_updates_select).w_full(),
+                                ))
+                                .child(card(
+                                    "Include pre-releases",
+                                    "Also offer beta builds (vX.Y.Z-beta.N), not just stable \
+                                         releases.",
+                                    Select::new(&self.prerelease_select).w_full(),
+                                )),
                         }
                     }),
             )
@@ -775,6 +921,18 @@ fn nav(active: Tab, cx: &mut Context<SettingsView>) -> impl IntoElement {
             active,
             cx,
         ))
+        .child(nav_item("nav-updates", "Updates", Tab::Updates, active, cx))
+}
+
+/// Open a URL in the user's default browser (the "View release" button).
+fn open_url(url: &str) {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "windows")]
+    let cmd = "explorer";
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let cmd = "xdg-open";
+    let _ = std::process::Command::new(cmd).arg(url).spawn();
 }
 
 /// One left-nav category. Highlights when active; clicking switches the pane.

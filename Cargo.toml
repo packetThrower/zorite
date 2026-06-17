@@ -92,6 +92,11 @@ url = "2"
 # gpui-pdf crate.
 image = "0.25"
 
+# Boot-time update check (src/updater.rs): sync HTTP against the GitHub Releases
+# API + semver comparison. Detection-only — never downloads or installs.
+ureq = { version = "2", features = ["json", "tls"] }
+semver = "1"
+
 # Embeds the Windows .exe icon (resources/icon.rc -> resources/icons/icon.ico)
 # into the PE resource section via build.rs. `embed_resource::compile` is a
 # no-op on macOS / Linux, so this build-dep is harmless off-Windows.

@@ -271,16 +271,33 @@ fn new_page_icon(cx: &mut Context<AppView>) -> impl IntoElement {
 }
 
 /// The settings gear. Opens the Settings window (deferred — opening a window
-/// from inside a mouse callback aborts).
+/// from inside a mouse callback aborts). Wears an amber dot when the boot-time
+/// update check found a newer release (see `crate::updater`).
 fn settings_gear(cx: &mut Context<AppView>) -> impl IntoElement {
-    icon_btn("settings-gear", IconName::Settings).on_click(cx.listener(
-        |_this: &mut AppView, _: &ClickEvent, window, cx| {
-            let view = cx.entity();
-            window.defer(cx, move |_, cx| {
-                AppView::open_settings(view, cx);
-            });
-        },
-    ))
+    let update_available = cx
+        .try_global::<crate::updater::UpdateState>()
+        .is_some_and(|u| u.available.is_some());
+    icon_btn("settings-gear", IconName::Settings)
+        .relative()
+        .when(update_available, |gear| {
+            gear.child(
+                div()
+                    .absolute()
+                    .top(px(2.0))
+                    .right(px(2.0))
+                    .size(px(7.0))
+                    .rounded_full()
+                    .bg(gpui::rgb(0xF59E0B)),
+            )
+        })
+        .on_click(
+            cx.listener(|_this: &mut AppView, _: &ClickEvent, window, cx| {
+                let view = cx.entity();
+                window.defer(cx, move |_, cx| {
+                    AppView::open_settings(view, cx);
+                });
+            }),
+        )
 }
 
 fn journal_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {

@@ -251,6 +251,10 @@ pub struct AppView {
     /// List-indent width in spaces (2 / 4 / 8), persisted. Drives both the editor's
     /// Tab/nesting unit and the markdown render's per-level indent, so they line up.
     list_indent: usize,
+    /// Check GitHub Releases for a newer version at startup, persisted.
+    check_updates: bool,
+    /// Whether the update check considers pre-releases (betas), persisted.
+    include_prerelease: bool,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -505,6 +509,8 @@ impl AppView {
             skin_id: String::new(),
             pdf_quality: DEFAULT_PDF_QUALITY,
             list_indent: DEFAULT_LIST_INDENT,
+            check_updates: true,
+            include_prerelease: false,
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -585,6 +591,16 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .filter(|n| matches!(n, 2 | 4 | 8))
             .unwrap_or(DEFAULT_LIST_INDENT);
+        this.check_updates = this
+            .db
+            .get_setting("check_updates")
+            .map(|v| v != "0")
+            .unwrap_or(true);
+        this.include_prerelease = this
+            .db
+            .get_setting("include_prerelease")
+            .map(|v| v == "1")
+            .unwrap_or(false);
         // Date/time display formats for /date, /time, and {{date}}/{{time}} —
         // applied to the thread-local in `crate::dates`; validated against the
         // known ids so a stale persisted value can't stick.
@@ -3499,6 +3515,39 @@ impl AppView {
         self.list_indent = spaces;
         let _ = self.db.set_setting("list_indent", &spaces.to_string());
         cx.notify();
+    }
+
+    /// Whether startup checks GitHub Releases for a newer version.
+    pub fn check_updates(&self) -> bool {
+        self.check_updates
+    }
+
+    /// Whether the update check considers pre-releases (betas).
+    pub fn include_prerelease(&self) -> bool {
+        self.include_prerelease
+    }
+
+    /// Enable / disable the startup update check; persists.
+    pub fn set_check_updates(&mut self, on: bool) {
+        self.check_updates = on;
+        let _ = self
+            .db
+            .set_setting("check_updates", if on { "1" } else { "0" });
+    }
+
+    /// Include / exclude pre-releases in the update check; persists, then re-runs
+    /// the check so the indicator reflects the new preference right away.
+    pub fn set_include_prerelease(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.include_prerelease = on;
+        let _ = self
+            .db
+            .set_setting("include_prerelease", if on { "1" } else { "0" });
+        crate::updater::spawn_check(on, cx);
+    }
+
+    /// Re-run the update check now (Settings → Updates → "Check now").
+    pub fn check_for_updates_now(&self, cx: &mut Context<Self>) {
+        crate::updater::spawn_check(self.include_prerelease, cx);
     }
 
     /// Set the date format used by `/date` and `{{date}}` (a [`crate::dates`] id):
