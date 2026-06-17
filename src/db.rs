@@ -11,10 +11,35 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::models::{Backlink, Page};
 use crate::paths;
+
+/// Read the saved `theme_skin` and `theme_mode` from a database file, read-only
+/// and without migrating or write-locking it — used to theme the data-move
+/// progress window before the database is opened normally. Best-effort:
+/// `(None, None)` if the file can't be read. The connection is dropped before
+/// returning, so it never holds the file against the impending move.
+pub fn read_theme(path: &Path) -> (Option<String>, Option<String>) {
+    let Ok(conn) = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return (None, None);
+    };
+    let read = |key: &str| {
+        conn.query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .ok()
+        .flatten()
+    };
+    (read("theme_skin"), read("theme_mode"))
+}
 
 /// Fresh-install schema (applied when `user_version` is 0).
 const SCHEMA_V2: &str = r#"

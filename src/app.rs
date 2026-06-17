@@ -3348,7 +3348,7 @@ impl AppView {
     }
 
     /// Open a folder in the OS file manager (Finder / Explorer / file manager).
-    fn reveal_folder(folder: &Path) {
+    pub fn reveal_folder(folder: &Path) {
         #[cfg(target_os = "macos")]
         let cmd = "open";
         #[cfg(target_os = "windows")]

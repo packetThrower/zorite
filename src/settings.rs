@@ -7,13 +7,16 @@
 //! The dropdowns are gpui-component `Select`s; selecting one calls back
 //! into `AppView` so the change applies live to every window.
 
+use std::path::PathBuf;
+
 use gpui::{
     AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
     Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
     div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    IndexPath, TitleBar,
+    IndexPath, Root, TitleBar, WindowExt,
+    dialog::DialogButtonProps,
     select::{Select, SelectEvent, SelectItem, SelectState},
     slider::{Slider, SliderEvent, SliderState},
 };
@@ -288,10 +291,139 @@ impl SettingsView {
             })
             .unwrap_or_default()
     }
+
+    /// Pick a new data directory, then confirm before recording the change.
+    fn choose_data_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Choose".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(target) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.confirm_relocation(target, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Confirm a relocation to `target`, then record it and quit so the change
+    /// (and any pending move) applies on the next launch.
+    fn confirm_relocation(&mut self, target: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        use crate::paths::Relocation;
+        let current = crate::paths::data_dir();
+        let (title, body, ok): (&'static str, String, &'static str) =
+            match crate::paths::plan_relocation(&target) {
+                Relocation::NoOp => return,
+                Relocation::Invalid(reason) => {
+                    self.alert("Can’t use that folder", reason, window, cx);
+                    return;
+                }
+                Relocation::Switch => (
+                    "Switch data location",
+                    format!(
+                        "“{}” already contains a Zorite database.\n\nZorite will use it the next \
+                         time it starts. Your current data stays where it is:\n{}",
+                        target.display(),
+                        current.display(),
+                    ),
+                    "Switch & Quit",
+                ),
+                Relocation::Move => (
+                    "Move data location",
+                    format!(
+                        "Zorite will move your notes, settings, and attachments to:\n{}\n\nThe \
+                         change takes effect the next time you open Zorite.",
+                        target.display(),
+                    ),
+                    "Move & Quit",
+                ),
+            };
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let target = target.clone();
+            let body = body.clone();
+            dialog
+                .title(title)
+                .description(SharedString::from(body))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text(ok)
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _window, cx| {
+                    match crate::paths::set_location(&target) {
+                        Ok(()) => cx.quit(),
+                        Err(e) => log::error!("set data location failed: {e}"),
+                    }
+                    true
+                })
+        });
+    }
+
+    /// Confirm sending the data back to the OS-default location, then quit.
+    fn confirm_reset_data_location(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if crate::paths::is_default_location() {
+            return;
+        }
+        let default = crate::paths::default_location();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let default = default.clone();
+            dialog
+                .title("Reset data location")
+                .description(SharedString::from(format!(
+                    "Zorite will move your data back to the default location:\n{}\n\nThe change \
+                     takes effect the next time you open Zorite.",
+                    default.display(),
+                )))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Reset & Quit")
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _window, cx| {
+                    match crate::paths::reset_location() {
+                        Ok(()) => cx.quit(),
+                        Err(e) => log::error!("reset data location failed: {e}"),
+                    }
+                    true
+                })
+        });
+    }
+
+    /// A simple message dialog with a single OK button (no action).
+    fn alert(
+        &self,
+        title: &'static str,
+        body: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let body = body.clone();
+            dialog
+                .title(title)
+                .description(SharedString::from(body))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("OK")
+                        .show_cancel(false),
+                )
+                .on_ok(|_, _window, _cx| true)
+        });
+    }
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let user_names = self.user_theme_names(cx);
 
         let qpct = self
@@ -356,6 +488,55 @@ impl Render for SettingsView {
             .child(actions)
             .child(list);
 
+        // Data-location card body (General): the current path, then change /
+        // reveal / reset actions.
+        let data_path = crate::paths::data_dir().display().to_string();
+        let at_default = crate::paths::is_default_location();
+        let location_control = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .px(px(10.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(theme::glass())
+                    .border_1()
+                    .border_color(theme::border_subtle())
+                    .text_size(px(12.0))
+                    .text_color(theme::text_secondary())
+                    .child(data_path),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(text_button(
+                        "data-change",
+                        "Change…",
+                        cx,
+                        |this, w, cx| this.choose_data_location(w, cx),
+                    ))
+                    .child(text_button(
+                        "data-reveal",
+                        "Reveal",
+                        cx,
+                        |_this, _w, _cx| {
+                            crate::app::AppView::reveal_folder(&crate::paths::data_dir());
+                        },
+                    ))
+                    .when(!at_default, |row| {
+                        row.child(text_button(
+                            "data-reset",
+                            "Reset to default",
+                            cx,
+                            |this, w, cx| this.confirm_reset_data_location(w, cx),
+                        ))
+                    }),
+            );
+
         div()
             .flex()
             .flex_col()
@@ -401,6 +582,13 @@ impl Render for SettingsView {
                             .gap(px(16.0));
                         match self.tab {
                             Tab::General => content
+                                .child(card(
+                                    "Data location",
+                                    "Where Zorite keeps your database, settings, and \
+                                         attachments. Changing it moves your data to the new \
+                                         folder, then reopens Zorite.",
+                                    location_control,
+                                ))
                                 .child(card(
                                     "Date format",
                                     "How /date and the {{date}} template placeholder are \
@@ -548,6 +736,10 @@ impl Render for SettingsView {
                         }
                     }),
             )
+            // gpui-component's `Root` stores dialog state but doesn't draw it;
+            // the host view must render the dialog layer (as the main window
+            // does), or the data-location confirm dialog stays invisible.
+            .children(Root::render_dialog_layer(window, cx))
     }
 }
 

@@ -18,6 +18,7 @@ mod hierarchy;
 mod images;
 mod import;
 mod mermaid;
+mod migration;
 mod models;
 mod paths;
 mod pdf;
@@ -30,10 +31,11 @@ mod ui;
 mod whiteboard;
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use gpui::{
-    App, AppContext, AssetSource, Bounds, Result, SharedString, TitlebarOptions, WindowBounds,
-    WindowDecorations, WindowOptions, px, size,
+    App, AppContext, AssetSource, Bounds, Result, SharedString, TitlebarOptions, WindowAppearance,
+    WindowBounds, WindowDecorations, WindowOptions, px, size,
 };
 use gpui_component::{Root, TitleBar};
 
@@ -130,8 +132,87 @@ fn main() {
         cx.set_global(GlobalDropTarget::default());
         cx.set_global(GlobalAppWindows::default());
 
-        let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
-        if let Err(err) = cx.open_window(
+        // If a data move was scheduled (the user changed the data location),
+        // run it behind a progress window before opening the main window;
+        // otherwise open straight away.
+        match paths::pending_migration() {
+            Some((source, target, total)) => start_migration(source, target, total, cx),
+            None => open_main_window(cx),
+        }
+    });
+}
+
+/// Open the main application window. On failure (no usable graphics device) pop a
+/// blocking dialog on Windows and bail; elsewhere log and return.
+fn open_main_window(cx: &mut App) {
+    let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+    if let Err(err) = cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some("Zorite".into()),
+                ..TitleBar::title_bar_options()
+            }),
+            app_id: Some("zorite".into()),
+            // Force client-side decorations so KWin doesn't stack a server
+            // titlebar over gpui-component's. No-op on macOS / Windows.
+            window_decorations: Some(WindowDecorations::Client),
+            ..Default::default()
+        },
+        |window, cx| {
+            // Wider resize hit-test margin for Wayland CSD.
+            window.set_client_inset(px(10.0));
+            let view = cx.new(|cx| AppView::new(window, cx));
+            view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
+            AppView::register_window(&view, window, cx);
+            cx.new(|cx| Root::new(view, window, cx))
+        },
+    ) {
+        // Window creation can fail when the OS can't hand gpui a graphics device
+        // (paused driver, headless / RDP session, GPU exhaustion). Pop a
+        // blocking dialog and bail instead of activating — under
+        // `windows_subsystem = "windows"` the dialog is the only feedback, and
+        // in the headless winget validator the modal keeps the process alive
+        // past the launch test.
+        eprintln!("zorite: failed to open window: {err}");
+        #[cfg(target_os = "windows")]
+        show_window_open_error_dialog(&err);
+        return;
+    }
+    cx.activate(true);
+}
+
+/// Run a scheduled data move behind a small progress window, then open the main
+/// window. The move runs on a background thread; a timer ticks the bar and, once
+/// it finishes (and the window has shown briefly), opens the main window and
+/// closes the progress window.
+fn start_migration(
+    source: std::path::PathBuf,
+    target: std::path::PathBuf,
+    total: u64,
+    cx: &mut App,
+) {
+    let progress = Arc::new(paths::MigrationProgress::new(total));
+
+    // Theme the progress window like the main window will be: read the saved
+    // skin + mode from the source DB (read-only, before the move), falling back
+    // to the default skin / mode if absent or unreadable.
+    let (skin_id, mode_str) = db::read_theme(&source.join("zorite.db"));
+    let mut all_skins = skins::builtin_skins();
+    let skin_idx = skin_id
+        .as_ref()
+        .and_then(|id| all_skins.iter().position(|s| &s.id == id))
+        .unwrap_or(0);
+    let skin = all_skins.swap_remove(skin_idx);
+    let mode = mode_str
+        .map(|s| theme::Mode::from_str(&s))
+        .unwrap_or_default();
+
+    let view =
+        cx.new(|_| migration::MigrationView::new(progress.clone(), target.display().to_string()));
+    let bounds = Bounds::centered(None, size(px(460.0), px(220.0)), cx);
+    let pwin = cx
+        .open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
@@ -139,34 +220,65 @@ fn main() {
                     ..TitleBar::title_bar_options()
                 }),
                 app_id: Some("zorite".into()),
-                // Force client-side decorations so KWin doesn't stack a
-                // server titlebar over gpui-component's. No-op on
-                // macOS / Windows.
                 window_decorations: Some(WindowDecorations::Client),
                 ..Default::default()
             },
-            |window, cx| {
-                // Wider resize hit-test margin for Wayland CSD.
-                window.set_client_inset(px(10.0));
-                let view = cx.new(|cx| AppView::new(window, cx));
-                view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
-                AppView::register_window(&view, window, cx);
-                cx.new(|cx| Root::new(view, window, cx))
+            {
+                let view = view.clone();
+                move |window, cx| {
+                    window.set_client_inset(px(10.0));
+                    // Match the app's saved theme before the first paint.
+                    let is_dark = skin.dark_only
+                        || match mode {
+                            theme::Mode::Light => false,
+                            theme::Mode::Dark => true,
+                            theme::Mode::Auto => matches!(
+                                window.appearance(),
+                                WindowAppearance::Dark | WindowAppearance::VibrantDark
+                            ),
+                        };
+                    let palette = if is_dark { skin.dark } else { skin.light };
+                    theme::apply(palette, is_dark, window, cx);
+                    cx.new(|cx| Root::new(view, window, cx))
+                }
             },
-        ) {
-            // Window creation can fail when the OS can't hand gpui a graphics
-            // device (paused driver, headless / RDP session, GPU exhaustion).
-            // Pop a blocking dialog and bail out of setup instead of falling
-            // through to `cx.activate` — under `windows_subsystem = "windows"`
-            // the dialog is the only feedback, and in the headless winget
-            // validator the modal keeps the process alive past the launch test.
-            eprintln!("zorite: failed to open window: {err}");
-            #[cfg(target_os = "windows")]
-            show_window_open_error_dialog(&err);
-            return;
+        )
+        .ok();
+    cx.activate(true);
+
+    let Some(pwin) = pwin else {
+        // No progress window could open — do the move synchronously, then open
+        // the main window.
+        paths::run_migration(&source, &target, &progress);
+        open_main_window(cx);
+        return;
+    };
+
+    // Move on a background thread so the bar can animate while it runs.
+    {
+        let progress = progress.clone();
+        std::thread::spawn(move || paths::run_migration(&source, &target, &progress));
+    }
+
+    // Tick the bar; once the move is done (and the window has shown for ~1s, so
+    // instant same-volume moves don't just flash), open the main window and
+    // close this one.
+    cx.spawn(async move |cx| {
+        let mut ticks = 0u32;
+        loop {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(100))
+                .await;
+            ticks += 1;
+            view.update(cx, |_, cx| cx.notify());
+            if progress.is_finished() && ticks >= 10 {
+                cx.update(open_main_window);
+                let _ = pwin.update(cx, |_, window, _| window.remove_window());
+                break;
+            }
         }
-        cx.activate(true);
-    });
+    })
+    .detach();
 }
 
 // ---- Windows headless-startup handling -------------------------------------
