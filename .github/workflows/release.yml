@@ -641,18 +641,6 @@ jobs:
               echo
             fi
 
-            # Platform-test disclaimer. Honest framing while macOS
-            # stays the primary daily-driver — Windows + Linux are
-            # kept in mind in code and tested periodically (Linux less
-            # often, since gpui's Linux backend is the least-mature
-            # of the three). Drop the whole block once all three
-            # platforms are routinely exercised.
-            echo "> ℹ️ **Platform support.**"
-            echo ">"
-            echo "> macOS (arm64 + amd64) is the primary dev target, exercised on every release."
-            echo "> Windows builds are verified periodically; Linux less often, as gpui's Linux backend is the least-mature of the three."
-            echo "> Issues on any platform are welcome at <https://github.com/packetThrower/zorite/issues>."
-            echo
             echo "## What's Changed"
             echo
             if [ -n "$PREV_TAG" ]; then
