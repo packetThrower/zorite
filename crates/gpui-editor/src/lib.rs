@@ -9,10 +9,10 @@
 //!
 //! This is the basis for Zorite's note editor, built so we own the editor and
 //! can add things gpui-component gates behind its code-editor mode — first up,
-//! spell-check squiggles. **M1 scope:** plain multi-line text, cursor +
-//! selection, type/backspace/delete/enter, arrow + Home/End navigation,
-//! copy/cut/paste, click + drag selection, IME. Soft-wrap, undo/redo,
-//! diagnostics/squiggles, and richer styling come next.
+//! spell-check squiggles. **Done:** multi-line text, cursor + selection,
+//! type/backspace/delete/enter, arrow + Home/End nav, copy/cut/paste, click +
+//! drag selection, IME, and **soft-wrap** with content-driven height. Undo/redo,
+//! visual-row up/down, diagnostics/squiggles, and richer styling come next.
 //!
 //! Usage: create an [`EditorState`] entity and render it; call [`bind_keys`]
 //! once at startup so the editing actions resolve while it's focused.
@@ -20,12 +20,12 @@
 use std::ops::Range;
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId, ElementInputHandler,
-    Entity, EntityInputHandler, FocusHandle, Focusable, GlobalElementId, InspectorElementId,
-    InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render, ShapedLine,
-    SharedString, Style, Styled, TextRun, UTF16Selection, Window, actions, div, fill, hsla, point,
-    px, relative, rgba, size,
+    App, AvailableSpace, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId,
+    Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
+    SharedString, Style, Styled, TextRun, UTF16Selection, Window, WrappedLine, actions, div, fill,
+    hsla, point, px, relative, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -99,8 +99,11 @@ pub struct EditorState {
     selection_reversed: bool,
     /// IME composition range, if any.
     marked_range: Option<Range<usize>>,
-    /// Last paint's shaped lines (one per visual line), for hit-testing.
-    lines: Vec<ShapedLine>,
+    /// Last paint's wrapped lines (one per logical line) and each line's top
+    /// offset relative to the editor's top — both used for hit-testing and
+    /// cursor/IME positioning.
+    wrapped: Vec<WrappedLine>,
+    line_tops: Vec<Pixels>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     is_selecting: bool,
@@ -115,7 +118,8 @@ impl EditorState {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
-            lines: Vec::new(),
+            wrapped: Vec::new(),
+            line_tops: Vec::new(),
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -376,19 +380,28 @@ impl EditorState {
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
-        if self.content.is_empty() || self.lines.is_empty() {
+        if self.content.is_empty() || self.wrapped.is_empty() {
             return 0;
         }
         let Some(bounds) = self.last_bounds.as_ref() else {
             return 0;
         };
-        let rel_y = f32::from(position.y - bounds.top()).max(0.0);
-        let lh = f32::from(self.line_height).max(1.0);
-        let row = ((rel_y / lh) as usize).min(self.lines.len() - 1);
-        let starts = self.line_starts();
-        let line_start = starts[row];
-        let col = self.lines[row].closest_index_for_x(position.x - bounds.left());
-        line_start + col
+        let lh = self.line_height;
+        let rel = point(position.x - bounds.left(), position.y - bounds.top());
+        // Which logical line, by the vertical band each occupies.
+        let mut row = self.wrapped.len() - 1;
+        for i in 0..self.wrapped.len() {
+            let height = lh * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            if rel.y < self.line_tops[i] + height {
+                row = i;
+                break;
+            }
+        }
+        let line_rel = point(rel.x, rel.y - self.line_tops[row]);
+        let col = match self.wrapped[row].closest_index_for_position(line_rel, lh) {
+            Ok(i) | Err(i) => i,
+        };
+        self.line_starts()[row] + col
     }
 
     // --- UTF-16 + grapheme boundaries (IME / cursor movement) ----------------
@@ -534,12 +547,12 @@ impl EntityInputHandler for EditorState {
     ) -> Option<Bounds<Pixels>> {
         let range = self.range_from_utf16(&range_utf16);
         let (row, col) = self.row_col(range.start);
-        let line = self.lines.get(row)?;
-        let x = line.x_for_index(col);
-        let y = bounds.top() + self.line_height * row as f32;
+        let line = self.wrapped.get(row)?;
+        let p = line.position_for_index(col, self.line_height)?;
+        let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
         Some(Bounds::from_corners(
-            point(bounds.left() + x, y),
-            point(bounds.left() + x, y + self.line_height),
+            point(bounds.left() + p.x, top),
+            point(bounds.left() + p.x, top + self.line_height),
         ))
     }
 
@@ -593,14 +606,48 @@ impl Render for EditorState {
     }
 }
 
-/// The custom element that lays out + paints the editor's lines, cursor, and
-/// selection, and wires the input handler.
+/// Shape `text` into wrapped lines at `wrap_width` (one [`WrappedLine`] per
+/// logical line, each carrying its own wrap boundaries). Empty on a shaping
+/// error, so the editor degrades to blank rather than panicking.
+fn shape_all(
+    window: &mut Window,
+    text: &SharedString,
+    font_size: Pixels,
+    font: Font,
+    color: Hsla,
+    wrap_width: Option<Pixels>,
+) -> Vec<WrappedLine> {
+    let run = TextRun {
+        len: text.len(),
+        font,
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let runs: &[TextRun] = if text.is_empty() {
+        &[]
+    } else {
+        std::slice::from_ref(&run)
+    };
+    window
+        .text_system()
+        .shape_text(text.clone(), font_size, runs, wrap_width, None)
+        .map(|lines| lines.into_vec())
+        .unwrap_or_default()
+}
+
+/// The custom element that lays out + paints the editor's wrapped lines, cursor,
+/// and selection, and wires the input handler. Height is content-driven via a
+/// measured layout (it depends on the resolved width once soft-wrap is applied).
 struct EditorElement {
     editor: Entity<EditorState>,
 }
 
 struct PrepaintState {
-    lines: Vec<ShapedLine>,
+    wrapped: Vec<WrappedLine>,
+    /// Top offset of each logical line relative to the editor's top.
+    line_tops: Vec<Pixels>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -629,20 +676,38 @@ impl Element for EditorElement {
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         window: &mut Window,
-        cx: &mut App,
+        _: &mut App,
     ) -> (LayoutId, ()) {
-        let line_count = self
-            .editor
-            .read(cx)
-            .content
-            .bytes()
-            .filter(|&b| b == b'\n')
-            .count()
-            + 1;
+        // Height depends on the resolved width (soft-wrap), so measure it: shape
+        // the content at the available width and count wrapped rows.
+        let editor = self.editor.clone();
         let mut style = Style::default();
         style.size.width = relative(1.).into();
-        style.size.height = (window.line_height() * line_count as f32).into();
-        (window.request_layout(style, [], cx), ())
+        let id = window.request_measured_layout(style, move |known, available, window, cx| {
+            let content: SharedString = editor.read(cx).content.clone().into();
+            let text_style = window.text_style();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let wrap_width = match available.width {
+                AvailableSpace::Definite(w) => Some(w),
+                _ => known.width,
+            };
+            let rows = shape_all(
+                window,
+                &content,
+                font_size,
+                text_style.font(),
+                text_style.color,
+                wrap_width,
+            )
+            .iter()
+            .map(|line| line.wrap_boundaries().len() + 1)
+            .sum::<usize>()
+            .max(1);
+            let width = wrap_width.or(known.width).unwrap_or(px(0.));
+            size(width, lh * rows as f32)
+        });
+        (id, ())
     }
 
     fn prepaint(
@@ -658,95 +723,122 @@ impl Element for EditorElement {
         let style = window.text_style();
         let font_size = style.font_size.to_pixels(window.rem_size());
         let lh = window.line_height();
-
-        let is_empty = editor.content.is_empty();
+        let wrap_width = Some(bounds.size.width);
         let text_color = style.color;
 
-        // Shape each visual line. When empty, shape the placeholder instead.
-        let mut shaped = Vec::new();
-        if is_empty {
-            let run = TextRun {
-                len: editor.placeholder.len(),
-                font: style.font(),
-                color: hsla(0., 0., 0.5, 0.5),
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let runs: &[TextRun] = if editor.placeholder.is_empty() {
-                &[]
-            } else {
-                std::slice::from_ref(&run)
-            };
-            shaped.push(window.text_system().shape_line(
-                editor.placeholder.clone(),
+        // Shape the content (or placeholder, when empty) at the resolved width.
+        let wrapped = if editor.content.is_empty() {
+            shape_all(
+                window,
+                &editor.placeholder,
                 font_size,
-                runs,
-                None,
-            ));
+                style.font(),
+                hsla(0., 0., 0.5, 0.5),
+                wrap_width,
+            )
         } else {
-            for line in editor.content.split('\n') {
-                let line: SharedString = line.to_string().into();
-                let run = TextRun {
-                    len: line.len(),
-                    font: style.font(),
-                    color: text_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let runs: &[TextRun] = if line.is_empty() {
-                    &[]
-                } else {
-                    std::slice::from_ref(&run)
-                };
-                shaped.push(window.text_system().shape_line(line, font_size, runs, None));
-            }
+            let content: SharedString = editor.content.clone().into();
+            shape_all(
+                window,
+                &content,
+                font_size,
+                style.font(),
+                text_color,
+                wrap_width,
+            )
+        };
+
+        // Top offset of each logical line (running sum of wrapped heights).
+        let mut line_tops = Vec::with_capacity(wrapped.len());
+        let mut y = px(0.);
+        for line in &wrapped {
+            line_tops.push(y);
+            y += lh * (line.wrap_boundaries().len() + 1) as f32;
         }
 
-        // Cursor + selection quads.
-        let starts = editor.line_starts();
-        let (cursor, selections) = if is_empty {
-            let cursor = fill(
+        // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
+        // only, so `line_tops` stays free to move into the prepaint state.
+        let to_screen =
+            |top: Pixels, p: Point<Pixels>| point(bounds.left() + p.x, bounds.top() + top + p.y);
+
+        let (cursor, selections) = if editor.content.is_empty() {
+            let c = fill(
                 Bounds::new(point(bounds.left(), bounds.top()), size(px(2.), lh)),
                 text_color,
             );
-            (Some(cursor), Vec::new())
+            (Some(c), Vec::new())
         } else if editor.selected_range.is_empty() {
             let (row, col) = editor.row_col(editor.cursor_offset());
-            let x = shaped[row].x_for_index(col);
-            let y = bounds.top() + lh * row as f32;
-            let cursor = fill(
-                Bounds::new(point(bounds.left() + x, y), size(px(2.), lh)),
-                text_color,
-            );
-            (Some(cursor), Vec::new())
+            let p = wrapped
+                .get(row)
+                .and_then(|l| l.position_for_index(col, lh))
+                .unwrap_or_default();
+            let top = line_tops.get(row).copied().unwrap_or(px(0.));
+            let c = fill(Bounds::new(to_screen(top, p), size(px(2.), lh)), text_color);
+            (Some(c), Vec::new())
         } else {
             let (s, e) = (editor.selected_range.start, editor.selected_range.end);
+            let starts = editor.line_starts();
             let (s_row, _) = editor.row_col(s);
             let (e_row, _) = editor.row_col(e);
+            let right = bounds.size.width;
+            let color = rgba(0x3b82f640);
             let mut sels = Vec::new();
             for row in s_row..=e_row {
+                let Some(line) = wrapped.get(row) else {
+                    continue;
+                };
+                let top = line_tops[row];
                 let line_start = starts[row];
-                let line_end = editor.line_end(row);
-                let sel_start = s.max(line_start);
-                let sel_end = e.min(line_end);
-                let x0 = shaped[row].x_for_index(sel_start - line_start);
-                let x1 = shaped[row].x_for_index(sel_end - line_start);
-                let y = bounds.top() + lh * row as f32;
-                sels.push(fill(
-                    Bounds::from_corners(
-                        point(bounds.left() + x0, y),
-                        point(bounds.left() + x1.max(x0 + px(2.)), y + lh),
-                    ),
-                    rgba(0x3b82f640),
-                ));
+                let a = s.max(line_start) - line_start;
+                let b = e.min(editor.line_end(row)) - line_start;
+                let pa = line.position_for_index(a, lh).unwrap_or_default();
+                let pb = line.position_for_index(b, lh).unwrap_or_default();
+                if pa.y == pb.y {
+                    sels.push(fill(
+                        Bounds::from_corners(
+                            to_screen(top, pa),
+                            to_screen(top, point(pb.x.max(pa.x + px(2.)), pb.y + lh)),
+                        ),
+                        color,
+                    ));
+                } else {
+                    // First wrap row: start x → right edge.
+                    sels.push(fill(
+                        Bounds::from_corners(
+                            to_screen(top, pa),
+                            to_screen(top, point(right, pa.y + lh)),
+                        ),
+                        color,
+                    ));
+                    // Full middle wrap rows.
+                    let mut yy = pa.y + lh;
+                    while yy < pb.y {
+                        sels.push(fill(
+                            Bounds::from_corners(
+                                to_screen(top, point(px(0.), yy)),
+                                to_screen(top, point(right, yy + lh)),
+                            ),
+                            color,
+                        ));
+                        yy += lh;
+                    }
+                    // Last wrap row: left edge → end x.
+                    sels.push(fill(
+                        Bounds::from_corners(
+                            to_screen(top, point(px(0.), pb.y)),
+                            to_screen(top, point(pb.x, pb.y + lh)),
+                        ),
+                        color,
+                    ));
+                }
             }
             (None, sels)
         };
 
         PrepaintState {
-            lines: shaped,
+            wrapped,
+            line_tops,
             cursor,
             selections,
         }
@@ -774,8 +866,8 @@ impl Element for EditorElement {
         }
 
         let lh = window.line_height();
-        for (row, line) in prepaint.lines.iter().enumerate() {
-            let origin = point(bounds.origin.x, bounds.origin.y + lh * row as f32);
+        for (line, top) in prepaint.wrapped.iter().zip(prepaint.line_tops.iter()) {
+            let origin = point(bounds.origin.x, bounds.origin.y + *top);
             let _ = line.paint(origin, lh, gpui::TextAlign::Left, None, window, cx);
         }
 
@@ -785,9 +877,11 @@ impl Element for EditorElement {
             window.paint_quad(cursor);
         }
 
-        let lines = std::mem::take(&mut prepaint.lines);
+        let wrapped = std::mem::take(&mut prepaint.wrapped);
+        let line_tops = std::mem::take(&mut prepaint.line_tops);
         self.editor.update(cx, |editor, _| {
-            editor.lines = lines;
+            editor.wrapped = wrapped;
+            editor.line_tops = line_tops;
             editor.last_bounds = Some(bounds);
             editor.line_height = lh;
         });
