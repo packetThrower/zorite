@@ -6,7 +6,7 @@ use gpui::{
     App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, KeyBinding, ParentElement,
     Render, Styled, Window, WindowBounds, WindowOptions, actions, div, px, rgb, size,
 };
-use gpui_editor::EditorState;
+use gpui_editor::{Diagnostic, EditorState};
 
 actions!(demo, [Quit]);
 
@@ -47,13 +47,30 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
+                let text = "gpui-editor demo — a from-scratch editor with two mispelled wrds.\n\n\
+                            The red squiggles are fake spell-check diagnostics (M5). Typing \
+                            clears them; the real engine is M6.";
+                let d1 = text.find("mispelled").unwrap();
+                let d2 = text.find("wrds").unwrap();
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
                         .with_placeholder("Type here…")
-                        .with_text(
-                            "gpui-editor demo\n\nA from-scratch multi-line editor.\n\
-                             Type, select, arrow around, ⌘A / ⌘C / ⌘V / ⌘X.",
-                        )
+                        .with_text(text)
+                });
+                editor.update(cx, |ed, cx| {
+                    ed.set_diagnostics(
+                        vec![
+                            Diagnostic {
+                                range: d1..d1 + "mispelled".len(),
+                                suggestions: vec!["misspelled".into()],
+                            },
+                            Diagnostic {
+                                range: d2..d2 + "wrds".len(),
+                                suggestions: vec!["words".into(), "wards".into()],
+                            },
+                        ],
+                        cx,
+                    );
                 });
                 window.focus(&editor.read(cx).focus_handle(cx), cx);
                 cx.new(|_| Demo { editor })

@@ -24,8 +24,8 @@ use gpui::{
     ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId,
     Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
-    SharedString, Style, Styled, TextRun, UTF16Selection, Window, WrappedLine, actions, div, fill,
-    hsla, point, px, relative, rgba, size,
+    SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
+    actions, div, fill, hsla, point, px, relative, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -122,6 +122,17 @@ enum EditKind {
     Other,
 }
 
+/// A flagged span (e.g. a misspelling) to underline, plus optional replacement
+/// suggestions surfaced on right-click. The host (e.g. a spell checker) computes
+/// these and feeds them in via [`EditorState::set_diagnostics`].
+#[derive(Clone)]
+pub struct Diagnostic {
+    /// Byte range in the document.
+    pub range: Range<usize>,
+    /// Suggested replacements, best first.
+    pub suggestions: Vec<String>,
+}
+
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
 pub struct EditorState {
@@ -148,6 +159,9 @@ pub struct EditorState {
     /// The target x for vertical (Up/Down) movement, so the caret keeps its
     /// column across short lines. `Some` only during a run of Up/Down.
     goal_x: Option<Pixels>,
+    /// Spans to underline (misspellings, etc.), set by the host via
+    /// [`Self::set_diagnostics`].
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl EditorState {
@@ -168,6 +182,7 @@ impl EditorState {
             redo_stack: Vec::new(),
             last_edit: EditKind::Other,
             goal_x: None,
+            diagnostics: Vec::new(),
         }
     }
 
@@ -199,6 +214,13 @@ impl EditorState {
         self.undo_stack.clear();
         self.redo_stack.clear();
         self.last_edit = EditKind::Other;
+        cx.notify();
+    }
+
+    /// Replace the set of diagnostics (underlined spans). The host computes these
+    /// (e.g. spell-check) and refreshes them as the text changes.
+    pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
+        self.diagnostics = diagnostics;
         cx.notify();
     }
 
@@ -753,6 +775,9 @@ impl EntityInputHandler for EditorState {
         self.selection_reversed = false;
         self.marked_range = None;
         self.goal_x = None;
+        // The text changed, so existing diagnostics may be stale; the host
+        // recomputes and re-sets them.
+        self.diagnostics.clear();
         cx.notify();
     }
 
@@ -889,6 +914,75 @@ fn shape_all(
         .unwrap_or_default()
 }
 
+/// Shape `text` with pre-built `runs`, so diagnostics can underline specific
+/// spans. The plain-run [`shape_all`] is used for the placeholder + measurement.
+fn shape_runs(
+    window: &mut Window,
+    text: &SharedString,
+    font_size: Pixels,
+    runs: &[TextRun],
+    wrap_width: Option<Pixels>,
+) -> Vec<WrappedLine> {
+    window
+        .text_system()
+        .shape_text(text.clone(), font_size, runs, wrap_width, None)
+        .map(|lines| lines.into_vec())
+        .unwrap_or_default()
+}
+
+/// Build text runs for `text`, giving each diagnostic span a red wavy underline.
+fn diagnostic_runs(
+    text: &str,
+    font: Font,
+    color: Hsla,
+    diagnostics: &[Diagnostic],
+) -> Vec<TextRun> {
+    let plain = |len: usize| TextRun {
+        len,
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let squiggle = UnderlineStyle {
+        color: Some(hsla(0., 0.8, 0.55, 1.)),
+        thickness: px(1.5),
+        wavy: true,
+    };
+    let mut spans: Vec<Range<usize>> = diagnostics
+        .iter()
+        .map(|d| d.range.clone())
+        .filter(|r| r.start < r.end && r.end <= text.len())
+        .collect();
+    spans.sort_by_key(|r| r.start);
+
+    let mut runs = Vec::new();
+    let mut cursor = 0;
+    for span in spans {
+        let start = span.start.max(cursor); // clamp away any overlap
+        if start >= span.end {
+            continue;
+        }
+        if start > cursor {
+            runs.push(plain(start - cursor));
+        }
+        runs.push(TextRun {
+            len: span.end - start,
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline: Some(squiggle),
+            strikethrough: None,
+        });
+        cursor = span.end;
+    }
+    if cursor < text.len() {
+        runs.push(plain(text.len() - cursor));
+    }
+    runs
+}
+
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
 /// and selection, and wires the input handler. Height is content-driven via a
 /// measured layout (it depends on the resolved width once soft-wrap is applied).
@@ -990,14 +1084,8 @@ impl Element for EditorElement {
             )
         } else {
             let content: SharedString = editor.content.clone().into();
-            shape_all(
-                window,
-                &content,
-                font_size,
-                style.font(),
-                text_color,
-                wrap_width,
-            )
+            let runs = diagnostic_runs(&content, style.font(), text_color, &editor.diagnostics);
+            shape_runs(window, &content, font_size, &runs, wrap_width)
         };
 
         // Top offset of each logical line (running sum of wrapped heights).
