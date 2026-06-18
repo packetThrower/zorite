@@ -56,6 +56,10 @@ actions!(
         ShowCharacterPalette,
         Undo,
         Redo,
+        WordLeft,
+        WordRight,
+        SelectWordLeft,
+        SelectWordRight,
     ]
 );
 
@@ -91,6 +95,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-z", Redo, ctx),
         KeyBinding::new("ctrl-shift-z", Redo, ctx),
         KeyBinding::new("ctrl-y", Redo, ctx),
+        KeyBinding::new("alt-left", WordLeft, ctx),
+        KeyBinding::new("alt-right", WordRight, ctx),
+        KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
+        KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
     ]);
 }
 
@@ -137,6 +145,9 @@ pub struct EditorState {
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
     last_edit: EditKind,
+    /// The target x for vertical (Up/Down) movement, so the caret keeps its
+    /// column across short lines. `Some` only during a run of Up/Down.
+    goal_x: Option<Pixels>,
 }
 
 impl EditorState {
@@ -156,6 +167,7 @@ impl EditorState {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_edit: EditKind::Other,
+            goal_x: None,
         }
     }
 
@@ -209,30 +221,37 @@ impl EditorState {
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
-        let off = self.vertical_offset(-1);
-        self.move_to(off, cx);
+        let off = self.move_vertical(-1);
+        // Set the caret directly (not via `move_to`) to keep the goal column.
+        self.selected_range = off..off;
+        self.last_edit = EditKind::Other;
+        cx.notify();
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
-        let off = self.vertical_offset(1);
-        self.move_to(off, cx);
+        let off = self.move_vertical(1);
+        self.selected_range = off..off;
+        self.last_edit = EditKind::Other;
+        cx.notify();
     }
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
         self.select_to(self.previous_boundary(self.cursor_offset()), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
         self.select_to(self.next_boundary(self.cursor_offset()), cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
-        let off = self.vertical_offset(-1);
+        let off = self.move_vertical(-1);
         self.select_to(off, cx);
     }
 
     fn select_down(&mut self, _: &SelectDown, _: &mut Window, cx: &mut Context<Self>) {
-        let off = self.vertical_offset(1);
+        let off = self.move_vertical(1);
         self.select_to(off, cx);
     }
 
@@ -381,12 +400,35 @@ impl EditorState {
     // --- Mouse ---------------------------------------------------------------
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.is_selecting = true;
         let offset = self.index_for_mouse_position(event.position);
-        if event.modifiers.shift {
-            self.select_to(offset, cx);
-        } else {
-            self.move_to(offset, cx);
+        self.goal_x = None;
+        self.last_edit = EditKind::Other;
+        match event.click_count {
+            // Double-click: select the word under the cursor.
+            2 => {
+                self.is_selecting = false;
+                self.selected_range = self.word_range_at(offset).unwrap_or(offset..offset);
+                self.selection_reversed = false;
+                cx.notify();
+            }
+            // Triple-click (or more): select the whole logical line.
+            n if n >= 3 => {
+                self.is_selecting = false;
+                let (row, _) = self.row_col(offset);
+                let start = self.line_starts()[row];
+                self.selected_range = start..self.line_end(row);
+                self.selection_reversed = false;
+                cx.notify();
+            }
+            // Single click: place the caret, or extend the selection with Shift.
+            _ => {
+                self.is_selecting = true;
+                if event.modifiers.shift {
+                    self.select_to(offset, cx);
+                } else {
+                    self.move_to(offset, cx);
+                }
+            }
         }
     }
 
@@ -404,8 +446,10 @@ impl EditorState {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
-        // A deliberate caret move ends the current typing/deleting run.
+        // A deliberate caret move ends the current typing/deleting run and the
+        // vertical-movement goal column.
         self.last_edit = EditKind::Other;
+        self.goal_x = None;
         cx.notify();
     }
 
@@ -482,6 +526,101 @@ impl EditorState {
             new_col -= 1;
         }
         target_start + new_col
+    }
+
+    /// Offset one *visual* row up/down from the caret, preserving the goal column
+    /// (x) across the run. Falls back to logical-line movement before the first
+    /// paint (when no wrapped layout is cached yet).
+    fn move_vertical(&mut self, dir: i32) -> usize {
+        let lh = self.line_height;
+        if self.wrapped.is_empty() || lh <= px(0.) {
+            return self.vertical_offset(dir);
+        }
+        let (row, col) = self.row_col(self.cursor_offset());
+        let Some(cur) = self
+            .wrapped
+            .get(row)
+            .and_then(|l| l.position_for_index(col, lh))
+        else {
+            return self.vertical_offset(dir);
+        };
+        let global_y = self.line_tops[row] + cur.y;
+        let goal = self.goal_x.unwrap_or(cur.x);
+        self.goal_x = Some(goal);
+        let target_y = global_y + lh * dir as f32;
+        if target_y < px(0.) {
+            return 0;
+        }
+        let last = self.wrapped.len() - 1;
+        let total =
+            self.line_tops[last] + lh * (self.wrapped[last].wrap_boundaries().len() + 1) as f32;
+        if target_y >= total {
+            return self.content.len();
+        }
+        let mut trow = last;
+        for i in 0..self.wrapped.len() {
+            let h = lh * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            if target_y < self.line_tops[i] + h {
+                trow = i;
+                break;
+            }
+        }
+        let rel = point(goal, target_y - self.line_tops[trow]);
+        let col = match self.wrapped[trow].closest_index_for_position(rel, lh) {
+            Ok(i) | Err(i) => i,
+        };
+        self.line_starts()[trow] + col
+    }
+
+    /// The end of the next word at/after `offset` (⌥→ on macOS).
+    fn next_word(&self, offset: usize) -> usize {
+        self.content
+            .unicode_word_indices()
+            .map(|(i, w)| i + w.len())
+            .find(|&end| end > offset)
+            .unwrap_or(self.content.len())
+    }
+
+    /// The start of the previous word before `offset` (⌥← on macOS).
+    fn prev_word(&self, offset: usize) -> usize {
+        self.content
+            .unicode_word_indices()
+            .map(|(i, _)| i)
+            .rfind(|&start| start < offset)
+            .unwrap_or(0)
+    }
+
+    /// The byte range of the word at `offset` (double-click); `None` in whitespace.
+    fn word_range_at(&self, offset: usize) -> Option<Range<usize>> {
+        let mut ends_at = None;
+        for (i, w) in self.content.unicode_word_indices() {
+            let range = i..i + w.len();
+            if range.start <= offset && offset < range.end {
+                return Some(range);
+            }
+            if range.end == offset {
+                ends_at = Some(range);
+            }
+        }
+        ends_at
+    }
+
+    fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.prev_word(self.cursor_offset()), cx);
+    }
+
+    fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.next_word(self.cursor_offset()), cx);
+    }
+
+    fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        self.select_to(self.prev_word(self.cursor_offset()), cx);
+    }
+
+    fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        self.select_to(self.next_word(self.cursor_offset()), cx);
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -613,6 +752,7 @@ impl EntityInputHandler for EditorState {
         self.selected_range = caret..caret;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.goal_x = None;
         cx.notify();
     }
 
@@ -696,6 +836,10 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::select_right))
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
+            .on_action(cx.listener(Self::word_left))
+            .on_action(cx.listener(Self::word_right))
+            .on_action(cx.listener(Self::select_word_left))
+            .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::paste))
