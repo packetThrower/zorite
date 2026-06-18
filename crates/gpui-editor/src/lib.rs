@@ -54,6 +54,8 @@ actions!(
         Copy,
         Cut,
         ShowCharacterPalette,
+        Undo,
+        Redo,
     ]
 );
 
@@ -84,11 +86,36 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-x", Cut, ctx),
         KeyBinding::new("ctrl-x", Cut, ctx),
         KeyBinding::new("ctrl-cmd-space", ShowCharacterPalette, ctx),
+        KeyBinding::new("cmd-z", Undo, ctx),
+        KeyBinding::new("ctrl-z", Undo, ctx),
+        KeyBinding::new("cmd-shift-z", Redo, ctx),
+        KeyBinding::new("ctrl-shift-z", Redo, ctx),
+        KeyBinding::new("ctrl-y", Redo, ctx),
     ]);
 }
 
-/// The editor: text + cursor/selection state, plus a cached layout (the shaped
-/// lines from the last paint) used for hit-testing and IME positioning.
+/// Cap on undo history (full snapshots) to bound memory.
+const UNDO_LIMIT: usize = 256;
+
+/// A restorable editor state, for undo/redo. Stores the caret offset (not a
+/// selection), so undo/redo place the caret rather than re-selecting text.
+#[derive(Clone)]
+struct Snapshot {
+    content: String,
+    caret: usize,
+}
+
+/// The last edit's kind, for coalescing a run of edits into one undo step.
+/// `Insert(end)` is a single-grapheme insert whose caret ends at `end`.
+#[derive(Clone, Copy, PartialEq)]
+enum EditKind {
+    Insert(usize),
+    Delete,
+    Other,
+}
+
+/// The editor: text + cursor/selection state, an undo/redo history, plus a
+/// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
 pub struct EditorState {
     focus_handle: FocusHandle,
     /// The whole document, newline-separated. Byte offsets index into this.
@@ -107,6 +134,9 @@ pub struct EditorState {
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     is_selecting: bool,
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
+    last_edit: EditKind,
 }
 
 impl EditorState {
@@ -123,6 +153,9 @@ impl EditorState {
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            last_edit: EditKind::Other,
         }
     }
 
@@ -150,6 +183,10 @@ impl EditorState {
         self.selected_range = 0..0;
         self.selection_reversed = false;
         self.marked_range = None;
+        // A programmatic load isn't undoable to the prior document.
+        self.undo_stack.clear();
+        self.redo_stack.clear();
+        self.last_edit = EditKind::Other;
         cx.notify();
     }
 
@@ -275,6 +312,72 @@ impl EditorState {
         window.show_character_palette();
     }
 
+    // --- Undo / redo ---------------------------------------------------------
+
+    fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(prev) = self.undo_stack.pop() {
+            self.redo_stack.push(self.snapshot());
+            self.restore(prev);
+            self.last_edit = EditKind::Other;
+            cx.notify();
+        }
+    }
+
+    fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(next) = self.redo_stack.pop() {
+            self.undo_stack.push(self.snapshot());
+            self.restore(next);
+            self.last_edit = EditKind::Other;
+            cx.notify();
+        }
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            content: self.content.clone(),
+            // The forward caret (selection end), so undoing a backspace lands the
+            // caret after the restored text rather than inside it.
+            caret: self.selected_range.end,
+        }
+    }
+
+    fn restore(&mut self, s: Snapshot) {
+        self.content = s.content;
+        let caret = s.caret.min(self.content.len());
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.marked_range = None;
+    }
+
+    /// Snapshot the pre-edit state for undo, coalescing a run of single-grapheme
+    /// inserts (or a run of deletes) into one undo step so typing isn't undone
+    /// one character at a time.
+    fn record_edit(&mut self, range: &Range<usize>, new_text: &str) {
+        let kind = if new_text.is_empty() {
+            EditKind::Delete
+        } else if range.start == range.end
+            && new_text != "\n"
+            && new_text.graphemes(true).count() == 1
+        {
+            EditKind::Insert(range.start + new_text.len())
+        } else {
+            EditKind::Other
+        };
+        let coalesce = match (self.last_edit, kind) {
+            (EditKind::Insert(end), EditKind::Insert(_)) => end == range.start,
+            (EditKind::Delete, EditKind::Delete) => true,
+            _ => false,
+        };
+        if !coalesce {
+            self.undo_stack.push(self.snapshot());
+            if self.undo_stack.len() > UNDO_LIMIT {
+                self.undo_stack.remove(0);
+            }
+            self.redo_stack.clear();
+        }
+        self.last_edit = kind;
+    }
+
     // --- Mouse ---------------------------------------------------------------
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -301,6 +404,8 @@ impl EditorState {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
+        // A deliberate caret move ends the current typing/deleting run.
+        self.last_edit = EditKind::Other;
         cx.notify();
     }
 
@@ -501,6 +606,7 @@ impl EntityInputHandler for EditorState {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        self.record_edit(&range, new_text);
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
         let caret = range.start + new_text.len();
@@ -596,6 +702,8 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::show_character_palette))
+            .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::redo))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
