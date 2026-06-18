@@ -2579,6 +2579,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui-editor"
+version = "0.1.0"
+dependencies = [
+ "gpui",
+ "gpui_platform",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "gpui-markdown"
 version = "0.1.0"
 dependencies = [

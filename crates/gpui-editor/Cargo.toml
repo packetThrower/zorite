@@ -1,0 +1,29 @@
+[package]
+name = "gpui-editor"
+version = "0.1.0"
+edition = "2024"
+description = "A from-scratch multi-line text editor for GPUI — the basis for Zorite's note editor (built on gpui's EntityInputHandler + text-shaping primitives, no gpui-component)."
+license = "GPL-3.0-or-later"
+
+[dependencies]
+# Same git spec (no rev) as the workspace root so Cargo unifies to one gpui;
+# the lock pins the actual revision.
+gpui = { git = "https://github.com/zed-industries/zed" }
+
+# Grapheme-cluster boundaries for cursor movement, so an emoji / combining mark
+# moves as a single unit (matches gpui's own input example).
+unicode-segmentation = "1"
+
+# The standalone demo needs a platform backend to open a real window (the `gpui`
+# crate alone has no app entry point in this setup — it's split into
+# `gpui_platform`, same as the host app). Same git spec so the lock unifies.
+[dev-dependencies]
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "wayland",
+    "x11",
+] }
+
+# A runnable, standalone demo window: `cargo run -p gpui-editor --example demo`.
+[[example]]
+name = "demo"
