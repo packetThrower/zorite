@@ -25,7 +25,7 @@ use gpui::{
     Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
     SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
-    actions, div, fill, hsla, point, px, relative, rgba, size,
+    actions, div, fill, hsla, point, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -60,6 +60,7 @@ actions!(
         WordRight,
         SelectWordLeft,
         SelectWordRight,
+        Dismiss,
     ]
 );
 
@@ -99,6 +100,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-right", WordRight, ctx),
         KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
         KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
+        KeyBinding::new("escape", Dismiss, ctx),
     ]);
 }
 
@@ -133,6 +135,16 @@ pub struct Diagnostic {
     pub suggestions: Vec<String>,
 }
 
+/// An open right-click suggestions menu for a diagnostic.
+#[derive(Clone)]
+struct DiagMenu {
+    /// Popup top-left, relative to the editor's top-left.
+    anchor: Point<Pixels>,
+    /// The diagnostic's byte range, replaced when a suggestion is chosen.
+    range: Range<usize>,
+    suggestions: Vec<SharedString>,
+}
+
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
 pub struct EditorState {
@@ -162,6 +174,8 @@ pub struct EditorState {
     /// Spans to underline (misspellings, etc.), set by the host via
     /// [`Self::set_diagnostics`].
     diagnostics: Vec<Diagnostic>,
+    /// The open right-click suggestions menu, if any.
+    menu: Option<DiagMenu>,
 }
 
 impl EditorState {
@@ -183,6 +197,7 @@ impl EditorState {
             last_edit: EditKind::Other,
             goal_x: None,
             diagnostics: Vec::new(),
+            menu: None,
         }
     }
 
@@ -222,6 +237,28 @@ impl EditorState {
     pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
         self.diagnostics = diagnostics;
         cx.notify();
+    }
+
+    /// Keep diagnostics valid across an edit at `edited` (the replaced byte
+    /// range) that inserted `new_len` bytes: spans before the edit are left
+    /// alone, spans after it are shifted by the size delta, and spans that
+    /// overlap the edited text are dropped (that text changed, so they're
+    /// stale). The host still recomputes the edited region on its own schedule —
+    /// this just keeps the *other* spans correct so they don't all flicker off
+    /// on every keystroke.
+    fn remap_diagnostics(&mut self, edited: &Range<usize>, new_len: usize) {
+        let delta = new_len as isize - (edited.end - edited.start) as isize;
+        self.diagnostics.retain_mut(|d| {
+            if d.range.end <= edited.start {
+                true
+            } else if d.range.start >= edited.end {
+                d.range.start = (d.range.start as isize + delta) as usize;
+                d.range.end = (d.range.end as isize + delta) as usize;
+                true
+            } else {
+                false
+            }
+        });
     }
 
     // --- Cursor movement -----------------------------------------------------
@@ -423,6 +460,7 @@ impl EditorState {
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let offset = self.index_for_mouse_position(event.position);
+        self.menu = None;
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
@@ -462,6 +500,64 @@ impl EditorState {
         if self.is_selecting {
             self.select_to(self.index_for_mouse_position(event.position), cx);
         }
+    }
+
+    /// Right-click: if the click lands on a diagnostic with suggestions, open a
+    /// menu anchored there; otherwise close any open menu.
+    fn on_right_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let offset = self.index_for_mouse_position(event.position);
+        let anchor = self
+            .last_bounds
+            .as_ref()
+            .map(|b| point(event.position.x - b.left(), event.position.y - b.top()))
+            .unwrap_or_default();
+        self.menu = self
+            .diagnostic_at(offset)
+            .filter(|d| !d.suggestions.is_empty())
+            .map(|d| DiagMenu {
+                anchor,
+                range: d.range.clone(),
+                suggestions: d
+                    .suggestions
+                    .iter()
+                    .cloned()
+                    .map(SharedString::from)
+                    .collect(),
+            });
+        cx.notify();
+    }
+
+    /// The diagnostic whose range contains `offset`, if any.
+    fn diagnostic_at(&self, offset: usize) -> Option<&Diagnostic> {
+        self.diagnostics
+            .iter()
+            .find(|d| d.range.start <= offset && offset < d.range.end)
+    }
+
+    /// Close the suggestions menu (Escape, or a click elsewhere).
+    fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
+        if self.menu.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Replace `range` with a chosen suggestion and close the menu.
+    fn apply_suggestion(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.menu = None;
+        self.selected_range = range;
+        self.selection_reversed = false;
+        self.replace_text_in_range(None, text, window, cx);
     }
 
     // --- Selection helpers ---------------------------------------------------
@@ -775,9 +871,9 @@ impl EntityInputHandler for EditorState {
         self.selection_reversed = false;
         self.marked_range = None;
         self.goal_x = None;
-        // The text changed, so existing diagnostics may be stale; the host
-        // recomputes and re-sets them.
-        self.diagnostics.clear();
+        // Keep unaffected diagnostics valid across the edit (shift those after
+        // it, drop those it overlapped); the host recomputes the edited region.
+        self.remap_diagnostics(&range, new_text.len());
         cx.notify();
     }
 
@@ -806,6 +902,7 @@ impl EntityInputHandler for EditorState {
                 let caret = range.start + new_text.len();
                 caret..caret
             });
+        self.remap_diagnostics(&range, new_text.len());
         cx.notify();
     }
 
@@ -846,6 +943,7 @@ impl Focusable for EditorState {
 impl Render for EditorState {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
+            .relative()
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
@@ -873,13 +971,53 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::show_character_palette))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .on_action(cx.listener(Self::dismiss))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .child(EditorElement {
                 editor: cx.entity(),
             })
+            // Right-click suggestions menu, absolutely positioned over the
+            // editor (anchored at the click). `Option`'s `IntoIterator` renders
+            // zero or one popup; clicking a row replaces the misspelled span.
+            .children(self.menu.clone().map(|menu| {
+                let DiagMenu {
+                    anchor,
+                    range,
+                    suggestions,
+                } = menu;
+                let rows = suggestions.into_iter().map(move |sugg| {
+                    let range = range.clone();
+                    let replacement = sugg.to_string();
+                    div().px(px(12.)).py(px(5.)).child(sugg).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
+                            // Keep the editor's own mouse-down from clearing
+                            // the menu / moving the caret out from under us.
+                            cx.stop_propagation();
+                            editor.apply_suggestion(range.clone(), &replacement, window, cx);
+                        }),
+                    )
+                });
+                div()
+                    .absolute()
+                    .left(anchor.x)
+                    .top(anchor.y)
+                    .flex()
+                    .flex_col()
+                    .min_w(px(150.))
+                    .py(px(4.))
+                    .bg(rgb(0x26262b))
+                    .border_1()
+                    .border_color(rgb(0x45454c))
+                    .rounded(px(6.))
+                    .text_color(rgb(0xe6e6e6))
+                    .text_size(px(14.))
+                    .children(rows)
+            }))
     }
 }
 
