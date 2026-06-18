@@ -24,6 +24,10 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "x11",
 ] }
 
+# The demo wires the editor to the real OS spell checker (M6). Dev-only, so the
+# editor crate itself stays host-agnostic and free of any OS-FFI dependency.
+spellcheck = { path = "../spellcheck" }
+
 # A runnable, standalone demo window: `cargo run -p gpui-editor --example demo`.
 [[example]]
 name = "demo"

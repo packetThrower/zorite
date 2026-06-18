@@ -21,11 +21,11 @@ use std::ops::Range;
 
 use gpui::{
     App, AvailableSpace, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, Focusable, Font, GlobalElementId,
-    Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, Pixels, Point, Render,
-    SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine,
-    actions, div, fill, hsla, point, px, relative, rgb, rgba, size,
+    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
+    GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding,
+    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement,
+    Pixels, Point, Render, SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle,
+    Window, WrappedLine, actions, div, fill, hsla, point, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -124,15 +124,15 @@ enum EditKind {
     Other,
 }
 
-/// A flagged span (e.g. a misspelling) to underline, plus optional replacement
-/// suggestions surfaced on right-click. The host (e.g. a spell checker) computes
-/// these and feeds them in via [`EditorState::set_diagnostics`].
+/// A flagged span (e.g. a misspelling) to underline. The host (e.g. a spell
+/// checker) computes these and feeds them in via [`EditorState::set_diagnostics`].
+/// Replacement suggestions are fetched lazily when the user right-clicks the
+/// span, via the provider set with [`EditorState::on_suggest`] — so detection
+/// can stay cheap and run on every edit.
 #[derive(Clone)]
 pub struct Diagnostic {
     /// Byte range in the document.
     pub range: Range<usize>,
-    /// Suggested replacements, best first.
-    pub suggestions: Vec<String>,
 }
 
 /// An open right-click suggestions menu for a diagnostic.
@@ -144,6 +144,19 @@ struct DiagMenu {
     range: Range<usize>,
     suggestions: Vec<SharedString>,
 }
+
+/// Events the editor emits so a host can react. Subscribe with
+/// `cx.subscribe(&editor, …)` — e.g. to re-run spell-check after an edit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditorEvent {
+    /// The document text changed via a user edit (typing, delete, paste, IME,
+    /// applying a suggestion). Not emitted for programmatic `set_text`.
+    Changed,
+}
+
+/// Provides replacement suggestions for a flagged word (best first); set by the
+/// host via [`EditorState::on_suggest`] and consulted on right-click.
+type SuggestFn = Box<dyn Fn(&str) -> Vec<String>>;
 
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
@@ -176,6 +189,10 @@ pub struct EditorState {
     diagnostics: Vec<Diagnostic>,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
+    /// Supplies replacement suggestions for a flagged word, fetched lazily when
+    /// the user right-clicks it. Set by the host via [`Self::on_suggest`];
+    /// without it, the right-click menu has nothing to offer.
+    suggest: Option<SuggestFn>,
 }
 
 impl EditorState {
@@ -198,6 +215,7 @@ impl EditorState {
             goal_x: None,
             diagnostics: Vec::new(),
             menu: None,
+            suggest: None,
         }
     }
 
@@ -237,6 +255,14 @@ impl EditorState {
     pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
         self.diagnostics = diagnostics;
         cx.notify();
+    }
+
+    /// Install the provider consulted when the user right-clicks a flagged word.
+    /// It's handed the offending word and returns replacements (best first).
+    /// Kept lazy by design — the OS suggestion call can be slow, so it runs only
+    /// on right-click, never in the per-edit detection pass.
+    pub fn on_suggest(&mut self, provider: impl Fn(&str) -> Vec<String> + 'static) {
+        self.suggest = Some(Box::new(provider));
     }
 
     /// Keep diagnostics valid across an edit at `edited` (the replaced byte
@@ -502,8 +528,9 @@ impl EditorState {
         }
     }
 
-    /// Right-click: if the click lands on a diagnostic with suggestions, open a
-    /// menu anchored there; otherwise close any open menu.
+    /// Right-click: if the click lands on a flagged word, fetch its suggestions
+    /// (lazily, via the provider) and open a menu anchored there; otherwise close
+    /// any open menu.
     fn on_right_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -516,19 +543,16 @@ impl EditorState {
             .as_ref()
             .map(|b| point(event.position.x - b.left(), event.position.y - b.top()))
             .unwrap_or_default();
-        self.menu = self
-            .diagnostic_at(offset)
-            .filter(|d| !d.suggestions.is_empty())
-            .map(|d| DiagMenu {
+        let hit = self.diagnostic_at(offset).map(|d| d.range.clone());
+        self.menu = hit.and_then(|range| {
+            let word = self.content[range.clone()].to_string();
+            let suggestions = self.suggest.as_ref().map(|f| f(&word)).unwrap_or_default();
+            (!suggestions.is_empty()).then(|| DiagMenu {
                 anchor,
-                range: d.range.clone(),
-                suggestions: d
-                    .suggestions
-                    .iter()
-                    .cloned()
-                    .map(SharedString::from)
-                    .collect(),
-            });
+                range,
+                suggestions: suggestions.into_iter().map(SharedString::from).collect(),
+            })
+        });
         cx.notify();
     }
 
@@ -874,6 +898,7 @@ impl EntityInputHandler for EditorState {
         // Keep unaffected diagnostics valid across the edit (shift those after
         // it, drop those it overlapped); the host recomputes the edited region.
         self.remap_diagnostics(&range, new_text.len());
+        cx.emit(EditorEvent::Changed);
         cx.notify();
     }
 
@@ -903,6 +928,7 @@ impl EntityInputHandler for EditorState {
                 caret..caret
             });
         self.remap_diagnostics(&range, new_text.len());
+        cx.emit(EditorEvent::Changed);
         cx.notify();
     }
 
@@ -939,6 +965,8 @@ impl Focusable for EditorState {
         self.focus_handle.clone()
     }
 }
+
+impl EventEmitter<EditorEvent> for EditorState {}
 
 impl Render for EditorState {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

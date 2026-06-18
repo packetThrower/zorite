@@ -1,0 +1,25 @@
+[package]
+name = "spellcheck"
+version = "0.1.0"
+edition = "2024"
+description = "Native OS spell-check — NSSpellChecker on macOS, ISpellChecker on Windows; a no-op elsewhere. Returns misspelled byte ranges + the OS's suggestions. Host-agnostic (no gpui)."
+license = "GPL-3.0-or-later"
+
+# macOS: Apple's system spell checker via AppKit. objc2-app-kit's NSSpellChecker
+# feature pulls in the NSString/NSArray/NSRange Foundation features it needs; we
+# also name those types directly, so list them too. Same objc2 0.6 / 0.3 family
+# gpui already uses, so these unify with the existing graph (no duplicate objc2).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSRange"] }
+objc2-app-kit = { version = "0.3", features = ["NSSpellChecker"] }
+
+# Windows: the Win32 Spell Checking API (Windows 8+). `windows` 0.62 to match the
+# version already in the lock (via gpui). Needs COM initialized on the calling
+# thread — the gpui host does that for the UI thread.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Globalization",
+    "Win32_System_Com",
+    "Win32_Foundation",
+] }

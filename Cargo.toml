@@ -12,7 +12,7 @@ name = "zorite"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard"]
+members = ["crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/spellcheck"]
 resolver = "2"
 
 [dependencies]
