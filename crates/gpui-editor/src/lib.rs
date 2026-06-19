@@ -24,8 +24,9 @@ use gpui::{
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
     GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement,
-    Pixels, Point, Render, SharedString, Style, Styled, TextRun, UTF16Selection, UnderlineStyle,
-    Window, WrappedLine, actions, div, fill, hsla, point, px, relative, rgb, rgba, size,
+    Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Style, Styled,
+    TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point,
+    px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -143,6 +144,8 @@ struct DiagMenu {
     /// The diagnostic's byte range, replaced when a suggestion is chosen.
     range: Range<usize>,
     suggestions: Vec<SharedString>,
+    /// Scroll state of the (capped-height) list, so a thumb can track it.
+    scroll: ScrollHandle,
 }
 
 /// Events the editor emits so a host can react. Subscribe with
@@ -551,6 +554,7 @@ impl EditorState {
                 anchor,
                 range,
                 suggestions: suggestions.into_iter().map(SharedString::from).collect(),
+                scroll: ScrollHandle::new(),
             })
         });
         cx.notify();
@@ -1016,35 +1020,106 @@ impl Render for EditorState {
                     anchor,
                     range,
                     suggestions,
+                    scroll,
                 } = menu;
-                let rows = suggestions.into_iter().map(move |sugg| {
-                    let range = range.clone();
-                    let replacement = sugg.to_string();
-                    div().px(px(12.)).py(px(5.)).child(sugg).on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
-                            // Keep the editor's own mouse-down from clearing
-                            // the menu / moving the caret out from under us.
-                            cx.stop_propagation();
-                            editor.apply_suggestion(range.clone(), &replacement, window, cx);
-                        }),
-                    )
+                let count = suggestions.len();
+                // Collected eagerly (not a lazy iterator) so `cx` is only
+                // borrowed here and stays free for the menu's own listeners below.
+                let rows: Vec<_> = suggestions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, sugg)| {
+                        let range = range.clone();
+                        let replacement = sugg.to_string();
+                        div()
+                            // A stable per-row id so gpui tracks hover state and
+                            // repaints as the pointer moves between rows. Without
+                            // an id, the hover style only shows on a forced
+                            // repaint (e.g. while scrolling).
+                            .id(("suggestion-row", i))
+                            // Don't let the scroll container's max-height squeeze
+                            // the rows; they keep their height and overflow.
+                            .flex_shrink_0()
+                            .px(px(12.))
+                            .py(px(5.))
+                            // Highlight the row under the pointer.
+                            .hover(|s| s.bg(rgb(0x2f6fd6)))
+                            .child(sugg)
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
+                                    // Keep the editor's own mouse-down from clearing
+                                    // the menu / moving the caret out from under us.
+                                    cx.stop_propagation();
+                                    editor.apply_suggestion(
+                                        range.clone(),
+                                        &replacement,
+                                        window,
+                                        cx,
+                                    );
+                                }),
+                            )
+                    })
+                    .collect();
+                // A thin scrollbar thumb, shown when the list overflows ~6 rows
+                // so the scroll affordance is visible. Sized from the row count
+                // (known now) and positioned from the live scroll offset — a
+                // wheel scroll calls window.refresh(), which re-renders this.
+                const ROW_H: f32 = 28.0;
+                const PAD: f32 = 4.0;
+                const MAX_H: f32 = 180.0;
+                let rows_h = count as f32 * ROW_H;
+                let view_h = MAX_H - 2.0 * PAD;
+                let thumb = (rows_h > view_h).then(|| {
+                    let scrolled = (-f32::from(scroll.offset().y)).clamp(0.0, rows_h - view_h);
+                    let thumb_h = (view_h * view_h / rows_h).max(24.0);
+                    let thumb_top = PAD + scrolled / (rows_h - view_h) * (view_h - thumb_h);
+                    div()
+                        .absolute()
+                        .top(px(thumb_top))
+                        .right(px(2.))
+                        .w(px(6.))
+                        .h(px(thumb_h))
+                        .rounded(px(3.))
+                        .bg(rgba(0xffffff66))
                 });
+
                 div()
                     .absolute()
                     .left(anchor.x)
                     .top(anchor.y)
-                    .flex()
-                    .flex_col()
                     .min_w(px(150.))
-                    .py(px(4.))
+                    // Override the editor's I-beam — the menu is a normal pointer
+                    // surface, not text (children inherit this hitbox's cursor).
+                    .cursor(CursorStyle::Arrow)
                     .bg(rgb(0x26262b))
                     .border_1()
                     .border_color(rgb(0x45454c))
                     .rounded(px(6.))
+                    // Clip rows + thumb to the rounded box.
+                    .overflow_hidden()
                     .text_color(rgb(0xe6e6e6))
                     .text_size(px(14.))
-                    .children(rows)
+                    // A click anywhere outside the menu (elsewhere in the
+                    // window) dismisses it.
+                    .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                        editor.menu = None;
+                        cx.notify();
+                    }))
+                    .child(
+                        // The scroll viewport: shows ~6 rows, the rest scroll.
+                        div()
+                            // Stable id so the scroll offset persists across frames.
+                            .id("suggestion-menu")
+                            .max_h(px(MAX_H))
+                            .overflow_y_scroll()
+                            .track_scroll(&scroll)
+                            .flex()
+                            .flex_col()
+                            .py(px(PAD))
+                            .children(rows),
+                    )
+                    .children(thumb)
             }))
     }
 }

@@ -65,9 +65,10 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let text = "gpui-editor demo — spell-check is live now (M6). Try typing some \
-                            mispelled wrds and watch the red squiggles appear; right-click one \
-                            for the system's suggestions.";
+                let text = "gpui-editor demo — spell-check is live (M6). Right-click a red word \
+                            for the system's suggestions: teh, recieve, wrds, definately, mispeld. \
+                            A long list scrolls (capped at ~6 rows); click anywhere outside the \
+                            menu to close it.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
                         .with_placeholder("Type here…")
