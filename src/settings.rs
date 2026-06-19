@@ -19,6 +19,7 @@ use gpui_component::{
     dialog::DialogButtonProps,
     select::{Select, SelectEvent, SelectItem, SelectState},
     slider::{Slider, SliderEvent, SliderState},
+    switch::Switch,
 };
 
 use crate::app::AppView;
@@ -497,6 +498,24 @@ impl Render for SettingsView {
                     .child(format!("{qpct}%")),
             );
 
+        // WYSIWYG live-preview toggle (Markdown pane), as a switch. Controlled:
+        // `.checked` reflects the persisted setting each render; the click
+        // persists + re-applies to open editors via `set_wysiwyg`.
+        let wys_on = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).wysiwyg())
+            .unwrap_or(true);
+        let wys_app = self.app.clone();
+        let wysiwyg_switch =
+            Switch::new("wysiwyg-toggle")
+                .checked(wys_on)
+                .on_click(move |checked, _window, cx| {
+                    if let Some(app) = wys_app.upgrade() {
+                        app.update(cx, |a, cx| a.set_wysiwyg(*checked, cx));
+                    }
+                });
+
         // Installed-themes card body: the actions + the list (or empty state).
         let actions = div()
             .flex()
@@ -752,12 +771,20 @@ impl Render for SettingsView {
                                      slower machines. 100% = your display's native resolution.",
                                 quality_control,
                             )),
-                            Tab::Markdown => content.child(card(
-                                "List indentation",
-                                "Spaces per nesting level for Tab and bullet nesting. Editing \
+                            Tab::Markdown => content
+                                .child(card(
+                                    "WYSIWYG editing",
+                                    "On shows formatting (bold, headings, links) inline as you \
+                                     type. Off edits plain Markdown and shows the rendered page \
+                                     on Esc.",
+                                    wysiwyg_switch,
+                                ))
+                                .child(card(
+                                    "List indentation",
+                                    "Spaces per nesting level for Tab and bullet nesting. Editing \
                                      and the rendered view use the same width, so they line up.",
-                                Select::new(&self.indent_select).w_full(),
-                            )),
+                                    Select::new(&self.indent_select).w_full(),
+                                )),
                             Tab::Keyboard => {
                                 let app_rows: Vec<(&str, Vec<&str>)> = vec![
                                     ("New tab (new page)", vec![keys::MOD, "T"]),

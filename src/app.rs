@@ -262,6 +262,10 @@ pub struct AppView {
     check_updates: bool,
     /// Whether the update check considers pre-releases (betas), persisted.
     include_prerelease: bool,
+    /// WYSIWYG live-preview editing, persisted (default on). On = the editor
+    /// shows inline markdown formatting as you type (W1+); off = "editor mode",
+    /// plain raw markdown in edit + the rendered page on Esc (the classic flow).
+    wysiwyg: bool,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -524,6 +528,7 @@ impl AppView {
             list_indent: DEFAULT_LIST_INDENT,
             check_updates: true,
             include_prerelease: false,
+            wysiwyg: true,
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -616,6 +621,11 @@ impl AppView {
             .get_setting("include_prerelease")
             .map(|v| v == "1")
             .unwrap_or(false);
+        this.wysiwyg = this
+            .db
+            .get_setting("wysiwyg")
+            .map(|v| v != "0")
+            .unwrap_or(true);
         // Date/time display formats for /date, /time, and {{date}}/{{time}} —
         // applied to the thread-local in `crate::dates`; validated against the
         // known ids so a stale persisted value can't stick.
@@ -655,7 +665,7 @@ impl AppView {
             .flatten()
             .map(|p| p.content)
             .unwrap_or_default();
-        let state = make_editor(&content, window, cx);
+        let state = make_editor(&content, self.wysiwyg, window, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -1370,7 +1380,7 @@ impl AppView {
             }
         };
         let pid = page.id;
-        let state = make_editor(&page.content, window, cx);
+        let state = make_editor(&page.content, self.wysiwyg, window, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -3615,6 +3625,40 @@ impl AppView {
             .set_setting("check_updates", if on { "1" } else { "0" });
     }
 
+    /// Whether WYSIWYG live-preview editing is on (default). Off = "editor mode":
+    /// raw markdown while editing, rendered page on Esc.
+    pub fn wysiwyg(&self) -> bool {
+        self.wysiwyg
+    }
+
+    /// Toggle WYSIWYG live-preview editing; persists, then re-applies to every
+    /// open editor so the change takes effect without reopening notes.
+    pub fn set_wysiwyg(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.wysiwyg == on {
+            return;
+        }
+        self.wysiwyg = on;
+        let _ = self.db.set_setting("wysiwyg", if on { "1" } else { "0" });
+        // Set or clear live-preview styling on each open editor. Collect the
+        // handles first so we don't hold a borrow of `self` across `update`.
+        let states: Vec<Entity<EditorState>> = self
+            .day_editors
+            .values()
+            .map(|de| de.state.clone())
+            .chain(self.page_editor.as_ref().map(|pe| pe.state.clone()))
+            .collect();
+        for state in states {
+            state.update(cx, |editor, cx| {
+                if on {
+                    editor.set_markdown_style(theme::editor_syntax_style(), cx);
+                } else {
+                    editor.clear_markdown_style(cx);
+                }
+            });
+        }
+        cx.notify();
+    }
+
     /// Include / exclude pre-releases in the update check; persists, then re-runs
     /// the check so the indicator reflects the new preference right away.
     pub fn set_include_prerelease(&mut self, on: bool, cx: &mut Context<Self>) {
@@ -5263,6 +5307,7 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 /// effectively means "never scroll internally".
 fn make_editor(
     content: &str,
+    wysiwyg: bool,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -5275,11 +5320,14 @@ fn make_editor(
         editor.on_suggest(|word| spellcheck::SpellChecker::new().suggestions(word));
         editor
     });
-    // Live-preview markdown styling — mirrors the rendered view's colors so
-    // formatting (bold/italic/code/links/tags) shows inline as you type (W1).
-    editor.update(cx, |editor, cx| {
-        editor.set_markdown_style(theme::editor_syntax_style(), cx)
-    });
+    // Live-preview markdown styling when WYSIWYG is on — mirrors the rendered
+    // view's colors so formatting (bold/italic/code/links/tags) shows inline as
+    // you type (W1). Off = plain raw markdown ("editor mode").
+    if wysiwyg {
+        editor.update(cx, |editor, cx| {
+            editor.set_markdown_style(theme::editor_syntax_style(), cx)
+        });
+    }
     editor
 }
 

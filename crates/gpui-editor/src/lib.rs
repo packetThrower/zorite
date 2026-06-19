@@ -282,6 +282,15 @@ impl EditorState {
         cx.notify();
     }
 
+    /// Turn off live-preview styling — the editor falls back to plain text
+    /// (spell-check underlines only). Used when the host's WYSIWYG setting is
+    /// switched off; a no-op if styling was already off.
+    pub fn clear_markdown_style(&mut self, cx: &mut Context<Self>) {
+        if self.markdown_style.take().is_some() {
+            cx.notify();
+        }
+    }
+
     /// Install the provider consulted when the user right-clicks a flagged word.
     /// It's handed the offending word and returns replacements (best first).
     /// Kept lazy by design — the OS suggestion call can be slow, so it runs only
