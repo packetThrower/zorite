@@ -209,6 +209,20 @@ pub fn markdown_style(indent_spaces: usize) -> gpui_markdown::MarkdownStyle {
     }
 }
 
+/// Inline-markdown styling palette for the live-preview editor (gpui-editor).
+/// Mirrors [`markdown_style`]'s colors so editing looks like the rendered view.
+pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
+    let p = get();
+    gpui_editor::SyntaxStyle {
+        marker: p.text_tertiary,
+        code: p.code,
+        code_bg: p.glass,
+        link: p.accent,
+        tag: p.tag,
+        mono: gpui::font(mono_font()),
+    }
+}
+
 // --- Theme mode + application ---
 
 /// Light / Dark / Auto (follow the OS appearance).

@@ -25,10 +25,13 @@ use gpui::{
     GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement,
     Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Style, Styled,
-    TextRun, UTF16Selection, UnderlineStyle, Window, WrappedLine, actions, div, fill, hsla, point,
-    px, relative, rgb, rgba, size,
+    TextRun, UTF16Selection, Window, WrappedLine, actions, div, fill, hsla, point, px, relative,
+    rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
+
+mod markdown_syntax;
+pub use markdown_syntax::SyntaxStyle;
 
 /// Key context the editing actions are scoped to (so they only fire while an
 /// editor is focused).
@@ -196,6 +199,9 @@ pub struct EditorState {
     /// Spans to underline (misspellings, etc.), set by the host via
     /// [`Self::set_diagnostics`].
     diagnostics: Vec<Diagnostic>,
+    /// Inline-markdown styling palette; `Some` turns on live-preview rendering
+    /// (W1), `None` is plain text. Set by the host via [`Self::set_markdown_style`].
+    markdown_style: Option<SyntaxStyle>,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
     /// Supplies replacement suggestions for a flagged word, fetched lazily when
@@ -223,6 +229,7 @@ impl EditorState {
             last_edit: EditKind::Other,
             goal_x: None,
             diagnostics: Vec::new(),
+            markdown_style: None,
             menu: None,
             suggest: None,
         }
@@ -263,6 +270,15 @@ impl EditorState {
     /// (e.g. spell-check) and refreshes them as the text changes.
     pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
         self.diagnostics = diagnostics;
+        cx.notify();
+    }
+
+    /// Turn on live-preview markdown styling with the given color/font palette
+    /// (call once at setup). Inline bold/italic/code/link/tag formatting then
+    /// renders as you type — markers stay in the text, dimmed. Without it the
+    /// editor renders plain text (spell-check underlines only).
+    pub fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>) {
+        self.markdown_style = Some(style);
         cx.notify();
     }
 
@@ -1222,59 +1238,6 @@ fn shape_runs(
         .unwrap_or_default()
 }
 
-/// Build text runs for `text`, giving each diagnostic span a red wavy underline.
-fn diagnostic_runs(
-    text: &str,
-    font: Font,
-    color: Hsla,
-    diagnostics: &[Diagnostic],
-) -> Vec<TextRun> {
-    let plain = |len: usize| TextRun {
-        len,
-        font: font.clone(),
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let squiggle = UnderlineStyle {
-        color: Some(hsla(0., 0.8, 0.55, 1.)),
-        thickness: px(1.5),
-        wavy: true,
-    };
-    let mut spans: Vec<Range<usize>> = diagnostics
-        .iter()
-        .map(|d| d.range.clone())
-        .filter(|r| r.start < r.end && r.end <= text.len())
-        .collect();
-    spans.sort_by_key(|r| r.start);
-
-    let mut runs = Vec::new();
-    let mut cursor = 0;
-    for span in spans {
-        let start = span.start.max(cursor); // clamp away any overlap
-        if start >= span.end {
-            continue;
-        }
-        if start > cursor {
-            runs.push(plain(start - cursor));
-        }
-        runs.push(TextRun {
-            len: span.end - start,
-            font: font.clone(),
-            color,
-            background_color: None,
-            underline: Some(squiggle),
-            strikethrough: None,
-        });
-        cursor = span.end;
-    }
-    if cursor < text.len() {
-        runs.push(plain(text.len() - cursor));
-    }
-    runs
-}
-
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
 /// and selection, and wires the input handler. Height is content-driven via a
 /// measured layout (it depends on the resolved width once soft-wrap is applied).
@@ -1376,7 +1339,13 @@ impl Element for EditorElement {
             )
         } else {
             let content: SharedString = editor.content.clone().into();
-            let runs = diagnostic_runs(&content, style.font(), text_color, &editor.diagnostics);
+            let runs = markdown_syntax::styled_runs(
+                &content,
+                &style.font(),
+                text_color,
+                &editor.diagnostics,
+                editor.markdown_style.as_ref(),
+            );
             shape_runs(window, &content, font_size, &runs, wrap_width)
         };
 

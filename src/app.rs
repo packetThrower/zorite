@@ -5269,12 +5269,18 @@ fn make_editor(
     // Our gpui-editor auto-grows to its content height and soft-wraps by design,
     // so the feed/page scrolls and the editor never does — the behavior the old
     // `auto_grow(1, 100_000)` InputState approximated.
-    cx.new(|cx| {
+    let editor = cx.new(|cx| {
         let mut editor = EditorState::new(window, cx).with_text(content);
         // Right-click a flagged word → the OS's suggestions, fetched lazily.
         editor.on_suggest(|word| spellcheck::SpellChecker::new().suggestions(word));
         editor
-    })
+    });
+    // Live-preview markdown styling — mirrors the rendered view's colors so
+    // formatting (bold/italic/code/links/tags) shows inline as you type (W1).
+    editor.update(cx, |editor, cx| {
+        editor.set_markdown_style(theme::editor_syntax_style(), cx)
+    });
+    editor
 }
 
 /// Run the OS spell checker over `text`, mapping each misspelling to an editor

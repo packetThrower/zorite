@@ -9,9 +9,10 @@
 
 use gpui::{
     App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, KeyBinding, ParentElement,
-    Render, Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div, px, rgb, size,
+    Render, Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div, font, hsla,
+    px, rgb, size,
 };
-use gpui_editor::{Diagnostic, EditorEvent, EditorState};
+use gpui_editor::{Diagnostic, EditorEvent, EditorState, SyntaxStyle};
 use spellcheck::SpellChecker;
 
 actions!(demo, [Quit]);
@@ -44,6 +45,18 @@ impl Render for Demo {
 
 /// Run the OS spell checker over `text` and turn the misspellings into editor
 /// diagnostics (the byte ranges + suggestions map across one-to-one).
+/// A dark-theme palette for the live-preview markdown styling.
+fn demo_markdown_style() -> SyntaxStyle {
+    SyntaxStyle {
+        marker: hsla(0., 0., 0.5, 0.55),  // dimmed gray syntax markers
+        code: hsla(0.09, 0.6, 0.72, 1.),  // warm inline code text
+        code_bg: hsla(0., 0., 1., 0.06),  // faint code chip background
+        link: hsla(0.58, 0.75, 0.66, 1.), // blue links / wiki-links
+        tag: hsla(0.33, 0.45, 0.62, 1.),  // green tags
+        mono: font("Menlo"),
+    }
+}
+
 fn diagnostics_for(text: &str) -> Vec<Diagnostic> {
     SpellChecker::new()
         .check(text)
@@ -65,10 +78,10 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let text = "gpui-editor demo — spell-check is live (M6). Right-click a red word \
-                            for the system's suggestions: teh, recieve, wrds, definately, mispeld. \
-                            A long list scrolls (capped at ~6 rows); click anywhere outside the \
-                            menu to close it.";
+                let text = "gpui-editor live-preview (W1).\n\n**Bold**, *italic*, ~~strike~~, \
+                            `inline code`, a [link](https://example.com), a [[Wiki Page]], and a \
+                            #tag all style as you type — markers stay, dimmed.\n\nSpell-check still \
+                            flags mispelled wrds; right-click one for suggestions.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
                         .with_placeholder("Type here…")
@@ -80,6 +93,7 @@ fn main() {
                 // initial detection pass over the seeded text.
                 editor.update(cx, |editor, cx| {
                     editor.on_suggest(|word| SpellChecker::new().suggestions(word));
+                    editor.set_markdown_style(demo_markdown_style(), cx);
                     editor.set_diagnostics(diagnostics_for(text), cx);
                 });
 
