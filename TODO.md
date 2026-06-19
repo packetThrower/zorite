@@ -9,6 +9,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [Notes & navigation](#notes--navigation)
 - [Performance](#performance)
 - [App & polish](#app--polish)
+- [Settings window](#settings-window)
 - [Import & export](#import--export)
 - [gpui-markdown crate](#gpui-markdown-crate)
 - [Completed](#completed)
@@ -35,6 +36,10 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Sidebar: remember the collapsed state across launches, and add a keyboard shortcut to toggle it
 - [ ] Multi-window: same-page **concurrent edits** are last-write-wins — editing the *same* page/day in two windows at once can drop one side's changes. True resolution needs a CRDT/OT layer (out of scope for a single-user app); revisit only if real-time collaboration is ever wanted
 - [ ] Window-bounds persistence (reopen where you left off)
+
+## Settings window
+- [ ] Convert the remaining boolean settings (Updates → "Check for updates", "Include pre-releases") from On/Off dropdowns to switches, matching the WYSIWYG toggle
+- [ ] Use small versions of components
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
