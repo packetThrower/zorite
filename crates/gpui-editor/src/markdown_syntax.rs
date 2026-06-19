@@ -384,10 +384,138 @@ pub(crate) fn line_scale(line: &str) -> f32 {
     }
 }
 
+/// Per-column text alignment of a GFM table.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// A detected GFM table region: the half-open range of logical line indices it
+/// spans (header, separator, then body rows) and its per-column alignment.
+pub(crate) struct TableRegion {
+    pub lines: Range<usize>,
+    pub aligns: Vec<Align>,
+}
+
+/// Detect GFM table regions in `content` (W4c). A region is a row line (trimmed
+/// text starts with `|`) immediately followed by a separator row
+/// (`| --- | :--: |`), then any further row lines. Returns regions in order.
+pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < lines.len() {
+        if is_table_row(lines[i])
+            && let Some(aligns) = separator_aligns(lines[i + 1])
+        {
+            let start = i;
+            let mut end = i + 2; // header + separator
+            while end < lines.len() && is_table_row(lines[end]) {
+                end += 1;
+            }
+            out.push(TableRegion {
+                lines: start..end,
+                aligns,
+            });
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// A table row is a line whose trimmed text starts with `|`.
+pub(crate) fn is_table_row(line: &str) -> bool {
+    line.trim_start().starts_with('|')
+}
+
+/// Split a `| a | b |` row into trimmed cell strings (the bounding pipes drop the
+/// empty leading/trailing cells they'd otherwise create).
+pub(crate) fn table_cells(line: &str) -> Vec<&str> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|').map(str::trim).collect()
+}
+
+/// If `line` is a table separator row (every cell is dashes with optional
+/// alignment colons), return its per-column alignment, else `None`.
+fn separator_aligns(line: &str) -> Option<Vec<Align>> {
+    if !is_table_row(line) {
+        return None;
+    }
+    let cells = table_cells(line);
+    if cells.is_empty() {
+        return None;
+    }
+    cells
+        .iter()
+        .map(|c| {
+            let left = c.starts_with(':');
+            let right = c.ends_with(':');
+            let dashes = c.trim_matches(':');
+            (!dashes.is_empty() && dashes.bytes().all(|b| b == b'-')).then_some(
+                match (left, right) {
+                    (true, true) => Align::Center,
+                    (false, true) => Align::Right,
+                    _ => Align::Left,
+                },
+            )
+        })
+        .collect()
+}
+
 fn is_word(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
 }
 
 fn is_tag(c: u8) -> bool {
     c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'/')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_a_gfm_table() {
+        let md = "intro\n\n| A | B |\n| --- | :-: |\n| 1 | 2 |\n| 3 | 4 |\n\nafter";
+        let regions = table_regions(md);
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].lines, 2..6); // header, separator, 2 body rows
+        assert_eq!(regions[0].aligns, vec![Align::Left, Align::Center]);
+    }
+
+    #[test]
+    fn cells_split_and_trim() {
+        assert_eq!(table_cells("| a | b |"), vec!["a", "b"]);
+        assert_eq!(table_cells("|  |  |"), vec!["", ""]);
+    }
+
+    #[test]
+    fn separator_required_and_alignment() {
+        // Pipes in prose without a separator row are not a table.
+        assert!(table_regions("a | b\nc | d").is_empty());
+        assert!(table_regions("| not a table\njust text").is_empty());
+        // Right alignment from `---:`.
+        assert_eq!(
+            table_regions("| h |\n| ---: |\n| x |")[0].aligns,
+            vec![Align::Right]
+        );
+    }
+
+    #[test]
+    fn heading_and_image_line() {
+        assert_eq!(heading_level("## Hi"), Some(2));
+        assert_eq!(heading_level("#notaheading"), None);
+        assert_eq!(image_line("![a](b.png)"), Some(("b.png", None)));
+        assert_eq!(
+            image_line("![a](b.png){width=320}"),
+            Some(("b.png", Some(320.0)))
+        );
+        assert_eq!(image_line("text ![a](b.png)"), None);
+    }
 }

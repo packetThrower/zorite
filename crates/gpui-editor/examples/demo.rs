@@ -82,8 +82,10 @@ fn main() {
                             **Bold**, *italic*, ~~strike~~, `inline code`, a \
                             [link](https://example.com), a [[Wiki Page]], and a #tag style \
                             inline.\n\nA fenced code block (W4b):\n\n```rust\nfn main() {\n    \
-                            println!(\"hello, world\");\n}\n```\n\nSpell-check still flags \
-                            mispelled wrds; right-click one for suggestions.";
+                            println!(\"hello, world\");\n}\n```\n\nA table (W4c):\n\n| Name | \
+                            Role | Score |\n| :-- | :--: | --: |\n| Ada | Engineer | 99 |\n\
+                            | Linus | Kernel | 88 |\n\nSpell-check still flags mispelled wrds; \
+                            right-click one for suggestions.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
                         .with_placeholder("Type here…")

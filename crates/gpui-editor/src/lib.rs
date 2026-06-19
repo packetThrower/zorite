@@ -1314,14 +1314,32 @@ struct BlockImg {
     height: Pixels,
 }
 
-/// Per-logical-line shaping output — four parallel vecs of equal length: the
-/// shaped source line, its row height, an optional inline-image widget, and an
-/// optional full-width line background (a fenced code block).
+/// A table row rendered as a grid (W4c): its cells, per-column alignment, the
+/// shared (equal) column width, header/separator/last-row flags, and the border
+/// color. Built only when the caret is outside the table — the caret's table
+/// shows source instead ("raw on caret").
+#[derive(Clone)]
+struct TableRow {
+    cells: Vec<SharedString>,
+    aligns: Vec<markdown_syntax::Align>,
+    cols: usize,
+    col_width: Pixels,
+    is_header: bool,
+    is_separator: bool,
+    is_last: bool,
+    border: Hsla,
+}
+
+/// Per-logical-line shaping output — five parallel vecs of equal length: the
+/// shaped source line, its row height, an optional inline-image widget, an
+/// optional full-width line background (a fenced code block), and an optional
+/// table-row grid.
 type ShapedLines = (
     Vec<WrappedLine>,
     Vec<Pixels>,
     Vec<Option<BlockImg>>,
     Vec<Option<Hsla>>,
+    Vec<Option<TableRow>>,
 );
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
@@ -1374,6 +1392,13 @@ fn shape_document(
     let mut heights = Vec::new();
     let mut widgets = Vec::new();
     let mut backgrounds = Vec::new();
+    let mut tables = Vec::new();
+    // Table regions (W4c) for the whole doc; equal-width columns, raw-on-caret.
+    let regions = md
+        .map(|_| markdown_syntax::table_regions(content))
+        .unwrap_or_default();
+    let table_row_h = base_font_size * LINE_HEIGHT_RATIO + px(12.);
+    let table_sep_h = px(8.);
     let mut line_start = 0;
     let mut in_fence = false;
     for (idx, line) in content.split('\n').enumerate() {
@@ -1407,6 +1432,29 @@ fn shape_document(
         } else {
             None
         };
+
+        // Table row (W4c): a line inside a detected table region renders as a
+        // grid row — unless the caret is in that table (then it shows source).
+        let table = regions
+            .iter()
+            .find(|r| r.lines.contains(&idx))
+            .filter(|r| !is_code && !caret_row.is_some_and(|cr| r.lines.contains(&cr)))
+            .map(|r| {
+                let cols = r.aligns.len().max(1);
+                TableRow {
+                    cells: markdown_syntax::table_cells(line)
+                        .into_iter()
+                        .map(|c| SharedString::from(c.to_string()))
+                        .collect(),
+                    aligns: r.aligns.clone(),
+                    cols,
+                    col_width: wrap_width.map_or(px(160.), |w| w) / cols as f32,
+                    is_header: idx == r.lines.start,
+                    is_separator: idx == r.lines.start + 1,
+                    is_last: idx + 1 == r.lines.end,
+                    border: md.map_or(base_color, |m| m.marker),
+                }
+            });
 
         let (runs, bg) = if let Some(st) = md.filter(|_| is_code) {
             // One monospace run for the whole line; ``` delimiters dimmed.
@@ -1450,15 +1498,100 @@ fn shape_document(
             wrap_width,
         );
         if let Some(wl) = shaped.into_iter().next() {
-            let h = widget.as_ref().map_or(fs * LINE_HEIGHT_RATIO, |w| w.height);
+            let h = match &table {
+                Some(t) if t.is_separator => table_sep_h,
+                Some(_) => table_row_h,
+                None => widget.as_ref().map_or(fs * LINE_HEIGHT_RATIO, |w| w.height),
+            };
             wrapped.push(wl);
             heights.push(h);
             widgets.push(widget);
             backgrounds.push(bg);
+            tables.push(table);
         }
         line_start = line_end + 1; // skip the '\n'
     }
-    (wrapped, heights, widgets, backgrounds)
+    (wrapped, heights, widgets, backgrounds, tables)
+}
+
+/// Paint a table row as a grid (W4c): a top border (+ bottom on the last row),
+/// a left border per column + a right outer border, and each cell's text aligned
+/// within its column. A separator row renders as a single horizontal divider.
+#[allow(clippy::too_many_arguments)]
+fn paint_table_row(
+    t: &TableRow,
+    origin: Point<Pixels>,
+    row_h: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    line_h: Pixels,
+    color: Hsla,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let thick = px(1.);
+    let table_w = t.col_width * t.cols as f32;
+    if t.is_separator {
+        let y = origin.y + (row_h - thick) / 2.;
+        window.paint_quad(fill(
+            Bounds::new(point(origin.x, y), size(table_w, thick)),
+            t.border,
+        ));
+        return;
+    }
+    // Horizontal borders: top on every row; bottom only on the last.
+    window.paint_quad(fill(Bounds::new(origin, size(table_w, thick)), t.border));
+    if t.is_last {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(origin.x, origin.y + row_h - thick),
+                size(table_w, thick),
+            ),
+            t.border,
+        ));
+    }
+    let pad = px(8.);
+    let mut cell_font = font.clone();
+    if t.is_header {
+        cell_font.weight = gpui::FontWeight::BOLD;
+    }
+    for c in 0..t.cols {
+        let cx0 = origin.x + t.col_width * c as f32;
+        window.paint_quad(fill(
+            Bounds::new(point(cx0, origin.y), size(thick, row_h)),
+            t.border,
+        ));
+        if let Some(cell) = t.cells.get(c).filter(|s| !s.is_empty()) {
+            let run = TextRun {
+                len: cell.len(),
+                font: cell_font.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window
+                .text_system()
+                .shape_line(cell.clone(), font_size, &[run], None);
+            let align = match t.aligns.get(c) {
+                Some(markdown_syntax::Align::Center) => gpui::TextAlign::Center,
+                Some(markdown_syntax::Align::Right) => gpui::TextAlign::Right,
+                _ => gpui::TextAlign::Left,
+            };
+            let _ = shaped.paint(
+                point(cx0 + pad, origin.y + (row_h - line_h) / 2.),
+                line_h,
+                align,
+                Some(t.col_width - pad * 2.),
+                window,
+                cx,
+            );
+        }
+    }
+    window.paint_quad(fill(
+        Bounds::new(point(origin.x + table_w, origin.y), size(thick, row_h)),
+        t.border,
+    ));
 }
 
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
@@ -1478,6 +1611,8 @@ struct PrepaintState {
     widgets: Vec<Option<BlockImg>>,
     /// Full-width background behind a line (e.g. a fenced code block).
     backgrounds: Vec<Option<Hsla>>,
+    /// `Some` for a line painted as a table-grid row instead of source.
+    tables: Vec<Option<TableRow>>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -1541,7 +1676,7 @@ impl Element for EditorElement {
                 // Sum of per-line (variable) heights × each line's wrap rows.
                 let caret_row = editor.row_col(editor.cursor_offset()).0;
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, _) = shape_document(
+                let (wrapped, heights, _, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -1588,7 +1723,7 @@ impl Element for EditorElement {
         // their own taller rows (W2) and image lines render inline (W4).
         let caret_row = editor.row_col(editor.cursor_offset()).0;
         let sf = window.scale_factor();
-        let (wrapped, line_heights, widgets, backgrounds) = if editor.content.is_empty() {
+        let (wrapped, line_heights, widgets, backgrounds, tables) = if editor.content.is_empty() {
             let w = shape_all(
                 window,
                 &editor.placeholder,
@@ -1598,7 +1733,13 @@ impl Element for EditorElement {
                 wrap_width,
             );
             let n = w.len();
-            (w, vec![base_lh; n], vec![None; n], vec![None; n])
+            (
+                w,
+                vec![base_lh; n],
+                vec![None; n],
+                vec![None; n],
+                vec![None; n],
+            )
         } else {
             shape_document(
                 window,
@@ -1711,6 +1852,7 @@ impl Element for EditorElement {
             line_heights,
             widgets,
             backgrounds,
+            tables,
             cursor,
             selections,
         }
@@ -1737,8 +1879,11 @@ impl Element for EditorElement {
             window.paint_quad(sel);
         }
 
-        let base_lh =
-            window.text_style().font_size.to_pixels(window.rem_size()) * LINE_HEIGHT_RATIO;
+        let style = window.text_style();
+        let font = style.font();
+        let text_color = style.color;
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let base_lh = font_size * LINE_HEIGHT_RATIO;
         for (i, ((line, top), lh)) in prepaint
             .wrapped
             .iter()
@@ -1751,7 +1896,12 @@ impl Element for EditorElement {
             if let Some(c) = prepaint.backgrounds.get(i).copied().flatten() {
                 window.paint_quad(fill(Bounds::new(origin, size(bounds.size.width, *lh)), c));
             }
-            if let Some(w) = prepaint.widgets.get(i).and_then(Option::as_ref) {
+            if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
+                // Table grid row (W4c): cells + borders instead of source.
+                paint_table_row(
+                    t, origin, *lh, &font, font_size, base_lh, text_color, window, cx,
+                );
+            } else if let Some(w) = prepaint.widgets.get(i).and_then(Option::as_ref) {
                 // Inline image (W4a): paint the decoded image instead of source.
                 let img_bounds = Bounds::new(origin, size(w.width, w.height));
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
@@ -1769,7 +1919,12 @@ impl Element for EditorElement {
         let wrapped = std::mem::take(&mut prepaint.wrapped);
         let line_tops = std::mem::take(&mut prepaint.line_tops);
         let line_heights = std::mem::take(&mut prepaint.line_heights);
-        let widget_rows: Vec<bool> = prepaint.widgets.iter().map(Option::is_some).collect();
+        let widget_rows: Vec<bool> = prepaint
+            .widgets
+            .iter()
+            .enumerate()
+            .map(|(i, w)| w.is_some() || prepaint.tables.get(i).is_some_and(Option::is_some))
+            .collect();
         self.editor.update(cx, |editor, _| {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
