@@ -132,6 +132,10 @@ const CODE_PAD: f32 = 8.;
 /// room for the left border (2px) + a gap, matching the reading view's `pl(12)`.
 const QUOTE_INSET: f32 = 14.;
 
+/// Width (px) of a list item's bullet/number column — the body text is inset this
+/// far past the item's indent, leaving room for the painted `•` / `N.` + a gap.
+const BULLET_COL: f32 = 22.;
+
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
 #[derive(Clone)]
@@ -1398,6 +1402,14 @@ enum LineMark {
     /// Blockquote: a muted left border; the `>` markers are hidden and the body
     /// text is muted (`SyntaxStyle::quote`).
     Quote(Hsla),
+    /// List item: a painted bullet (`•`) or number (`N.`) at `indent`, muted; the
+    /// source marker is hidden and the body inset past the bullet column.
+    List {
+        indent: Pixels,
+        ordered: bool,
+        num: u32,
+        color: Hsla,
+    },
 }
 
 impl LineMark {
@@ -1405,6 +1417,7 @@ impl LineMark {
     fn inset(self) -> Pixels {
         match self {
             LineMark::Quote(_) => px(QUOTE_INSET),
+            LineMark::List { indent, .. } => indent + px(BULLET_COL),
         }
     }
 }
@@ -1652,23 +1665,41 @@ fn shape_document(
                 })
             })
             .collect();
-        // Gutter decoration (blockquote for now): a non-code/widget/table line
-        // beginning with `>`. The decoration (muted text + left border, `>`
-        // hidden) shows only while the caret is OFF the line; on the line it reads
-        // as plain source with the `>` revealed (a line-level reveal — the whole
-        // prefix shows wherever the caret sits on the line, unlike inline #5).
-        let quote_prefix = md
+        // Gutter decoration (blockquote / list): a non-code/widget/table line with
+        // a `>` or list marker. The decoration (border / bullet, marker hidden,
+        // body inset) shows only while the caret is OFF the line; on the line it
+        // reads as plain source with the prefix revealed (a line-level reveal — the
+        // whole prefix shows wherever the caret sits, unlike inline #5).
+        let gutter: Option<(usize, LineMark)> = md
             .filter(|_| !is_code && widget.is_none() && table.is_none())
-            .and_then(|_| markdown_syntax::blockquote_prefix(line));
+            .and_then(|st| {
+                if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
+                    Some((plen, LineMark::Quote(st.quote)))
+                } else {
+                    markdown_syntax::list_prefix(line).map(|(plen, indent, ordered, num)| {
+                        let indent_px = px(indent as f32 * f32::from(fs) * 0.5);
+                        (
+                            plen,
+                            LineMark::List {
+                                indent: indent_px,
+                                ordered,
+                                num,
+                                color: st.quote,
+                            },
+                        )
+                    })
+                }
+            });
         let caret_here = caret_col.is_some();
-        let mark = quote_prefix
+        let mark = gutter
             .filter(|_| !caret_here && !full_source)
-            .and(md)
-            .map(|st| LineMark::Quote(st.quote));
-        let reveal_prefix = quote_prefix.filter(|_| caret_here).unwrap_or(0);
+            .map(|(_, m)| m);
+        let reveal_prefix = gutter.filter(|_| caret_here).map_or(0, |(plen, _)| plen);
+        // A blockquote's body is muted; a list keeps the normal body color (only
+        // its bullet is muted).
         let line_base = match mark {
             Some(LineMark::Quote(c)) => c,
-            None => base_color,
+            _ => base_color,
         };
         let (shaped_text, runs, bg, map) = if collapse_fence {
             // Hidden ``` fence line: nothing painted, zero height.
@@ -2302,6 +2333,40 @@ impl Element for EditorElement {
             // past it by QUOTE_INSET).
             if let Some(LineMark::Quote(c)) = prepaint.marks.get(i).copied().flatten() {
                 window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), c));
+            }
+            // List item: a muted bullet (`•`) or number (`N.`) at the item's
+            // indent; the body is inset past it (the source marker is hidden).
+            if let Some(LineMark::List {
+                indent,
+                ordered,
+                num,
+                color,
+            }) = prepaint.marks.get(i).copied().flatten()
+            {
+                let glyph: SharedString = if ordered {
+                    format!("{num}.").into()
+                } else {
+                    "•".into()
+                };
+                let run = TextRun {
+                    len: glyph.len(),
+                    font: font.clone(),
+                    color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window
+                    .text_system()
+                    .shape_line(glyph, font_size, &[run], None);
+                let _ = shaped.paint(
+                    point(origin.x + indent, origin.y),
+                    *lh,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
                 // Table grid row (W4c): cells + borders instead of source.

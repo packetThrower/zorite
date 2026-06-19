@@ -350,6 +350,11 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         marker(out, start..p, st.marker);
         i = p;
+    } else if let Some((prefix_len, ..)) = list_prefix(&text[start..end]) {
+        // List item: hide the leading whitespace + marker; a bullet/number is
+        // painted in its place and the body keeps inline styling.
+        marker(out, start..start + prefix_len, st.marker);
+        i = start + prefix_len;
     }
     while i < end {
         let c = b[i];
@@ -532,6 +537,35 @@ pub(crate) fn blockquote_prefix(line: &str) -> Option<usize> {
         }
     }
     Some(p)
+}
+
+/// If `line` is a list item, return `(prefix_len, indent, ordered, number)`.
+/// `prefix_len` is the byte length of the leading whitespace plus the marker
+/// (a bullet `-`/`*`/`+`, or digits then `.`/`)`) plus one space; `indent` is the
+/// leading-whitespace length (nesting depth); `ordered`/`number` describe an
+/// ordered item. The editor hides this prefix and paints a bullet/number,
+/// revealing the raw prefix on caret.
+pub(crate) fn list_prefix(line: &str) -> Option<(usize, usize, bool, u32)> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() && (b[i] == b' ' || b[i] == b'\t') {
+        i += 1;
+    }
+    let indent = i;
+    // Unordered: `-`/`*`/`+` then a space.
+    if i < b.len() && matches!(b[i], b'-' | b'*' | b'+') && b.get(i + 1) == Some(&b' ') {
+        return Some((i + 2, indent, false, 0));
+    }
+    // Ordered: one or more digits, then `.` or `)`, then a space.
+    let ds = i;
+    while i < b.len() && b[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > ds && matches!(b.get(i), Some(b'.') | Some(b')')) && b.get(i + 1) == Some(&b' ') {
+        let num = line[ds..i].parse::<u32>().unwrap_or(1);
+        return Some((i + 2, indent, true, num));
+    }
+    None
 }
 
 /// If `line` is a standalone image — `![alt](src)`, optionally followed by a
@@ -852,5 +886,27 @@ mod tests {
         // the caret isn't in it; inline markers still hide unless under the caret.
         let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, &st);
         assert_eq!(disp, "> a b");
+    }
+
+    #[test]
+    fn list_prefix_detection() {
+        assert_eq!(list_prefix("- item"), Some((2, 0, false, 0)));
+        assert_eq!(list_prefix("* item"), Some((2, 0, false, 0)));
+        assert_eq!(list_prefix("+ item"), Some((2, 0, false, 0)));
+        assert_eq!(list_prefix("  - nested"), Some((4, 2, false, 0)));
+        assert_eq!(list_prefix("3. third"), Some((3, 0, true, 3)));
+        assert_eq!(list_prefix("  10) tenth"), Some((6, 2, true, 10)));
+        // Not lists: italic, a bare dash, indented prose.
+        assert_eq!(list_prefix("*italic*"), None);
+        assert_eq!(list_prefix("-no space"), None);
+        assert_eq!(list_prefix("  just indented"), None);
+
+        // The marker hides; a nested item maps the body back past the prefix.
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+        let (disp, _, map) = hidden_runs("  - hi", &font, c, &[], None, 0, &st);
+        assert_eq!(disp, "hi");
+        assert_eq!(map[0], 4); // display 0 ('h') ← source 4
     }
 }
