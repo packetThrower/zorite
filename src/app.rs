@@ -722,7 +722,7 @@ impl AppView {
     /// that rewrites content across pages (e.g. a page rename that updated
     /// `[[links]]`) so the feed shows the new text instead of stale cache.
     /// Only days whose content actually changed are touched.
-    fn reload_day_editors(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn reload_day_editors(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let dates: Vec<String> = self.day_editors.keys().cloned().collect();
         for date in dates {
             // Never reload the day being edited here — that would clobber the
@@ -740,8 +740,7 @@ impl AppView {
             if let Some(de) = self.day_editors.get(&date)
                 && de.state.read(cx).value() != content
             {
-                de.state
-                    .update(cx, |s, cx| s.set_value(content, window, cx));
+                de.state.update(cx, |s, cx| s.set_text(content, cx));
             }
         }
     }
@@ -1576,7 +1575,7 @@ impl AppView {
             }
             return;
         };
-        let Some(caret) = editor.read(cx).range_to_bounds(&(start..start)) else {
+        let Some(caret) = editor.read(cx).bounds_for_offset(start) else {
             if self.slash.take().is_some() {
                 cx.notify();
             }
@@ -1775,11 +1774,11 @@ impl AppView {
         editor: &Entity<EditorState>,
         new: String,
         caret: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         editor.update(cx, |st, cx| {
-            st.set_value(new.clone(), window, cx);
+            st.set_text(new.clone(), cx);
             st.set_cursor(caret, cx);
         });
         match target {
@@ -1794,7 +1793,7 @@ impl AppView {
         &mut self,
         snippet: String,
         caret: usize,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(s) = self.slash.take() else { return };
@@ -1818,7 +1817,7 @@ impl AppView {
         let new = format!("{}{}{}", &value[..start], snippet, &value[tail..]);
         let caret_off = start + caret;
         editor.update(cx, |st, cx| {
-            st.set_value(new.clone(), window, cx);
+            st.set_text(new.clone(), cx);
             st.set_cursor(caret_off, cx);
         });
         match &s.target {
@@ -1839,7 +1838,7 @@ impl AppView {
     /// onto the next line (indent preserved, ordered numbers incremented), or
     /// remove the marker when the current item is empty. Returns whether it
     /// handled the Enter (so the caller skips inserting a plain newline).
-    fn continue_list(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+    fn continue_list(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(target) = self.focused_editor_target() else {
             return false;
         };
@@ -1861,7 +1860,7 @@ impl AppView {
             }
         };
         editor.update(cx, |st, cx| {
-            st.set_value(new.clone(), window, cx);
+            st.set_text(new.clone(), cx);
             st.set_cursor(caret, cx);
         });
         match &target {
@@ -2949,7 +2948,7 @@ impl AppView {
     }
 
     /// Finish a resize drag: write `{width=N}` into the source and persist.
-    fn finish_image_drag(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn finish_image_drag(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = self.image_drag.take() else {
             return;
         };
@@ -2960,7 +2959,7 @@ impl AppView {
             let end = d.attr_target.end.min(value.len());
             let new = format!("{}{{width={width}}}{}", &value[..start], &value[end..]);
             editor.update(cx, |st, cx| {
-                st.set_value(new.clone(), window, cx);
+                st.set_text(new.clone(), cx);
             });
             match &d.target {
                 SlashTarget::Day(day) => self.save_journal(day, &new, cx),
@@ -2991,7 +2990,7 @@ impl AppView {
         target: &SlashTarget,
         rel: &str,
         at_cursor: bool,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let Some(editor) = self.editor_for(target) else {
@@ -3018,7 +3017,7 @@ impl AppView {
         let caret = pos + snippet.len();
         let new = format!("{before}{snippet}{after}");
         editor.update(cx, |st, cx| {
-            st.set_value(new.clone(), window, cx);
+            st.set_text(new.clone(), cx);
             st.set_cursor(caret, cx);
         });
         match target {
@@ -3112,7 +3111,7 @@ impl AppView {
     fn maybe_autopair(
         &mut self,
         target: &SlashTarget,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(editor) = self.editor_for(target) else {
@@ -3152,7 +3151,7 @@ impl AppView {
             },
         };
         editor.update(cx, |st, cx| {
-            st.set_value(new.clone(), window, cx);
+            st.set_text(new.clone(), cx);
             st.set_cursor(caret, cx);
         });
         self.set_autopair_prev(target, new.clone());
@@ -3347,7 +3346,7 @@ impl AppView {
         editor.update(cx, |st, cx| {
             let value = st.value().to_string();
             if !value.is_empty() && !value.ends_with('\n') {
-                st.set_value(format!("{value}\n"), window, cx);
+                st.set_text(format!("{value}\n"), cx);
             }
             let end = st.text().len();
             st.set_cursor(end, cx);
@@ -4501,7 +4500,7 @@ impl AppView {
             let Some(new) = apply_fit(&value, &imgs, comfortable) else {
                 continue;
             };
-            editor.update(cx, |st, cx| st.set_value(new.clone(), window, cx));
+            editor.update(cx, |st, cx| st.set_text(new.clone(), cx));
             match &slash_target {
                 SlashTarget::Day(d) => self.save_journal(d, &new, cx),
                 SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
@@ -5232,7 +5231,7 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
         let caret = state
             .editor
             .read(cx)
-            .range_to_bounds(&(state.off..state.off))
+            .bounds_for_offset(state.off)
             .map(|b| b.origin.y);
         let offset = state.scroll.offset().y;
         let Some(caret_y) = caret else {

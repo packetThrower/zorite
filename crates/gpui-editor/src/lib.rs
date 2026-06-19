@@ -307,35 +307,14 @@ impl EditorState {
         ))
     }
 
-    // --- gpui-component `Input` compatibility shims --------------------------
-    // Thin bridges over the canonical text()/set_text()/bounds_for_offset() so a
-    // host migrating off gpui-component's Input can keep its call-site shapes.
-
-    /// The document text as an owned [`SharedString`]. See [`Self::text`].
+    /// The document text as an owned [`SharedString`]; use [`Self::text`] for a
+    /// borrowed `&str`.
     pub fn value(&self) -> SharedString {
         self.content.clone().into()
     }
 
-    /// Replace all text; the `window` argument is ignored (kept only so call
-    /// sites that passed a window to `InputState::set_value` need not change).
-    /// See [`Self::set_text`].
-    pub fn set_value(
-        &mut self,
-        content: impl Into<String>,
-        _window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.set_text(content, cx);
-    }
-
-    /// Caret bounds at `range.start`. See [`Self::bounds_for_offset`].
-    pub fn range_to_bounds(&self, range: &Range<usize>) -> Option<Bounds<Pixels>> {
-        self.bounds_for_offset(range.start)
-    }
-
-    /// Focus the editor (so it receives keyboard input). Matches the shape of
-    /// `InputState::focus`; `set_cursor` does NOT focus, so call this to enter
-    /// edit mode (e.g. on a click into rendered text).
+    /// Focus the editor so it receives keyboard input. (`set_cursor` only moves
+    /// the caret; call this to enter edit mode, e.g. on a click into rendered text.)
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
     }
