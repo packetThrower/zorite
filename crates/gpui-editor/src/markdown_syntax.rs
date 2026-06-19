@@ -350,9 +350,12 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         marker(out, start..p, st.marker);
         i = p;
-    } else if let Some((prefix_len, ..)) = list_prefix(&text[start..end]) {
-        // List item: hide the leading whitespace + marker; a bullet/number is
-        // painted in its place and the body keeps inline styling.
+    } else if let Some(prefix_len) = task_prefix(&text[start..end])
+        .map(|(p, ..)| p)
+        .or_else(|| list_prefix(&text[start..end]).map(|(p, ..)| p))
+    {
+        // List / task item: hide the leading whitespace + marker (+ checkbox); a
+        // bullet/number/box is painted in its place, body keeps inline styling.
         marker(out, start..start + prefix_len, st.marker);
         i = start + prefix_len;
     }
@@ -564,6 +567,24 @@ pub(crate) fn list_prefix(line: &str) -> Option<(usize, usize, bool, u32)> {
     if i > ds && matches!(b.get(i), Some(b'.') | Some(b')')) && b.get(i + 1) == Some(&b' ') {
         let num = line[ds..i].parse::<u32>().unwrap_or(1);
         return Some((i + 2, indent, true, num));
+    }
+    None
+}
+
+/// If `line` is a GFM task item — a list item whose body starts with `[ ]`,
+/// `[x]`, or `[X]` then a space — return `(prefix_len, indent, checked)`, where
+/// `prefix_len` covers the list marker plus the checkbox. The editor hides this
+/// prefix and paints a ☐/☑ box (parity with the reading view).
+pub(crate) fn task_prefix(line: &str) -> Option<(usize, usize, bool)> {
+    let (list_len, indent, ..) = list_prefix(line)?;
+    let rest = &line.as_bytes()[list_len..];
+    if rest.len() >= 4
+        && rest[0] == b'['
+        && rest[2] == b']'
+        && rest[3] == b' '
+        && matches!(rest[1], b' ' | b'x' | b'X')
+    {
+        return Some((list_len + 4, indent, matches!(rest[1], b'x' | b'X')));
     }
     None
 }
@@ -908,5 +929,23 @@ mod tests {
         let (disp, _, map) = hidden_runs("  - hi", &font, c, &[], None, 0, &st);
         assert_eq!(disp, "hi");
         assert_eq!(map[0], 4); // display 0 ('h') ← source 4
+    }
+
+    #[test]
+    fn task_prefix_detection() {
+        assert_eq!(task_prefix("- [ ] todo"), Some((6, 0, false)));
+        assert_eq!(task_prefix("- [x] done"), Some((6, 0, true)));
+        assert_eq!(task_prefix("- [X] done"), Some((6, 0, true)));
+        assert_eq!(task_prefix("  - [ ] nested"), Some((8, 2, false)));
+        // A plain list item is not a task.
+        assert_eq!(task_prefix("- item"), None);
+
+        // The `- [ ] ` prefix hides entirely; body maps back past it.
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+        let (disp, _, map) = hidden_runs("- [x] go", &font, c, &[], None, 0, &st);
+        assert_eq!(disp, "go");
+        assert_eq!(map[0], 6); // display 0 ('g') ← source 6
     }
 }

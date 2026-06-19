@@ -21,13 +21,13 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use gpui::{
-    App, AvailableSpace, Bounds, ClipboardItem, Context, Corners, CursorStyle, Element, ElementId,
-    ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
-    GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding,
-    LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement,
-    Pixels, Point, Render, RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement,
-    Style, Styled, TextRun, UTF16Selection, Window, WrappedLine, actions, div, fill, hsla, point,
-    px, relative, rgb, rgba, size,
+    App, AvailableSpace, BorderStyle, Bounds, ClipboardItem, Context, Corners, CursorStyle, Edges,
+    Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
+    Focusable, Font, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement,
+    KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
+    ParentElement, PathBuilder, Pixels, Point, Render, RenderImage, ScrollHandle, SharedString,
+    StatefulInteractiveElement, Style, Styled, TextRun, UTF16Selection, Window, WrappedLine,
+    actions, div, fill, hsla, point, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -1410,6 +1410,13 @@ enum LineMark {
         num: u32,
         color: Hsla,
     },
+    /// GFM task item: a painted ☐/☑ box at `indent`, muted; the source marker +
+    /// checkbox are hidden and the body inset past the bullet column.
+    Check {
+        indent: Pixels,
+        checked: bool,
+        color: Hsla,
+    },
 }
 
 impl LineMark {
@@ -1417,7 +1424,9 @@ impl LineMark {
     fn inset(self) -> Pixels {
         match self {
             LineMark::Quote(_) => px(QUOTE_INSET),
-            LineMark::List { indent, .. } => indent + px(BULLET_COL),
+            LineMark::List { indent, .. } | LineMark::Check { indent, .. } => {
+                indent + px(BULLET_COL)
+            }
         }
     }
 }
@@ -1673,15 +1682,24 @@ fn shape_document(
         let gutter: Option<(usize, LineMark)> = md
             .filter(|_| !is_code && widget.is_none() && table.is_none())
             .and_then(|st| {
+                let indent_px = |indent: usize| px(indent as f32 * f32::from(fs) * 0.5);
                 if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
                     Some((plen, LineMark::Quote(st.quote)))
+                } else if let Some((plen, indent, checked)) = markdown_syntax::task_prefix(line) {
+                    Some((
+                        plen,
+                        LineMark::Check {
+                            indent: indent_px(indent),
+                            checked,
+                            color: st.quote,
+                        },
+                    ))
                 } else {
                     markdown_syntax::list_prefix(line).map(|(plen, indent, ordered, num)| {
-                        let indent_px = px(indent as f32 * f32::from(fs) * 0.5);
                         (
                             plen,
                             LineMark::List {
-                                indent: indent_px,
+                                indent: indent_px(indent),
                                 ordered,
                                 num,
                                 color: st.quote,
@@ -2334,7 +2352,7 @@ impl Element for EditorElement {
             if let Some(LineMark::Quote(c)) = prepaint.marks.get(i).copied().flatten() {
                 window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), c));
             }
-            // List item: a muted bullet (`•`) or number (`N.`) at the item's
+            // List item: a muted bullet (`•`) or number (`N.`) glyph at the item's
             // indent; the body is inset past it (the source marker is hidden).
             if let Some(LineMark::List {
                 indent,
@@ -2367,6 +2385,36 @@ impl Element for EditorElement {
                     window,
                     cx,
                 );
+            }
+            // Task item: a crisp cap-height box (custom-drawn, not a font glyph so
+            // it reads at the text's size) with a checkmark when done.
+            if let Some(LineMark::Check {
+                indent,
+                checked,
+                color,
+            }) = prepaint.marks.get(i).copied().flatten()
+            {
+                let sz = font_size * 0.78; // ~cap height
+                let bx = origin.x + indent;
+                let by = origin.y + (*lh - sz) / 2.; // vertically centered on the line
+                window.paint_quad(PaintQuad {
+                    bounds: Bounds::new(point(bx, by), size(sz, sz)),
+                    corner_radii: Corners::all(px(3.)),
+                    background: hsla(0., 0., 0., 0.).into(),
+                    border_widths: Edges::all(px(1.5)),
+                    border_color: color,
+                    border_style: BorderStyle::Solid,
+                });
+                if checked {
+                    let s = f32::from(sz);
+                    let mut pb = PathBuilder::stroke(px(1.6));
+                    pb.move_to(point(bx + px(s * 0.24), by + px(s * 0.52)));
+                    pb.line_to(point(bx + px(s * 0.42), by + px(s * 0.70)));
+                    pb.line_to(point(bx + px(s * 0.76), by + px(s * 0.28)));
+                    if let Ok(path) = pb.build() {
+                        window.paint_path(path, color);
+                    }
+                }
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
                 // Table grid row (W4c): cells + borders instead of source.

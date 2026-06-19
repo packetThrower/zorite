@@ -87,7 +87,8 @@ fn main() {
                             Role | Score |\n| :-- | :--: | --: |\n| Ada | Engineer | 99 |\n\
                             | Linus | Kernel | 88 |\n\n> A blockquote, *muted* with a left \
                             border.\n\n- First bullet\n- Second bullet\n  - Nested bullet\n\n\
-                            1. First step\n2. Second step\n\nSpell-check still flags mispelled \
+                            1. First step\n2. Second step\n\n- [x] Done task\n- [ ] Pending \
+                            task\n\nSpell-check still flags mispelled \
                             wrds; right-click one for suggestions.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
