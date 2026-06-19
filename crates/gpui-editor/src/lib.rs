@@ -136,6 +136,10 @@ const QUOTE_INSET: f32 = 14.;
 /// far past the item's indent, leaving room for the painted `•` / `N.` + a gap.
 const BULLET_COL: f32 = 22.;
 
+/// Vertical padding (px) inside a file chip (e.g. a PDF embed), above + below its
+/// label, so the chip box reads as a button rather than a bare line of text.
+const CHIP_PAD: f32 = 5.;
+
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
 #[derive(Clone)]
@@ -178,11 +182,14 @@ struct DiagMenu {
 
 /// Events the editor emits so a host can react. Subscribe with
 /// `cx.subscribe(&editor, …)` — e.g. to re-run spell-check after an edit.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditorEvent {
     /// The document text changed via a user edit (typing, delete, paste, IME,
     /// applying a suggestion). Not emitted for programmatic `set_text`.
     Changed,
+    /// A file chip (e.g. a PDF embed) was left-clicked — the host opens its
+    /// `src`. The chip itself stays in the document; this is a navigation hint.
+    OpenLink(SharedString),
 }
 
 /// Provides replacement suggestions for a flagged word (best first); set by the
@@ -194,6 +201,12 @@ type SuggestFn = Box<dyn Fn(&str) -> Vec<String>>;
 /// [`EditorState::set_block_image_provider`]; the host owns loading + caching and
 /// returns `None` while still decoding / on failure (the line shows raw source).
 type BlockImageFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
+
+/// Classifies an `![](src)` reference as a file chip (e.g. a PDF) rather than an
+/// image, returning its display label. Set via
+/// [`EditorState::set_block_chip_provider`]; the editor renders such a line as a
+/// clickable chip (left-click emits [`EditorEvent::OpenLink`]).
+type BlockChipFn = Box<dyn Fn(&str) -> Option<SharedString>>;
 
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
@@ -251,6 +264,12 @@ pub struct EditorState {
     /// Resolves a standalone image line's `src` to a decoded image for inline
     /// rendering (W4); set by the host via [`Self::set_block_image_provider`].
     block_image: Option<BlockImageFn>,
+    /// Classifies an `![](src)` as a file chip (e.g. a PDF) + its label; set by
+    /// the host via [`Self::set_block_chip_provider`].
+    block_chip: Option<BlockChipFn>,
+    /// Per-logical-line `src` for rows painted as a file chip (from the last
+    /// paint), so a left-click can open it and a right-click can edit it.
+    chip_rows: Vec<Option<SharedString>>,
 }
 
 impl EditorState {
@@ -280,6 +299,8 @@ impl EditorState {
             menu: None,
             suggest: None,
             block_image: None,
+            block_chip: None,
+            chip_rows: Vec::new(),
         }
     }
 
@@ -356,6 +377,17 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
     ) {
         self.block_image = Some(Box::new(provider));
+    }
+
+    /// Install the provider that classifies an `![](src)` reference as a file chip
+    /// (e.g. a PDF) and supplies its label. With it, such lines render as a
+    /// clickable chip when the caret is elsewhere; a left-click emits
+    /// [`EditorEvent::OpenLink`] and a right-click places the caret to edit.
+    pub fn set_block_chip_provider(
+        &mut self,
+        provider: impl Fn(&str) -> Option<SharedString> + 'static,
+    ) {
+        self.block_chip = Some(Box::new(provider));
     }
 
     /// The caret's byte offset into [`Self::text`] (the moving end of any
@@ -638,6 +670,12 @@ impl EditorState {
     // --- Mouse ---------------------------------------------------------------
 
     fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
+        // the host handles the link. Right-click edits (see on_right_mouse_down).
+        if let Some(src) = self.chip_at(event.position) {
+            cx.emit(EditorEvent::OpenLink(src));
+            return;
+        }
         let offset = self.index_for_mouse_position(event.position);
         self.menu = None;
         self.goal_x = None;
@@ -687,9 +725,18 @@ impl EditorState {
     fn on_right_mouse_down(
         &mut self,
         event: &MouseDownEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Right-click a file chip places the caret to edit its source (the line
+        // then reveals raw `![](src)`), instead of opening the spell menu.
+        if self.chip_at(event.position).is_some() {
+            self.menu = None;
+            self.focus(window, cx);
+            let offset = self.index_for_mouse_position(event.position);
+            self.move_to(offset, cx);
+            return;
+        }
         let offset = self.index_for_mouse_position(event.position);
         let anchor = self
             .last_bounds
@@ -928,6 +975,25 @@ impl EditorState {
     fn select_word_right(&mut self, _: &SelectWordRight, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
         self.select_to(self.next_word(self.cursor_offset()), cx);
+    }
+
+    /// The `src` of a file chip on the row at window `position`, if that row is a
+    /// chip (from the last paint) — left-click opens it, right-click edits.
+    fn chip_at(&self, position: Point<Pixels>) -> Option<SharedString> {
+        if self.wrapped.is_empty() || self.chip_rows.iter().all(Option::is_none) {
+            return None;
+        }
+        let bounds = self.last_bounds.as_ref()?;
+        let rel_y = position.y - bounds.top();
+        let mut row = self.wrapped.len() - 1;
+        for i in 0..self.wrapped.len() {
+            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            if rel_y < self.line_tops[i] + h {
+                row = i;
+                break;
+            }
+        }
+        self.chip_rows.get(row).and_then(Option::clone)
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -1366,6 +1432,32 @@ struct BlockImg {
     height: Pixels,
 }
 
+/// A line rendered as a block widget instead of its source text: a standalone
+/// image, or a clickable file chip (e.g. a PDF — left-click opens it, right-click
+/// edits). Shown only while the caret is off the line ("raw on caret").
+#[derive(Clone)]
+enum Block {
+    Image(BlockImg),
+    Chip {
+        src: SharedString,
+        label: SharedString,
+        /// Label color (accent, signalling clickable), box fill, box border.
+        link: Hsla,
+        bg: Hsla,
+        border: Hsla,
+        height: Pixels,
+    },
+}
+
+impl Block {
+    fn height(&self) -> Pixels {
+        match self {
+            Block::Image(i) => i.height,
+            Block::Chip { height, .. } => *height,
+        }
+    }
+}
+
 /// A fenced-code-block line's background (W4b/refinement): the block reads as one
 /// rounded, content-fit box (sized to its widest line, like a table — not the
 /// full editor width). Each line carries the block color, the shared box width
@@ -1438,7 +1530,7 @@ impl LineMark {
 type ShapedLines = (
     Vec<WrappedLine>,
     Vec<Pixels>,
-    Vec<Option<BlockImg>>,
+    Vec<Option<Block>>,
     Vec<Option<CodeBg>>,
     Vec<Option<TableRow>>,
     // Per-line display→source byte map for lines with markers hidden (W6); `None`
@@ -1531,6 +1623,7 @@ fn shape_document(
     wrap_width: Option<Pixels>,
     caret_row: Option<usize>,
     block_image: Option<&BlockImageFn>,
+    block_chip: Option<&BlockChipFn>,
     scale_factor: f32,
     // The selected byte range; a line it touches keeps full source (markers
     // shown), the rest hide their markers (W6, reveal-on-caret).
@@ -1617,15 +1710,29 @@ fn shape_document(
             base_font_size * md.map_or(1.0, |_| markdown_syntax::line_scale(line))
         };
 
-        // Inline image (non-code): a standalone image line that isn't the caret's
-        // line and has a decoded image renders as that image, fit to width.
-        let widget = if !is_code
-            && md.is_some()
+        // Block widget (non-code): a standalone `![](src)` line that isn't the
+        // caret's renders as a file chip (if the host classifies `src` as one,
+        // e.g. a PDF) or else its decoded image, fit to width.
+        let widget: Option<Block> = if !is_code
             && Some(idx) != caret_row
+            && let Some(st) = md
             && let Some((src, w_attr)) = markdown_syntax::image_line(line)
-            && let Some(img) = block_image.and_then(|f| f(src))
         {
-            block_img(img, w_attr, wrap_width, scale_factor)
+            if let Some(label) = block_chip.and_then(|f| f(src)) {
+                Some(Block::Chip {
+                    src: src.into(),
+                    label,
+                    link: st.link,
+                    bg: st.code_bg,
+                    border: st.marker,
+                    height: fs * LINE_HEIGHT_RATIO + px(CHIP_PAD * 2.),
+                })
+            } else {
+                block_image
+                    .and_then(|f| f(src))
+                    .and_then(|img| block_img(img, w_attr, wrap_width, scale_factor))
+                    .map(Block::Image)
+            }
         } else {
             None
         };
@@ -1658,9 +1765,14 @@ fn shape_document(
         // caret sits in is revealed (per-construct reveal, #5: finer than the old
         // whole-line reveal, so the rest of the line stays rendered).
         let sel_empty = selection.0 == selection.1;
-        let full_source = !sel_empty && selection.0 <= line_end && selection.1 >= line_start;
         let caret_col = (sel_empty && selection.0 >= line_start && selection.0 <= line_end)
             .then(|| selection.0 - line_start);
+        // An `![](src)` line (image/chip candidate) shows full raw source while the
+        // caret is on it, so editing reveals the whole `![](src)` rather than the
+        // per-construct view (where the caret at the `!` would hide the link).
+        let widget_line = md.is_some() && markdown_syntax::image_line(line).is_some();
+        let full_source = (!sel_empty && selection.0 <= line_end && selection.1 >= line_start)
+            || (caret_col.is_some() && widget_line);
         // This line's diagnostics, clipped + shifted to line-local byte offsets —
         // used as spell-check squiggles whether the line shows source or hides its
         // markers.
@@ -1797,7 +1909,9 @@ fn shape_document(
                 match &table {
                     Some(t) if t.is_separator => table_sep_h,
                     Some(_) => table_row_h,
-                    None => widget.as_ref().map_or(fs * LINE_HEIGHT_RATIO, |w| w.height),
+                    None => widget
+                        .as_ref()
+                        .map_or(fs * LINE_HEIGHT_RATIO, Block::height),
                 }
             };
             let line_w = wl.width();
@@ -1830,6 +1944,56 @@ fn shape_document(
         }
     }
     (wrapped, heights, widgets, backgrounds, tables, maps, marks)
+}
+
+/// Paint a file chip — a rounded, bordered button with a 📄 icon + `label` —
+/// filling the row (sized in `shape_document` to include vertical padding), its
+/// width fit to the label. Left-click opens it, right-click edits (handled by the
+/// mouse handlers via `chip_rows`).
+#[allow(clippy::too_many_arguments)]
+fn paint_chip(
+    label: &str,
+    link: Hsla,
+    bg: Hsla,
+    border: Hsla,
+    origin: Point<Pixels>,
+    row_h: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let text = SharedString::from(format!("📄  {label}"));
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color: link,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped = window
+        .text_system()
+        .shape_line(text, font_size, &[run], None);
+    let pad_x = px(10.);
+    let box_w = shaped.width() + pad_x * 2.;
+    window.paint_quad(PaintQuad {
+        bounds: Bounds::new(origin, size(box_w, row_h)),
+        corner_radii: Corners::all(px(6.)),
+        background: bg.into(),
+        border_widths: Edges::all(px(1.)),
+        border_color: border,
+        border_style: BorderStyle::Solid,
+    });
+    let line_h = font_size * LINE_HEIGHT_RATIO;
+    let _ = shaped.paint(
+        point(origin.x + pad_x, origin.y + (row_h - line_h) / 2.),
+        line_h,
+        gpui::TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
 }
 
 /// Content-fit column widths for a table region (W4c): each column sized to its
@@ -1995,7 +2159,7 @@ struct PrepaintState {
     /// Per-logical-line wrap-row height (variable for headings + images).
     line_heights: Vec<Pixels>,
     /// `Some` for a line painted as an inline image instead of its source text.
-    widgets: Vec<Option<BlockImg>>,
+    widgets: Vec<Option<Block>>,
     /// Per-line fenced-code-block background (rounded full-width box).
     backgrounds: Vec<Option<CodeBg>>,
     /// `Some` for a line painted as a table-grid row instead of source.
@@ -2078,6 +2242,7 @@ impl Element for EditorElement {
                     wrap_width,
                     Some(caret_row),
                     editor.block_image.as_ref(),
+                    editor.block_chip.as_ref(),
                     sf,
                     (editor.selected_range.start, editor.selected_range.end),
                 );
@@ -2151,6 +2316,7 @@ impl Element for EditorElement {
                     wrap_width,
                     Some(caret_row),
                     editor.block_image.as_ref(),
+                    editor.block_chip.as_ref(),
                     sf,
                     (editor.selected_range.start, editor.selected_range.end),
                 )
@@ -2421,10 +2587,22 @@ impl Element for EditorElement {
                 paint_table_row(
                     t, origin, *lh, &font, font_size, base_lh, text_color, window, cx,
                 );
-            } else if let Some(w) = prepaint.widgets.get(i).and_then(Option::as_ref) {
+            } else if let Some(Block::Image(w)) = prepaint.widgets.get(i).and_then(Option::as_ref) {
                 // Inline image (W4a): paint the decoded image instead of source.
                 let img_bounds = Bounds::new(origin, size(w.width, w.height));
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
+            } else if let Some(Block::Chip {
+                label,
+                link,
+                bg,
+                border,
+                ..
+            }) = prepaint.widgets.get(i).and_then(Option::as_ref)
+            {
+                // File chip (e.g. a PDF embed): a rounded button with the label.
+                paint_chip(
+                    label, *link, *bg, *border, origin, *lh, &font, font_size, window, cx,
+                );
             } else {
                 // Code blocks + gutter marks inset their text (kept in sync with
                 // `EditorState::line_inset` / the fresh prepaint inset).
@@ -2469,12 +2647,21 @@ impl Element for EditorElement {
             .zip(prepaint.marks.iter())
             .map(|(bg, mark)| row_inset(*bg, *mark))
             .collect();
+        let chip_rows: Vec<Option<SharedString>> = prepaint
+            .widgets
+            .iter()
+            .map(|w| match w {
+                Some(Block::Chip { src, .. }) => Some(src.clone()),
+                _ => None,
+            })
+            .collect();
         self.editor.update(cx, |editor, _| {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
             editor.line_heights = line_heights;
             editor.widget_rows = widget_rows;
             editor.offset_maps = offset_maps;
+            editor.chip_rows = chip_rows;
             editor.line_insets = line_insets;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;

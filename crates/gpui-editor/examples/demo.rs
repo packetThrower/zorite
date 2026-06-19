@@ -9,8 +9,8 @@
 
 use gpui::{
     App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, KeyBinding, ParentElement,
-    Render, Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div, font, hsla,
-    px, rgb, size,
+    Render, SharedString, Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div,
+    font, hsla, px, rgb, size,
 };
 use gpui_editor::{Diagnostic, EditorEvent, EditorState, SyntaxStyle};
 use spellcheck::SpellChecker;
@@ -88,7 +88,7 @@ fn main() {
                             | Linus | Kernel | 88 |\n\n> A blockquote, *muted* with a left \
                             border.\n\n- First bullet\n- Second bullet\n  - Nested bullet\n\n\
                             1. First step\n2. Second step\n\n- [x] Done task\n- [ ] Pending \
-                            task\n\nSpell-check still flags mispelled \
+                            task\n\n![](docs/report.pdf)\n\nSpell-check still flags mispelled \
                             wrds; right-click one for suggestions.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
@@ -102,15 +102,24 @@ fn main() {
                 editor.update(cx, |editor, cx| {
                     editor.on_suggest(|word| SpellChecker::new().suggestions(word));
                     editor.set_markdown_style(demo_markdown_style(), cx);
+                    // Treat a `![](*.pdf)` as a clickable chip (label = file name).
+                    editor.set_block_chip_provider(|src| {
+                        src.ends_with(".pdf")
+                            .then(|| SharedString::from(src.rsplit('/').next().unwrap_or(src)))
+                    });
                     editor.set_diagnostics(diagnostics_for(text), cx);
                 });
 
-                // Re-check on every edit.
+                // Re-check on every edit; log chip opens.
                 let editor_handle = editor.clone();
                 cx.new(|cx| {
                     let _spell_sub = cx.subscribe(
                         &editor_handle,
-                        |_demo: &mut Demo, editor, _: &EditorEvent, cx| {
+                        |_demo: &mut Demo, editor, event: &EditorEvent, cx| {
+                            if let EditorEvent::OpenLink(src) = event {
+                                eprintln!("open link: {src}");
+                                return;
+                            }
                             let text = editor.read(cx).text().to_string();
                             let diagnostics = diagnostics_for(&text);
                             editor.update(cx, |editor, cx| editor.set_diagnostics(diagnostics, cx));

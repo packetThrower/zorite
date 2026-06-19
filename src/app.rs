@@ -701,6 +701,11 @@ impl AppView {
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                     this.schedule_spellcheck(st.clone(), cx);
                 }
+                EditorEvent::OpenLink(src) => {
+                    if let Some(path) = crate::pdf::resolve_path(src) {
+                        this.open_pdf(path, window, cx);
+                    }
+                }
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -1415,6 +1420,11 @@ impl AppView {
                     }
                     this.update_slash(SlashTarget::Page(pid), cx);
                     this.schedule_spellcheck(st.clone(), cx);
+                }
+                EditorEvent::OpenLink(src) => {
+                    if let Some(path) = crate::pdf::resolve_path(src) {
+                        this.open_pdf(path, window, cx);
+                    }
                 }
             },
         );
@@ -5473,6 +5483,16 @@ fn make_editor(
         // Inline images (W4): resolve a standalone image's src to its decoded
         // bitmap from the shared store (None until decoding finishes / on fail).
         editor.set_block_image_provider(move |src| image_store.borrow().get(src));
+        // A `![](file.pdf)` renders as a clickable chip (label = file name) that
+        // opens the PDF viewer on click — matching the reading view.
+        editor.set_block_chip_provider(|src| {
+            crate::pdf::is_pdf(src).then(|| {
+                crate::pdf::resolve_path(src)
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| src.to_string())
+                    .into()
+            })
+        });
         editor
     });
     // Live-preview markdown styling when WYSIWYG is on — mirrors the rendered
