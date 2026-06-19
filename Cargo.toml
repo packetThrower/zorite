@@ -26,6 +26,14 @@ gpui-pdf = { path = "crates/gpui-pdf", features = ["markup", "search"] }
 # Our own infinite-canvas whiteboard, a host-agnostic workspace crate.
 gpui-whiteboard = { path = "crates/gpui-whiteboard" }
 
+# Our from-scratch text editor — replaces gpui-component's Input across the note
+# body editors (native spell-check + custom menus). A workspace crate.
+gpui-editor = { path = "crates/gpui-editor" }
+
+# Native OS spell-check (NSSpellChecker / ISpellChecker), feeding the editor's
+# diagnostics; a no-op on Linux. A workspace crate.
+spellcheck = { path = "crates/spellcheck" }
+
 # Mermaid diagrams: a pure-Rust mermaid → SVG renderer (zed-industries — the
 # same crate Zed's markdown preview uses; no JS/Node). We rasterize its SVG to a
 # `gpui::RenderImage` via `cx.svg_renderer()` and cache it like a note image. Git
