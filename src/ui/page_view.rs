@@ -69,10 +69,12 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .min_h(relative(1.0))
                         .child(page_title(pe))
                         .child(if app.is_page_editing() {
-                            Input::new(&pe.state)
-                                .appearance(false)
+                            // gpui-editor draws no chrome; the wrapper sets the
+                            // ambient text style it inherits when shaping lines.
+                            div()
                                 .text_size(px(16.0))
                                 .text_color(theme::text_primary())
+                                .child(pe.state.clone())
                                 .into_any_element()
                         } else {
                             page_rendered(app, pe, cx).into_any_element()

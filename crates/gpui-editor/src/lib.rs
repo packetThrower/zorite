@@ -108,6 +108,12 @@ pub fn bind_keys(cx: &mut App) {
 /// Cap on undo history (full snapshots) to bound memory.
 const UNDO_LIMIT: usize = 256;
 
+/// Line height as a multiple of the font size. Derived from the editor's own
+/// font (not the ambient `window.line_height()`, which tracks the host's UI text
+/// style and would leave the caret/rows mismatched against differently-sized
+/// editor text). 1.25 matches the spacing the editor replaced.
+const LINE_HEIGHT_RATIO: f32 = 1.25;
+
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
 #[derive(Clone)]
@@ -299,6 +305,39 @@ impl EditorState {
             point(bounds.left() + p.x, top),
             point(bounds.left() + p.x, top + self.line_height),
         ))
+    }
+
+    // --- gpui-component `Input` compatibility shims --------------------------
+    // Thin bridges over the canonical text()/set_text()/bounds_for_offset() so a
+    // host migrating off gpui-component's Input can keep its call-site shapes.
+
+    /// The document text as an owned [`SharedString`]. See [`Self::text`].
+    pub fn value(&self) -> SharedString {
+        self.content.clone().into()
+    }
+
+    /// Replace all text; the `window` argument is ignored (kept only so call
+    /// sites that passed a window to `InputState::set_value` need not change).
+    /// See [`Self::set_text`].
+    pub fn set_value(
+        &mut self,
+        content: impl Into<String>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_text(content, cx);
+    }
+
+    /// Caret bounds at `range.start`. See [`Self::bounds_for_offset`].
+    pub fn range_to_bounds(&self, range: &Range<usize>) -> Option<Bounds<Pixels>> {
+        self.bounds_for_offset(range.start)
+    }
+
+    /// Focus the editor (so it receives keyboard input). Matches the shape of
+    /// `InputState::focus`; `set_cursor` does NOT focus, so call this to enter
+    /// edit mode (e.g. on a click into rendered text).
+    pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
     }
 
     /// Keep diagnostics valid across an edit at `edited` (the replaced byte
@@ -1307,7 +1346,7 @@ impl Element for EditorElement {
             let content: SharedString = editor.read(cx).content.clone().into();
             let text_style = window.text_style();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
-            let lh = window.line_height();
+            let lh = font_size * LINE_HEIGHT_RATIO;
             let wrap_width = match available.width {
                 AvailableSpace::Definite(w) => Some(w),
                 _ => known.width,
@@ -1342,7 +1381,7 @@ impl Element for EditorElement {
         let editor = self.editor.read(cx);
         let style = window.text_style();
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let lh = window.line_height();
+        let lh = font_size * LINE_HEIGHT_RATIO;
         let wrap_width = Some(bounds.size.width);
         let text_color = style.color;
 
@@ -1479,7 +1518,8 @@ impl Element for EditorElement {
             window.paint_quad(sel);
         }
 
-        let lh = window.line_height();
+        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
+        let lh = font_size * LINE_HEIGHT_RATIO;
         for (line, top) in prepaint.wrapped.iter().zip(prepaint.line_tops.iter()) {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
             let _ = line.paint(origin, lh, gpui::TextAlign::Left, None, window, cx);

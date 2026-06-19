@@ -7,8 +7,8 @@ use gpui::{
     MouseButton, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, div,
     prelude::FluentBuilder as _, px,
 };
-use gpui_component::input::{Input, InputState};
 use gpui_component::menu::ContextMenuExt;
+use gpui_editor::EditorState;
 
 use crate::actions::EditNote;
 use crate::app::{self, AppView};
@@ -56,7 +56,7 @@ fn day_section(
     app: &AppView,
     i: usize,
     date: &str,
-    state: &Entity<InputState>,
+    state: &Entity<EditorState>,
     day_min: Pixels,
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
@@ -69,10 +69,12 @@ fn day_section(
         .child(app::date_label(i));
 
     let body = if app.is_editing_day(date) {
-        Input::new(state)
-            .appearance(false)
+        // gpui-editor has no chrome of its own; the wrapper sets the ambient
+        // text style (size/color) the editor inherits when it shapes lines.
+        div()
             .text_size(px(16.0))
             .text_color(theme::text_primary())
+            .child(state.clone())
             .into_any_element()
     } else {
         rendered_day(app, i, date, state.read(cx).value(), cx).into_any_element()

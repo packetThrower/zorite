@@ -18,19 +18,20 @@ use std::rc::Rc;
 
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle,
-    Entity, EventEmitter, FocusHandle, Global, ImageFormat, InteractiveElement, IntoElement,
-    MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render, ScrollHandle,
-    SharedString, StatefulInteractiveElement, Styled, Subscription, TitlebarOptions, WeakEntity,
-    Window, WindowAppearance, WindowBounds, WindowDecorations, WindowHandle, WindowOptions, div,
-    point, px, size,
+    Entity, EventEmitter, FocusHandle, Focusable, Global, ImageFormat, InteractiveElement,
+    IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
+    TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds, WindowDecorations,
+    WindowHandle, WindowOptions, div, point, px, size,
 };
 use gpui_component::{
-    Root, RopeExt, TitleBar, WindowExt,
+    Root, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants},
     calendar::{Calendar, CalendarEvent, CalendarState},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
 };
+use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
     CloseTab, DeletePage, EditNote, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab,
@@ -163,9 +164,9 @@ impl Render for TabDrag {
     }
 }
 
-/// A journal day's editor + the subscription saving its edits.
+/// A journal day's editor + the subscriptions saving its edits.
 pub struct DayEditor {
-    pub state: Entity<InputState>,
+    pub state: Entity<EditorState>,
     /// Tracks the day's rendered-markdown root bounds (the slot the editor
     /// takes over in edit mode) — the anchor for click-to-caret's scroll math.
     pub md_scroll: ScrollHandle,
@@ -173,6 +174,9 @@ pub struct DayEditor {
     /// bracket/quote insertions for auto-pairing.
     prev: String,
     _sub: Subscription,
+    /// gpui-editor has no Focus/Blur events, so we listen on its focus handle.
+    _focus_sub: Subscription,
+    _blur_sub: Subscription,
 }
 
 /// The currently-open named/journal page in `View::Page`.
@@ -187,10 +191,13 @@ pub struct PageEditor {
     /// Enter/blur. Replaces typing an `alias::` property in the body.
     pub alias_state: Entity<InputState>,
     pub is_journal: bool,
-    pub state: Entity<InputState>,
+    pub state: Entity<EditorState>,
     /// Last-change text snapshot for auto-pair detection (see `DayEditor::prev`).
     prev: String,
     _sub: Subscription,
+    /// gpui-editor has no Focus/Blur events, so we listen on its focus handle.
+    _focus_sub: Subscription,
+    _blur_sub: Subscription,
     _title_sub: Subscription,
     _alias_sub: Subscription,
     pub backlinks: Vec<Backlink>,
@@ -346,6 +353,12 @@ pub struct AppView {
     pub search: crate::search::Results,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
+    /// Debounced spell-check for the focused body editor; replacing it cancels
+    /// the prior pending run so we don't hit the OS spell service per keystroke.
+    spell_task: Option<Task<()>>,
+    /// Debounced cross-window "document changed" signal, so the feed-reloading
+    /// `apply_external_edit` doesn't run on every keystroke (only after idle).
+    signal_task: Option<Task<()>>,
     /// Templates parsed from the reserved `Templates` page.
     templates: Vec<Template>,
     /// The page (id + title) targeted by an open right-click context menu,
@@ -541,6 +554,8 @@ impl AppView {
             collapsed_sections: HashSet::new(),
             search: crate::search::Results::default(),
             slash: None,
+            spell_task: None,
+            signal_task: None,
             templates: Vec::new(),
             context_page: None,
             context_edit: None,
@@ -645,35 +660,51 @@ impl AppView {
         let sub = cx.subscribe_in(
             &state,
             window,
-            move |this: &mut AppView, st, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => {
-                    // Auto-pair first; if it inserted a closer, the resulting
-                    // change re-enters here to save + refresh the menu.
-                    if this.maybe_autopair(&SlashTarget::Day(key.clone()), window, cx) {
-                        return;
+            move |this: &mut AppView, st, ev: &EditorEvent, window, cx| match ev {
+                EditorEvent::Changed => {
+                    // Auto-pair may rewrite the text and save directly; only save
+                    // here if it didn't. Always refresh the slash menu.
+                    if !this.maybe_autopair(&SlashTarget::Day(key.clone()), window, cx) {
+                        let value = st.read(cx).text().to_string();
+                        this.save_journal(&key, &value, cx);
                     }
-                    let value = st.read(cx).value().to_string();
-                    this.save_journal(&key, &value, cx);
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
+                    this.schedule_spellcheck(st.clone(), cx);
                 }
-                InputEvent::Focus => {
-                    this.editing_day = Some(key.clone());
-                    cx.notify();
-                }
-                InputEvent::Blur => {
-                    if this.editing_day.as_deref() == Some(key.as_str()) {
-                        this.editing_day = None;
-                    }
-                    this.slash = None;
-                    let value = st.read(cx).value().to_string();
-                    this.flush_journal(&key, &value);
-                    // Link re-index changed backlinks elsewhere — sync windows.
-                    this.signal_doc_changed(cx);
-                    cx.notify();
-                }
-                _ => {}
             },
         );
+        // gpui-editor has no Focus/Blur events; listen on its focus handle.
+        let handle = state.read(cx).focus_handle(cx);
+        let weak = cx.entity().downgrade();
+        let fkey = date.clone();
+        let fstate = state.clone();
+        let focus_sub = window.on_focus_in(&handle, cx, move |_window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                this.editing_day = Some(fkey.clone());
+                // Spell-check on entering edit mode so existing misspellings show.
+                let diags = spell_diagnostics(fstate.read(cx).text());
+                fstate.update(cx, |ed, cx| ed.set_diagnostics(diags, cx));
+                cx.notify();
+            })
+            .ok();
+        });
+        let weak = cx.entity().downgrade();
+        let bkey = date.clone();
+        let bstate = state.clone();
+        let blur_sub = window.on_focus_out(&handle, cx, move |_ev, _window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                if this.editing_day.as_deref() == Some(bkey.as_str()) {
+                    this.editing_day = None;
+                }
+                this.slash = None;
+                let value = bstate.read(cx).text().to_string();
+                this.flush_journal(&bkey, &value);
+                // Link re-index changed backlinks elsewhere — sync windows.
+                this.signal_doc_changed(cx);
+                cx.notify();
+            })
+            .ok();
+        });
         self.day_editors.insert(
             date,
             DayEditor {
@@ -681,6 +712,8 @@ impl AppView {
                 state,
                 md_scroll: ScrollHandle::new(),
                 _sub: sub,
+                _focus_sub: focus_sub,
+                _blur_sub: blur_sub,
             },
         );
     }
@@ -728,13 +761,27 @@ impl AppView {
         if let Err(e) = self.db.set_page_content(id, content) {
             log::error!("save page {id}: {e}");
         }
-        self.signal_doc_changed(cx);
+        self.schedule_doc_signal(cx);
     }
 
     /// Notify every window (including this one) that content changed, so each
     /// reloads any now-stale journal days / active page from the shared database.
     fn signal_doc_changed(&self, cx: &mut Context<Self>) {
         self.doc_signal.update(cx, |_, cx| cx.emit(DocChanged));
+    }
+
+    /// Debounced [`Self::signal_doc_changed`]: per-keystroke saves still hit the
+    /// DB immediately, but the cross-window refresh (which reloads the feed and
+    /// re-renders it via `apply_external_edit`) coalesces to one run after a
+    /// short idle — so typing doesn't re-render the whole journal each key. Blur
+    /// signals immediately for a prompt final sync.
+    fn schedule_doc_signal(&mut self, cx: &mut Context<Self>) {
+        self.signal_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(300))
+                .await;
+            let _ = this.update(cx, |this, cx| this.signal_doc_changed(cx));
+        }));
     }
 
     /// Reload stale content after another window saved: refresh changed journal
@@ -1328,35 +1375,50 @@ impl AppView {
         let sub = cx.subscribe_in(
             &state,
             window,
-            move |this: &mut AppView, st, ev: &InputEvent, window, cx| match ev {
-                InputEvent::Change => {
-                    if this.maybe_autopair(&SlashTarget::Page(pid), window, cx) {
-                        return;
-                    }
+            move |this: &mut AppView, st, ev: &EditorEvent, window, cx| match ev {
+                EditorEvent::Changed => {
+                    // Auto-pair may rewrite + save directly; otherwise save here.
                     // Content only; link re-indexing happens on blur.
-                    let value = st.read(cx).value().to_string();
-                    this.save_page_content(pid, &value, cx);
+                    if !this.maybe_autopair(&SlashTarget::Page(pid), window, cx) {
+                        let value = st.read(cx).text().to_string();
+                        this.save_page_content(pid, &value, cx);
+                    }
                     this.update_slash(SlashTarget::Page(pid), cx);
+                    this.schedule_spellcheck(st.clone(), cx);
                 }
-                InputEvent::Focus => {
-                    this.page_editing = true;
-                    // Editing replaces the rendered view (where matches highlight),
-                    // so the find bar no longer applies.
-                    this.page_find = None;
-                    cx.notify();
-                }
-                InputEvent::Blur => {
-                    this.page_editing = false;
-                    this.slash = None;
-                    let value = st.read(cx).value().to_string();
-                    this.persist(pid, &value);
-                    this.refresh_sidebar();
-                    this.signal_doc_changed(cx);
-                    cx.notify();
-                }
-                _ => {}
             },
         );
+        // gpui-editor has no Focus/Blur events; listen on its focus handle.
+        let handle = state.read(cx).focus_handle(cx);
+        let weak = cx.entity().downgrade();
+        let fstate = state.clone();
+        let focus_sub = window.on_focus_in(&handle, cx, move |_window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                this.page_editing = true;
+                // Editing replaces the rendered view (where matches highlight),
+                // so the find bar no longer applies.
+                this.page_find = None;
+                // Spell-check on entering edit mode so existing misspellings show.
+                let diags = spell_diagnostics(fstate.read(cx).text());
+                fstate.update(cx, |ed, cx| ed.set_diagnostics(diags, cx));
+                cx.notify();
+            })
+            .ok();
+        });
+        let weak = cx.entity().downgrade();
+        let bstate = state.clone();
+        let blur_sub = window.on_focus_out(&handle, cx, move |_ev, _window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                this.page_editing = false;
+                this.slash = None;
+                let value = bstate.read(cx).text().to_string();
+                this.persist(pid, &value);
+                this.refresh_sidebar();
+                this.signal_doc_changed(cx);
+                cx.notify();
+            })
+            .ok();
+        });
         let backlinks = self.db.backlinks(pid).unwrap_or_default();
 
         // Inline-editable title: renames the page on Enter or blur.
@@ -1401,6 +1463,8 @@ impl AppView {
             state,
             prev: page.content,
             _sub: sub,
+            _focus_sub: focus_sub,
+            _blur_sub: blur_sub,
             _title_sub: title_sub,
             _alias_sub: alias_sub,
             backlinks,
@@ -1497,8 +1561,9 @@ impl AppView {
     fn update_slash(&mut self, target: SlashTarget, cx: &mut Context<Self>) {
         let editor = self.editor_for(&target);
         let Some(editor) = editor else {
-            self.slash = None;
-            cx.notify();
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
             return;
         };
         let (value, cursor) = {
@@ -1506,13 +1571,15 @@ impl AppView {
             (s.value().to_string(), s.cursor())
         };
         let Some((trigger, start, query)) = slash::detect(&value, cursor) else {
-            self.slash = None;
-            cx.notify();
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
             return;
         };
         let Some(caret) = editor.read(cx).range_to_bounds(&(start..start)) else {
-            self.slash = None;
-            cx.notify();
+            if self.slash.take().is_some() {
+                cx.notify();
+            }
             return;
         };
         // Only the slash menu has submenu levels; carry the level forward only
@@ -1546,6 +1613,22 @@ impl AppView {
             items,
         });
         cx.notify();
+    }
+
+    /// Debounced spell-check for a body editor: re-run after a short idle so we
+    /// don't do an OS spell-service round-trip on every keystroke. Replacing
+    /// `spell_task` cancels any still-pending run.
+    fn schedule_spellcheck(&mut self, editor: Entity<EditorState>, cx: &mut Context<Self>) {
+        self.spell_task = Some(cx.spawn(async move |_this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(250))
+                .await;
+            editor.update(cx, |editor, cx| {
+                let text = editor.text().to_string();
+                let diags = spell_diagnostics(&text);
+                editor.set_diagnostics(diags, cx);
+            });
+        }));
     }
 
     fn slash_title(&self, target: &SlashTarget) -> String {
@@ -1689,7 +1772,7 @@ impl AppView {
     fn apply_editor_edit(
         &mut self,
         target: &SlashTarget,
-        editor: &Entity<InputState>,
+        editor: &Entity<EditorState>,
         new: String,
         caret: usize,
         window: &mut Window,
@@ -1697,8 +1780,7 @@ impl AppView {
     ) {
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
-            let pos = st.text().offset_to_position(caret.min(new.len()));
-            st.set_cursor_position(pos, window, cx);
+            st.set_cursor(caret, cx);
         });
         match target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
@@ -1737,8 +1819,7 @@ impl AppView {
         let caret_off = start + caret;
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
-            let pos = st.text().offset_to_position(caret_off);
-            st.set_cursor_position(pos, window, cx);
+            st.set_cursor(caret_off, cx);
         });
         match &s.target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
@@ -1747,7 +1828,7 @@ impl AppView {
         cx.notify();
     }
 
-    fn editor_for(&self, target: &SlashTarget) -> Option<Entity<InputState>> {
+    fn editor_for(&self, target: &SlashTarget) -> Option<Entity<EditorState>> {
         match target {
             SlashTarget::Day(d) => self.day_editors.get(d).map(|de| de.state.clone()),
             SlashTarget::Page(_) => self.page_editor.as_ref().map(|pe| pe.state.clone()),
@@ -1781,8 +1862,7 @@ impl AppView {
         };
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
-            let pos = st.text().offset_to_position(caret.min(new.len()));
-            st.set_cursor_position(pos, window, cx);
+            st.set_cursor(caret, cx);
         });
         match &target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
@@ -2939,8 +3019,7 @@ impl AppView {
         let new = format!("{before}{snippet}{after}");
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
-            let p = st.text().offset_to_position(caret.min(new.len()));
-            st.set_cursor_position(p, window, cx);
+            st.set_cursor(caret, cx);
         });
         match target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
@@ -3074,8 +3153,7 @@ impl AppView {
         };
         editor.update(cx, |st, cx| {
             st.set_value(new.clone(), window, cx);
-            let pos = st.text().offset_to_position(caret);
-            st.set_cursor_position(pos, window, cx);
+            st.set_cursor(caret, cx);
         });
         self.set_autopair_prev(target, new.clone());
         match target {
@@ -3148,8 +3226,10 @@ impl AppView {
         let editor = de.state.clone();
         let source = editor.read(cx).value().to_string();
         let off = clamp_to_boundary(&source, offset);
-        let pos = offset_to_position(&source, off);
-        editor.update(cx, |s, cx| s.set_cursor_position(pos, window, cx));
+        editor.update(cx, |s, cx| {
+            s.set_cursor(off, cx);
+            s.focus(window, cx);
+        });
         // Same predict-then-jump as `edit_page_at_offset`, anchored on this day's
         // markdown root (the editor takes over its slot in the day section).
         let slot = de.md_scroll.bounds();
@@ -3209,8 +3289,10 @@ impl AppView {
         let editor = pe.state.clone();
         let source = editor.read(cx).value().to_string();
         let off = clamp_to_boundary(&source, offset);
-        let pos = offset_to_position(&source, off);
-        editor.update(cx, |s, cx| s.set_cursor_position(pos, window, cx));
+        editor.update(cx, |s, cx| {
+            s.set_cursor(off, cx);
+            s.focus(window, cx);
+        });
         // The source layout is more compact than the rendered one, so keeping the
         // scroll offset would let the clicked line slide away from the cursor.
         // Predict the caret's position from the still-painted rendered frame (the
@@ -3255,10 +3337,10 @@ impl AppView {
     }
 
     /// Focus `editor` with the caret on a trailing blank line, appending a
-    /// newline first when the content doesn't already end with one. The append
-    /// runs through `set_value`, so the editor's change handler persists it.
+    /// newline first when the content doesn't already end with one. The appended
+    /// newline persists on the next edit or on blur.
     fn focus_editor_at_end(
-        editor: &Entity<InputState>,
+        editor: &Entity<EditorState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3268,8 +3350,7 @@ impl AppView {
                 st.set_value(format!("{value}\n"), window, cx);
             }
             let end = st.text().len();
-            let pos = st.text().offset_to_position(end);
-            st.set_cursor_position(pos, window, cx);
+            st.set_cursor(end, cx);
             st.focus(window, cx);
         });
     }
@@ -4377,7 +4458,7 @@ impl AppView {
     fn on_fit_images(&mut self, _: &FitImages, window: &mut Window, cx: &mut Context<Self>) {
         // Collect (target, editor, max-width) up front so the write loop doesn't
         // borrow `self` while it also mutates it.
-        let mut targets: Vec<(SlashTarget, Entity<InputState>, i64)> = Vec::new();
+        let mut targets: Vec<(SlashTarget, Entity<EditorState>, i64)> = Vec::new();
         match self.tabs.get(self.active).map(|t| t.kind.clone()) {
             Some(TabKind::Page(id)) => {
                 if let Some(pe) = self.page_editor.as_ref() {
@@ -5042,25 +5123,15 @@ fn clamp_to_boundary(source: &str, offset: usize) -> usize {
     offset
 }
 
-/// Convert a source byte `offset` into the editor's `(line, char-column)` Position
-/// (0-based; column counts characters, per gpui-component). Clamps to the source
-/// length and snaps to a char boundary.
-fn offset_to_position(source: &str, offset: usize) -> gpui_component::input::Position {
-    let offset = clamp_to_boundary(source, offset);
-    let line = source[..offset].bytes().filter(|&b| b == b'\n').count() as u32;
-    let line_start = source[..offset].rfind('\n').map_or(0, |i| i + 1);
-    let column = source[line_start..offset].chars().count() as u32;
-    gpui_component::input::Position::new(line, column)
-}
-
-/// Layout constants of gpui-component's `Input` for our chrome-less editors
-/// (`appearance(false)`, default `Medium` size, no line numbers): the inner
-/// padding, the soft-wrap right margin, and the text size the hosts set.
-/// Mirrored here so [`predict_caret_row`] can predict the caret's position
-/// *before* the editor first paints.
-const INPUT_PY: Pixels = px(8.0);
-const INPUT_PX: Pixels = px(12.0);
-const INPUT_WRAP_RIGHT_MARGIN: Pixels = px(10.0);
+/// Layout constants for our chrome-less gpui-editor body editors, used by
+/// [`predict_caret_row`] to position the caret *before* the editor first paints.
+/// gpui-editor draws no internal padding and soft-wraps at its full width, so
+/// the padding / wrap-margin are zero (kept named so the click-to-edit math
+/// reads clearly). Its line height is `EDITOR_TEXT_SIZE * 1.25`, which matches
+/// the `rems(1.25)` used below.
+const INPUT_PY: Pixels = px(0.0);
+const INPUT_PX: Pixels = px(0.0);
+const INPUT_WRAP_RIGHT_MARGIN: Pixels = px(0.0);
 const EDITOR_TEXT_SIZE: Pixels = px(16.0);
 
 /// Predict where the caret at byte `off` will land inside one of our editors:
@@ -5110,7 +5181,7 @@ fn predict_caret_row(
 
 /// Frame-loop state for [`align_caret_to_click`].
 struct CaretAlign {
-    editor: Entity<InputState>,
+    editor: Entity<EditorState>,
     scroll: ScrollHandle,
     view: Entity<AppView>,
     /// Caret byte offset and the window y it should sit at.
@@ -5126,7 +5197,7 @@ struct CaretAlign {
 
 impl CaretAlign {
     fn new(
-        editor: Entity<InputState>,
+        editor: Entity<EditorState>,
         scroll: ScrollHandle,
         view: Entity<AppView>,
         off: usize,
@@ -5195,16 +5266,27 @@ fn make_editor(
     content: &str,
     window: &mut Window,
     cx: &mut Context<AppView>,
-) -> Entity<InputState> {
+) -> Entity<EditorState> {
+    // Our gpui-editor auto-grows to its content height and soft-wraps by design,
+    // so the feed/page scrolls and the editor never does — the behavior the old
+    // `auto_grow(1, 100_000)` InputState approximated.
     cx.new(|cx| {
-        // Auto-grow so the editor expands to fit its content (the feed/page
-        // scrolls, not the editor). Tab indentation is handled by our own
-        // `InsertTab` action — auto-grow mode isn't gpui-component-indentable.
-        let mut s = InputState::new(window, cx).auto_grow(1, 100_000);
-        s.set_soft_wrap(true, window, cx);
-        s.set_value(content, window, cx);
-        s
+        let mut editor = EditorState::new(window, cx).with_text(content);
+        // Right-click a flagged word → the OS's suggestions, fetched lazily.
+        editor.on_suggest(|word| spellcheck::SpellChecker::new().suggestions(word));
+        editor
     })
+}
+
+/// Run the OS spell checker over `text`, mapping each misspelling to an editor
+/// diagnostic (a red wavy underline). Detection only — suggestions are fetched
+/// lazily on right-click via the editor's `on_suggest` provider.
+fn spell_diagnostics(text: &str) -> Vec<Diagnostic> {
+    spellcheck::SpellChecker::new()
+        .check(text)
+        .into_iter()
+        .map(|range| Diagnostic { range })
+        .collect()
 }
 
 /// ISO `YYYY-MM-DD` for the day `i` days before today (local time). This is the

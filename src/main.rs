@@ -113,10 +113,12 @@ fn main() {
         gpui_component::init(cx);
         // Slash-menu keys (up/down/enter/escape, gated on the menu being open)
         // plus the app-wide shortcuts (new tab/window, close tab, quit, …).
-        actions::bind_keys(cx);
         // The from-scratch editor binds its own editing keys in the "Editor"
-        // key context (used by the note body editors).
+        // key context (used by the note body editors). Bind these FIRST so the
+        // app's slash/indent rebindings (also scoped to "Editor", in
+        // `actions::bind_keys`) are registered after and thus tried first.
         gpui_editor::bind_keys(cx);
+        actions::bind_keys(cx);
         // View-independent commands, handled at the App level so they work from
         // any focused window. Tab/settings commands are handled per-window on
         // `AppView`.

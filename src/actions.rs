@@ -55,8 +55,12 @@ actions!(
 );
 
 const INPUT_CONTEXT: &str = "Input";
+/// Key context of our gpui-editor body editors (matches `gpui_editor`'s own).
+const EDITOR_CONTEXT: &str = "Editor";
 
 pub fn bind_keys(cx: &mut App) {
+    // Single-line gpui-component fields (title, alias, find bar, search, dialogs)
+    // run in the "Input" context.
     cx.bind_keys([
         KeyBinding::new("up", SlashUp, Some(INPUT_CONTEXT)),
         KeyBinding::new("down", SlashDown, Some(INPUT_CONTEXT)),
@@ -66,15 +70,34 @@ pub fn bind_keys(cx: &mut App) {
         // Shift+Tab outdents the caret's list line (no-op if nothing to remove).
         KeyBinding::new("shift-tab", Outdent, Some(INPUT_CONTEXT)),
     ]);
+    // The note body editors run on gpui-editor (key context "Editor"), which
+    // binds its own up/down/enter/escape. Rebind the same keys to the slash /
+    // indent actions so the menu, Tab, and Esc work there too. `gpui_editor::
+    // bind_keys` runs first (see `main`), so these are tried first and the
+    // handlers `cx.propagate()` to fall through to the editor when not consumed.
+    cx.bind_keys([
+        KeyBinding::new("up", SlashUp, Some(EDITOR_CONTEXT)),
+        KeyBinding::new("down", SlashDown, Some(EDITOR_CONTEXT)),
+        KeyBinding::new("enter", SlashConfirm, Some(EDITOR_CONTEXT)),
+        KeyBinding::new("escape", SlashCancel, Some(EDITOR_CONTEXT)),
+        KeyBinding::new("tab", InsertTab, Some(EDITOR_CONTEXT)),
+        KeyBinding::new("shift-tab", Outdent, Some(EDITOR_CONTEXT)),
+    ]);
     // Paste-image: bind the platform's real paste chord — Cmd+V on macOS, Ctrl+V on
     // Windows/Linux. gpui treats `cmd-` and `ctrl-` as distinct chords, so a bare
     // `cmd-v` binding never fires off-Mac and image paste would be dead there. The
     // handler checks the clipboard for an image and otherwise propagates to
     // gpui-component's native text paste, so binding the real chord is safe.
     #[cfg(target_os = "macos")]
-    cx.bind_keys([KeyBinding::new("cmd-v", PasteImage, Some(INPUT_CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("cmd-v", PasteImage, Some(INPUT_CONTEXT)),
+        KeyBinding::new("cmd-v", PasteImage, Some(EDITOR_CONTEXT)),
+    ]);
     #[cfg(not(target_os = "macos"))]
-    cx.bind_keys([KeyBinding::new("ctrl-v", PasteImage, Some(INPUT_CONTEXT))]);
+    cx.bind_keys([
+        KeyBinding::new("ctrl-v", PasteImage, Some(INPUT_CONTEXT)),
+        KeyBinding::new("ctrl-v", PasteImage, Some(EDITOR_CONTEXT)),
+    ]);
 
     // App-wide shortcuts. `secondary-` resolves to Cmd on macOS and Ctrl on
     // Windows/Linux, so one binding is correct on every OS. No key context →
