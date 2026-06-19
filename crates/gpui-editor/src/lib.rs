@@ -1315,15 +1315,14 @@ struct BlockImg {
 }
 
 /// A table row rendered as a grid (W4c): its cells, per-column alignment, the
-/// shared (equal) column width, header/separator/last-row flags, and the border
-/// color. Built only when the caret is outside the table — the caret's table
-/// shows source instead ("raw on caret").
+/// content-fit per-column widths (shared across the table), header/separator/
+/// last-row flags, and the border color. Built only when the caret is outside
+/// the table — the caret's table shows source instead ("raw on caret").
 #[derive(Clone)]
 struct TableRow {
     cells: Vec<SharedString>,
     aligns: Vec<markdown_syntax::Align>,
-    cols: usize,
-    col_width: Pixels,
+    col_widths: Vec<Pixels>,
     is_header: bool,
     is_separator: bool,
     is_last: bool,
@@ -1338,7 +1337,7 @@ type ShapedLines = (
     Vec<WrappedLine>,
     Vec<Pixels>,
     Vec<Option<BlockImg>>,
-    Vec<Option<Hsla>>,
+    Vec<Option<(Hsla, Pixels)>>,
     Vec<Option<TableRow>>,
 );
 
@@ -1393,25 +1392,55 @@ fn shape_document(
     let mut widgets = Vec::new();
     let mut backgrounds = Vec::new();
     let mut tables = Vec::new();
-    // Table regions (W4c) for the whole doc; equal-width columns, raw-on-caret.
+    let lines: Vec<&str> = content.split('\n').collect();
+    // Table regions (W4c); content-fit column widths shared by each region's rows.
     let regions = md
         .map(|_| markdown_syntax::table_regions(content))
         .unwrap_or_default();
+    let mut region_cols: Vec<Vec<Pixels>> = Vec::with_capacity(regions.len());
+    for r in &regions {
+        region_cols.push(table_column_widths(
+            &lines,
+            r,
+            window,
+            base_font,
+            base_font_size,
+            base_color,
+            wrap_width,
+        ));
+    }
     let table_row_h = base_font_size * LINE_HEIGHT_RATIO + px(12.);
     let table_sep_h = px(8.);
+    // Fenced-code-block tracking: collect a block's background indices + its
+    // widest line, then back-patch every line's bg width so the block is a
+    // content-fit box (W4c refinement) rather than a full-width band.
+    let mut code_block: Vec<usize> = Vec::new();
+    let mut code_w = px(0.);
     let mut line_start = 0;
     let mut in_fence = false;
-    for (idx, line) in content.split('\n').enumerate() {
+    for (idx, &line) in lines.iter().enumerate() {
         let line_end = line_start + line.len();
 
         // Fenced code block (W4b): a ``` line toggles the fence; the delimiter
-        // lines + the lines between render as monospace code with a full-width
+        // lines + the lines between render as monospace code over a content-fit
         // background (delimiters dimmed). Code is literal — no inline scanning,
         // no heading size, no squiggles. Styling-mode only.
         let is_fence = md.is_some() && line.trim_start().starts_with("```");
         let is_code = md.is_some() && (in_fence || is_fence);
         if is_fence {
             in_fence = !in_fence;
+        }
+
+        // Leaving a code block: back-patch its lines to the block's box width.
+        if !is_code && !code_block.is_empty() {
+            let box_w = (code_w + px(12.)).min(wrap_width.unwrap_or(code_w + px(12.)));
+            for &bi in &code_block {
+                if let Some((_, w)) = &mut backgrounds[bi] {
+                    *w = box_w;
+                }
+            }
+            code_block.clear();
+            code_w = px(0.);
         }
 
         let fs = if is_code {
@@ -1437,18 +1466,17 @@ fn shape_document(
         // grid row — unless the caret is in that table (then it shows source).
         let table = regions
             .iter()
-            .find(|r| r.lines.contains(&idx))
-            .filter(|r| !is_code && !caret_row.is_some_and(|cr| r.lines.contains(&cr)))
-            .map(|r| {
-                let cols = r.aligns.len().max(1);
+            .position(|r| r.lines.contains(&idx))
+            .filter(|&ri| !is_code && !caret_row.is_some_and(|cr| regions[ri].lines.contains(&cr)))
+            .map(|ri| {
+                let r = &regions[ri];
                 TableRow {
                     cells: markdown_syntax::table_cells(line)
                         .into_iter()
                         .map(|c| SharedString::from(c.to_string()))
                         .collect(),
                     aligns: r.aligns.clone(),
-                    cols,
-                    col_width: wrap_width.map_or(px(160.), |w| w) / cols as f32,
+                    col_widths: region_cols[ri].clone(),
                     is_header: idx == r.lines.start,
                     is_separator: idx == r.lines.start + 1,
                     is_last: idx + 1 == r.lines.end,
@@ -1471,7 +1499,7 @@ fn shape_document(
             } else {
                 vec![run]
             };
-            (runs, Some(st.code_bg))
+            (runs, Some((st.code_bg, px(0.))))
         } else {
             // Diagnostics overlapping this line, shifted to line-relative ranges.
             let line_diags: Vec<Diagnostic> = diagnostics
@@ -1503,20 +1531,103 @@ fn shape_document(
                 Some(_) => table_row_h,
                 None => widget.as_ref().map_or(fs * LINE_HEIGHT_RATIO, |w| w.height),
             };
+            let line_w = wl.width();
             wrapped.push(wl);
             heights.push(h);
             widgets.push(widget);
             backgrounds.push(bg);
             tables.push(table);
+            // Accumulate this code line into the current block for box sizing.
+            if is_code {
+                code_block.push(backgrounds.len() - 1);
+                code_w = code_w.max(line_w);
+            }
         }
         line_start = line_end + 1; // skip the '\n'
+    }
+    // Back-patch a code block that runs to the end of the document.
+    if !code_block.is_empty() {
+        let box_w = (code_w + px(12.)).min(wrap_width.unwrap_or(code_w + px(12.)));
+        for &bi in &code_block {
+            if let Some((_, w)) = &mut backgrounds[bi] {
+                *w = box_w;
+            }
+        }
     }
     (wrapped, heights, widgets, backgrounds, tables)
 }
 
+/// Content-fit column widths for a table region (W4c): each column sized to its
+/// widest cell (header measured bold) + padding, with a minimum, and the whole
+/// table scaled down proportionally to fit `wrap_width` if it would overflow.
+#[allow(clippy::too_many_arguments)]
+fn table_column_widths(
+    lines: &[&str],
+    region: &markdown_syntax::TableRegion,
+    window: &mut Window,
+    base_font: &Font,
+    font_size: Pixels,
+    color: Hsla,
+    wrap_width: Option<Pixels>,
+) -> Vec<Pixels> {
+    let cols = region.aligns.len().max(1);
+    let pad = px(8.);
+    let mut widths = vec![px(0.); cols];
+    for li in region.lines.clone() {
+        if li == region.lines.start + 1 {
+            continue; // skip the |---| separator
+        }
+        let header = li == region.lines.start;
+        for (c, cell) in markdown_syntax::table_cells(lines[li])
+            .iter()
+            .enumerate()
+            .take(cols)
+        {
+            if cell.is_empty() {
+                continue;
+            }
+            let mut font = base_font.clone();
+            if header {
+                font.weight = gpui::FontWeight::BOLD;
+            }
+            let run = TextRun {
+                len: cell.len(),
+                font,
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let w = window
+                .text_system()
+                .shape_line(
+                    SharedString::from(cell.to_string()),
+                    font_size,
+                    &[run],
+                    None,
+                )
+                .width();
+            widths[c] = widths[c].max(w + pad * 2.);
+        }
+    }
+    for w in &mut widths {
+        *w = (*w).max(px(48.));
+    }
+    if let Some(avail) = wrap_width {
+        let total = widths.iter().fold(px(0.), |a, &w| a + w);
+        if total > avail && total > px(0.) {
+            let scale = f32::from(avail) / f32::from(total);
+            for w in &mut widths {
+                *w *= scale;
+            }
+        }
+    }
+    widths
+}
+
 /// Paint a table row as a grid (W4c): a top border (+ bottom on the last row),
 /// a left border per column + a right outer border, and each cell's text aligned
-/// within its column. A separator row renders as a single horizontal divider.
+/// within its (content-fit) column. A separator row is a single horizontal rule.
 #[allow(clippy::too_many_arguments)]
 fn paint_table_row(
     t: &TableRow,
@@ -1530,7 +1641,7 @@ fn paint_table_row(
     cx: &mut App,
 ) {
     let thick = px(1.);
-    let table_w = t.col_width * t.cols as f32;
+    let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
     if t.is_separator {
         let y = origin.y + (row_h - thick) / 2.;
         window.paint_quad(fill(
@@ -1555,10 +1666,10 @@ fn paint_table_row(
     if t.is_header {
         cell_font.weight = gpui::FontWeight::BOLD;
     }
-    for c in 0..t.cols {
-        let cx0 = origin.x + t.col_width * c as f32;
+    let mut x = origin.x;
+    for (c, &cw) in t.col_widths.iter().enumerate() {
         window.paint_quad(fill(
-            Bounds::new(point(cx0, origin.y), size(thick, row_h)),
+            Bounds::new(point(x, origin.y), size(thick, row_h)),
             t.border,
         ));
         if let Some(cell) = t.cells.get(c).filter(|s| !s.is_empty()) {
@@ -1579,17 +1690,18 @@ fn paint_table_row(
                 _ => gpui::TextAlign::Left,
             };
             let _ = shaped.paint(
-                point(cx0 + pad, origin.y + (row_h - line_h) / 2.),
+                point(x + pad, origin.y + (row_h - line_h) / 2.),
                 line_h,
                 align,
-                Some(t.col_width - pad * 2.),
+                Some(cw - pad * 2.),
                 window,
                 cx,
             );
         }
+        x += cw;
     }
     window.paint_quad(fill(
-        Bounds::new(point(origin.x + table_w, origin.y), size(thick, row_h)),
+        Bounds::new(point(x, origin.y), size(thick, row_h)),
         t.border,
     ));
 }
@@ -1609,8 +1721,8 @@ struct PrepaintState {
     line_heights: Vec<Pixels>,
     /// `Some` for a line painted as an inline image instead of its source text.
     widgets: Vec<Option<BlockImg>>,
-    /// Full-width background behind a line (e.g. a fenced code block).
-    backgrounds: Vec<Option<Hsla>>,
+    /// Background behind a line + its width (a content-fit fenced code block).
+    backgrounds: Vec<Option<(Hsla, Pixels)>>,
     /// `Some` for a line painted as a table-grid row instead of source.
     tables: Vec<Option<TableRow>>,
     cursor: Option<PaintQuad>,
@@ -1892,9 +2004,9 @@ impl Element for EditorElement {
             .enumerate()
         {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
-            // Full-width background behind the line (a fenced code block — W4b).
-            if let Some(c) = prepaint.backgrounds.get(i).copied().flatten() {
-                window.paint_quad(fill(Bounds::new(origin, size(bounds.size.width, *lh)), c));
+            // Content-fit background behind the line (a fenced code block — W4b/c).
+            if let Some((c, w)) = prepaint.backgrounds.get(i).copied().flatten() {
+                window.paint_quad(fill(Bounds::new(origin, size(w, *lh)), c));
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
                 // Table grid row (W4c): cells + borders instead of source.
