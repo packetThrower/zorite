@@ -160,6 +160,28 @@ fn marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
 /// UTF-8-safe (an ASCII byte never appears inside a multi-byte char).
 fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut Vec<Span>) {
     let b = text.as_bytes();
+    // Heading: `#`..`######` + a space. Dim the marker, bold the rest. The
+    // larger heading SIZE is applied per line at layout time (variable line
+    // heights), not here — so the rest of the line isn't scanned for inline
+    // constructs in W2. (W2)
+    if let Some(level) = heading_level(&text[start..end]) {
+        let mut marker_end = start + level as usize;
+        if marker_end < end && b[marker_end] == b' ' {
+            marker_end += 1;
+        }
+        marker(out, start..marker_end, st.marker);
+        if marker_end < end {
+            push(
+                out,
+                marker_end..end,
+                Style {
+                    bold: true,
+                    ..Default::default()
+                },
+            );
+        }
+        return;
+    }
     let mut i = start;
     while i < end {
         let c = b[i];
@@ -309,6 +331,30 @@ fn find1(b: &[u8], from: usize, end: usize, c: u8) -> Option<usize> {
 /// First index of the pair `c1 c2` in `b[from..end]`.
 fn find2(b: &[u8], from: usize, end: usize, c1: u8, c2: u8) -> Option<usize> {
     (from..end.saturating_sub(1)).find(|&k| b[k] == c1 && b[k + 1] == c2)
+}
+
+/// ATX heading depth (1–6) if `line` is a heading: 1–6 leading `#` followed by
+/// a space or end-of-line. `None` otherwise.
+pub(crate) fn heading_level(line: &str) -> Option<u8> {
+    let b = line.as_bytes();
+    let mut n = 0;
+    while n < b.len() && b[n] == b'#' {
+        n += 1;
+    }
+    ((1..=6).contains(&n) && (n == b.len() || b[n] == b' ')).then_some(n as u8)
+}
+
+/// Font-size multiplier for a line — larger for headings (matching the reading
+/// view's scale), 1.0 for body text. Drives the editor's variable line heights.
+pub(crate) fn line_scale(line: &str) -> f32 {
+    match heading_level(line) {
+        Some(1) => 1.8,
+        Some(2) => 1.5,
+        Some(3) => 1.3,
+        Some(4) => 1.15,
+        Some(5) => 1.05,
+        _ => 1.0,
+    }
 }
 
 fn is_word(c: u8) -> bool {

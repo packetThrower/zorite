@@ -187,6 +187,10 @@ pub struct EditorState {
     /// cursor/IME positioning.
     wrapped: Vec<WrappedLine>,
     line_tops: Vec<Pixels>,
+    /// Per-logical-line wrap-row height. Variable so a heading (bigger font) gets
+    /// a taller row (W2); `line_height` is the base/fallback for the empty doc
+    /// and any row without a recorded height.
+    line_heights: Vec<Pixels>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     is_selecting: bool,
@@ -221,6 +225,7 @@ impl EditorState {
             marked_range: None,
             wrapped: Vec::new(),
             line_tops: Vec::new(),
+            line_heights: Vec::new(),
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -317,18 +322,28 @@ impl EditorState {
         self.move_to(offset, cx);
     }
 
+    /// The wrap-row height of logical line `row` (a heading is taller). Falls
+    /// back to the base `line_height` for unrecorded rows / the empty document.
+    fn line_h(&self, row: usize) -> Pixels {
+        self.line_heights
+            .get(row)
+            .copied()
+            .unwrap_or(self.line_height)
+    }
+
     /// Window-space bounds of the caret at `offset`, from the last paint's
     /// layout — for anchoring a popup (e.g. a slash menu) at a document offset.
     /// `None` before the first paint or if `offset`'s row isn't laid out.
     pub fn bounds_for_offset(&self, offset: usize) -> Option<Bounds<Pixels>> {
         let bounds = self.last_bounds?;
         let (row, col) = self.row_col(offset);
+        let lh = self.line_h(row);
         let line = self.wrapped.get(row)?;
-        let p = line.position_for_index(col, self.line_height)?;
+        let p = line.position_for_index(col, lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
         Some(Bounds::from_corners(
             point(bounds.left() + p.x, top),
-            point(bounds.left() + p.x, top + self.line_height),
+            point(bounds.left() + p.x, top + lh),
         ))
     }
 
@@ -754,41 +769,52 @@ impl EditorState {
     /// (x) across the run. Falls back to logical-line movement before the first
     /// paint (when no wrapped layout is cached yet).
     fn move_vertical(&mut self, dir: i32) -> usize {
-        let lh = self.line_height;
-        if self.wrapped.is_empty() || lh <= px(0.) {
+        if self.wrapped.is_empty() {
             return self.vertical_offset(dir);
         }
         let (row, col) = self.row_col(self.cursor_offset());
+        let cur_lh = self.line_h(row);
+        if cur_lh <= px(0.) {
+            return self.vertical_offset(dir);
+        }
         let Some(cur) = self
             .wrapped
             .get(row)
-            .and_then(|l| l.position_for_index(col, lh))
+            .and_then(|l| l.position_for_index(col, cur_lh))
         else {
             return self.vertical_offset(dir);
         };
         let global_y = self.line_tops[row] + cur.y;
         let goal = self.goal_x.unwrap_or(cur.x);
         self.goal_x = Some(goal);
-        let target_y = global_y + lh * dir as f32;
+        // Step to the adjacent visual row. Down: to the bottom of the current
+        // row (= the top of the next one). Up: just above the current row's top
+        // — robust to the row above having a different height (e.g. a heading),
+        // since it doesn't depend on the current row's height.
+        let target_y = if dir >= 0 {
+            global_y + cur_lh
+        } else {
+            global_y - px(1.)
+        };
         if target_y < px(0.) {
             return 0;
         }
         let last = self.wrapped.len() - 1;
-        let total =
-            self.line_tops[last] + lh * (self.wrapped[last].wrap_boundaries().len() + 1) as f32;
+        let total = self.line_tops[last]
+            + self.line_h(last) * (self.wrapped[last].wrap_boundaries().len() + 1) as f32;
         if target_y >= total {
             return self.content.len();
         }
         let mut trow = last;
         for i in 0..self.wrapped.len() {
-            let h = lh * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
             if target_y < self.line_tops[i] + h {
                 trow = i;
                 break;
             }
         }
         let rel = point(goal, target_y - self.line_tops[trow]);
-        let col = match self.wrapped[trow].closest_index_for_position(rel, lh) {
+        let col = match self.wrapped[trow].closest_index_for_position(rel, self.line_h(trow)) {
             Ok(i) | Err(i) => i,
         };
         self.line_starts()[trow] + col
@@ -852,19 +878,18 @@ impl EditorState {
         let Some(bounds) = self.last_bounds.as_ref() else {
             return 0;
         };
-        let lh = self.line_height;
         let rel = point(position.x - bounds.left(), position.y - bounds.top());
-        // Which logical line, by the vertical band each occupies.
+        // Which logical line, by the vertical band each occupies (variable height).
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
-            let height = lh * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let height = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
             if rel.y < self.line_tops[i] + height {
                 row = i;
                 break;
             }
         }
         let line_rel = point(rel.x, rel.y - self.line_tops[row]);
-        let col = match self.wrapped[row].closest_index_for_position(line_rel, lh) {
+        let col = match self.wrapped[row].closest_index_for_position(line_rel, self.line_h(row)) {
             Ok(i) | Err(i) => i,
         };
         self.line_starts()[row] + col
@@ -1021,12 +1046,13 @@ impl EntityInputHandler for EditorState {
     ) -> Option<Bounds<Pixels>> {
         let range = self.range_from_utf16(&range_utf16);
         let (row, col) = self.row_col(range.start);
+        let lh = self.line_h(row);
         let line = self.wrapped.get(row)?;
-        let p = line.position_for_index(col, self.line_height)?;
+        let p = line.position_for_index(col, lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
         Some(Bounds::from_corners(
             point(bounds.left() + p.x, top),
-            point(bounds.left() + p.x, top + self.line_height),
+            point(bounds.left() + p.x, top + lh),
         ))
     }
 
@@ -1247,6 +1273,58 @@ fn shape_runs(
         .unwrap_or_default()
 }
 
+/// Shape `content` line-by-line so each logical line can use its own font size
+/// (headings are larger — W2). Returns one [`WrappedLine`] per logical line and
+/// each line's wrap-row height. `md` drives the per-line size and inline styling
+/// (`None` keeps every line at the base size); `diagnostics` are clipped and
+/// shifted to each line. A single line (no newline) always shapes to exactly one
+/// wrapped line, including an empty line, so the count matches the logical lines
+/// and blank rows stay positionable.
+#[allow(clippy::too_many_arguments)]
+fn shape_document(
+    window: &mut Window,
+    content: &str,
+    base_font: &Font,
+    base_color: Hsla,
+    base_font_size: Pixels,
+    diagnostics: &[Diagnostic],
+    md: Option<&SyntaxStyle>,
+    wrap_width: Option<Pixels>,
+) -> (Vec<WrappedLine>, Vec<Pixels>) {
+    let mut wrapped = Vec::new();
+    let mut heights = Vec::new();
+    let mut line_start = 0;
+    for line in content.split('\n') {
+        let line_end = line_start + line.len();
+        let fs = base_font_size * md.map_or(1.0, |_| markdown_syntax::line_scale(line));
+        // Diagnostics overlapping this line, shifted to line-relative ranges.
+        let line_diags: Vec<Diagnostic> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                let s = d.range.start.max(line_start);
+                let e = d.range.end.min(line_end);
+                (s < e).then(|| Diagnostic {
+                    range: (s - line_start)..(e - line_start),
+                })
+            })
+            .collect();
+        let runs = markdown_syntax::styled_runs(line, base_font, base_color, &line_diags, md);
+        let shaped = shape_runs(
+            window,
+            &SharedString::from(line.to_string()),
+            fs,
+            &runs,
+            wrap_width,
+        );
+        if let Some(wl) = shaped.into_iter().next() {
+            wrapped.push(wl);
+            heights.push(fs * LINE_HEIGHT_RATIO);
+        }
+        line_start = line_end + 1; // skip the '\n'
+    }
+    (wrapped, heights)
+}
+
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
 /// and selection, and wires the input handler. Height is content-driven via a
 /// measured layout (it depends on the resolved width once soft-wrap is applied).
@@ -1258,6 +1336,8 @@ struct PrepaintState {
     wrapped: Vec<WrappedLine>,
     /// Top offset of each logical line relative to the editor's top.
     line_tops: Vec<Pixels>,
+    /// Per-logical-line wrap-row height (variable for headings).
+    line_heights: Vec<Pixels>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -1294,28 +1374,50 @@ impl Element for EditorElement {
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         let id = window.request_measured_layout(style, move |known, available, window, cx| {
-            let content: SharedString = editor.read(cx).content.clone().into();
+            let editor = editor.read(cx);
             let text_style = window.text_style();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
-            let lh = font_size * LINE_HEIGHT_RATIO;
+            let base_lh = font_size * LINE_HEIGHT_RATIO;
             let wrap_width = match available.width {
                 AvailableSpace::Definite(w) => Some(w),
                 _ => known.width,
             };
-            let rows = shape_all(
-                window,
-                &content,
-                font_size,
-                text_style.font(),
-                text_style.color,
-                wrap_width,
-            )
-            .iter()
-            .map(|line| line.wrap_boundaries().len() + 1)
-            .sum::<usize>()
-            .max(1);
+            let height = if editor.content.is_empty() {
+                // Placeholder rows at the base size.
+                let rows = shape_all(
+                    window,
+                    &editor.placeholder,
+                    font_size,
+                    text_style.font(),
+                    text_style.color,
+                    wrap_width,
+                )
+                .iter()
+                .map(|line| line.wrap_boundaries().len() + 1)
+                .sum::<usize>()
+                .max(1);
+                base_lh * rows as f32
+            } else {
+                // Sum of per-line (variable) heights × each line's wrap rows.
+                let (wrapped, heights) = shape_document(
+                    window,
+                    &editor.content,
+                    &text_style.font(),
+                    text_style.color,
+                    font_size,
+                    &editor.diagnostics,
+                    editor.markdown_style.as_ref(),
+                    wrap_width,
+                );
+                wrapped
+                    .iter()
+                    .zip(&heights)
+                    .map(|(line, h)| *h * (line.wrap_boundaries().len() + 1) as f32)
+                    .fold(px(0.), |a, b| a + b)
+                    .max(base_lh)
+            };
             let width = wrap_width.or(known.width).unwrap_or(px(0.));
-            size(width, lh * rows as f32)
+            size(width, height)
         });
         (id, ())
     }
@@ -1331,39 +1433,44 @@ impl Element for EditorElement {
     ) -> PrepaintState {
         let editor = self.editor.read(cx);
         let style = window.text_style();
+        let font = style.font();
         let font_size = style.font_size.to_pixels(window.rem_size());
-        let lh = font_size * LINE_HEIGHT_RATIO;
+        let base_lh = font_size * LINE_HEIGHT_RATIO;
         let wrap_width = Some(bounds.size.width);
         let text_color = style.color;
 
-        // Shape the content (or placeholder, when empty) at the resolved width.
-        let wrapped = if editor.content.is_empty() {
-            shape_all(
+        // Placeholder (uniform) when empty; else shape per line so headings get
+        // their own taller rows (variable line heights — W2).
+        let (wrapped, line_heights) = if editor.content.is_empty() {
+            let w = shape_all(
                 window,
                 &editor.placeholder,
                 font_size,
-                style.font(),
+                font.clone(),
                 hsla(0., 0., 0.5, 0.5),
                 wrap_width,
-            )
+            );
+            let h = vec![base_lh; w.len()];
+            (w, h)
         } else {
-            let content: SharedString = editor.content.clone().into();
-            let runs = markdown_syntax::styled_runs(
-                &content,
-                &style.font(),
+            shape_document(
+                window,
+                &editor.content,
+                &font,
                 text_color,
+                font_size,
                 &editor.diagnostics,
                 editor.markdown_style.as_ref(),
-            );
-            shape_runs(window, &content, font_size, &runs, wrap_width)
+                wrap_width,
+            )
         };
 
-        // Top offset of each logical line (running sum of wrapped heights).
+        // Top offset of each logical line (running sum of variable wrap heights).
         let mut line_tops = Vec::with_capacity(wrapped.len());
         let mut y = px(0.);
-        for line in &wrapped {
+        for (line, lh) in wrapped.iter().zip(line_heights.iter()) {
             line_tops.push(y);
-            y += lh * (line.wrap_boundaries().len() + 1) as f32;
+            y += *lh * (line.wrap_boundaries().len() + 1) as f32;
         }
 
         // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
@@ -1373,12 +1480,13 @@ impl Element for EditorElement {
 
         let (cursor, selections) = if editor.content.is_empty() {
             let c = fill(
-                Bounds::new(point(bounds.left(), bounds.top()), size(px(2.), lh)),
+                Bounds::new(point(bounds.left(), bounds.top()), size(px(2.), base_lh)),
                 text_color,
             );
             (Some(c), Vec::new())
         } else if editor.selected_range.is_empty() {
             let (row, col) = editor.row_col(editor.cursor_offset());
+            let lh = line_heights.get(row).copied().unwrap_or(base_lh);
             let p = wrapped
                 .get(row)
                 .and_then(|l| l.position_for_index(col, lh))
@@ -1398,6 +1506,7 @@ impl Element for EditorElement {
                 let Some(line) = wrapped.get(row) else {
                     continue;
                 };
+                let lh = line_heights.get(row).copied().unwrap_or(base_lh);
                 let top = line_tops[row];
                 let line_start = starts[row];
                 let a = s.max(line_start) - line_start;
@@ -1449,6 +1558,7 @@ impl Element for EditorElement {
         PrepaintState {
             wrapped,
             line_tops,
+            line_heights,
             cursor,
             selections,
         }
@@ -1475,11 +1585,16 @@ impl Element for EditorElement {
             window.paint_quad(sel);
         }
 
-        let font_size = window.text_style().font_size.to_pixels(window.rem_size());
-        let lh = font_size * LINE_HEIGHT_RATIO;
-        for (line, top) in prepaint.wrapped.iter().zip(prepaint.line_tops.iter()) {
+        let base_lh =
+            window.text_style().font_size.to_pixels(window.rem_size()) * LINE_HEIGHT_RATIO;
+        for ((line, top), lh) in prepaint
+            .wrapped
+            .iter()
+            .zip(prepaint.line_tops.iter())
+            .zip(prepaint.line_heights.iter())
+        {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
-            let _ = line.paint(origin, lh, gpui::TextAlign::Left, None, window, cx);
+            let _ = line.paint(origin, *lh, gpui::TextAlign::Left, None, window, cx);
         }
 
         if focus.is_focused(window)
@@ -1490,11 +1605,13 @@ impl Element for EditorElement {
 
         let wrapped = std::mem::take(&mut prepaint.wrapped);
         let line_tops = std::mem::take(&mut prepaint.line_tops);
+        let line_heights = std::mem::take(&mut prepaint.line_heights);
         self.editor.update(cx, |editor, _| {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
+            editor.line_heights = line_heights;
             editor.last_bounds = Some(bounds);
-            editor.line_height = lh;
+            editor.line_height = base_lh;
         });
     }
 }

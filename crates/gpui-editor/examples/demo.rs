@@ -78,10 +78,12 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let text = "gpui-editor live-preview (W1).\n\n**Bold**, *italic*, ~~strike~~, \
-                            `inline code`, a [link](https://example.com), a [[Wiki Page]], and a \
-                            #tag all style as you type — markers stay, dimmed.\n\nSpell-check still \
-                            flags mispelled wrds; right-click one for suggestions.";
+                let text = "# Heading 1\n## Heading 2\n### Heading 3\n\ngpui-editor live-preview \
+                            — headings get bigger as you type (W2).\n\n**Bold**, *italic*, \
+                            ~~strike~~, `inline code`, a [link](https://example.com), a \
+                            [[Wiki Page]], and a #tag all style inline — markers stay, dimmed.\
+                            \n\nSpell-check still flags mispelled wrds; right-click one for \
+                            suggestions.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
                         .with_placeholder("Type here…")
