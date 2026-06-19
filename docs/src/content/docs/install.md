@@ -42,14 +42,6 @@ sidesteps Gatekeeper. Update with `brew upgrade --cask zorite`.
 
 ## Windows (winget)
 
-<!-- WINGET-PENDING: remove this aside once microsoft/winget-pkgs#387921 merges -->
-:::caution[Pending review]
-Zorite's winget manifest is in Microsoft's [review queue](https://github.com/microsoft/winget-pkgs/pull/387921)
-and isn't live yet — `winget install` will start working once it's merged. Until then,
-use Scoop (below) or a [direct download](https://github.com/packetThrower/zorite/releases)
-on Windows.
-:::
-
 [winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/) is
 Microsoft's own package manager, preinstalled on Windows 10 1809+ and
 Windows 11. It resolves either by the full identifier or the short moniker:
