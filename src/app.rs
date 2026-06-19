@@ -665,7 +665,8 @@ impl AppView {
             .flatten()
             .map(|p| p.content)
             .unwrap_or_default();
-        let state = make_editor(&content, self.wysiwyg, window, cx);
+        let state = make_editor(&content, self.wysiwyg, self.image_store(), window, cx);
+        self.ensure_content_images(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -1380,7 +1381,8 @@ impl AppView {
             }
         };
         let pid = page.id;
-        let state = make_editor(&page.content, self.wysiwyg, window, cx);
+        let state = make_editor(&page.content, self.wysiwyg, self.image_store(), window, cx);
+        self.ensure_content_images(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -1947,6 +1949,16 @@ impl AppView {
         self.mermaid_lightbox = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    /// Kick off decoding for every standalone image in `content`, so an editor in
+    /// WYSIWYG mode can render them inline (W4) rather than as raw `![](src)`.
+    /// `ensure_image_loaded` dedupes, so re-scanning is cheap; a finished decode
+    /// notifies → repaint → the editor's block-image provider finds the bitmap.
+    fn ensure_content_images(&mut self, content: &str, cx: &mut Context<Self>) {
+        for info in gpui_markdown::images(content) {
+            self.ensure_image_loaded(info.src, cx);
+        }
     }
 
     /// Ensure the image at `src` is decoding/decoded (idempotent). Called from a
@@ -5308,6 +5320,7 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 fn make_editor(
     content: &str,
     wysiwyg: bool,
+    image_store: Rc<RefCell<crate::images::ImageStore>>,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -5318,6 +5331,9 @@ fn make_editor(
         let mut editor = EditorState::new(window, cx).with_text(content);
         // Right-click a flagged word → the OS's suggestions, fetched lazily.
         editor.on_suggest(|word| spellcheck::SpellChecker::new().suggestions(word));
+        // Inline images (W4): resolve a standalone image's src to its decoded
+        // bitmap from the shared store (None until decoding finishes / on fail).
+        editor.set_block_image_provider(move |src| image_store.borrow().get(src));
         editor
     });
     // Live-preview markdown styling when WYSIWYG is on — mirrors the rendered

@@ -344,6 +344,33 @@ pub(crate) fn heading_level(line: &str) -> Option<u8> {
     ((1..=6).contains(&n) && (n == b.len() || b[n] == b' ')).then_some(n as u8)
 }
 
+/// If `line` is a standalone image — `![alt](src)`, optionally followed by a
+/// `{width=N}` / `{width=Npx}` attribute, with only whitespace around it —
+/// return `(src, explicit_width)`. The editor renders such a line as the image
+/// (W4) when the caret is elsewhere; a line with any other trailing text stays
+/// plain source.
+pub(crate) fn image_line(line: &str) -> Option<(&str, Option<f32>)> {
+    let rest = line.trim().strip_prefix("![")?;
+    let close_alt = rest.find("](")?;
+    let after_alt = &rest[close_alt + 2..];
+    let close_src = after_alt.find(')')?;
+    let src = after_alt[..close_src].trim();
+    let tail = after_alt[close_src + 1..].trim();
+    let width = if tail.is_empty() {
+        None
+    } else {
+        let w = tail.strip_prefix("{width=")?.strip_suffix('}')?;
+        Some(
+            w.strip_suffix("px")
+                .unwrap_or(w)
+                .trim()
+                .parse::<f32>()
+                .ok()?,
+        )
+    };
+    (!src.is_empty()).then_some((src, width))
+}
+
 /// Font-size multiplier for a line — larger for headings (matching the reading
 /// view's scale), 1.0 for body text. Drives the editor's variable line heights.
 pub(crate) fn line_scale(line: &str) -> f32 {

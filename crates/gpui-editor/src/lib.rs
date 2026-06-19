@@ -18,15 +18,16 @@
 //! once at startup so the editing actions resolve while it's focused.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use gpui::{
-    App, AvailableSpace, Bounds, ClipboardItem, Context, CursorStyle, Element, ElementId,
+    App, AvailableSpace, Bounds, ClipboardItem, Context, Corners, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable, Font,
     GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement, KeyBinding,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement,
-    Pixels, Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Style, Styled,
-    TextRun, UTF16Selection, Window, WrappedLine, actions, div, fill, hsla, point, px, relative,
-    rgb, rgba, size,
+    Pixels, Point, Render, RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Style, Styled, TextRun, UTF16Selection, Window, WrappedLine, actions, div, fill, hsla, point,
+    px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -170,6 +171,12 @@ pub enum EditorEvent {
 /// host via [`EditorState::on_suggest`] and consulted on right-click.
 type SuggestFn = Box<dyn Fn(&str) -> Vec<String>>;
 
+/// Resolves a standalone image line's `src` to a decoded image so the editor can
+/// render it inline (W4). Set by the host via
+/// [`EditorState::set_block_image_provider`]; the host owns loading + caching and
+/// returns `None` while still decoding / on failure (the line shows raw source).
+type BlockImageFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
+
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
 pub struct EditorState {
@@ -191,6 +198,10 @@ pub struct EditorState {
     /// a taller row (W2); `line_height` is the base/fallback for the empty doc
     /// and any row without a recorded height.
     line_heights: Vec<Pixels>,
+    /// Per-logical-line flag: this row is painted as an inline image (W4), so a
+    /// click on it places the caret at the line start instead of hit-testing
+    /// source text. From the last paint.
+    widget_rows: Vec<bool>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     is_selecting: bool,
@@ -212,6 +223,9 @@ pub struct EditorState {
     /// the user right-clicks it. Set by the host via [`Self::on_suggest`];
     /// without it, the right-click menu has nothing to offer.
     suggest: Option<SuggestFn>,
+    /// Resolves a standalone image line's `src` to a decoded image for inline
+    /// rendering (W4); set by the host via [`Self::set_block_image_provider`].
+    block_image: Option<BlockImageFn>,
 }
 
 impl EditorState {
@@ -226,6 +240,7 @@ impl EditorState {
             wrapped: Vec::new(),
             line_tops: Vec::new(),
             line_heights: Vec::new(),
+            widget_rows: Vec::new(),
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -237,6 +252,7 @@ impl EditorState {
             markdown_style: None,
             menu: None,
             suggest: None,
+            block_image: None,
         }
     }
 
@@ -302,6 +318,17 @@ impl EditorState {
     /// on right-click, never in the per-edit detection pass.
     pub fn on_suggest(&mut self, provider: impl Fn(&str) -> Vec<String> + 'static) {
         self.suggest = Some(Box::new(provider));
+    }
+
+    /// Install the provider that resolves a standalone image line's `src` to a
+    /// decoded image; with it, such lines render inline (W4) when the caret is
+    /// elsewhere. Without it (or while an image is still loading), the line shows
+    /// its raw `![](src)` source.
+    pub fn set_block_image_provider(
+        &mut self,
+        provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
+    ) {
+        self.block_image = Some(Box::new(provider));
     }
 
     /// The caret's byte offset into [`Self::text`] (the moving end of any
@@ -888,6 +915,11 @@ impl EditorState {
                 break;
             }
         }
+        // An inline-image row: clicking it puts the caret at the line start (the
+        // line then shows its source — "raw on caret"), not a text column.
+        if self.widget_rows.get(row).copied().unwrap_or(false) {
+            return self.line_starts()[row];
+        }
         let line_rel = point(rel.x, rel.y - self.line_tops[row]);
         let col = match self.wrapped[row].closest_index_for_position(line_rel, self.line_h(row)) {
             Ok(i) | Err(i) => i,
@@ -1273,13 +1305,47 @@ fn shape_runs(
         .unwrap_or_default()
 }
 
+/// A line currently rendered as an inline image (W4) instead of its source text:
+/// the decoded image plus its fit-to-width display size (logical px).
+#[derive(Clone)]
+struct BlockImg {
+    img: Arc<RenderImage>,
+    width: Pixels,
+    height: Pixels,
+}
+
+/// Fit-to-width display size for an inline image from its natural (device) size:
+/// cap to the content width (or an explicit `{width=N}`), preserving aspect.
+fn block_img(
+    img: Arc<RenderImage>,
+    width_attr: Option<f32>,
+    wrap_width: Option<Pixels>,
+    scale_factor: f32,
+) -> Option<BlockImg> {
+    let dev = img.size(0);
+    let (dw, dh) = (dev.width.0 as f32, dev.height.0 as f32);
+    if dw <= 0. || dh <= 0. || scale_factor <= 0. {
+        return None;
+    }
+    let natural_w = dw / scale_factor;
+    let avail = wrap_width.map_or(natural_w, f32::from);
+    let target_w = width_attr.unwrap_or(natural_w).min(avail).max(1.);
+    Some(BlockImg {
+        img,
+        width: px(target_w),
+        height: px(target_w * dh / dw),
+    })
+}
+
 /// Shape `content` line-by-line so each logical line can use its own font size
-/// (headings are larger — W2). Returns one [`WrappedLine`] per logical line and
-/// each line's wrap-row height. `md` drives the per-line size and inline styling
-/// (`None` keeps every line at the base size); `diagnostics` are clipped and
-/// shifted to each line. A single line (no newline) always shapes to exactly one
-/// wrapped line, including an empty line, so the count matches the logical lines
-/// and blank rows stay positionable.
+/// (headings are larger — W2) and a standalone image line can render as the image
+/// (W4). Returns, per logical line: the shaped source [`WrappedLine`], its row
+/// height, and `Some(BlockImg)` when it paints as an image. `md` drives the
+/// per-line size + inline styling (`None` keeps the base size, no images);
+/// `diagnostics` are clipped + shifted to each line. The caret's line
+/// (`caret_row`) always shows source, so an image stays editable ("raw on
+/// caret"). A single line always shapes to one wrapped line (incl. empty), so the
+/// counts match the logical lines and blank rows stay positionable.
 #[allow(clippy::too_many_arguments)]
 fn shape_document(
     window: &mut Window,
@@ -1290,13 +1356,30 @@ fn shape_document(
     diagnostics: &[Diagnostic],
     md: Option<&SyntaxStyle>,
     wrap_width: Option<Pixels>,
-) -> (Vec<WrappedLine>, Vec<Pixels>) {
+    caret_row: Option<usize>,
+    block_image: Option<&BlockImageFn>,
+    scale_factor: f32,
+) -> (Vec<WrappedLine>, Vec<Pixels>, Vec<Option<BlockImg>>) {
     let mut wrapped = Vec::new();
     let mut heights = Vec::new();
+    let mut widgets = Vec::new();
     let mut line_start = 0;
-    for line in content.split('\n') {
+    for (idx, line) in content.split('\n').enumerate() {
         let line_end = line_start + line.len();
         let fs = base_font_size * md.map_or(1.0, |_| markdown_syntax::line_scale(line));
+
+        // Inline image: a standalone image line that isn't the caret's line and
+        // has a decoded image renders as that image, fit to the content width.
+        let widget = if md.is_some()
+            && Some(idx) != caret_row
+            && let Some((src, w_attr)) = markdown_syntax::image_line(line)
+            && let Some(img) = block_image.and_then(|f| f(src))
+        {
+            block_img(img, w_attr, wrap_width, scale_factor)
+        } else {
+            None
+        };
+
         // Diagnostics overlapping this line, shifted to line-relative ranges.
         let line_diags: Vec<Diagnostic> = diagnostics
             .iter()
@@ -1317,12 +1400,14 @@ fn shape_document(
             wrap_width,
         );
         if let Some(wl) = shaped.into_iter().next() {
+            let h = widget.as_ref().map_or(fs * LINE_HEIGHT_RATIO, |w| w.height);
             wrapped.push(wl);
-            heights.push(fs * LINE_HEIGHT_RATIO);
+            heights.push(h);
+            widgets.push(widget);
         }
         line_start = line_end + 1; // skip the '\n'
     }
-    (wrapped, heights)
+    (wrapped, heights, widgets)
 }
 
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
@@ -1336,8 +1421,10 @@ struct PrepaintState {
     wrapped: Vec<WrappedLine>,
     /// Top offset of each logical line relative to the editor's top.
     line_tops: Vec<Pixels>,
-    /// Per-logical-line wrap-row height (variable for headings).
+    /// Per-logical-line wrap-row height (variable for headings + images).
     line_heights: Vec<Pixels>,
+    /// `Some` for a line painted as an inline image instead of its source text.
+    widgets: Vec<Option<BlockImg>>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -1399,7 +1486,9 @@ impl Element for EditorElement {
                 base_lh * rows as f32
             } else {
                 // Sum of per-line (variable) heights × each line's wrap rows.
-                let (wrapped, heights) = shape_document(
+                let caret_row = editor.row_col(editor.cursor_offset()).0;
+                let sf = window.scale_factor();
+                let (wrapped, heights, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -1408,6 +1497,9 @@ impl Element for EditorElement {
                     &editor.diagnostics,
                     editor.markdown_style.as_ref(),
                     wrap_width,
+                    Some(caret_row),
+                    editor.block_image.as_ref(),
+                    sf,
                 );
                 wrapped
                     .iter()
@@ -1440,8 +1532,10 @@ impl Element for EditorElement {
         let text_color = style.color;
 
         // Placeholder (uniform) when empty; else shape per line so headings get
-        // their own taller rows (variable line heights — W2).
-        let (wrapped, line_heights) = if editor.content.is_empty() {
+        // their own taller rows (W2) and image lines render inline (W4).
+        let caret_row = editor.row_col(editor.cursor_offset()).0;
+        let sf = window.scale_factor();
+        let (wrapped, line_heights, widgets) = if editor.content.is_empty() {
             let w = shape_all(
                 window,
                 &editor.placeholder,
@@ -1451,7 +1545,8 @@ impl Element for EditorElement {
                 wrap_width,
             );
             let h = vec![base_lh; w.len()];
-            (w, h)
+            let g = vec![None; w.len()];
+            (w, h, g)
         } else {
             shape_document(
                 window,
@@ -1462,6 +1557,9 @@ impl Element for EditorElement {
                 &editor.diagnostics,
                 editor.markdown_style.as_ref(),
                 wrap_width,
+                Some(caret_row),
+                editor.block_image.as_ref(),
+                sf,
             )
         };
 
@@ -1559,6 +1657,7 @@ impl Element for EditorElement {
             wrapped,
             line_tops,
             line_heights,
+            widgets,
             cursor,
             selections,
         }
@@ -1587,14 +1686,21 @@ impl Element for EditorElement {
 
         let base_lh =
             window.text_style().font_size.to_pixels(window.rem_size()) * LINE_HEIGHT_RATIO;
-        for ((line, top), lh) in prepaint
+        for (((line, top), lh), widget) in prepaint
             .wrapped
             .iter()
             .zip(prepaint.line_tops.iter())
             .zip(prepaint.line_heights.iter())
+            .zip(prepaint.widgets.iter())
         {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
-            let _ = line.paint(origin, *lh, gpui::TextAlign::Left, None, window, cx);
+            if let Some(w) = widget {
+                // Inline image (W4): paint the decoded image instead of source.
+                let img_bounds = Bounds::new(origin, size(w.width, w.height));
+                let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
+            } else {
+                let _ = line.paint(origin, *lh, gpui::TextAlign::Left, None, window, cx);
+            }
         }
 
         if focus.is_focused(window)
@@ -1606,10 +1712,12 @@ impl Element for EditorElement {
         let wrapped = std::mem::take(&mut prepaint.wrapped);
         let line_tops = std::mem::take(&mut prepaint.line_tops);
         let line_heights = std::mem::take(&mut prepaint.line_heights);
+        let widget_rows: Vec<bool> = prepaint.widgets.iter().map(Option::is_some).collect();
         self.editor.update(cx, |editor, _| {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
             editor.line_heights = line_heights;
+            editor.widget_rows = widget_rows;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });
