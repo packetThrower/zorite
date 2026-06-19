@@ -128,6 +128,10 @@ const CODE_INSET: f32 = 12.;
 /// box doesn't overlap adjacent lines, with no blank line required.
 const CODE_PAD: f32 = 8.;
 
+/// Horizontal inset (px) of blockquote text from the editor's left edge, leaving
+/// room for the left border (2px) + a gap, matching the reading view's `pl(12)`.
+const QUOTE_INSET: f32 = 14.;
+
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
 #[derive(Clone)]
@@ -215,10 +219,10 @@ pub struct EditorState {
     /// Per-logical-line display→source byte map for rows with hidden markers
     /// (W6); `None` when the painted text equals the source. From the last paint.
     offset_maps: Vec<Option<Vec<usize>>>,
-    /// Per-logical-line flag: this row is inside a fenced code block, so its text
-    /// (and the caret/selection/hit-test on it) is inset by [`CODE_INSET`] to sit
-    /// inside the block's padded box. From the last paint.
-    code_rows: Vec<bool>,
+    /// Per-logical-line horizontal text inset (and so the caret/selection/hit-test
+    /// inset): non-zero for fenced code blocks and gutter marks (blockquotes,
+    /// lists). From the last paint.
+    line_insets: Vec<Pixels>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     is_selecting: bool,
@@ -259,7 +263,7 @@ impl EditorState {
             line_heights: Vec::new(),
             widget_rows: Vec::new(),
             offset_maps: Vec::new(),
-            code_rows: Vec::new(),
+            line_insets: Vec::new(),
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -377,15 +381,11 @@ impl EditorState {
             .unwrap_or(self.line_height)
     }
 
-    /// Horizontal text inset for logical line `row`: [`CODE_INSET`] for a fenced
-    /// code-block row (text sits inside the padded box), else zero. Applied to the
-    /// caret, selection, hit-test, and text paint so they all stay aligned.
-    fn code_inset(&self, row: usize) -> Pixels {
-        if self.code_rows.get(row).copied().unwrap_or(false) {
-            px(CODE_INSET)
-        } else {
-            px(0.)
-        }
+    /// Horizontal text inset for logical line `row` (from the last paint): non-zero
+    /// for fenced code blocks + gutter marks. Applied to the caret, selection,
+    /// hit-test, and text paint so they all stay aligned.
+    fn line_inset(&self, row: usize) -> Pixels {
+        self.line_insets.get(row).copied().unwrap_or(px(0.))
     }
 
     /// Window-space bounds of the caret at `offset`, from the last paint's
@@ -398,7 +398,7 @@ impl EditorState {
         let line = self.wrapped.get(row)?;
         let p = line.position_for_index(self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
-        let x = bounds.left() + p.x + self.code_inset(row);
+        let x = bounds.left() + p.x + self.line_inset(row);
         Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
     }
 
@@ -948,7 +948,7 @@ impl EditorState {
         if self.widget_rows.get(row).copied().unwrap_or(false) {
             return self.line_starts()[row];
         }
-        let x = (rel.x - self.code_inset(row)).max(px(0.));
+        let x = (rel.x - self.line_inset(row)).max(px(0.));
         let line_rel = point(x, rel.y - self.line_tops[row]);
         let col = match self.wrapped[row].closest_index_for_position(line_rel, self.line_h(row)) {
             Ok(i) | Err(i) => i,
@@ -1132,7 +1132,7 @@ impl EntityInputHandler for EditorState {
         let line = self.wrapped.get(row)?;
         let p = line.position_for_index(self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
-        let x = bounds.left() + p.x + self.code_inset(row);
+        let x = bounds.left() + p.x + self.line_inset(row);
         Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
     }
 
@@ -1390,10 +1390,29 @@ struct TableRow {
     border: Hsla,
 }
 
-/// Per-logical-line shaping output — five parallel vecs of equal length: the
-/// shaped source line, its row height, an optional inline-image widget, an
-/// optional full-width line background (a fenced code block), and an optional
-/// table-row grid.
+/// A per-line "gutter" decoration: a left-margin treatment that hides its source
+/// marker and renders something in its place, with the body text inset to make
+/// room. Covers blockquotes now; list bullets + task checkboxes reuse it.
+#[derive(Clone, Copy)]
+enum LineMark {
+    /// Blockquote: a muted left border; the `>` markers are hidden and the body
+    /// text is muted (`SyntaxStyle::quote`).
+    Quote(Hsla),
+}
+
+impl LineMark {
+    /// Horizontal inset (px) applied to the body text + caret for this mark.
+    fn inset(self) -> Pixels {
+        match self {
+            LineMark::Quote(_) => px(QUOTE_INSET),
+        }
+    }
+}
+
+/// Per-logical-line shaping output — parallel vecs of equal length: the shaped
+/// source line, its row height, an optional inline-image widget, an optional
+/// fenced-code-block background, an optional table-row grid, the display→source
+/// map, and an optional gutter decoration (blockquote / list / checkbox).
 type ShapedLines = (
     Vec<WrappedLine>,
     Vec<Pixels>,
@@ -1403,6 +1422,7 @@ type ShapedLines = (
     // Per-line display→source byte map for lines with markers hidden (W6); `None`
     // when the displayed text equals the source (revealed / code / widget lines).
     Vec<Option<Vec<usize>>>,
+    Vec<Option<LineMark>>,
 );
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
@@ -1440,6 +1460,17 @@ fn display_col_in(map: Option<&Vec<usize>>, source_col: usize) -> usize {
             Ok(d) | Err(d) => d,
         },
         None => source_col,
+    }
+}
+
+/// Horizontal text inset for a row from its decorations: [`CODE_INSET`] inside a
+/// fenced code block, else the gutter mark's inset (blockquote/list), else zero.
+/// At most one applies per line.
+fn row_inset(bg: Option<CodeBg>, mark: Option<LineMark>) -> Pixels {
+    if bg.is_some() {
+        px(CODE_INSET)
+    } else {
+        mark.map_or(px(0.), LineMark::inset)
     }
 }
 
@@ -1489,6 +1520,7 @@ fn shape_document(
     let mut backgrounds: Vec<Option<CodeBg>> = Vec::new();
     let mut tables = Vec::new();
     let mut maps = Vec::new();
+    let mut marks: Vec<Option<LineMark>> = Vec::new();
     let lines: Vec<&str> = content.split('\n').collect();
     // Fenced-code-block regions; a block's ``` fence lines collapse (W6) unless
     // the caret is inside that block (then they show, so they stay editable).
@@ -1620,6 +1652,24 @@ fn shape_document(
                 })
             })
             .collect();
+        // Gutter decoration (blockquote for now): a non-code/widget/table line
+        // beginning with `>`. The decoration (muted text + left border, `>`
+        // hidden) shows only while the caret is OFF the line; on the line it reads
+        // as plain source with the `>` revealed (a line-level reveal — the whole
+        // prefix shows wherever the caret sits on the line, unlike inline #5).
+        let quote_prefix = md
+            .filter(|_| !is_code && widget.is_none() && table.is_none())
+            .and_then(|_| markdown_syntax::blockquote_prefix(line));
+        let caret_here = caret_col.is_some();
+        let mark = quote_prefix
+            .filter(|_| !caret_here && !full_source)
+            .and(md)
+            .map(|st| LineMark::Quote(st.quote));
+        let reveal_prefix = quote_prefix.filter(|_| caret_here).unwrap_or(0);
+        let line_base = match mark {
+            Some(LineMark::Quote(c)) => c,
+            None => base_color,
+        };
         let (shaped_text, runs, bg, map) = if collapse_fence {
             // Hidden ``` fence line: nothing painted, zero height.
             (String::new(), Vec::new(), None, None)
@@ -1658,9 +1708,10 @@ fn shape_document(
             let (disp, runs, m) = markdown_syntax::hidden_runs(
                 line,
                 base_font,
-                base_color,
+                line_base,
                 &line_diags,
                 caret_col,
+                reveal_prefix,
                 st,
             );
             (disp, runs, None, Some(m))
@@ -1668,16 +1719,18 @@ fn shape_document(
             // Full source with diagnostics (the caret/selected line, or md off).
             (
                 line.to_string(),
-                markdown_syntax::styled_runs(line, base_font, base_color, &line_diags, md),
+                markdown_syntax::styled_runs(line, base_font, line_base, &line_diags, md),
                 None,
                 None,
             )
         };
 
-        // Code lines are painted inset by CODE_INSET on each side, so they wrap at
-        // a correspondingly narrower width to stay inside the box.
+        // Code lines are inset by CODE_INSET on each side; a gutter mark insets the
+        // left only. Either wraps at a correspondingly narrower width.
         let line_wrap = if is_code {
             wrap_width.map(|w| (w - px(2. * CODE_INSET)).max(px(0.)))
+        } else if let Some(m) = mark {
+            wrap_width.map(|w| (w - m.inset()).max(px(0.)))
         } else {
             wrap_width
         };
@@ -1705,6 +1758,7 @@ fn shape_document(
             backgrounds.push(bg);
             tables.push(table);
             maps.push(map);
+            marks.push(mark);
             // Track a (visible) code line + its width so the block's box can be
             // sized to its widest line and its last line marked.
             if is_code && !collapse_fence {
@@ -1726,7 +1780,7 @@ fn shape_document(
             }
         }
     }
-    (wrapped, heights, widgets, backgrounds, tables, maps)
+    (wrapped, heights, widgets, backgrounds, tables, maps, marks)
 }
 
 /// Content-fit column widths for a table region (W4c): each column sized to its
@@ -1899,6 +1953,8 @@ struct PrepaintState {
     tables: Vec<Option<TableRow>>,
     /// Per-line display→source byte map for marker-hidden rows (W6).
     maps: Vec<Option<Vec<usize>>>,
+    /// Per-line gutter decoration (blockquote / list / checkbox).
+    marks: Vec<Option<LineMark>>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -1962,7 +2018,7 @@ impl Element for EditorElement {
                 // Sum of per-line (variable) heights × each line's wrap rows.
                 let caret_row = editor.row_col(editor.cursor_offset()).0;
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, backgrounds, _, _) = shape_document(
+                let (wrapped, heights, _, backgrounds, _, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -2014,7 +2070,7 @@ impl Element for EditorElement {
         // their own taller rows (W2) and image lines render inline (W4).
         let caret_row = editor.row_col(editor.cursor_offset()).0;
         let sf = window.scale_factor();
-        let (wrapped, line_heights, widgets, backgrounds, tables, maps) =
+        let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks) =
             if editor.content.is_empty() {
                 let w = shape_all(
                     window,
@@ -2028,6 +2084,7 @@ impl Element for EditorElement {
                 (
                     w,
                     vec![base_lh; n],
+                    vec![None; n],
                     vec![None; n],
                     vec![None; n],
                     vec![None; n],
@@ -2072,17 +2129,16 @@ impl Element for EditorElement {
             |top: Pixels, p: Point<Pixels>| point(bounds.left() + p.x, bounds.top() + top + p.y);
 
         // Caret/selection positioning must use THIS frame's fresh per-row data —
-        // `editor.offset_maps`/`code_rows` aren't committed until paint, so the
+        // `editor.offset_maps`/`line_insets` aren't committed until paint, so the
         // method forms would lag a frame (a one-frame caret jump after an edit
         // that hides/reveals markers).
         let disp_col =
             |row: usize, sc: usize| display_col_in(maps.get(row).and_then(Option::as_ref), sc);
         let code_inset = |row: usize| {
-            if backgrounds.get(row).is_some_and(Option::is_some) {
-                px(CODE_INSET)
-            } else {
-                px(0.)
-            }
+            row_inset(
+                backgrounds.get(row).copied().flatten(),
+                marks.get(row).copied().flatten(),
+            )
         };
 
         let (cursor, selections) = if editor.content.is_empty() {
@@ -2181,6 +2237,7 @@ impl Element for EditorElement {
             backgrounds,
             tables,
             maps,
+            marks,
             cursor,
             selections,
         }
@@ -2241,6 +2298,11 @@ impl Element for EditorElement {
                     fill(Bounds::new(box_origin, box_size), cb.color).corner_radii(corners),
                 );
             }
+            // Blockquote: a muted 2px left border down the line (the body is inset
+            // past it by QUOTE_INSET).
+            if let Some(LineMark::Quote(c)) = prepaint.marks.get(i).copied().flatten() {
+                window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), c));
+            }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
                 // Table grid row (W4c): cells + borders instead of source.
                 paint_table_row(
@@ -2251,13 +2313,13 @@ impl Element for EditorElement {
                 let img_bounds = Bounds::new(origin, size(w.width, w.height));
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
             } else {
-                // Code lines inset their text to sit inside the block's padded box
-                // (kept in sync with `EditorState::code_inset`).
-                let text_origin = if prepaint.backgrounds.get(i).copied().flatten().is_some() {
-                    point(origin.x + px(CODE_INSET), origin.y)
-                } else {
-                    origin
-                };
+                // Code blocks + gutter marks inset their text (kept in sync with
+                // `EditorState::line_inset` / the fresh prepaint inset).
+                let inset = row_inset(
+                    prepaint.backgrounds.get(i).copied().flatten(),
+                    prepaint.marks.get(i).copied().flatten(),
+                );
+                let text_origin = point(origin.x + inset, origin.y);
                 // Run backgrounds (the inline-code highlight) paint separately from
                 // the glyphs — `paint` alone wouldn't show them.
                 let _ = line.paint_background(
@@ -2288,14 +2350,19 @@ impl Element for EditorElement {
             .enumerate()
             .map(|(i, w)| w.is_some() || prepaint.tables.get(i).is_some_and(Option::is_some))
             .collect();
-        let code_rows: Vec<bool> = prepaint.backgrounds.iter().map(Option::is_some).collect();
+        let line_insets: Vec<Pixels> = prepaint
+            .backgrounds
+            .iter()
+            .zip(prepaint.marks.iter())
+            .map(|(bg, mark)| row_inset(*bg, *mark))
+            .collect();
         self.editor.update(cx, |editor, _| {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
             editor.line_heights = line_heights;
             editor.widget_rows = widget_rows;
             editor.offset_maps = offset_maps;
-            editor.code_rows = code_rows;
+            editor.line_insets = line_insets;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });

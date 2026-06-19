@@ -53,6 +53,7 @@ fn demo_markdown_style() -> SyntaxStyle {
         code_bg: hsla(0., 0., 1., 0.06),  // faint code chip background
         link: hsla(0.58, 0.75, 0.66, 1.), // blue links / wiki-links
         tag: hsla(0.33, 0.45, 0.62, 1.),  // green tags
+        quote: hsla(0., 0., 0.6, 1.),     // muted blockquote text/border
         mono: font("Menlo"),
     }
 }
@@ -84,7 +85,8 @@ fn main() {
                             inline.\n\nA fenced code block (W4b):\n\n```rust\nfn main() {\n    \
                             println!(\"hello, world\");\n}\n```\n\nA table (W4c):\n\n| Name | \
                             Role | Score |\n| :-- | :--: | --: |\n| Ada | Engineer | 99 |\n\
-                            | Linus | Kernel | 88 |\n\nSpell-check still flags mispelled wrds; \
+                            | Linus | Kernel | 88 |\n\n> A blockquote, *muted* with a left \
+                            border.\n\nSpell-check still flags mispelled wrds; \
                             right-click one for suggestions.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)

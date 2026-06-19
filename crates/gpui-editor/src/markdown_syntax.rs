@@ -35,6 +35,8 @@ pub struct SyntaxStyle {
     pub link: Hsla,
     /// `#tags`.
     pub tag: Hsla,
+    /// Blockquote text + left-border color (a muted tone).
+    pub quote: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
 }
@@ -206,6 +208,7 @@ pub(crate) fn hidden_runs(
     base_color: Hsla,
     diagnostics: &[Diagnostic],
     caret_col: Option<usize>,
+    reveal_prefix: usize,
     md: &SyntaxStyle,
 ) -> (String, Vec<TextRun>, Vec<usize>) {
     let mut spans = scan(line, md);
@@ -225,8 +228,12 @@ pub(crate) fn hidden_runs(
         if span.range.start > pos {
             segs.push((pos..span.range.start, None));
         }
-        let hidden =
-            span.style.hide && !(reveal.start <= span.range.start && span.range.end <= reveal.end);
+        // A marker is shown when it's inside the caret's construct OR within the
+        // revealed line-level prefix (e.g. a blockquote's `>` while the caret is
+        // anywhere on the line).
+        let in_construct = reveal.start <= span.range.start && span.range.end <= reveal.end;
+        let in_prefix = span.range.end <= reveal_prefix;
+        let hidden = span.style.hide && !in_construct && !in_prefix;
         if !hidden {
             segs.push((span.range.clone(), Some(&span.style)));
         }
@@ -330,7 +337,20 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         return;
     }
+    // Blockquote: leading `>` (GFM nesting) + optional spaces. Hide the markers;
+    // the body keeps inline styling over a muted base color (set by the caller).
     let mut i = start;
+    if b.get(start) == Some(&b'>') {
+        let mut p = start;
+        while p < end && b[p] == b'>' {
+            p += 1;
+            if p < end && b[p] == b' ' {
+                p += 1;
+            }
+        }
+        marker(out, start..p, st.marker);
+        i = p;
+    }
     while i < end {
         let c = b[i];
         // Inline code: `code` — backticks are hideable markers, the body a
@@ -493,6 +513,25 @@ pub(crate) fn heading_level(line: &str) -> Option<u8> {
         n += 1;
     }
     ((1..=6).contains(&n) && (n == b.len() || b[n] == b' ')).then_some(n as u8)
+}
+
+/// Byte length of a blockquote's leading marker — one or more `>` (GFM nesting),
+/// each with an optional trailing space — if `line` is a blockquote. `None`
+/// otherwise. The editor hides this marker (reveal-on-caret) and renders the line
+/// with a muted color + a left border.
+pub(crate) fn blockquote_prefix(line: &str) -> Option<usize> {
+    let b = line.as_bytes();
+    if b.first() != Some(&b'>') {
+        return None;
+    }
+    let mut p = 0;
+    while p < b.len() && b[p] == b'>' {
+        p += 1;
+        if p < b.len() && b[p] == b' ' {
+            p += 1;
+        }
+    }
+    Some(p)
 }
 
 /// If `line` is a standalone image — `![alt](src)`, optionally followed by a
@@ -703,6 +742,7 @@ mod tests {
             code_bg: c,
             link: c,
             tag: c,
+            quote: c,
             mono: gpui::font("monospace"),
         }
     }
@@ -714,20 +754,20 @@ mod tests {
         let st = test_style();
 
         // "**bold**" → "bold"; display 0 maps to source 2, end (4) to 8.
-        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], None, &st);
+        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], None, 0, &st);
         assert_eq!(disp, "bold");
         assert_eq!(map.len(), disp.len() + 1);
         assert_eq!(map[0], 2);
         assert_eq!(map[4], 8);
 
         // "## Hi" → "Hi"; the `## ` prefix is gone, display 0 maps to source 3.
-        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], None, &st);
+        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], None, 0, &st);
         assert_eq!(disp, "Hi");
         assert_eq!(map[0], 3);
         assert_eq!(map[2], 5);
 
         // No markers → unchanged, identity map.
-        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, &st);
+        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, 0, &st);
         assert_eq!(disp, "plain text");
         assert_eq!(map, (0..=10).collect::<Vec<_>>());
     }
@@ -746,6 +786,7 @@ mod tests {
             c,
             &[Diagnostic { range: 2..6 }],
             None,
+            0,
             &st,
         );
         assert_eq!(disp, "bold");
@@ -759,6 +800,7 @@ mod tests {
             c,
             &[Diagnostic { range: 6..10 }],
             None,
+            0,
             &st,
         );
         assert_eq!(disp, "plain text");
@@ -778,16 +820,37 @@ mod tests {
 
         let line = "**bold** *it*";
         // Caret in "bold" reveals the bold markers; the italic stays hidden.
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), 0, &st);
         assert_eq!(disp, "**bold** it");
         // Caret in "it" reveals the italic; the bold hides.
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), 0, &st);
         assert_eq!(disp, "bold *it*");
         // Caret in plain text reveals nothing.
-        let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), &st);
+        let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), 0, &st);
         assert_eq!(disp, "a b");
         // No caret on the line → fully hidden (W6).
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], None, &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], None, 0, &st);
         assert_eq!(disp, "bold it");
+    }
+
+    #[test]
+    fn blockquote_prefix_and_hidden() {
+        assert_eq!(blockquote_prefix("> quote"), Some(2));
+        assert_eq!(blockquote_prefix(">no space"), Some(1));
+        assert_eq!(blockquote_prefix(">> nested"), Some(3));
+        assert_eq!(blockquote_prefix("not a quote"), None);
+
+        // The `> ` marker hides; inline styling in the body still applies.
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+        let (disp, _, map) = hidden_runs("> a **b**", &font, c, &[], None, 0, &st);
+        assert_eq!(disp, "a b"); // "> " + "**" hidden
+        assert_eq!(map[0], 2); // display 0 ('a') ← source 2
+
+        // With the prefix revealed (caret on the line) the `> ` shows even when
+        // the caret isn't in it; inline markers still hide unless under the caret.
+        let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, &st);
+        assert_eq!(disp, "> a b");
     }
 }
