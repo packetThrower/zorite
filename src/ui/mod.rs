@@ -11,3 +11,4 @@ pub mod search;
 pub mod sidebar;
 pub mod slash_menu;
 pub mod tab_bar;
+pub mod table_picker;

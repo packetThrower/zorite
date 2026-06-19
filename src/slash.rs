@@ -40,6 +40,8 @@ pub enum ItemKind {
     Category(SlashLevel),
     /// Insert `snippet`, caret at byte offset `caret` within it.
     Insert { snippet: String, caret: usize },
+    /// Open the rows×cols table-size picker (instead of inserting a fixed table).
+    TablePicker,
 }
 
 /// One entry in the open palette.
@@ -176,12 +178,18 @@ pub fn build_slash_items(
 fn markdown_items(q: &str, out: &mut Vec<PaletteItem>) {
     for s in SNIPPETS {
         if q.is_empty() || s.label.to_lowercase().contains(q) {
-            out.push(PaletteItem {
-                label: s.label.to_string(),
-                kind: ItemKind::Insert {
+            // "Table" opens the rows×cols picker; everything else inserts directly.
+            let kind = if s.label == "Table" {
+                ItemKind::TablePicker
+            } else {
+                ItemKind::Insert {
                     snippet: s.snippet.to_string(),
                     caret: s.caret,
-                },
+                }
+            };
+            out.push(PaletteItem {
+                label: s.label.to_string(),
+                kind,
             });
         }
     }

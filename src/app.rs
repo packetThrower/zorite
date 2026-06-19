@@ -19,9 +19,9 @@ use std::rc::Rc;
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle,
     Entity, EventEmitter, FocusHandle, Focusable, Global, ImageFormat, InteractiveElement,
-    IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
-    TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds, WindowDecorations,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Task, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds, WindowDecorations,
     WindowHandle, WindowOptions, div, point, px, size,
 };
 use gpui_component::{
@@ -225,6 +225,22 @@ const RECENT_PAGES_LIMIT: usize = 10;
 /// RAM at ~100 MB while loading a photo page ~3× faster than one-at-a-time.
 const MAX_IMAGE_DECODES: usize = 3;
 
+/// Open rows×cols table-size picker (from the `/table` command). Hovering its
+/// grid sets `rows`/`cols` (1-based; 0 = nothing hovered yet); a click inserts a
+/// table of that size at `start`, replacing the `/table` query.
+pub struct TablePicker {
+    target: SlashTarget,
+    /// Byte offset of the `/` to replace in the target editor.
+    start: usize,
+    /// Caret bounds (window space) to anchor the popup.
+    caret: gpui::Bounds<gpui::Pixels>,
+    pub rows: usize,
+    pub cols: usize,
+    /// Typed custom dimensions, for tables larger than the hover grid.
+    pub rows_input: Entity<InputState>,
+    pub cols_input: Entity<InputState>,
+}
+
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -357,6 +373,8 @@ pub struct AppView {
     pub search: crate::search::Results,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
+    /// Open `/table` rows×cols picker, if any.
+    table_picker: Option<TablePicker>,
     /// Debounced spell-check for the focused body editor; replacing it cancels
     /// the prior pending run so we don't hit the OS spell service per keystroke.
     spell_task: Option<Task<()>>,
@@ -559,6 +577,7 @@ impl AppView {
             collapsed_sections: HashSet::new(),
             search: crate::search::Results::default(),
             slash: None,
+            table_picker: None,
             spell_task: None,
             signal_task: None,
             templates: Vec::new(),
@@ -1658,6 +1677,7 @@ impl AppView {
         enum Act {
             Enter(SlashLevel),
             Insert(String, usize),
+            OpenPicker(SlashTarget, usize, gpui::Bounds<gpui::Pixels>),
         }
         let act = {
             let Some(s) = self.slash.as_ref() else { return };
@@ -1668,11 +1688,27 @@ impl AppView {
             match &item.kind {
                 ItemKind::Category(level) => Act::Enter(*level),
                 ItemKind::Insert { snippet, caret } => Act::Insert(snippet.clone(), *caret),
+                ItemKind::TablePicker => Act::OpenPicker(s.target.clone(), s.start, s.caret),
             }
         };
         match act {
             Act::Enter(level) => self.enter_slash_category(level, cx),
             Act::Insert(snippet, caret) => self.insert_slash(snippet, caret, window, cx),
+            Act::OpenPicker(target, start, caret) => {
+                self.slash = None;
+                let rows_input = cx.new(|cx| InputState::new(window, cx).placeholder("rows"));
+                let cols_input = cx.new(|cx| InputState::new(window, cx).placeholder("cols"));
+                self.table_picker = Some(TablePicker {
+                    target,
+                    start,
+                    caret,
+                    rows: 0,
+                    cols: 0,
+                    rows_input,
+                    cols_input,
+                });
+                cx.notify();
+            }
         }
     }
 
@@ -1844,6 +1880,85 @@ impl AppView {
             SlashTarget::Day(d) => self.day_editors.get(d).map(|de| de.state.clone()),
             SlashTarget::Page(_) => self.page_editor.as_ref().map(|pe| pe.state.clone()),
         }
+    }
+
+    /// Hovering the `/table` picker grid previews a size (1-based; 0 = none).
+    pub fn table_picker_hover(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
+        if let Some(p) = self.table_picker.as_mut()
+            && (p.rows != rows || p.cols != cols)
+        {
+            p.rows = rows;
+            p.cols = cols;
+            cx.notify();
+        }
+    }
+
+    /// Close the `/table` picker without inserting.
+    pub fn cancel_table_picker(&mut self, cx: &mut Context<Self>) {
+        if self.table_picker.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Insert a `rows`×`cols` Markdown table (header + separator + body, empty
+    /// cells) at the picker's start, replacing the `/table` query, caret in the
+    /// first cell.
+    pub fn table_picker_pick(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
+        let Some(p) = self.table_picker.take() else {
+            return;
+        };
+        let (rows, cols) = (rows.max(1), cols.max(1));
+        let Some(editor) = self.editor_for(&p.target) else {
+            cx.notify();
+            return;
+        };
+        let row = format!("|{}", "  |".repeat(cols));
+        let sep = format!("|{}", " --- |".repeat(cols));
+        let mut lines = vec![row.clone(), sep];
+        for _ in 1..rows {
+            lines.push(row.clone());
+        }
+        let snippet = format!("{}\n", lines.join("\n"));
+        let value = editor.read(cx).value().to_string();
+        let cursor = editor.read(cx).cursor().min(value.len());
+        let start = p.start.min(cursor);
+        let new = format!("{}{}{}", &value[..start], snippet, &value[cursor..]);
+        let caret_off = start + 2; // first cell, just after "| "
+        editor.update(cx, |st, cx| {
+            st.set_text(new.clone(), cx);
+            st.set_cursor(caret_off, cx);
+        });
+        match &p.target {
+            SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        cx.notify();
+    }
+
+    /// Insert a table from the picker's typed custom dimensions (for sizes beyond
+    /// the hover grid). No-op unless both fields are positive numbers.
+    pub fn table_picker_insert_custom(&mut self, cx: &mut Context<Self>) {
+        let (rows, cols) = match self.table_picker.as_ref() {
+            Some(p) => (
+                p.rows_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap_or(0),
+                p.cols_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap_or(0),
+            ),
+            None => return,
+        };
+        if rows == 0 || cols == 0 {
+            return;
+        }
+        self.table_picker_pick(rows.min(100), cols.min(100), cx);
     }
 
     /// On Enter with the slash menu closed: continue a markdown list / blockquote
@@ -4724,6 +4839,29 @@ impl Render for AppView {
             .into_any_element()
         });
 
+        // The `/table` size picker: a full-window backdrop (click outside to
+        // cancel) with the hover-grid anchored at the caret.
+        let table_picker_overlay = self.table_picker.as_ref().map(|p| {
+            gpui::deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut AppView, _: &MouseDownEvent, _, cx| {
+                            this.cancel_table_picker(cx);
+                        }),
+                    )
+                    .child(
+                        gpui::anchored()
+                            .position(p.caret.bottom_left())
+                            .snap_to_window()
+                            .child(ui::table_picker::render(p, cx)),
+                    ),
+            )
+            .into_any_element()
+        });
+
         // While resizing an image, a transparent full-window layer captures the
         // mouse so the drag continues even as the pointer leaves the handle.
         let drag_overlay = self.image_drag.as_ref().map(|_| {
@@ -5090,6 +5228,7 @@ impl Render for AppView {
                     ),
             )
             .children(overlay)
+            .children(table_picker_overlay)
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)
