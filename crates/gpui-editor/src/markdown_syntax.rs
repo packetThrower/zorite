@@ -170,11 +170,34 @@ fn run_for(
     }
 }
 
+/// The maximal run of adjacent spans (a markdown construct: its markers + body)
+/// containing source byte `c`, or an empty range when `c` is in plain text.
+/// `spans` must be sorted by `range.start` and non-overlapping. Used to reveal
+/// only the construct the caret sits in (#5).
+fn construct_at(spans: &[Span], c: usize) -> Range<usize> {
+    let mut i = 0;
+    while i < spans.len() {
+        let start = spans[i].range.start;
+        let mut end = spans[i].range.end;
+        let mut j = i + 1;
+        while j < spans.len() && spans[j].range.start == end {
+            end = spans[j].range.end;
+            j += 1;
+        }
+        if start <= c && c <= end {
+            return start..end;
+        }
+        i = j;
+    }
+    0..0
+}
+
 /// Render `line` with its syntax markers HIDDEN (W6): returns the display string
 /// (source minus the marker chars), the styled runs over it, and a per-display-
 /// byte map back to the source byte offset (length `display.len() + 1`, so the
-/// end position maps too). Used for lines the caret/selection don't touch; the
-/// caret's line keeps full source, so its caret/selection math is unchanged.
+/// end position maps too). Used for every styled line that isn't fully revealed;
+/// the construct under `caret_col` (if any) keeps its markers (#5). The caller
+/// maps caret/selection columns through the returned map (see `display_col`).
 /// Spans don't overlap and cover the line in order, so each non-marker segment
 /// contributes one run of its byte length.
 pub(crate) fn hidden_runs(
@@ -182,10 +205,16 @@ pub(crate) fn hidden_runs(
     base_font: &Font,
     base_color: Hsla,
     diagnostics: &[Diagnostic],
+    caret_col: Option<usize>,
     md: &SyntaxStyle,
 ) -> (String, Vec<TextRun>, Vec<usize>) {
     let mut spans = scan(line, md);
     spans.sort_by_key(|s| s.range.start);
+
+    // The construct (a maximal run of adjacent spans: its markers + body) the
+    // caret sits in keeps its markers visible — everything else hides them (#5,
+    // per-construct reveal). Empty range when the caret is in plain text / absent.
+    let reveal = caret_col.map_or(0..0, |c| construct_at(&spans, c));
 
     // The visible segments (markers dropped), each a source byte range + style.
     // A visible segment is copied verbatim, so source↔display is 1:1 within it —
@@ -196,7 +225,9 @@ pub(crate) fn hidden_runs(
         if span.range.start > pos {
             segs.push((pos..span.range.start, None));
         }
-        if !span.style.hide {
+        let hidden =
+            span.style.hide && !(reveal.start <= span.range.start && span.range.end <= reveal.end);
+        if !hidden {
             segs.push((span.range.clone(), Some(&span.style)));
         }
         pos = span.range.end;
@@ -683,20 +714,20 @@ mod tests {
         let st = test_style();
 
         // "**bold**" → "bold"; display 0 maps to source 2, end (4) to 8.
-        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], &st);
+        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], None, &st);
         assert_eq!(disp, "bold");
         assert_eq!(map.len(), disp.len() + 1);
         assert_eq!(map[0], 2);
         assert_eq!(map[4], 8);
 
         // "## Hi" → "Hi"; the `## ` prefix is gone, display 0 maps to source 3.
-        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], &st);
+        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], None, &st);
         assert_eq!(disp, "Hi");
         assert_eq!(map[0], 3);
         assert_eq!(map[2], 5);
 
         // No markers → unchanged, identity map.
-        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], &st);
+        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, &st);
         assert_eq!(disp, "plain text");
         assert_eq!(map, (0..=10).collect::<Vec<_>>());
     }
@@ -709,14 +740,27 @@ mod tests {
 
         // A diagnostic on the bold body ("bold" at source 2..6) underlines the
         // whole display string — squiggles survive marker hiding (W6).
-        let (disp, runs, _) = hidden_runs("**bold**", &font, c, &[Diagnostic { range: 2..6 }], &st);
+        let (disp, runs, _) = hidden_runs(
+            "**bold**",
+            &font,
+            c,
+            &[Diagnostic { range: 2..6 }],
+            None,
+            &st,
+        );
         assert_eq!(disp, "bold");
         assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), disp.len());
         assert!(runs.iter().all(|r| r.underline.is_some()));
 
         // A partial diagnostic splits the segment: only "text" (6..10) squiggles.
-        let (disp, runs, _) =
-            hidden_runs("plain text", &font, c, &[Diagnostic { range: 6..10 }], &st);
+        let (disp, runs, _) = hidden_runs(
+            "plain text",
+            &font,
+            c,
+            &[Diagnostic { range: 6..10 }],
+            None,
+            &st,
+        );
         assert_eq!(disp, "plain text");
         let underlined: usize = runs
             .iter()
@@ -724,5 +768,26 @@ mod tests {
             .map(|r| r.len)
             .sum();
         assert_eq!(underlined, 4); // "text"
+    }
+
+    #[test]
+    fn hidden_runs_reveals_only_caret_construct() {
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+
+        let line = "**bold** *it*";
+        // Caret in "bold" reveals the bold markers; the italic stays hidden.
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), &st);
+        assert_eq!(disp, "**bold** it");
+        // Caret in "it" reveals the italic; the bold hides.
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), &st);
+        assert_eq!(disp, "bold *it*");
+        // Caret in plain text reveals nothing.
+        let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), &st);
+        assert_eq!(disp, "a b");
+        // No caret on the line → fully hidden (W6).
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], None, &st);
+        assert_eq!(disp, "bold it");
     }
 }

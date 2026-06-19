@@ -123,6 +123,11 @@ const LINE_HEIGHT_RATIO: f32 = 1.25;
 /// renderer's `px(12)` left padding.
 const CODE_INSET: f32 = 12.;
 
+/// Vertical padding (px) above the first / below the last line of a fenced code
+/// block. Reserved as layout space (a gap in the line tops + total height) so the
+/// box doesn't overlap adjacent lines, with no blank line required.
+const CODE_PAD: f32 = 8.;
+
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
 #[derive(Clone)]
@@ -391,7 +396,7 @@ impl EditorState {
         let (row, col) = self.row_col(offset);
         let lh = self.line_h(row);
         let line = self.wrapped.get(row)?;
-        let p = line.position_for_index(col, lh)?;
+        let p = line.position_for_index(self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
         let x = bounds.left() + p.x + self.code_inset(row);
         Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
@@ -830,7 +835,7 @@ impl EditorState {
         let Some(cur) = self
             .wrapped
             .get(row)
-            .and_then(|l| l.position_for_index(col, cur_lh))
+            .and_then(|l| l.position_for_index(self.display_col(row, col), cur_lh))
         else {
             return self.vertical_offset(dir);
         };
@@ -959,6 +964,17 @@ impl EditorState {
             Some(map) => map.get(display_col).copied().unwrap_or(display_col),
             None => display_col,
         }
+    }
+
+    /// Map a source byte column on `row` to its display column — the inverse of
+    /// [`Self::source_col`], for positioning the caret/selection on a row whose
+    /// markers are hidden (W6/#5). Uses the last painted map; in-paint code that
+    /// has this frame's fresh map should call [`display_col_in`] directly.
+    fn display_col(&self, row: usize, source_col: usize) -> usize {
+        display_col_in(
+            self.offset_maps.get(row).and_then(Option::as_ref),
+            source_col,
+        )
     }
 
     // --- UTF-16 + grapheme boundaries (IME / cursor movement) ----------------
@@ -1114,7 +1130,7 @@ impl EntityInputHandler for EditorState {
         let (row, col) = self.row_col(range.start);
         let lh = self.line_h(row);
         let line = self.wrapped.get(row)?;
-        let p = line.position_for_index(col, lh)?;
+        let p = line.position_for_index(self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
         let x = bounds.left() + p.x + self.code_inset(row);
         Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
@@ -1412,6 +1428,35 @@ fn block_img(
     })
 }
 
+/// Invert a display→source offset map: the display column for `source_col`. The
+/// map is ascending, so a source column that is hidden (a collapsed marker)
+/// snaps to the next visible display column. `None` map → identity (a row shown
+/// as full source). The prepaint cursor/selection pass this frame's fresh map
+/// (the committed `EditorState::offset_maps` lags a frame); event handlers go
+/// through [`EditorState::display_col`], which uses the committed map.
+fn display_col_in(map: Option<&Vec<usize>>, source_col: usize) -> usize {
+    match map {
+        Some(m) => match m.binary_search(&source_col) {
+            Ok(d) | Err(d) => d,
+        },
+        None => source_col,
+    }
+}
+
+/// The reserved vertical gap above (`.0`) and below (`.1`) a row, from its
+/// code-block background: [`CODE_PAD`] above the block's first line and below its
+/// last. Added to the line tops + total height so the padded box has real layout
+/// space and never overlaps adjacent lines.
+fn code_pads(bg: Option<CodeBg>) -> (Pixels, Pixels) {
+    match bg {
+        Some(cb) => (
+            if cb.top { px(CODE_PAD) } else { px(0.) },
+            if cb.bottom { px(CODE_PAD) } else { px(0.) },
+        ),
+        None => (px(0.), px(0.)),
+    }
+}
+
 /// Shape `content` line-by-line so each logical line can use its own font size
 /// (headings are larger — W2) and a standalone image line can render as the image
 /// (W4). Returns, per logical line: the shaped source [`WrappedLine`], its row
@@ -1553,9 +1598,15 @@ fn shape_document(
                 }
             });
 
-        // A line keeps full source while the selection touches it (or styling is
-        // off); otherwise its markers are hidden (W6, reveal-on-caret).
-        let revealed = selection.0 <= line_end && selection.1 >= line_start;
+        // A line shows full source while a non-empty selection touches it (so the
+        // markers are visible to select) or styling is off. Otherwise its markers
+        // are hidden — except, on the caret's own line, the single construct the
+        // caret sits in is revealed (per-construct reveal, #5: finer than the old
+        // whole-line reveal, so the rest of the line stays rendered).
+        let sel_empty = selection.0 == selection.1;
+        let full_source = !sel_empty && selection.0 <= line_end && selection.1 >= line_start;
+        let caret_col = (sel_empty && selection.0 >= line_start && selection.0 <= line_end)
+            .then(|| selection.0 - line_start);
         // This line's diagnostics, clipped + shifted to line-local byte offsets —
         // used as spell-check squiggles whether the line shows source or hides its
         // markers.
@@ -1600,10 +1651,18 @@ fn shape_document(
                 }),
                 None,
             )
-        } else if let Some(st) = md.filter(|_| widget.is_none() && table.is_none() && !revealed) {
-            // Markers hidden: shape the display string + keep a map back to source.
-            let (disp, runs, m) =
-                markdown_syntax::hidden_runs(line, base_font, base_color, &line_diags, st);
+        } else if let Some(st) = md.filter(|_| widget.is_none() && table.is_none() && !full_source)
+        {
+            // Markers hidden (except the caret's construct): shape the display
+            // string + keep a map back to source.
+            let (disp, runs, m) = markdown_syntax::hidden_runs(
+                line,
+                base_font,
+                base_color,
+                &line_diags,
+                caret_col,
+                st,
+            );
             (disp, runs, None, Some(m))
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).
@@ -1903,7 +1962,7 @@ impl Element for EditorElement {
                 // Sum of per-line (variable) heights × each line's wrap rows.
                 let caret_row = editor.row_col(editor.cursor_offset()).0;
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, _, _, _) = shape_document(
+                let (wrapped, heights, _, backgrounds, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -1920,7 +1979,11 @@ impl Element for EditorElement {
                 wrapped
                     .iter()
                     .zip(&heights)
-                    .map(|(line, h)| *h * (line.wrap_boundaries().len() + 1) as f32)
+                    .zip(&backgrounds)
+                    .map(|((line, h), bg)| {
+                        let (top, bot) = code_pads(*bg);
+                        *h * (line.wrap_boundaries().len() + 1) as f32 + top + bot
+                    })
                     .fold(px(0.), |a, b| a + b)
                     .max(base_lh)
             };
@@ -1987,18 +2050,40 @@ impl Element for EditorElement {
                 )
             };
 
-        // Top offset of each logical line (running sum of variable wrap heights).
+        // Top offset of each logical line (running sum of variable wrap heights),
+        // reserving a gap above/below each code block so its padded box has its
+        // own space (no overlap with the adjacent line, no blank line required).
         let mut line_tops = Vec::with_capacity(wrapped.len());
         let mut y = px(0.);
-        for (line, lh) in wrapped.iter().zip(line_heights.iter()) {
+        for ((line, lh), bg) in wrapped
+            .iter()
+            .zip(line_heights.iter())
+            .zip(backgrounds.iter())
+        {
+            let (top_pad, bot_pad) = code_pads(*bg);
+            y += top_pad;
             line_tops.push(y);
-            y += *lh * (line.wrap_boundaries().len() + 1) as f32;
+            y += *lh * (line.wrap_boundaries().len() + 1) as f32 + bot_pad;
         }
 
         // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
         // only, so `line_tops` stays free to move into the prepaint state.
         let to_screen =
             |top: Pixels, p: Point<Pixels>| point(bounds.left() + p.x, bounds.top() + top + p.y);
+
+        // Caret/selection positioning must use THIS frame's fresh per-row data —
+        // `editor.offset_maps`/`code_rows` aren't committed until paint, so the
+        // method forms would lag a frame (a one-frame caret jump after an edit
+        // that hides/reveals markers).
+        let disp_col =
+            |row: usize, sc: usize| display_col_in(maps.get(row).and_then(Option::as_ref), sc);
+        let code_inset = |row: usize| {
+            if backgrounds.get(row).is_some_and(Option::is_some) {
+                px(CODE_INSET)
+            } else {
+                px(0.)
+            }
+        };
 
         let (cursor, selections) = if editor.content.is_empty() {
             let c = fill(
@@ -2011,10 +2096,10 @@ impl Element for EditorElement {
             let lh = line_heights.get(row).copied().unwrap_or(base_lh);
             let p = wrapped
                 .get(row)
-                .and_then(|l| l.position_for_index(col, lh))
+                .and_then(|l| l.position_for_index(disp_col(row, col), lh))
                 .unwrap_or_default();
             let top = line_tops.get(row).copied().unwrap_or(px(0.));
-            let inset = editor.code_inset(row);
+            let inset = code_inset(row);
             let c = fill(
                 Bounds::new(to_screen(top, point(p.x + inset, p.y)), size(px(2.), lh)),
                 text_color,
@@ -2034,12 +2119,16 @@ impl Element for EditorElement {
                 };
                 let lh = line_heights.get(row).copied().unwrap_or(base_lh);
                 let top = line_tops[row];
-                let inset = editor.code_inset(row);
+                let inset = code_inset(row);
                 let line_start = starts[row];
                 let a = s.max(line_start) - line_start;
                 let b = e.min(editor.line_end(row)) - line_start;
-                let pa = line.position_for_index(a, lh).unwrap_or_default();
-                let pb = line.position_for_index(b, lh).unwrap_or_default();
+                let pa = line
+                    .position_for_index(disp_col(row, a), lh)
+                    .unwrap_or_default();
+                let pb = line
+                    .position_for_index(disp_col(row, b), lh)
+                    .unwrap_or_default();
                 let pa = point(pa.x + inset, pa.y);
                 let pb = point(pb.x + inset, pb.y);
                 if pa.y == pb.y {
@@ -2132,15 +2221,14 @@ impl Element for EditorElement {
         {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
             // Fenced code block: one rounded, content-fit box (sized to the
-            // widest line, like a table). The first line rounds + pads the top,
-            // the last rounds + pads the bottom. Padding is grown into the quad
-            // (not the line height), so the caret/hit-test geometry is unchanged.
+            // widest line, like a table). The first line rounds + pads the top, the
+            // last rounds + pads the bottom; the pad fills the layout gap reserved
+            // for it (see `code_pads`), so the caret geometry stays text-height and
+            // the box never overlaps an adjacent line.
             if let Some(cb) = prepaint.backgrounds.get(i).copied().flatten() {
                 let r = px(6.);
                 let z = px(0.);
-                let pad = px(8.);
-                let top_pad = if cb.top { pad } else { z };
-                let bot_pad = if cb.bottom { pad } else { z };
+                let (top_pad, bot_pad) = code_pads(Some(cb));
                 let corners = Corners {
                     top_left: if cb.top { r } else { z },
                     top_right: if cb.top { r } else { z },
