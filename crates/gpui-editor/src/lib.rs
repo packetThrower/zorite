@@ -268,6 +268,39 @@ impl EditorState {
         self.suggest = Some(Box::new(provider));
     }
 
+    /// The caret's byte offset into [`Self::text`] (the moving end of any
+    /// selection). For hosts that drive a menu/completion off the caret position.
+    pub fn cursor(&self) -> usize {
+        self.cursor_offset()
+    }
+
+    /// Place the caret at `offset` (a byte offset into the document), collapsing
+    /// any selection. Clamped to the document and snapped down to a char
+    /// boundary, so a host can pass a raw click offset safely — e.g. to enter
+    /// edit mode where rendered text was clicked.
+    pub fn set_cursor(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let mut offset = offset.min(self.content.len());
+        while !self.content.is_char_boundary(offset) {
+            offset -= 1;
+        }
+        self.move_to(offset, cx);
+    }
+
+    /// Window-space bounds of the caret at `offset`, from the last paint's
+    /// layout — for anchoring a popup (e.g. a slash menu) at a document offset.
+    /// `None` before the first paint or if `offset`'s row isn't laid out.
+    pub fn bounds_for_offset(&self, offset: usize) -> Option<Bounds<Pixels>> {
+        let bounds = self.last_bounds?;
+        let (row, col) = self.row_col(offset);
+        let line = self.wrapped.get(row)?;
+        let p = line.position_for_index(col, self.line_height)?;
+        let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
+        Some(Bounds::from_corners(
+            point(bounds.left() + p.x, top),
+            point(bounds.left() + p.x, top + self.line_height),
+        ))
+    }
+
     /// Keep diagnostics valid across an edit at `edited` (the replaced byte
     /// range) that inserted `new_len` bytes: spans before the edit are left
     /// alone, spans after it are shifted by the size delta, and spans that
