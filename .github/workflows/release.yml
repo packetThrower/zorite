@@ -51,6 +51,11 @@ on:
 # through correctly without per-step plumbing.
 env:
   EFFECTIVE_VERSION: ${{ github.event.inputs.version || github.ref_name }}
+  # Fetch git deps (notably the large gpui/zed dependency) with the
+  # system `git` instead of libgit2 — more robust against the slow /
+  # flaky fetches that otherwise surface as cargo-packager's swallowed
+  # "no configuration" error. Pairs with the per-job "Pre-fetch" steps.
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 # Queue, don't cancel: a mid-flight release shouldn't be interrupted
 # by a retag of the same version — risk of half-uploaded artifacts.
@@ -133,6 +138,18 @@ jobs:
         uses: taiki-e/install-action@15449e3094499af05d8d964a1c884208e4b8b595 # v2.81.11
         with:
           tool: cargo-packager
+
+      # Pre-fetch all deps up front, while Cargo.lock still matches
+      # Cargo.toml (i.e. before the version patch). cargo-packager runs
+      # `cargo metadata` for config discovery and SILENTLY treats any
+      # failure as "no config" — so a transient registry/git fetch (the
+      # large gpui/zed git dep especially) surfaces as the bogus
+      # "Couldn't detect a valid configuration file" error rather than a
+      # network error. Fetching here warms the cache so metadata runs
+      # offline, and fails loudly with the real error otherwise.
+      # (v0.2.0-beta.2's macOS build died exactly this way.)
+      - name: Pre-fetch dependencies
+        run: cargo fetch --locked
 
       - name: Patch version from tag
         run: |
@@ -295,6 +312,13 @@ jobs:
             exit 1
           }
 
+      # See the macOS job's "Pre-fetch dependencies" note: warm the
+      # cache so cargo-packager's internal `cargo metadata` can't fail
+      # on a transient fetch and get swallowed into a bogus "no config"
+      # error.
+      - name: Pre-fetch dependencies
+        run: cargo fetch --locked
+
       - name: Patch version from tag
         shell: pwsh
         run: |
@@ -445,6 +469,13 @@ jobs:
 
       - name: Install fpm (for .rpm + .pkg.tar.zst)
         run: sudo gem install --no-document fpm
+
+      # See the macOS job's "Pre-fetch dependencies" note: warm the
+      # cache so cargo-packager's internal `cargo metadata` can't fail
+      # on a transient fetch and get swallowed into a bogus "no config"
+      # error.
+      - name: Pre-fetch dependencies
+        run: cargo fetch --locked
 
       - name: Patch version from tag
         run: |
