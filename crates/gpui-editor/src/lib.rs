@@ -118,6 +118,11 @@ const UNDO_LIMIT: usize = 256;
 /// editor text). 1.25 matches the spacing the editor replaced.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
 
+/// Horizontal inset (px) of fenced-code-block text from the box's left edge, so
+/// code sits inside the padded box rather than flush against it. Mirrors the old
+/// renderer's `px(12)` left padding.
+const CODE_INSET: f32 = 12.;
+
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
 #[derive(Clone)]
@@ -205,6 +210,10 @@ pub struct EditorState {
     /// Per-logical-line display→source byte map for rows with hidden markers
     /// (W6); `None` when the painted text equals the source. From the last paint.
     offset_maps: Vec<Option<Vec<usize>>>,
+    /// Per-logical-line flag: this row is inside a fenced code block, so its text
+    /// (and the caret/selection/hit-test on it) is inset by [`CODE_INSET`] to sit
+    /// inside the block's padded box. From the last paint.
+    code_rows: Vec<bool>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     is_selecting: bool,
@@ -245,6 +254,7 @@ impl EditorState {
             line_heights: Vec::new(),
             widget_rows: Vec::new(),
             offset_maps: Vec::new(),
+            code_rows: Vec::new(),
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -362,6 +372,17 @@ impl EditorState {
             .unwrap_or(self.line_height)
     }
 
+    /// Horizontal text inset for logical line `row`: [`CODE_INSET`] for a fenced
+    /// code-block row (text sits inside the padded box), else zero. Applied to the
+    /// caret, selection, hit-test, and text paint so they all stay aligned.
+    fn code_inset(&self, row: usize) -> Pixels {
+        if self.code_rows.get(row).copied().unwrap_or(false) {
+            px(CODE_INSET)
+        } else {
+            px(0.)
+        }
+    }
+
     /// Window-space bounds of the caret at `offset`, from the last paint's
     /// layout — for anchoring a popup (e.g. a slash menu) at a document offset.
     /// `None` before the first paint or if `offset`'s row isn't laid out.
@@ -372,10 +393,8 @@ impl EditorState {
         let line = self.wrapped.get(row)?;
         let p = line.position_for_index(col, lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
-        Some(Bounds::from_corners(
-            point(bounds.left() + p.x, top),
-            point(bounds.left() + p.x, top + lh),
-        ))
+        let x = bounds.left() + p.x + self.code_inset(row);
+        Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
     }
 
     /// The document text as an owned [`SharedString`]; use [`Self::text`] for a
@@ -924,7 +943,8 @@ impl EditorState {
         if self.widget_rows.get(row).copied().unwrap_or(false) {
             return self.line_starts()[row];
         }
-        let line_rel = point(rel.x, rel.y - self.line_tops[row]);
+        let x = (rel.x - self.code_inset(row)).max(px(0.));
+        let line_rel = point(x, rel.y - self.line_tops[row]);
         let col = match self.wrapped[row].closest_index_for_position(line_rel, self.line_h(row)) {
             Ok(i) | Err(i) => i,
         };
@@ -1096,10 +1116,8 @@ impl EntityInputHandler for EditorState {
         let line = self.wrapped.get(row)?;
         let p = line.position_for_index(col, lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
-        Some(Bounds::from_corners(
-            point(bounds.left() + p.x, top),
-            point(bounds.left() + p.x, top + lh),
-        ))
+        let x = bounds.left() + p.x + self.code_inset(row);
+        Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
     }
 
     fn character_index_for_point(
@@ -1328,6 +1346,19 @@ struct BlockImg {
     height: Pixels,
 }
 
+/// A fenced-code-block line's background (W4b/refinement): the block reads as one
+/// rounded, content-fit box (sized to its widest line, like a table — not the
+/// full editor width). Each line carries the block color, the shared box width
+/// (back-patched once the block's extent is known), and whether it's the
+/// first/last visible line (to round the box's top/bottom corners).
+#[derive(Clone, Copy)]
+struct CodeBg {
+    color: Hsla,
+    width: Pixels,
+    top: bool,
+    bottom: bool,
+}
+
 /// A table row rendered as a grid (W4c): its cells, per-column alignment, the
 /// content-fit per-column widths (shared across the table), header/separator/
 /// last-row flags, and the border color. Built only when the caret is outside
@@ -1351,7 +1382,7 @@ type ShapedLines = (
     Vec<WrappedLine>,
     Vec<Pixels>,
     Vec<Option<BlockImg>>,
-    Vec<Option<(Hsla, Pixels)>>,
+    Vec<Option<CodeBg>>,
     Vec<Option<TableRow>>,
     // Per-line display→source byte map for lines with markers hidden (W6); `None`
     // when the displayed text equals the source (revealed / code / widget lines).
@@ -1410,7 +1441,7 @@ fn shape_document(
     let mut wrapped = Vec::new();
     let mut heights = Vec::new();
     let mut widgets = Vec::new();
-    let mut backgrounds = Vec::new();
+    let mut backgrounds: Vec<Option<CodeBg>> = Vec::new();
     let mut tables = Vec::new();
     let mut maps = Vec::new();
     let lines: Vec<&str> = content.split('\n').collect();
@@ -1437,9 +1468,9 @@ fn shape_document(
     }
     let table_row_h = base_font_size * LINE_HEIGHT_RATIO + px(12.);
     let table_sep_h = px(8.);
-    // Fenced-code-block tracking: collect a block's background indices + its
-    // widest line, then back-patch every line's bg width so the block is a
-    // content-fit box (W4c refinement) rather than a full-width band.
+    // Fenced-code-block tracking: collect a block's line indices (so its box can
+    // be sized to its widest line + the first/last line marked for rounding) and
+    // the running max line width.
     let mut code_block: Vec<usize> = Vec::new();
     let mut code_w = px(0.);
     let mut line_start = 0;
@@ -1464,12 +1495,17 @@ fn shape_document(
                 .iter()
                 .any(|r| r.contains(&idx) && caret_row.is_some_and(|cr| r.contains(&cr)));
 
-        // Leaving a code block: back-patch its lines to the block's box width.
+        // Leaving a code block: size the box to its widest line (+ the inset on
+        // each side, like a table) and mark its last line so the box rounds + pads
+        // its bottom edge. The vertical padding is grown into the painted quad, so
+        // line geometry — and the caret — stay untouched.
         if !is_code && !code_block.is_empty() {
-            let box_w = (code_w + px(12.)).min(wrap_width.unwrap_or(code_w + px(12.)));
+            let bw = code_w + px(2. * CODE_INSET);
+            let last = *code_block.last().unwrap();
             for &bi in &code_block {
-                if let Some((_, w)) = &mut backgrounds[bi] {
-                    *w = box_w;
+                if let Some(cb) = &mut backgrounds[bi] {
+                    cb.width = bw;
+                    cb.bottom = bi == last;
                 }
             }
             code_block.clear();
@@ -1520,6 +1556,19 @@ fn shape_document(
         // A line keeps full source while the selection touches it (or styling is
         // off); otherwise its markers are hidden (W6, reveal-on-caret).
         let revealed = selection.0 <= line_end && selection.1 >= line_start;
+        // This line's diagnostics, clipped + shifted to line-local byte offsets —
+        // used as spell-check squiggles whether the line shows source or hides its
+        // markers.
+        let line_diags: Vec<Diagnostic> = diagnostics
+            .iter()
+            .filter_map(|d| {
+                let s = d.range.start.max(line_start);
+                let e = d.range.end.min(line_end);
+                (s < e).then(|| Diagnostic {
+                    range: (s - line_start)..(e - line_start),
+                })
+            })
+            .collect();
         let (shaped_text, runs, bg, map) = if collapse_fence {
             // Hidden ``` fence line: nothing painted, zero height.
             (String::new(), Vec::new(), None, None)
@@ -1538,23 +1587,26 @@ fn shape_document(
             } else {
                 vec![run]
             };
-            (line.to_string(), runs, Some((st.code_bg, px(0.))), None)
+            // First visible code line of the block rounds the box's top corners.
+            let top = code_block.is_empty();
+            (
+                line.to_string(),
+                runs,
+                Some(CodeBg {
+                    color: st.code_bg,
+                    width: px(0.), // back-patched to the block's widest line
+                    top,
+                    bottom: false,
+                }),
+                None,
+            )
         } else if let Some(st) = md.filter(|_| widget.is_none() && table.is_none() && !revealed) {
             // Markers hidden: shape the display string + keep a map back to source.
-            let (disp, runs, m) = markdown_syntax::hidden_runs(line, base_font, base_color, st);
+            let (disp, runs, m) =
+                markdown_syntax::hidden_runs(line, base_font, base_color, &line_diags, st);
             (disp, runs, None, Some(m))
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).
-            let line_diags: Vec<Diagnostic> = diagnostics
-                .iter()
-                .filter_map(|d| {
-                    let s = d.range.start.max(line_start);
-                    let e = d.range.end.min(line_end);
-                    (s < e).then(|| Diagnostic {
-                        range: (s - line_start)..(e - line_start),
-                    })
-                })
-                .collect();
             (
                 line.to_string(),
                 markdown_syntax::styled_runs(line, base_font, base_color, &line_diags, md),
@@ -1563,12 +1615,19 @@ fn shape_document(
             )
         };
 
+        // Code lines are painted inset by CODE_INSET on each side, so they wrap at
+        // a correspondingly narrower width to stay inside the box.
+        let line_wrap = if is_code {
+            wrap_width.map(|w| (w - px(2. * CODE_INSET)).max(px(0.)))
+        } else {
+            wrap_width
+        };
         let shaped = shape_runs(
             window,
             &SharedString::from(shaped_text),
             fs,
             &runs,
-            wrap_width,
+            line_wrap,
         );
         if let Some(wl) = shaped.into_iter().next() {
             let h = if collapse_fence {
@@ -1587,7 +1646,8 @@ fn shape_document(
             backgrounds.push(bg);
             tables.push(table);
             maps.push(map);
-            // Accumulate a (visible) code line into the current block for box sizing.
+            // Track a (visible) code line + its width so the block's box can be
+            // sized to its widest line and its last line marked.
             if is_code && !collapse_fence {
                 code_block.push(backgrounds.len() - 1);
                 code_w = code_w.max(line_w);
@@ -1595,12 +1655,15 @@ fn shape_document(
         }
         line_start = line_end + 1; // skip the '\n'
     }
-    // Back-patch a code block that runs to the end of the document.
+    // A code block running to the end of the document: size its box + mark its
+    // last line (round the box bottom + pad).
     if !code_block.is_empty() {
-        let box_w = (code_w + px(12.)).min(wrap_width.unwrap_or(code_w + px(12.)));
+        let bw = code_w + px(2. * CODE_INSET);
+        let last = *code_block.last().unwrap();
         for &bi in &code_block {
-            if let Some((_, w)) = &mut backgrounds[bi] {
-                *w = box_w;
+            if let Some(cb) = &mut backgrounds[bi] {
+                cb.width = bw;
+                cb.bottom = bi == last;
             }
         }
     }
@@ -1771,8 +1834,8 @@ struct PrepaintState {
     line_heights: Vec<Pixels>,
     /// `Some` for a line painted as an inline image instead of its source text.
     widgets: Vec<Option<BlockImg>>,
-    /// Background behind a line + its width (a content-fit fenced code block).
-    backgrounds: Vec<Option<(Hsla, Pixels)>>,
+    /// Per-line fenced-code-block background (rounded full-width box).
+    backgrounds: Vec<Option<CodeBg>>,
     /// `Some` for a line painted as a table-grid row instead of source.
     tables: Vec<Option<TableRow>>,
     /// Per-line display→source byte map for marker-hidden rows (W6).
@@ -1951,7 +2014,11 @@ impl Element for EditorElement {
                 .and_then(|l| l.position_for_index(col, lh))
                 .unwrap_or_default();
             let top = line_tops.get(row).copied().unwrap_or(px(0.));
-            let c = fill(Bounds::new(to_screen(top, p), size(px(2.), lh)), text_color);
+            let inset = editor.code_inset(row);
+            let c = fill(
+                Bounds::new(to_screen(top, point(p.x + inset, p.y)), size(px(2.), lh)),
+                text_color,
+            );
             (Some(c), Vec::new())
         } else {
             let (s, e) = (editor.selected_range.start, editor.selected_range.end);
@@ -1967,11 +2034,14 @@ impl Element for EditorElement {
                 };
                 let lh = line_heights.get(row).copied().unwrap_or(base_lh);
                 let top = line_tops[row];
+                let inset = editor.code_inset(row);
                 let line_start = starts[row];
                 let a = s.max(line_start) - line_start;
                 let b = e.min(editor.line_end(row)) - line_start;
                 let pa = line.position_for_index(a, lh).unwrap_or_default();
                 let pb = line.position_for_index(b, lh).unwrap_or_default();
+                let pa = point(pa.x + inset, pa.y);
+                let pb = point(pb.x + inset, pb.y);
                 if pa.y == pb.y {
                     sels.push(fill(
                         Bounds::from_corners(
@@ -2061,9 +2131,27 @@ impl Element for EditorElement {
             .enumerate()
         {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
-            // Content-fit background behind the line (a fenced code block — W4b/c).
-            if let Some((c, w)) = prepaint.backgrounds.get(i).copied().flatten() {
-                window.paint_quad(fill(Bounds::new(origin, size(w, *lh)), c));
+            // Fenced code block: one rounded, content-fit box (sized to the
+            // widest line, like a table). The first line rounds + pads the top,
+            // the last rounds + pads the bottom. Padding is grown into the quad
+            // (not the line height), so the caret/hit-test geometry is unchanged.
+            if let Some(cb) = prepaint.backgrounds.get(i).copied().flatten() {
+                let r = px(6.);
+                let z = px(0.);
+                let pad = px(8.);
+                let top_pad = if cb.top { pad } else { z };
+                let bot_pad = if cb.bottom { pad } else { z };
+                let corners = Corners {
+                    top_left: if cb.top { r } else { z },
+                    top_right: if cb.top { r } else { z },
+                    bottom_left: if cb.bottom { r } else { z },
+                    bottom_right: if cb.bottom { r } else { z },
+                };
+                let box_origin = point(origin.x, origin.y - top_pad);
+                let box_size = size(cb.width, *lh + top_pad + bot_pad);
+                window.paint_quad(
+                    fill(Bounds::new(box_origin, box_size), cb.color).corner_radii(corners),
+                );
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
                 // Table grid row (W4c): cells + borders instead of source.
@@ -2075,7 +2163,24 @@ impl Element for EditorElement {
                 let img_bounds = Bounds::new(origin, size(w.width, w.height));
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
             } else {
-                let _ = line.paint(origin, *lh, gpui::TextAlign::Left, None, window, cx);
+                // Code lines inset their text to sit inside the block's padded box
+                // (kept in sync with `EditorState::code_inset`).
+                let text_origin = if prepaint.backgrounds.get(i).copied().flatten().is_some() {
+                    point(origin.x + px(CODE_INSET), origin.y)
+                } else {
+                    origin
+                };
+                // Run backgrounds (the inline-code highlight) paint separately from
+                // the glyphs — `paint` alone wouldn't show them.
+                let _ = line.paint_background(
+                    text_origin,
+                    *lh,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                let _ = line.paint(text_origin, *lh, gpui::TextAlign::Left, None, window, cx);
             }
         }
 
@@ -2095,12 +2200,14 @@ impl Element for EditorElement {
             .enumerate()
             .map(|(i, w)| w.is_some() || prepaint.tables.get(i).is_some_and(Option::is_some))
             .collect();
+        let code_rows: Vec<bool> = prepaint.backgrounds.iter().map(Option::is_some).collect();
         self.editor.update(cx, |editor, _| {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
             editor.line_heights = line_heights;
             editor.widget_rows = widget_rows;
             editor.offset_maps = offset_maps;
+            editor.code_rows = code_rows;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });

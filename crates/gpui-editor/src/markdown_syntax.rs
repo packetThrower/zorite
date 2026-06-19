@@ -143,6 +143,7 @@ fn run_for(
     base_font: &Font,
     base_color: Hsla,
     md: Option<&SyntaxStyle>,
+    underline: Option<UnderlineStyle>,
 ) -> TextRun {
     let mut font = match style {
         Some(s) if s.mono => md.map_or_else(|| base_font.clone(), |m| m.mono.clone()),
@@ -161,7 +162,7 @@ fn run_for(
         font,
         color: style.and_then(|s| s.color).unwrap_or(base_color),
         background_color: style.and_then(|s| s.bg),
-        underline: None,
+        underline,
         strikethrough: style.filter(|s| s.strike).map(|_| StrikethroughStyle {
             thickness: px(1.5),
             color: None,
@@ -180,40 +181,68 @@ pub(crate) fn hidden_runs(
     line: &str,
     base_font: &Font,
     base_color: Hsla,
+    diagnostics: &[Diagnostic],
     md: &SyntaxStyle,
 ) -> (String, Vec<TextRun>, Vec<usize>) {
     let mut spans = scan(line, md);
     spans.sort_by_key(|s| s.range.start);
-    let mut display = String::with_capacity(line.len());
-    let mut runs: Vec<TextRun> = Vec::new();
-    let mut map: Vec<usize> = Vec::with_capacity(line.len() + 1);
+
+    // The visible segments (markers dropped), each a source byte range + style.
+    // A visible segment is copied verbatim, so source↔display is 1:1 within it —
+    // which lets a diagnostic (source coords) map straight onto the display.
+    let mut segs: Vec<(Range<usize>, Option<&Style>)> = Vec::new();
     let mut pos = 0;
     for span in &spans {
         if span.range.start > pos {
-            let seg = &line[pos..span.range.start];
-            runs.push(run_for(seg.len(), None, base_font, base_color, Some(md)));
-            map.extend(pos..span.range.start);
-            display.push_str(seg);
+            segs.push((pos..span.range.start, None));
         }
         if !span.style.hide {
-            let seg = &line[span.range.clone()];
-            runs.push(run_for(
-                seg.len(),
-                Some(&span.style),
-                base_font,
-                base_color,
-                Some(md),
-            ));
-            map.extend(span.range.clone());
-            display.push_str(seg);
+            segs.push((span.range.clone(), Some(&span.style)));
         }
         pos = span.range.end;
     }
     if pos < line.len() {
-        let seg = &line[pos..];
-        runs.push(run_for(seg.len(), None, base_font, base_color, Some(md)));
-        map.extend(pos..line.len());
-        display.push_str(seg);
+        segs.push((pos..line.len(), None));
+    }
+
+    let squiggle = UnderlineStyle {
+        color: Some(hsla(0., 0.8, 0.55, 1.)),
+        thickness: px(1.5),
+        wavy: true,
+    };
+    let mut display = String::with_capacity(line.len());
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut map: Vec<usize> = Vec::with_capacity(line.len() + 1);
+    for (src, style) in &segs {
+        display.push_str(&line[src.clone()]);
+        map.extend(src.clone());
+        // Split the segment at any diagnostic edges falling inside it, so the
+        // covered pieces get a spell-check squiggle (W6 lines kept their markers
+        // hidden but were dropping these underlines).
+        let mut edges = vec![src.start, src.end];
+        for d in diagnostics.iter().filter(|d| d.range.start < d.range.end) {
+            for e in [d.range.start, d.range.end] {
+                if e > src.start && e < src.end {
+                    edges.push(e);
+                }
+            }
+        }
+        edges.sort_unstable();
+        edges.dedup();
+        for w in edges.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            let under = diagnostics
+                .iter()
+                .any(|d| d.range.start <= a && a < d.range.end);
+            runs.push(run_for(
+                b - a,
+                *style,
+                base_font,
+                base_color,
+                Some(md),
+                under.then_some(squiggle),
+            ));
+        }
     }
     map.push(line.len());
     (display, runs, map)
@@ -273,8 +302,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
     let mut i = start;
     while i < end {
         let c = b[i];
-        // Inline code: `code` — backticks are hideable markers, the body a mono
-        // chip (so it matches the reading view: a highlight, no backticks).
+        // Inline code: `code` — backticks are hideable markers, the body a
+        // highlight (code color on a tint, body font) matching the reading view.
         if c == b'`'
             && let Some(close) = find1(b, i + 1, end, b'`')
         {
@@ -283,7 +312,6 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 out,
                 i + 1..close,
                 Style {
-                    mono: true,
                     color: Some(st.code),
                     bg: Some(st.code_bg),
                     ..Default::default()
@@ -655,21 +683,46 @@ mod tests {
         let st = test_style();
 
         // "**bold**" → "bold"; display 0 maps to source 2, end (4) to 8.
-        let (disp, _, map) = hidden_runs("**bold**", &font, c, &st);
+        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], &st);
         assert_eq!(disp, "bold");
         assert_eq!(map.len(), disp.len() + 1);
         assert_eq!(map[0], 2);
         assert_eq!(map[4], 8);
 
         // "## Hi" → "Hi"; the `## ` prefix is gone, display 0 maps to source 3.
-        let (disp, _, map) = hidden_runs("## Hi", &font, c, &st);
+        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], &st);
         assert_eq!(disp, "Hi");
         assert_eq!(map[0], 3);
         assert_eq!(map[2], 5);
 
         // No markers → unchanged, identity map.
-        let (disp, _, map) = hidden_runs("plain text", &font, c, &st);
+        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], &st);
         assert_eq!(disp, "plain text");
         assert_eq!(map, (0..=10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn hidden_runs_squiggle_diagnostics() {
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+
+        // A diagnostic on the bold body ("bold" at source 2..6) underlines the
+        // whole display string — squiggles survive marker hiding (W6).
+        let (disp, runs, _) = hidden_runs("**bold**", &font, c, &[Diagnostic { range: 2..6 }], &st);
+        assert_eq!(disp, "bold");
+        assert_eq!(runs.iter().map(|r| r.len).sum::<usize>(), disp.len());
+        assert!(runs.iter().all(|r| r.underline.is_some()));
+
+        // A partial diagnostic splits the segment: only "text" (6..10) squiggles.
+        let (disp, runs, _) =
+            hidden_runs("plain text", &font, c, &[Diagnostic { range: 6..10 }], &st);
+        assert_eq!(disp, "plain text");
+        let underlined: usize = runs
+            .iter()
+            .filter(|r| r.underline.is_some())
+            .map(|r| r.len)
+            .sum();
+        assert_eq!(underlined, 4); // "text"
     }
 }
