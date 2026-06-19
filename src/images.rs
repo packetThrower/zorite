@@ -112,7 +112,7 @@ fn sanitize(s: &str) -> String {
 /// shows them at ~1000 px even on a Retina display; decoding at native size
 /// costs ~11× the RAM for no visible gain (a 3024×4032 photo is 47 MB of RGBA
 /// versus ~4 MB downscaled). 2048 stays crisp at any realistic note width.
-const MAX_IMAGE_EDGE: u32 = 2048;
+const MAX_IMAGE_EDGE: u32 = 1280;
 
 /// Decoded bitmaps handed from one window to another when a tab moves (drag a
 /// tab out / into another window, right-click → "Open in new window"), so the
