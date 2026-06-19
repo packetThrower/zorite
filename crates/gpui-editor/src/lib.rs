@@ -1314,6 +1314,16 @@ struct BlockImg {
     height: Pixels,
 }
 
+/// Per-logical-line shaping output — four parallel vecs of equal length: the
+/// shaped source line, its row height, an optional inline-image widget, and an
+/// optional full-width line background (a fenced code block).
+type ShapedLines = (
+    Vec<WrappedLine>,
+    Vec<Pixels>,
+    Vec<Option<BlockImg>>,
+    Vec<Option<Hsla>>,
+);
+
 /// Fit-to-width display size for an inline image from its natural (device) size:
 /// cap to the content width (or an explicit `{width=N}`), preserving aspect.
 fn block_img(
@@ -1359,18 +1369,36 @@ fn shape_document(
     caret_row: Option<usize>,
     block_image: Option<&BlockImageFn>,
     scale_factor: f32,
-) -> (Vec<WrappedLine>, Vec<Pixels>, Vec<Option<BlockImg>>) {
+) -> ShapedLines {
     let mut wrapped = Vec::new();
     let mut heights = Vec::new();
     let mut widgets = Vec::new();
+    let mut backgrounds = Vec::new();
     let mut line_start = 0;
+    let mut in_fence = false;
     for (idx, line) in content.split('\n').enumerate() {
         let line_end = line_start + line.len();
-        let fs = base_font_size * md.map_or(1.0, |_| markdown_syntax::line_scale(line));
 
-        // Inline image: a standalone image line that isn't the caret's line and
-        // has a decoded image renders as that image, fit to the content width.
-        let widget = if md.is_some()
+        // Fenced code block (W4b): a ``` line toggles the fence; the delimiter
+        // lines + the lines between render as monospace code with a full-width
+        // background (delimiters dimmed). Code is literal — no inline scanning,
+        // no heading size, no squiggles. Styling-mode only.
+        let is_fence = md.is_some() && line.trim_start().starts_with("```");
+        let is_code = md.is_some() && (in_fence || is_fence);
+        if is_fence {
+            in_fence = !in_fence;
+        }
+
+        let fs = if is_code {
+            base_font_size
+        } else {
+            base_font_size * md.map_or(1.0, |_| markdown_syntax::line_scale(line))
+        };
+
+        // Inline image (non-code): a standalone image line that isn't the caret's
+        // line and has a decoded image renders as that image, fit to width.
+        let widget = if !is_code
+            && md.is_some()
             && Some(idx) != caret_row
             && let Some((src, w_attr)) = markdown_syntax::image_line(line)
             && let Some(img) = block_image.and_then(|f| f(src))
@@ -1380,18 +1408,40 @@ fn shape_document(
             None
         };
 
-        // Diagnostics overlapping this line, shifted to line-relative ranges.
-        let line_diags: Vec<Diagnostic> = diagnostics
-            .iter()
-            .filter_map(|d| {
-                let s = d.range.start.max(line_start);
-                let e = d.range.end.min(line_end);
-                (s < e).then(|| Diagnostic {
-                    range: (s - line_start)..(e - line_start),
+        let (runs, bg) = if let Some(st) = md.filter(|_| is_code) {
+            // One monospace run for the whole line; ``` delimiters dimmed.
+            let run = TextRun {
+                len: line.len(),
+                font: st.mono.clone(),
+                color: if is_fence { st.marker } else { st.code },
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let runs = if line.is_empty() {
+                Vec::new()
+            } else {
+                vec![run]
+            };
+            (runs, Some(st.code_bg))
+        } else {
+            // Diagnostics overlapping this line, shifted to line-relative ranges.
+            let line_diags: Vec<Diagnostic> = diagnostics
+                .iter()
+                .filter_map(|d| {
+                    let s = d.range.start.max(line_start);
+                    let e = d.range.end.min(line_end);
+                    (s < e).then(|| Diagnostic {
+                        range: (s - line_start)..(e - line_start),
+                    })
                 })
-            })
-            .collect();
-        let runs = markdown_syntax::styled_runs(line, base_font, base_color, &line_diags, md);
+                .collect();
+            (
+                markdown_syntax::styled_runs(line, base_font, base_color, &line_diags, md),
+                None,
+            )
+        };
+
         let shaped = shape_runs(
             window,
             &SharedString::from(line.to_string()),
@@ -1404,10 +1454,11 @@ fn shape_document(
             wrapped.push(wl);
             heights.push(h);
             widgets.push(widget);
+            backgrounds.push(bg);
         }
         line_start = line_end + 1; // skip the '\n'
     }
-    (wrapped, heights, widgets)
+    (wrapped, heights, widgets, backgrounds)
 }
 
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
@@ -1425,6 +1476,8 @@ struct PrepaintState {
     line_heights: Vec<Pixels>,
     /// `Some` for a line painted as an inline image instead of its source text.
     widgets: Vec<Option<BlockImg>>,
+    /// Full-width background behind a line (e.g. a fenced code block).
+    backgrounds: Vec<Option<Hsla>>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -1488,7 +1541,7 @@ impl Element for EditorElement {
                 // Sum of per-line (variable) heights × each line's wrap rows.
                 let caret_row = editor.row_col(editor.cursor_offset()).0;
                 let sf = window.scale_factor();
-                let (wrapped, heights, _) = shape_document(
+                let (wrapped, heights, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -1535,7 +1588,7 @@ impl Element for EditorElement {
         // their own taller rows (W2) and image lines render inline (W4).
         let caret_row = editor.row_col(editor.cursor_offset()).0;
         let sf = window.scale_factor();
-        let (wrapped, line_heights, widgets) = if editor.content.is_empty() {
+        let (wrapped, line_heights, widgets, backgrounds) = if editor.content.is_empty() {
             let w = shape_all(
                 window,
                 &editor.placeholder,
@@ -1544,9 +1597,8 @@ impl Element for EditorElement {
                 hsla(0., 0., 0.5, 0.5),
                 wrap_width,
             );
-            let h = vec![base_lh; w.len()];
-            let g = vec![None; w.len()];
-            (w, h, g)
+            let n = w.len();
+            (w, vec![base_lh; n], vec![None; n], vec![None; n])
         } else {
             shape_document(
                 window,
@@ -1658,6 +1710,7 @@ impl Element for EditorElement {
             line_tops,
             line_heights,
             widgets,
+            backgrounds,
             cursor,
             selections,
         }
@@ -1686,16 +1739,20 @@ impl Element for EditorElement {
 
         let base_lh =
             window.text_style().font_size.to_pixels(window.rem_size()) * LINE_HEIGHT_RATIO;
-        for (((line, top), lh), widget) in prepaint
+        for (i, ((line, top), lh)) in prepaint
             .wrapped
             .iter()
             .zip(prepaint.line_tops.iter())
             .zip(prepaint.line_heights.iter())
-            .zip(prepaint.widgets.iter())
+            .enumerate()
         {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
-            if let Some(w) = widget {
-                // Inline image (W4): paint the decoded image instead of source.
+            // Full-width background behind the line (a fenced code block — W4b).
+            if let Some(c) = prepaint.backgrounds.get(i).copied().flatten() {
+                window.paint_quad(fill(Bounds::new(origin, size(bounds.size.width, *lh)), c));
+            }
+            if let Some(w) = prepaint.widgets.get(i).and_then(Option::as_ref) {
+                // Inline image (W4a): paint the decoded image instead of source.
                 let img_bounds = Bounds::new(origin, size(w.width, w.height));
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
             } else {
