@@ -48,6 +48,9 @@ struct Style {
     mono: bool,
     color: Option<Hsla>,
     bg: Option<Hsla>,
+    /// A syntax marker (`**`, `#`, `[`, …) — dimmed when shown, and removed
+    /// entirely when the line's markers are hidden (W6, reveal-on-caret).
+    hide: bool,
 }
 
 struct Span {
@@ -132,6 +135,90 @@ pub(crate) fn styled_runs(
     runs
 }
 
+/// Build a `TextRun` of byte length `len` from a scanned span's style (or the
+/// base style when `None`). Shared by the hidden-line renderer.
+fn run_for(
+    len: usize,
+    style: Option<&Style>,
+    base_font: &Font,
+    base_color: Hsla,
+    md: Option<&SyntaxStyle>,
+) -> TextRun {
+    let mut font = match style {
+        Some(s) if s.mono => md.map_or_else(|| base_font.clone(), |m| m.mono.clone()),
+        _ => base_font.clone(),
+    };
+    if let Some(s) = style {
+        if s.bold {
+            font.weight = FontWeight::BOLD;
+        }
+        if s.italic {
+            font.style = FontStyle::Italic;
+        }
+    }
+    TextRun {
+        len,
+        font,
+        color: style.and_then(|s| s.color).unwrap_or(base_color),
+        background_color: style.and_then(|s| s.bg),
+        underline: None,
+        strikethrough: style.filter(|s| s.strike).map(|_| StrikethroughStyle {
+            thickness: px(1.5),
+            color: None,
+        }),
+    }
+}
+
+/// Render `line` with its syntax markers HIDDEN (W6): returns the display string
+/// (source minus the marker chars), the styled runs over it, and a per-display-
+/// byte map back to the source byte offset (length `display.len() + 1`, so the
+/// end position maps too). Used for lines the caret/selection don't touch; the
+/// caret's line keeps full source, so its caret/selection math is unchanged.
+/// Spans don't overlap and cover the line in order, so each non-marker segment
+/// contributes one run of its byte length.
+pub(crate) fn hidden_runs(
+    line: &str,
+    base_font: &Font,
+    base_color: Hsla,
+    md: &SyntaxStyle,
+) -> (String, Vec<TextRun>, Vec<usize>) {
+    let mut spans = scan(line, md);
+    spans.sort_by_key(|s| s.range.start);
+    let mut display = String::with_capacity(line.len());
+    let mut runs: Vec<TextRun> = Vec::new();
+    let mut map: Vec<usize> = Vec::with_capacity(line.len() + 1);
+    let mut pos = 0;
+    for span in &spans {
+        if span.range.start > pos {
+            let seg = &line[pos..span.range.start];
+            runs.push(run_for(seg.len(), None, base_font, base_color, Some(md)));
+            map.extend(pos..span.range.start);
+            display.push_str(seg);
+        }
+        if !span.style.hide {
+            let seg = &line[span.range.clone()];
+            runs.push(run_for(
+                seg.len(),
+                Some(&span.style),
+                base_font,
+                base_color,
+                Some(md),
+            ));
+            map.extend(span.range.clone());
+            display.push_str(seg);
+        }
+        pos = span.range.end;
+    }
+    if pos < line.len() {
+        let seg = &line[pos..];
+        runs.push(run_for(seg.len(), None, base_font, base_color, Some(md)));
+        map.extend(pos..line.len());
+        display.push_str(seg);
+    }
+    map.push(line.len());
+    (display, runs, map)
+}
+
 /// Scan the whole document line by line for inline markdown constructs.
 fn scan(text: &str, st: &SyntaxStyle) -> Vec<Span> {
     let mut out = Vec::new();
@@ -151,6 +238,7 @@ fn marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
         range,
         style: Style {
             color: Some(color),
+            hide: true,
             ..Default::default()
         },
     });
@@ -185,19 +273,23 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
     let mut i = start;
     while i < end {
         let c = b[i];
-        // Inline code: `code` (whole span styled as a mono chip).
+        // Inline code: `code` — backticks are hideable markers, the body a mono
+        // chip (so it matches the reading view: a highlight, no backticks).
         if c == b'`'
             && let Some(close) = find1(b, i + 1, end, b'`')
         {
-            out.push(Span {
-                range: i..close + 1,
-                style: Style {
+            marker(out, i..i + 1, st.marker);
+            push(
+                out,
+                i + 1..close,
+                Style {
                     mono: true,
                     color: Some(st.code),
                     bg: Some(st.code_bg),
                     ..Default::default()
                 },
-            });
+            );
+            marker(out, close..close + 1, st.marker);
             i = close + 1;
             continue;
         }
@@ -384,6 +476,31 @@ pub(crate) fn line_scale(line: &str) -> f32 {
     }
 }
 
+/// Fenced code-block regions (W4b/W6): each ` ``` ` line toggles a block;
+/// returns the line-index range `start..end` covering both fences (and the body
+/// between). An unclosed fence runs to the last line.
+pub(crate) fn code_regions(content: &str) -> Vec<Range<usize>> {
+    let mut out = Vec::new();
+    let mut open: Option<usize> = None;
+    let mut last = 0;
+    for (i, line) in content.split('\n').enumerate() {
+        last = i;
+        if line.trim_start().starts_with("```") {
+            match open {
+                None => open = Some(i),
+                Some(s) => {
+                    out.push(s..i + 1);
+                    open = None;
+                }
+            }
+        }
+    }
+    if let Some(s) = open {
+        out.push(s..last + 1);
+    }
+    out
+}
+
 /// Per-column text alignment of a GFM table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Align {
@@ -517,5 +634,42 @@ mod tests {
             Some(("b.png", Some(320.0)))
         );
         assert_eq!(image_line("text ![a](b.png)"), None);
+    }
+
+    fn test_style() -> SyntaxStyle {
+        let c = hsla(0., 0., 0.5, 1.);
+        SyntaxStyle {
+            marker: c,
+            code: c,
+            code_bg: c,
+            link: c,
+            tag: c,
+            mono: gpui::font("monospace"),
+        }
+    }
+
+    #[test]
+    fn hidden_runs_removes_markers_and_maps_back() {
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+
+        // "**bold**" → "bold"; display 0 maps to source 2, end (4) to 8.
+        let (disp, _, map) = hidden_runs("**bold**", &font, c, &st);
+        assert_eq!(disp, "bold");
+        assert_eq!(map.len(), disp.len() + 1);
+        assert_eq!(map[0], 2);
+        assert_eq!(map[4], 8);
+
+        // "## Hi" → "Hi"; the `## ` prefix is gone, display 0 maps to source 3.
+        let (disp, _, map) = hidden_runs("## Hi", &font, c, &st);
+        assert_eq!(disp, "Hi");
+        assert_eq!(map[0], 3);
+        assert_eq!(map[2], 5);
+
+        // No markers → unchanged, identity map.
+        let (disp, _, map) = hidden_runs("plain text", &font, c, &st);
+        assert_eq!(disp, "plain text");
+        assert_eq!(map, (0..=10).collect::<Vec<_>>());
     }
 }

@@ -202,6 +202,9 @@ pub struct EditorState {
     /// click on it places the caret at the line start instead of hit-testing
     /// source text. From the last paint.
     widget_rows: Vec<bool>,
+    /// Per-logical-line display→source byte map for rows with hidden markers
+    /// (W6); `None` when the painted text equals the source. From the last paint.
+    offset_maps: Vec<Option<Vec<usize>>>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     is_selecting: bool,
@@ -241,6 +244,7 @@ impl EditorState {
             line_tops: Vec::new(),
             line_heights: Vec::new(),
             widget_rows: Vec::new(),
+            offset_maps: Vec::new(),
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -844,7 +848,7 @@ impl EditorState {
         let col = match self.wrapped[trow].closest_index_for_position(rel, self.line_h(trow)) {
             Ok(i) | Err(i) => i,
         };
-        self.line_starts()[trow] + col
+        self.line_starts()[trow] + self.source_col(trow, col)
     }
 
     /// The end of the next word at/after `offset` (⌥→ on macOS).
@@ -924,7 +928,17 @@ impl EditorState {
         let col = match self.wrapped[row].closest_index_for_position(line_rel, self.line_h(row)) {
             Ok(i) | Err(i) => i,
         };
-        self.line_starts()[row] + col
+        self.line_starts()[row] + self.source_col(row, col)
+    }
+
+    /// Map a display byte column on `row` back to its source column. Identity
+    /// unless the row's markers are hidden (W6), where the painted text is
+    /// shorter than the source.
+    fn source_col(&self, row: usize, display_col: usize) -> usize {
+        match self.offset_maps.get(row).and_then(Option::as_ref) {
+            Some(map) => map.get(display_col).copied().unwrap_or(display_col),
+            None => display_col,
+        }
     }
 
     // --- UTF-16 + grapheme boundaries (IME / cursor movement) ----------------
@@ -1339,6 +1353,9 @@ type ShapedLines = (
     Vec<Option<BlockImg>>,
     Vec<Option<(Hsla, Pixels)>>,
     Vec<Option<TableRow>>,
+    // Per-line display→source byte map for lines with markers hidden (W6); `None`
+    // when the displayed text equals the source (revealed / code / widget lines).
+    Vec<Option<Vec<usize>>>,
 );
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
@@ -1386,13 +1403,22 @@ fn shape_document(
     caret_row: Option<usize>,
     block_image: Option<&BlockImageFn>,
     scale_factor: f32,
+    // The selected byte range; a line it touches keeps full source (markers
+    // shown), the rest hide their markers (W6, reveal-on-caret).
+    selection: (usize, usize),
 ) -> ShapedLines {
     let mut wrapped = Vec::new();
     let mut heights = Vec::new();
     let mut widgets = Vec::new();
     let mut backgrounds = Vec::new();
     let mut tables = Vec::new();
+    let mut maps = Vec::new();
     let lines: Vec<&str> = content.split('\n').collect();
+    // Fenced-code-block regions; a block's ``` fence lines collapse (W6) unless
+    // the caret is inside that block (then they show, so they stay editable).
+    let code_regions = md
+        .map(|_| markdown_syntax::code_regions(content))
+        .unwrap_or_default();
     // Table regions (W4c); content-fit column widths shared by each region's rows.
     let regions = md
         .map(|_| markdown_syntax::table_regions(content))
@@ -1430,6 +1456,13 @@ fn shape_document(
         if is_fence {
             in_fence = !in_fence;
         }
+        // A ``` fence line collapses (height 0, no text) unless the caret is in
+        // its block — so a code block reads as just its boxed body (W6), with the
+        // fences re-appearing while you edit inside it.
+        let collapse_fence = is_fence
+            && !code_regions
+                .iter()
+                .any(|r| r.contains(&idx) && caret_row.is_some_and(|cr| r.contains(&cr)));
 
         // Leaving a code block: back-patch its lines to the block's box width.
         if !is_code && !code_block.is_empty() {
@@ -1484,7 +1517,13 @@ fn shape_document(
                 }
             });
 
-        let (runs, bg) = if let Some(st) = md.filter(|_| is_code) {
+        // A line keeps full source while the selection touches it (or styling is
+        // off); otherwise its markers are hidden (W6, reveal-on-caret).
+        let revealed = selection.0 <= line_end && selection.1 >= line_start;
+        let (shaped_text, runs, bg, map) = if collapse_fence {
+            // Hidden ``` fence line: nothing painted, zero height.
+            (String::new(), Vec::new(), None, None)
+        } else if let Some(st) = md.filter(|_| is_code) {
             // One monospace run for the whole line; ``` delimiters dimmed.
             let run = TextRun {
                 len: line.len(),
@@ -1499,9 +1538,13 @@ fn shape_document(
             } else {
                 vec![run]
             };
-            (runs, Some((st.code_bg, px(0.))))
+            (line.to_string(), runs, Some((st.code_bg, px(0.))), None)
+        } else if let Some(st) = md.filter(|_| widget.is_none() && table.is_none() && !revealed) {
+            // Markers hidden: shape the display string + keep a map back to source.
+            let (disp, runs, m) = markdown_syntax::hidden_runs(line, base_font, base_color, st);
+            (disp, runs, None, Some(m))
         } else {
-            // Diagnostics overlapping this line, shifted to line-relative ranges.
+            // Full source with diagnostics (the caret/selected line, or md off).
             let line_diags: Vec<Diagnostic> = diagnostics
                 .iter()
                 .filter_map(|d| {
@@ -1513,23 +1556,29 @@ fn shape_document(
                 })
                 .collect();
             (
+                line.to_string(),
                 markdown_syntax::styled_runs(line, base_font, base_color, &line_diags, md),
+                None,
                 None,
             )
         };
 
         let shaped = shape_runs(
             window,
-            &SharedString::from(line.to_string()),
+            &SharedString::from(shaped_text),
             fs,
             &runs,
             wrap_width,
         );
         if let Some(wl) = shaped.into_iter().next() {
-            let h = match &table {
-                Some(t) if t.is_separator => table_sep_h,
-                Some(_) => table_row_h,
-                None => widget.as_ref().map_or(fs * LINE_HEIGHT_RATIO, |w| w.height),
+            let h = if collapse_fence {
+                px(0.)
+            } else {
+                match &table {
+                    Some(t) if t.is_separator => table_sep_h,
+                    Some(_) => table_row_h,
+                    None => widget.as_ref().map_or(fs * LINE_HEIGHT_RATIO, |w| w.height),
+                }
             };
             let line_w = wl.width();
             wrapped.push(wl);
@@ -1537,8 +1586,9 @@ fn shape_document(
             widgets.push(widget);
             backgrounds.push(bg);
             tables.push(table);
-            // Accumulate this code line into the current block for box sizing.
-            if is_code {
+            maps.push(map);
+            // Accumulate a (visible) code line into the current block for box sizing.
+            if is_code && !collapse_fence {
                 code_block.push(backgrounds.len() - 1);
                 code_w = code_w.max(line_w);
             }
@@ -1554,7 +1604,7 @@ fn shape_document(
             }
         }
     }
-    (wrapped, heights, widgets, backgrounds, tables)
+    (wrapped, heights, widgets, backgrounds, tables, maps)
 }
 
 /// Content-fit column widths for a table region (W4c): each column sized to its
@@ -1725,6 +1775,8 @@ struct PrepaintState {
     backgrounds: Vec<Option<(Hsla, Pixels)>>,
     /// `Some` for a line painted as a table-grid row instead of source.
     tables: Vec<Option<TableRow>>,
+    /// Per-line display→source byte map for marker-hidden rows (W6).
+    maps: Vec<Option<Vec<usize>>>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -1788,7 +1840,7 @@ impl Element for EditorElement {
                 // Sum of per-line (variable) heights × each line's wrap rows.
                 let caret_row = editor.row_col(editor.cursor_offset()).0;
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, _, _) = shape_document(
+                let (wrapped, heights, _, _, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -1800,6 +1852,7 @@ impl Element for EditorElement {
                     Some(caret_row),
                     editor.block_image.as_ref(),
                     sf,
+                    (editor.selected_range.start, editor.selected_range.end),
                 );
                 wrapped
                     .iter()
@@ -1835,38 +1888,41 @@ impl Element for EditorElement {
         // their own taller rows (W2) and image lines render inline (W4).
         let caret_row = editor.row_col(editor.cursor_offset()).0;
         let sf = window.scale_factor();
-        let (wrapped, line_heights, widgets, backgrounds, tables) = if editor.content.is_empty() {
-            let w = shape_all(
-                window,
-                &editor.placeholder,
-                font_size,
-                font.clone(),
-                hsla(0., 0., 0.5, 0.5),
-                wrap_width,
-            );
-            let n = w.len();
-            (
-                w,
-                vec![base_lh; n],
-                vec![None; n],
-                vec![None; n],
-                vec![None; n],
-            )
-        } else {
-            shape_document(
-                window,
-                &editor.content,
-                &font,
-                text_color,
-                font_size,
-                &editor.diagnostics,
-                editor.markdown_style.as_ref(),
-                wrap_width,
-                Some(caret_row),
-                editor.block_image.as_ref(),
-                sf,
-            )
-        };
+        let (wrapped, line_heights, widgets, backgrounds, tables, maps) =
+            if editor.content.is_empty() {
+                let w = shape_all(
+                    window,
+                    &editor.placeholder,
+                    font_size,
+                    font.clone(),
+                    hsla(0., 0., 0.5, 0.5),
+                    wrap_width,
+                );
+                let n = w.len();
+                (
+                    w,
+                    vec![base_lh; n],
+                    vec![None; n],
+                    vec![None; n],
+                    vec![None; n],
+                    vec![None; n],
+                )
+            } else {
+                shape_document(
+                    window,
+                    &editor.content,
+                    &font,
+                    text_color,
+                    font_size,
+                    &editor.diagnostics,
+                    editor.markdown_style.as_ref(),
+                    wrap_width,
+                    Some(caret_row),
+                    editor.block_image.as_ref(),
+                    sf,
+                    (editor.selected_range.start, editor.selected_range.end),
+                )
+            };
 
         // Top offset of each logical line (running sum of variable wrap heights).
         let mut line_tops = Vec::with_capacity(wrapped.len());
@@ -1965,6 +2021,7 @@ impl Element for EditorElement {
             widgets,
             backgrounds,
             tables,
+            maps,
             cursor,
             selections,
         }
@@ -2031,6 +2088,7 @@ impl Element for EditorElement {
         let wrapped = std::mem::take(&mut prepaint.wrapped);
         let line_tops = std::mem::take(&mut prepaint.line_tops);
         let line_heights = std::mem::take(&mut prepaint.line_heights);
+        let offset_maps = std::mem::take(&mut prepaint.maps);
         let widget_rows: Vec<bool> = prepaint
             .widgets
             .iter()
@@ -2042,6 +2100,7 @@ impl Element for EditorElement {
             editor.line_tops = line_tops;
             editor.line_heights = line_heights;
             editor.widget_rows = widget_rows;
+            editor.offset_maps = offset_maps;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });
