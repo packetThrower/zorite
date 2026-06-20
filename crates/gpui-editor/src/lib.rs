@@ -1803,7 +1803,6 @@ fn shape_document(
         ));
     }
     let table_row_h = base_font_size * LINE_HEIGHT_RATIO + px(12.);
-    let table_sep_h = px(8.);
     // Fenced-code-block tracking: collect a block's line indices (so its box can
     // be sized to its widest line + the first/last line marked for rounding) and
     // the running max line width.
@@ -2094,7 +2093,10 @@ fn shape_document(
                 px(0.)
             } else {
                 match &table {
-                    Some(t) if t.is_separator => table_sep_h,
+                    // The `|---|` separator collapses in grid mode — the old
+                    // renderer doesn't show it; the first body row's top divider
+                    // becomes the header/body border.
+                    Some(t) if t.is_separator => px(0.),
                     Some(_) => table_row_h,
                     None => widget
                         .as_ref()
@@ -2267,37 +2269,32 @@ fn paint_table_row(
     cx: &mut App,
 ) {
     let thick = px(1.);
-    let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
+    // The collapsed `|---|` separator draws nothing — the outer box + the next
+    // row's top divider form the header/body border.
     if t.is_separator {
-        let y = origin.y + (row_h - thick) / 2.;
-        window.paint_quad(fill(
-            Bounds::new(point(origin.x, y), size(table_w, thick)),
-            t.border,
-        ));
         return;
     }
-    // Horizontal borders: top on every row; bottom only on the last.
-    window.paint_quad(fill(Bounds::new(origin, size(table_w, thick)), t.border));
-    if t.is_last {
-        window.paint_quad(fill(
-            Bounds::new(
-                point(origin.x, origin.y + row_h - thick),
-                size(table_w, thick),
-            ),
-            t.border,
-        ));
+    let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
+    // Inter-row divider at the top of every row except the header (the outer box's
+    // top border covers that one).
+    if !t.is_header {
+        window.paint_quad(fill(Bounds::new(origin, size(table_w, thick)), t.border));
     }
-    let pad = px(8.);
+    let pad = px(10.);
     let mut cell_font = font.clone();
     if t.is_header {
         cell_font.weight = gpui::FontWeight::BOLD;
     }
     let mut x = origin.x;
     for (c, &cw) in t.col_widths.iter().enumerate() {
-        window.paint_quad(fill(
-            Bounds::new(point(x, origin.y), size(thick, row_h)),
-            t.border,
-        ));
+        // Inner cell separator at the left of every cell except the first (the box
+        // provides the outer-left border).
+        if c > 0 {
+            window.paint_quad(fill(
+                Bounds::new(point(x, origin.y), size(thick, row_h)),
+                t.border,
+            ));
+        }
         if let Some(cell) = t.cells.get(c).filter(|s| !s.is_empty()) {
             let run = TextRun {
                 len: cell.len(),
@@ -2326,10 +2323,6 @@ fn paint_table_row(
         }
         x += cw;
     }
-    window.paint_quad(fill(
-        Bounds::new(point(x, origin.y), size(thick, row_h)),
-        t.border,
-    ));
 }
 
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
@@ -2823,7 +2816,32 @@ impl Element for EditorElement {
                 }
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
-                // Table grid row (W4c): cells + borders instead of source.
+                // The header row paints the whole table's rounded outer border
+                // (one box around all its rows, matching the reading view); each
+                // row then paints its inner dividers + cell text.
+                if t.is_header {
+                    let mut total_h = px(0.);
+                    for j in i..prepaint.tables.len() {
+                        match prepaint.tables[j].as_ref() {
+                            Some(tr) => {
+                                total_h += prepaint.line_heights[j];
+                                if tr.is_last {
+                                    break;
+                                }
+                            }
+                            None => break,
+                        }
+                    }
+                    let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
+                    window.paint_quad(PaintQuad {
+                        bounds: Bounds::new(origin, size(table_w, total_h)),
+                        corner_radii: Corners::all(px(6.)),
+                        background: hsla(0., 0., 0., 0.).into(),
+                        border_widths: Edges::all(px(1.)),
+                        border_color: t.border,
+                        border_style: BorderStyle::Solid,
+                    });
+                }
                 paint_table_row(
                     t, origin, *lh, &font, font_size, base_lh, text_color, window, cx,
                 );
