@@ -220,6 +220,7 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
         link: p.accent,
         tag: p.tag,
         quote: p.text_tertiary,
+        mark_bg: gpui::rgba(0xFFD60066).into(),
         mono: gpui::font(mono_font()),
     }
 }

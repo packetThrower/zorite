@@ -48,12 +48,13 @@ impl Render for Demo {
 /// A dark-theme palette for the live-preview markdown styling.
 fn demo_markdown_style() -> SyntaxStyle {
     SyntaxStyle {
-        marker: hsla(0., 0., 0.5, 0.55),  // dimmed gray syntax markers
-        code: hsla(0.09, 0.6, 0.72, 1.),  // warm inline code text
-        code_bg: hsla(0., 0., 1., 0.06),  // faint code chip background
-        link: hsla(0.58, 0.75, 0.66, 1.), // blue links / wiki-links
-        tag: hsla(0.33, 0.45, 0.62, 1.),  // green tags
-        quote: hsla(0., 0., 0.6, 1.),     // muted blockquote text/border
+        marker: hsla(0., 0., 0.5, 0.55),   // dimmed gray syntax markers
+        code: hsla(0.09, 0.6, 0.72, 1.),   // warm inline code text
+        code_bg: hsla(0., 0., 1., 0.06),   // faint code chip background
+        link: hsla(0.58, 0.75, 0.66, 1.),  // blue links / wiki-links
+        tag: hsla(0.33, 0.45, 0.62, 1.),   // green tags
+        quote: hsla(0., 0., 0.6, 1.),      // muted blockquote text/border
+        mark_bg: hsla(0.13, 1., 0.5, 0.4), // yellow <mark> highlight
         mono: font("Menlo"),
     }
 }
@@ -88,7 +89,10 @@ fn main() {
                             | Linus | Kernel | 88 |\n\n> A blockquote, *muted* with a left \
                             border.\n\n- First bullet\n- Second bullet\n  - Nested bullet\n\n\
                             1. First step\n2. Second step\n\n- [x] Done task\n- [ ] Pending \
-                            task\n\n![](docs/report.pdf)\n\nSpell-check still flags mispelled \
+                            task\n\n![](docs/report.pdf)\n\n---\n\nA footnote reference[^1], a \
+                            [reference link][ref], and <mark>highlighted</mark> text.\n\n\
+                            [^1]: The footnote definition, shown muted.\n\
+                            [ref]: https://example.com\n\nSpell-check still flags mispelled \
                             wrds; right-click one for suggestions.";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)

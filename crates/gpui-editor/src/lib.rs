@@ -1784,6 +1784,9 @@ enum LineMark {
         checked: bool,
         color: Hsla,
     },
+    /// Thematic break (`---`): a full-width muted divider painted in place of the
+    /// source; the line has no body text (reveal-on-caret shows the raw `---`).
+    Rule(Hsla),
 }
 
 impl LineMark {
@@ -1792,6 +1795,7 @@ impl LineMark {
         match self {
             LineMark::Quote(_) => px(QUOTE_INSET),
             LineMark::List { text_inset, .. } | LineMark::Check { text_inset, .. } => text_inset,
+            LineMark::Rule(_) => px(0.),
         }
     }
 }
@@ -2155,18 +2159,42 @@ fn shape_document(
             None
         };
         let caret_here = caret_col.is_some();
-        let mark = gutter
-            .filter(|_| !caret_here && !full_source)
-            .map(|(_, m)| m);
+        // A thematic break (`---`) renders as a full-width divider, but only while
+        // the caret is off it; on the line it reads as the raw `---` (editable).
+        let is_rule = !is_code
+            && widget.is_none()
+            && table.is_none()
+            && !caret_here
+            && !full_source
+            && md.is_some()
+            && markdown_syntax::thematic_break(line);
+        let mark = if is_rule {
+            md.map(|st| LineMark::Rule(st.quote))
+        } else {
+            gutter
+                .filter(|_| !caret_here && !full_source)
+                .map(|(_, m)| m)
+        };
         let reveal_prefix = gutter.filter(|_| caret_here).map_or(0, |(plen, _)| plen);
+        // Footnote definitions (`[^1]: …`) and raw-HTML lines render muted, the way
+        // the reading view shows them — a whole-line color, no hidden markers.
+        let muted_line = md
+            .filter(|_| !is_code && widget.is_none() && table.is_none())
+            .filter(|_| {
+                markdown_syntax::footnote_def(line).is_some() || markdown_syntax::html_block(line)
+            })
+            .map(|st| st.quote);
         // A blockquote's body is muted; a list keeps the normal body color (only
         // its bullet is muted).
         let line_base = match mark {
             Some(LineMark::Quote(c)) => c,
-            _ => base_color,
+            _ => muted_line.unwrap_or(base_color),
         };
         let (shaped_text, runs, bg, map) = if collapse_fence {
             // Hidden ``` fence line: nothing painted, zero height.
+            (String::new(), Vec::new(), None, None)
+        } else if is_rule {
+            // Thematic break: the divider is painted from the mark; no body text.
             (String::new(), Vec::new(), None, None)
         } else if let Some(st) = md.filter(|_| is_code) {
             // One monospace run for the whole line; ``` delimiters dimmed.
@@ -2283,10 +2311,10 @@ fn shape_document(
     (wrapped, heights, widgets, backgrounds, tables, maps, marks)
 }
 
-/// Paint a file chip — a rounded, bordered button with a 📄 icon + `label` —
-/// filling the row (sized in `shape_document` to include vertical padding), its
-/// width fit to the label. Left-click opens it, right-click edits (handled by the
-/// mouse handlers via `chip_rows`).
+/// Paint a file chip — a rounded, bordered button with a flat document icon +
+/// `label` — filling the row (sized in `shape_document` to include vertical
+/// padding), its width fit to the label. Left-click opens it, right-click edits
+/// (handled by the mouse handlers via `chip_rows`).
 #[allow(clippy::too_many_arguments)]
 fn paint_chip(
     label: &str,
@@ -2300,7 +2328,7 @@ fn paint_chip(
     window: &mut Window,
     cx: &mut App,
 ) {
-    let text = SharedString::from(format!("📄  {label}"));
+    let text = SharedString::from(label.to_string());
     let run = TextRun {
         len: text.len(),
         font: font.clone(),
@@ -2313,7 +2341,10 @@ fn paint_chip(
         .text_system()
         .shape_line(text, font_size, &[run], None);
     let pad_x = px(10.);
-    let box_w = shaped.width() + pad_x * 2.;
+    let icon_h = font_size * 0.92;
+    let icon_w = icon_h * 0.74;
+    let gap = px(7.); // between the icon and the label
+    let box_w = pad_x * 2. + icon_w + gap + shaped.width();
     window.paint_quad(PaintQuad {
         bounds: Bounds::new(origin, size(box_w, row_h)),
         corner_radii: Corners::all(px(6.)),
@@ -2322,15 +2353,59 @@ fn paint_chip(
         border_color: border,
         border_style: BorderStyle::Solid,
     });
+    let ix = origin.x + pad_x;
+    paint_doc_icon(
+        ix,
+        origin.y + (row_h - icon_h) / 2.,
+        icon_w,
+        icon_h,
+        link,
+        window,
+    );
     let line_h = font_size * LINE_HEIGHT_RATIO;
     let _ = shaped.paint(
-        point(origin.x + pad_x, origin.y + (row_h - line_h) / 2.),
+        point(ix + icon_w + gap, origin.y + (row_h - line_h) / 2.),
         line_h,
         gpui::TextAlign::Left,
         None,
         window,
         cx,
     );
+}
+
+/// Paint a flat, line-art document glyph (a page with a folded top-right corner +
+/// two text lines) in `color`, the chip's file icon. Drawn with strokes — not a
+/// font emoji — so it reads flat and on-theme at the text's size.
+fn paint_doc_icon(x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla, window: &mut Window) {
+    let f = w * 0.33; // folded-corner size
+    // Page silhouette, with the top-right corner cut away for the fold.
+    let mut outline = PathBuilder::stroke(px(1.3));
+    outline.move_to(point(x, y));
+    outline.line_to(point(x + w - f, y));
+    outline.line_to(point(x + w, y + f));
+    outline.line_to(point(x + w, y + h));
+    outline.line_to(point(x, y + h));
+    outline.line_to(point(x, y));
+    if let Ok(p) = outline.build() {
+        window.paint_path(p, color);
+    }
+    // The folded corner (dog-ear).
+    let mut fold = PathBuilder::stroke(px(1.3));
+    fold.move_to(point(x + w - f, y));
+    fold.line_to(point(x + w - f, y + f));
+    fold.line_to(point(x + w, y + f));
+    if let Ok(p) = fold.build() {
+        window.paint_path(p, color);
+    }
+    // Two short text lines below the fold.
+    for fy in [0.6_f32, 0.78] {
+        let mut ln = PathBuilder::stroke(px(1.));
+        ln.move_to(point(x + w * 0.26, y + h * fy));
+        ln.line_to(point(x + w * 0.74, y + h * fy));
+        if let Ok(p) = ln.build() {
+            window.paint_path(p, color);
+        }
+    }
 }
 
 /// Content-fit column widths for a table region (W4c): each column sized to its
@@ -3049,6 +3124,12 @@ impl Element for EditorElement {
             // past it by QUOTE_INSET).
             if let Some(LineMark::Quote(c)) = prepaint.marks.get(i).copied().flatten() {
                 window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), c));
+            }
+            // Thematic break: a 1px full-width divider centered in the row.
+            if let Some(LineMark::Rule(c)) = prepaint.marks.get(i).copied().flatten() {
+                let y = origin.y + (*lh - px(1.)) / 2.;
+                let w = bounds.size.width;
+                window.paint_quad(fill(Bounds::new(point(origin.x, y), size(w, px(1.))), c));
             }
             // List item: a muted bullet (`•`) or number (`N.`) glyph where the
             // hidden source marker began (`bullet_x`); the body is inset to the

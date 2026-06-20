@@ -37,6 +37,8 @@ pub struct SyntaxStyle {
     pub tag: Hsla,
     /// Blockquote text + left-border color (a muted tone).
     pub quote: Hsla,
+    /// `<mark>` highlight background.
+    pub mark_bg: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
 }
@@ -436,6 +438,34 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             i = close + 2;
             continue;
         }
+        // Footnote reference: [^label] — rendered `[label]` in link color (the
+        // `^` hidden), matching the reading view's resolved marker.
+        if c == b'['
+            && i + 1 < end
+            && b[i + 1] == b'^'
+            && let Some(rb) = find1(b, i + 2, end, b']')
+            && rb > i + 2
+        {
+            push(
+                out,
+                i..i + 1,
+                Style {
+                    color: Some(st.link),
+                    ..Default::default()
+                },
+            );
+            marker(out, i + 1..i + 2, st.marker); // hide the `^`
+            push(
+                out,
+                i + 2..rb + 1,
+                Style {
+                    color: Some(st.link),
+                    ..Default::default()
+                },
+            );
+            i = rb + 1;
+            continue;
+        }
         // Wiki-link: [[Page]] (check before single-[ link).
         if c == b'['
             && i + 1 < end
@@ -473,6 +503,48 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             );
             marker(out, rb..rp + 1, st.marker);
             i = rp + 1;
+            continue;
+        }
+        // Reference link: [text][id] — `text` colored, brackets + `[id]` dimmed.
+        // (Inline `[text](url)` is handled just above; this is the `][` form.)
+        if c == b'['
+            && let Some(rb) = find1(b, i + 1, end, b']')
+            && rb + 1 < end
+            && b[rb + 1] == b'['
+            && let Some(rb2) = find1(b, rb + 2, end, b']')
+        {
+            marker(out, i..i + 1, st.marker);
+            push(
+                out,
+                i + 1..rb,
+                Style {
+                    color: Some(st.link),
+                    ..Default::default()
+                },
+            );
+            marker(out, rb..rb2 + 1, st.marker);
+            i = rb2 + 1;
+            continue;
+        }
+        // <mark>…</mark>: a highlight — the one safe inline-HTML tag the reading
+        // view honors. Tags hidden, body gets a highlight background.
+        if c == b'<'
+            && text[i..end].starts_with("<mark>")
+            && let Some(rel) = text[i + 6..end].find("</mark>")
+        {
+            let body = i + 6;
+            let close = body + rel;
+            marker(out, i..body, st.marker);
+            push(
+                out,
+                body..close,
+                Style {
+                    bg: Some(st.mark_bg),
+                    ..Default::default()
+                },
+            );
+            marker(out, close..close + 7, st.marker);
+            i = close + 7;
             continue;
         }
         // Tag: #tag (at a non-word boundary; needs at least one tag char).
@@ -521,6 +593,46 @@ pub(crate) fn heading_level(line: &str) -> Option<u8> {
         n += 1;
     }
     ((1..=6).contains(&n) && (n == b.len() || b[n] == b' ')).then_some(n as u8)
+}
+
+/// True if `line` is a thematic break (horizontal rule): three or more of the
+/// same `-`, `*`, or `_`, separated only by optional spaces — e.g. `---`, `***`,
+/// `- - -`. The editor paints a divider in its place (reveal-on-caret). Matches
+/// CommonMark, ignoring the rare setext-underline ambiguity this app doesn't use.
+pub(crate) fn thematic_break(line: &str) -> bool {
+    let mut chars = line.bytes().filter(|b| !b.is_ascii_whitespace());
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !matches!(first, b'-' | b'*' | b'_') {
+        return false;
+    }
+    let mut count = 1;
+    for b in chars {
+        if b != first {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 3
+}
+
+/// Byte length of the `[^label]:` prefix if `line` is a footnote definition, so
+/// the editor can render the whole line muted (the reading view does the same).
+/// `None` otherwise.
+pub(crate) fn footnote_def(line: &str) -> Option<usize> {
+    let rest = line.strip_prefix("[^")?;
+    let close = rest.find(']')?;
+    // Label must be non-empty and the `]` immediately followed by `:`.
+    (close > 0 && rest[close + 1..].starts_with(':')).then_some(2 + close + 2)
+}
+
+/// True if `line` looks like a block-level raw HTML line — `<tag …>`, `</tag>`,
+/// or `<!-- … -->` at the start (after optional indentation). The editor renders
+/// it muted, matching the reading view (raw HTML is shown literally, never run).
+pub(crate) fn html_block(line: &str) -> bool {
+    let t = line.trim_start().as_bytes();
+    matches!(t, [b'<', rest, ..] if rest.is_ascii_alphabetic() || *rest == b'/' || *rest == b'!')
 }
 
 /// Byte length of a blockquote's leading marker — one or more `>` (GFM nesting),
@@ -862,8 +974,35 @@ mod tests {
             link: c,
             tag: c,
             quote: c,
+            mark_bg: c,
             mono: gpui::font("monospace"),
         }
+    }
+
+    #[test]
+    fn thematic_break_detection() {
+        for s in ["---", "***", "___", "- - -", "  ---  ", "----"] {
+            assert!(thematic_break(s), "{s:?} should be a rule");
+        }
+        for s in ["--", "**", "", "text", "---x", "- -- text", "===", "> ---"] {
+            assert!(!thematic_break(s), "{s:?} should not be a rule");
+        }
+    }
+
+    #[test]
+    fn footnote_def_and_html_block() {
+        assert_eq!(footnote_def("[^1]: a note"), Some(5)); // `[^1]:`
+        assert_eq!(footnote_def("[^note]:x"), Some(8)); // `[^note]:`
+        assert_eq!(footnote_def("[^1] not a def"), None);
+        assert_eq!(footnote_def("[^]: empty label"), None);
+        assert_eq!(footnote_def("plain"), None);
+
+        assert!(html_block("<div>"));
+        assert!(html_block("</section>"));
+        assert!(html_block("<!-- comment -->"));
+        assert!(html_block("  <span>indented"));
+        assert!(!html_block("< 5 items"));
+        assert!(!html_block("text <b>inline</b>"));
     }
 
     #[test]
