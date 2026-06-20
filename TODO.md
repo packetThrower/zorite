@@ -17,6 +17,7 @@ work is collected under [Completed](#completed) at the bottom.
 ## Editor & rendering
 - [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
+- [ ] WYSIWYG table editing (`wysiwyg` branch): deleting the **last row or last column** via the right-click menu drops the caret just below the table. The op computes a correct in-table caret offset (confirmed via logging — e.g. `caret=2 rc=(0,2)`), but a later step in the editor's `Changed` flow moves the caret to the document end before the next paint. Other rows/columns are fine. Auto-pair was ruled out (it now skips non-keystroke edits); the resetter is still unidentified — likely a `set_cursor`/`set_text` on a reactive path (save / slash / spellcheck / toolbar refresh)
 
 ## Notes & navigation
 - [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
