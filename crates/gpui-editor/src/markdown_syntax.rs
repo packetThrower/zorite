@@ -800,11 +800,57 @@ pub(crate) enum Align {
     Right,
 }
 
+/// Visual style of a GFM table, chosen per-table via a `<!-- table:STYLE -->`
+/// marker comment on the line directly above it. `Grid` is the default (no
+/// marker). The renderers honor it; standard Markdown viewers ignore the comment
+/// and show a plain table.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub(crate) enum TableStyle {
+    /// Full outer box + all row/column gridlines.
+    #[default]
+    Grid,
+    /// Alternate body rows shaded; no gridlines; a rule under the header.
+    Striped,
+    /// Only the header row shaded; no gridlines.
+    Header,
+    /// No box or gridlines — just a rule under the header.
+    Minimal,
+}
+
+impl TableStyle {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "grid" => Some(Self::Grid),
+            "striped" => Some(Self::Striped),
+            "header" => Some(Self::Header),
+            "minimal" => Some(Self::Minimal),
+            _ => None,
+        }
+    }
+}
+
+/// Parse a `<!-- table:STYLE -->` marker line into its [`TableStyle`]. `None` if
+/// the line isn't a recognized table-style marker (so an unknown marker stays a
+/// plain HTML comment).
+pub(crate) fn table_style_marker(line: &str) -> Option<TableStyle> {
+    let inner = line
+        .trim()
+        .strip_prefix("<!--")?
+        .strip_suffix("-->")?
+        .trim();
+    TableStyle::from_name(inner.strip_prefix("table:")?.trim())
+}
+
 /// A detected GFM table region: the half-open range of logical line indices it
-/// spans (header, separator, then body rows) and its per-column alignment.
+/// spans (header, separator, then body rows) and its per-column alignment, plus
+/// an optional `<!-- table:STYLE -->` marker line directly above it.
 pub(crate) struct TableRegion {
     pub lines: Range<usize>,
     pub aligns: Vec<Align>,
+    pub style: TableStyle,
+    /// Index of the style-marker comment line above the header, if present — the
+    /// editor hides it (revealed only when the caret lands on it).
+    pub marker_line: Option<usize>,
 }
 
 /// Detect GFM table regions in `content` (W4c). A region is a row line (trimmed
@@ -823,9 +869,20 @@ pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
             while end < lines.len() && is_table_row(lines[end]) {
                 end += 1;
             }
+            // A `<!-- table:STYLE -->` comment on the line directly above sets the
+            // table's visual style (and is hidden by the editor).
+            let (style, marker_line) = match start
+                .checked_sub(1)
+                .map(|m| (m, table_style_marker(lines[m])))
+            {
+                Some((m, Some(s))) => (s, Some(m)),
+                _ => (TableStyle::Grid, None),
+            };
             out.push(TableRegion {
                 lines: start..end,
                 aligns,
+                style,
+                marker_line,
             });
             i = end;
         } else {
@@ -951,6 +1008,33 @@ mod tests {
             table_regions("| h |\n| ---: |\n| x |")[0].aligns,
             vec![Align::Right]
         );
+    }
+
+    #[test]
+    fn table_style_marker_and_region() {
+        assert_eq!(
+            table_style_marker("<!-- table:striped -->"),
+            Some(TableStyle::Striped)
+        );
+        assert_eq!(
+            table_style_marker("<!--table:minimal-->"),
+            Some(TableStyle::Minimal)
+        );
+        assert_eq!(table_style_marker("<!-- table:bogus -->"), None);
+        assert_eq!(table_style_marker("<!-- a comment -->"), None);
+        assert_eq!(table_style_marker("| a | b |"), None);
+
+        // The marker above a table sets its style + is recorded (not in `lines`).
+        let r = table_regions("<!-- table:header -->\n| h |\n| --- |\n| x |");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].style, TableStyle::Header);
+        assert_eq!(r[0].marker_line, Some(0));
+        assert_eq!(r[0].lines, 1..4);
+
+        // No marker → default Grid.
+        let g = table_regions("| h |\n| --- |\n| x |");
+        assert_eq!(g[0].style, TableStyle::Grid);
+        assert_eq!(g[0].marker_line, None);
     }
 
     #[test]

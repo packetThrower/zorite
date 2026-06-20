@@ -228,6 +228,47 @@ const MAX_IMAGE_DECODES: usize = 3;
 /// Open rows×cols table-size picker (from the `/table` command). Hovering its
 /// grid sets `rows`/`cols` (1-based; 0 = nothing hovered yet); a click inserts a
 /// table of that size at `start`, replacing the `/table` query.
+/// A table visual design offered by the `/table` picker. Maps to the
+/// `<!-- table:STYLE -->` marker the renderers honor; `Grid` is the default and
+/// writes no marker (a plain table).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableDesign {
+    #[default]
+    Grid,
+    Striped,
+    Header,
+    Minimal,
+}
+
+impl TableDesign {
+    pub const ALL: [TableDesign; 4] = [
+        TableDesign::Grid,
+        TableDesign::Striped,
+        TableDesign::Header,
+        TableDesign::Minimal,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TableDesign::Grid => "Grid",
+            TableDesign::Striped => "Striped",
+            TableDesign::Header => "Header",
+            TableDesign::Minimal => "Minimal",
+        }
+    }
+
+    /// The hidden `<!-- table:NAME -->` marker line, or `None` for the default
+    /// `Grid` (written without a marker). The names match the editor's parser.
+    fn marker(self) -> Option<&'static str> {
+        match self {
+            TableDesign::Grid => None,
+            TableDesign::Striped => Some("<!-- table:striped -->"),
+            TableDesign::Header => Some("<!-- table:header -->"),
+            TableDesign::Minimal => Some("<!-- table:minimal -->"),
+        }
+    }
+}
+
 pub struct TablePicker {
     target: SlashTarget,
     /// Byte offset of the `/` to replace in the target editor.
@@ -236,6 +277,8 @@ pub struct TablePicker {
     caret: gpui::Bounds<gpui::Pixels>,
     pub rows: usize,
     pub cols: usize,
+    /// The chosen visual design (its marker is prepended on insert).
+    pub style: TableDesign,
     /// Typed custom dimensions, for tables larger than the hover grid.
     pub rows_input: Entity<InputState>,
     pub cols_input: Entity<InputState>,
@@ -1732,6 +1775,7 @@ impl AppView {
                     caret,
                     rows: 0,
                     cols: 0,
+                    style: TableDesign::Grid,
                     rows_input,
                     cols_input,
                 });
@@ -1921,6 +1965,15 @@ impl AppView {
         }
     }
 
+    /// Select a table design in the open picker (highlighted; its marker is
+    /// prepended when a size is then chosen).
+    pub fn table_picker_set_style(&mut self, style: TableDesign, cx: &mut Context<Self>) {
+        if let Some(p) = self.table_picker.as_mut() {
+            p.style = style;
+            cx.notify();
+        }
+    }
+
     /// Close the `/table` picker without inserting.
     pub fn cancel_table_picker(&mut self, cx: &mut Context<Self>) {
         if self.table_picker.take().is_some() {
@@ -1942,7 +1995,16 @@ impl AppView {
         };
         let row = format!("|{}", "  |".repeat(cols));
         let sep = format!("|{}", " --- |".repeat(cols));
-        let mut lines = vec![row.clone(), sep];
+        // The design's hidden marker (if any) goes on the line directly above the
+        // header, so the editor associates it with this table.
+        let mut lines = Vec::new();
+        if let Some(marker) = p.style.marker() {
+            lines.push(marker.to_string());
+        }
+        // Byte length of the marker line(s) + their newline, before the header.
+        let header_off: usize = lines.iter().map(|l| l.len() + 1).sum();
+        lines.push(row.clone());
+        lines.push(sep);
         for _ in 1..rows {
             lines.push(row.clone());
         }
@@ -1951,7 +2013,7 @@ impl AppView {
         let cursor = editor.read(cx).cursor().min(value.len());
         let start = p.start.min(cursor);
         let new = format!("{}{}{}", &value[..start], snippet, &value[cursor..]);
-        let caret_off = start + 2; // first cell, just after "| "
+        let caret_off = start + header_off + 2; // first header cell, just after "| "
         editor.update(cx, |st, cx| {
             st.set_text(new.clone(), cx);
             st.set_cursor(caret_off, cx);

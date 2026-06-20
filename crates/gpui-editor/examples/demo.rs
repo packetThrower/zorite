@@ -8,9 +8,10 @@
 //! on each edit, and we re-run the checker in response.
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, KeyBinding, ParentElement,
-    Render, SharedString, Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div,
-    font, hsla, px, rgb, size,
+    App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement, IntoElement,
+    KeyBinding, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div, font, hsla, px, rgb,
+    size,
 };
 use gpui_editor::{Diagnostic, EditorEvent, EditorState, SyntaxStyle};
 use spellcheck::SpellChecker;
@@ -21,6 +22,8 @@ struct Demo {
     editor: Entity<EditorState>,
     /// Held so the change subscription keeps firing for the window's lifetime.
     _spell_sub: Subscription,
+    /// Lets the seeded content (taller than the window) scroll.
+    scroll: ScrollHandle,
 }
 
 impl Render for Demo {
@@ -30,15 +33,22 @@ impl Render for Demo {
             .bg(rgb(0x1e1e22))
             .text_color(rgb(0xe6e6e6))
             .text_size(px(16.))
-            .p(px(28.))
             .child(
                 div()
-                    .bg(rgb(0x111114))
-                    .border_1()
-                    .border_color(rgb(0x333338))
-                    .rounded(px(8.))
-                    .p(px(14.))
-                    .child(self.editor.clone()),
+                    .id("demo-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .p(px(28.))
+                    .child(
+                        div()
+                            .bg(rgb(0x111114))
+                            .border_1()
+                            .border_color(rgb(0x333338))
+                            .rounded(px(8.))
+                            .p(px(14.))
+                            .child(self.editor.clone()),
+                    ),
             )
     }
 }
@@ -93,7 +103,13 @@ fn main() {
                             [reference link][ref], and <mark>highlighted</mark> text.\n\n\
                             [^1]: The footnote definition, shown muted.\n\
                             [ref]: https://example.com\n\nSpell-check still flags mispelled \
-                            wrds; right-click one for suggestions.";
+                            wrds; right-click one for suggestions.\n\nStriped:\n\
+                            <!-- table:striped -->\n| Name | Role | Score |\n| :-- | :--: | --: |\n\
+                            | Ada | Engineer | 99 |\n| Linus | Kernel | 88 |\n\
+                            | Grace | Compiler | 95 |\n\nHeader:\n<!-- table:header -->\n\
+                            | Name | Role |\n| :-- | :-- |\n| Ada | Engineer |\n| Linus | Kernel |\
+                            \n\nMinimal:\n<!-- table:minimal -->\n| Name | Role |\n| :-- | :-- |\n\
+                            | Ada | Engineer |\n| Linus | Kernel |";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
                         .with_placeholder("Type here…")
@@ -129,7 +145,11 @@ fn main() {
                             editor.update(cx, |editor, cx| editor.set_diagnostics(diagnostics, cx));
                         },
                     );
-                    Demo { editor, _spell_sub }
+                    Demo {
+                        editor,
+                        _spell_sub,
+                        scroll: ScrollHandle::new(),
+                    }
                 })
             },
         )

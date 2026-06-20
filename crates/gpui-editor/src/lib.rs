@@ -614,6 +614,24 @@ impl EditorState {
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        // Inside a table, the caret sits at a source offset *within a cell*, so a
+        // raw newline would split the row's `| … |` markup. Instead, exit the
+        // table: drop the caret onto a fresh line just below it.
+        if self.caret_in_table() {
+            let (row, _) = self.row_col(self.cursor_offset());
+            let mut last = row;
+            while self
+                .table_rows
+                .get(last + 1)
+                .and_then(Option::as_ref)
+                .is_some()
+            {
+                last += 1;
+            }
+            let starts = self.line_starts();
+            let end = starts.get(last + 1).map_or(self.content.len(), |&s| s - 1);
+            self.selected_range = end..end;
+        }
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
@@ -1754,7 +1772,14 @@ struct TableRow {
     is_header: bool,
     is_separator: bool,
     is_last: bool,
+    /// 0-based position among the body rows (`None` for header/separator) — drives
+    /// striping (shade odd indices) + the rule-under-header (index 0).
+    body_index: Option<usize>,
+    /// The table's visual style (from its `<!-- table:STYLE -->` marker).
+    style: markdown_syntax::TableStyle,
     border: Hsla,
+    /// Row-shade color for striped / header-shaded styles (a faint tint).
+    shade: Hsla,
 }
 
 /// A per-line "gutter" decoration: a left-margin treatment that hides its source
@@ -2011,6 +2036,10 @@ fn shape_document(
             && !code_regions
                 .iter()
                 .any(|r| r.contains(&idx) && caret_row.is_some_and(|cr| r.contains(&cr)));
+        // A `<!-- table:STYLE -->` marker line collapses (hidden) too, unless the
+        // caret lands on it — so the style stays out of the way but is editable.
+        let collapse_marker =
+            caret_row != Some(idx) && regions.iter().any(|r| r.marker_line == Some(idx));
 
         // Leaving a code block: size the box to its widest line (+ the inset on
         // each side, like a table) and mark its last line so the box rounds + pads
@@ -2083,7 +2112,11 @@ fn shape_document(
                     is_header: idx == r.lines.start,
                     is_separator: idx == r.lines.start + 1,
                     is_last: idx + 1 == r.lines.end,
+                    // 0 for the first body row; None for the header/separator.
+                    body_index: idx.checked_sub(r.lines.start + 2),
+                    style: r.style,
                     border: md.map_or(base_color, |m| m.marker),
+                    shade: md.map_or(hsla(0., 0., 0., 0.), |m| m.code_bg),
                 }
             });
 
@@ -2190,8 +2223,8 @@ fn shape_document(
             Some(LineMark::Quote(c)) => c,
             _ => muted_line.unwrap_or(base_color),
         };
-        let (shaped_text, runs, bg, map) = if collapse_fence {
-            // Hidden ``` fence line: nothing painted, zero height.
+        let (shaped_text, runs, bg, map) = if collapse_fence || collapse_marker {
+            // Hidden ``` fence line or table-style marker: nothing, zero height.
             (String::new(), Vec::new(), None, None)
         } else if is_rule {
             // Thematic break: the divider is painted from the mark; no body text.
@@ -2265,7 +2298,7 @@ fn shape_document(
             line_wrap,
         );
         if let Some(wl) = shaped.into_iter().next() {
-            let h = if collapse_fence {
+            let h = if collapse_fence || collapse_marker {
                 px(0.)
             } else {
                 match &table {
@@ -2606,16 +2639,38 @@ fn paint_table_row(
     window: &mut Window,
     cx: &mut App,
 ) {
+    use markdown_syntax::TableStyle;
     let thick = px(1.);
     // The collapsed `|---|` separator draws nothing — the outer box + the next
     // row's top divider form the header/body border.
     if t.is_separator {
         return;
     }
+    let style = t.style;
+    let vlines = matches!(style, TableStyle::Grid);
+    // A single rule under the header (Striped/Minimal) vs a divider under every
+    // row (Grid) vs none (Header).
+    let header_rule = matches!(style, TableStyle::Striped | TableStyle::Minimal);
     let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
-    // Inter-row divider at the top of every row except the header (the outer box's
-    // top border covers that one).
-    if !t.is_header {
+    // Row shading (painted first, behind everything): the header for the Header
+    // style; alternate body rows for Striped.
+    let shaded = match style {
+        TableStyle::Header => t.is_header,
+        TableStyle::Striped => t.body_index.is_some_and(|b| b % 2 == 1),
+        _ => false,
+    };
+    if shaded {
+        window.paint_quad(fill(Bounds::new(origin, size(table_w, row_h)), t.shade));
+    }
+    // Horizontal divider at the row's top: under every row (Grid, header excepted —
+    // the box covers it), or just under the header (Striped/Minimal: the first body
+    // row's top), or never (Header).
+    let top_divider = if matches!(style, TableStyle::Grid) {
+        !t.is_header
+    } else {
+        header_rule && t.body_index == Some(0)
+    };
+    if top_divider {
         window.paint_quad(fill(Bounds::new(origin, size(table_w, thick)), t.border));
     }
     let pad = px(TABLE_CELL_PAD);
@@ -2625,9 +2680,9 @@ fn paint_table_row(
     }
     let mut x = origin.x;
     for (c, &cw) in t.col_widths.iter().enumerate() {
-        // Inner cell separator at the left of every cell except the first (the box
-        // provides the outer-left border).
-        if c > 0 {
+        // Inner cell separator at the left of every cell except the first (Grid
+        // only; the other styles drop vertical lines).
+        if vlines && c > 0 {
             window.paint_quad(fill(
                 Bounds::new(point(x, origin.y), size(thick, row_h)),
                 t.border,
@@ -3200,9 +3255,10 @@ impl Element for EditorElement {
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
                 // The header row paints the whole table's rounded outer border
-                // (one box around all its rows, matching the reading view); each
-                // row then paints its inner dividers + cell text.
-                if t.is_header {
+                // (one box around all its rows, matching the reading view) — for the
+                // Grid style only; the others are box-less. Each row then paints its
+                // shading, dividers, + cell text.
+                if t.is_header && matches!(t.style, markdown_syntax::TableStyle::Grid) {
                     let mut total_h = px(0.);
                     for j in i..prepaint.tables.len() {
                         match prepaint.tables[j].as_ref() {

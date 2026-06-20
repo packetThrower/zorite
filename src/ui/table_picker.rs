@@ -8,7 +8,7 @@ use gpui::{
 };
 use gpui_component::{Sizable, input::Input};
 
-use crate::app::{AppView, TablePicker};
+use crate::app::{AppView, TableDesign, TablePicker};
 use crate::theme;
 
 const MAX_COLS: usize = 8;
@@ -67,6 +67,40 @@ pub fn render(picker: &TablePicker, cx: &mut Context<AppView>) -> impl IntoEleme
         }
     }
 
+    // Design buttons (pick a visual style, then a size). The selected one shows an
+    // accent border; Grid is the plain default.
+    let mut designs = div().flex().flex_row().gap(px(4.0));
+    for d in TableDesign::ALL {
+        let selected = picker.style == d;
+        designs = designs.child(
+            div()
+                .px(px(7.0))
+                .py(px(3.0))
+                .rounded(px(5.0))
+                .border_1()
+                .border_color(if selected {
+                    theme::accent()
+                } else {
+                    theme::border_subtle()
+                })
+                .bg(theme::glass())
+                .text_size(px(11.0))
+                .text_color(if selected {
+                    theme::text_primary()
+                } else {
+                    theme::text_secondary()
+                })
+                .child(d.label())
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this: &mut AppView, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.table_picker_set_style(d, cx);
+                    }),
+                ),
+        );
+    }
+
     div()
         .occlude()
         .bg(theme::elevated())
@@ -77,6 +111,7 @@ pub fn render(picker: &TablePicker, cx: &mut Context<AppView>) -> impl IntoEleme
         .flex()
         .flex_col()
         .gap(px(6.0))
+        .child(designs)
         .child(grid)
         .child(
             div()
