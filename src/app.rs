@@ -684,8 +684,16 @@ impl AppView {
             .flatten()
             .map(|p| p.content)
             .unwrap_or_default();
-        let state = make_editor(&content, self.wysiwyg, self.image_store(), window, cx);
+        let state = make_editor(
+            &content,
+            self.wysiwyg,
+            self.image_store(),
+            self.mermaid_store(),
+            window,
+            cx,
+        );
         self.ensure_content_images(&content, cx);
+        self.ensure_content_mermaid(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -1405,8 +1413,16 @@ impl AppView {
             }
         };
         let pid = page.id;
-        let state = make_editor(&page.content, self.wysiwyg, self.image_store(), window, cx);
+        let state = make_editor(
+            &page.content,
+            self.wysiwyg,
+            self.image_store(),
+            self.mermaid_store(),
+            window,
+            cx,
+        );
         self.ensure_content_images(&page.content, cx);
+        self.ensure_content_mermaid(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -2083,6 +2099,17 @@ impl AppView {
     fn ensure_content_images(&mut self, content: &str, cx: &mut Context<Self>) {
         for info in gpui_markdown::images(content) {
             self.ensure_image_loaded(info.src, cx);
+        }
+    }
+
+    /// Kick off the off-thread render of every ```mermaid block in `content`, so
+    /// an editor in WYSIWYG mode can render them as diagrams. Idempotent (the
+    /// store dedupes); a finished render notifies → repaint → the editor's mermaid
+    /// provider finds the bitmap. Uses the editor's extraction so the cache key
+    /// matches what the editor looks up.
+    fn ensure_content_mermaid(&mut self, content: &str, cx: &mut Context<Self>) {
+        for source in gpui_editor::mermaid_sources(content) {
+            self.ensure_mermaid_loaded(source, cx);
         }
     }
 
@@ -5470,6 +5497,7 @@ fn make_editor(
     content: &str,
     wysiwyg: bool,
     image_store: Rc<RefCell<crate::images::ImageStore>>,
+    mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -5492,6 +5520,13 @@ fn make_editor(
                     .unwrap_or_else(|| src.to_string())
                     .into()
             })
+        });
+        // A ```mermaid block renders as its diagram from the shared store (None
+        // until the off-thread render finishes — the block shows raw code then).
+        editor.set_block_mermaid_provider(move |source| {
+            mermaid_store
+                .borrow()
+                .get(&gpui::SharedString::from(source))
         });
         editor
     });

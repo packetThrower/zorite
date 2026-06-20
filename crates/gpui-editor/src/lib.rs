@@ -208,6 +208,21 @@ type BlockImageFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
 /// clickable chip (left-click emits [`EditorEvent::OpenLink`]).
 type BlockChipFn = Box<dyn Fn(&str) -> Option<SharedString>>;
 
+/// Resolves a ` ```mermaid ` block's source to a rendered diagram bitmap, so the
+/// editor can render the block as the diagram (caret outside) instead of code.
+/// Set via [`EditorState::set_block_mermaid_provider`]; the host renders +
+/// caches off-thread (see [`EditorState::mermaid_sources`] to pre-render).
+type BlockMermaidFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
+
+/// The diagram sources of every ` ```mermaid ` block in `content`, so a host can
+/// pre-render them (the editor's mermaid provider then finds the ready bitmap).
+pub fn mermaid_sources(content: &str) -> Vec<SharedString> {
+    markdown_syntax::mermaid_blocks(content)
+        .into_iter()
+        .map(|(_, source)| source.into())
+        .collect()
+}
+
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
 pub struct EditorState {
@@ -267,6 +282,9 @@ pub struct EditorState {
     /// Classifies an `![](src)` as a file chip (e.g. a PDF) + its label; set by
     /// the host via [`Self::set_block_chip_provider`].
     block_chip: Option<BlockChipFn>,
+    /// Resolves a ` ```mermaid ` block's source to a rendered diagram; set by the
+    /// host via [`Self::set_block_mermaid_provider`].
+    block_mermaid: Option<BlockMermaidFn>,
     /// Per-logical-line `src` for rows painted as a file chip (from the last
     /// paint), so a left-click can open it and a right-click can edit it.
     chip_rows: Vec<Option<SharedString>>,
@@ -300,6 +318,7 @@ impl EditorState {
             suggest: None,
             block_image: None,
             block_chip: None,
+            block_mermaid: None,
             chip_rows: Vec::new(),
         }
     }
@@ -388,6 +407,17 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<SharedString> + 'static,
     ) {
         self.block_chip = Some(Box::new(provider));
+    }
+
+    /// Install the provider that resolves a ` ```mermaid ` block's source to a
+    /// rendered diagram. With it, such a block renders as the diagram when the
+    /// caret is elsewhere; with the caret inside (or while it renders) it shows
+    /// the raw fenced source. Pre-render with [`mermaid_sources`].
+    pub fn set_block_mermaid_provider(
+        &mut self,
+        provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
+    ) {
+        self.block_mermaid = Some(Box::new(provider));
     }
 
     /// The caret's byte offset into [`Self::text`] (the moving end of any
@@ -1624,6 +1654,7 @@ fn shape_document(
     caret_row: Option<usize>,
     block_image: Option<&BlockImageFn>,
     block_chip: Option<&BlockChipFn>,
+    block_mermaid: Option<&BlockMermaidFn>,
     scale_factor: f32,
     // The selected byte range; a line it touches keeps full source (markers
     // shown), the rest hide their markers (W6, reveal-on-caret).
@@ -1642,6 +1673,21 @@ fn shape_document(
     let code_regions = md
         .map(|_| markdown_syntax::code_regions(content))
         .unwrap_or_default();
+    // ```mermaid blocks ready to render as a diagram: the caret is outside the
+    // block and the host has a rendered bitmap. The diagram paints on the block's
+    // first line; the rest collapse. Caret inside / still rendering → raw code.
+    let mermaid: Vec<(Range<usize>, BlockImg)> = match block_mermaid.filter(|_| md.is_some()) {
+        Some(f) => markdown_syntax::mermaid_blocks(content)
+            .into_iter()
+            .filter(|(range, _)| caret_row.is_none_or(|cr| !range.contains(&cr)))
+            .filter_map(|(range, source)| {
+                let img = f(&source)?;
+                let bi = block_img(img, None, wrap_width, scale_factor)?;
+                Some((range, bi))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     // Table regions (W4c); content-fit column widths shared by each region's rows.
     let regions = md
         .map(|_| markdown_syntax::table_regions(content))
@@ -1669,6 +1715,39 @@ fn shape_document(
     let mut in_fence = false;
     for (idx, &line) in lines.iter().enumerate() {
         let line_end = line_start + line.len();
+
+        // A ready mermaid block renders as its diagram (on the first line) with the
+        // rest of the block collapsed — bypassing the normal per-line handling. Its
+        // ``` fences still toggle `in_fence` so later code blocks track correctly.
+        if let Some((range, bi)) = mermaid.iter().find(|(r, _)| r.contains(&idx)) {
+            if line.trim_start().starts_with("```") {
+                in_fence = !in_fence;
+            }
+            let (h, widget) = if idx == range.start {
+                (bi.height, Some(Block::Image(bi.clone())))
+            } else {
+                (px(0.), None)
+            };
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(widget);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            line_start = line_end + 1;
+            continue;
+        }
 
         // Fenced code block (W4b): a ``` line toggles the fence; the delimiter
         // lines + the lines between render as monospace code over a content-fit
@@ -2243,6 +2322,7 @@ impl Element for EditorElement {
                     Some(caret_row),
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
+                    editor.block_mermaid.as_ref(),
                     sf,
                     (editor.selected_range.start, editor.selected_range.end),
                 );
@@ -2317,6 +2397,7 @@ impl Element for EditorElement {
                     Some(caret_row),
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
+                    editor.block_mermaid.as_ref(),
                     sf,
                     (editor.selected_range.start, editor.selected_range.end),
                 )

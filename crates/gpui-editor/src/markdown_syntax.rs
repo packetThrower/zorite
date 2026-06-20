@@ -654,6 +654,32 @@ pub(crate) fn code_regions(content: &str) -> Vec<Range<usize>> {
     out
 }
 
+/// Fenced ` ```mermaid ` blocks: each entry is `(line_range, source)` — the line
+/// range covering both fences (so it can collapse), and the diagram source (the
+/// lines between the fences, joined). Used to render the block as a diagram.
+pub(crate) fn mermaid_blocks(content: &str) -> Vec<(Range<usize>, String)> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim_start();
+        if t.starts_with("```") && t[3..].trim() == "mermaid" {
+            let start = i;
+            let mut j = i + 1;
+            while j < lines.len() && !lines[j].trim_start().starts_with("```") {
+                j += 1;
+            }
+            let source = lines[start + 1..j].join("\n");
+            let end = (j + 1).min(lines.len()); // include the closing fence
+            out.push((start..end, source));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Per-column text alignment of a GFM table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Align {
@@ -757,6 +783,19 @@ mod tests {
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].lines, 2..6); // header, separator, 2 body rows
         assert_eq!(regions[0].aligns, vec![Align::Left, Align::Center]);
+    }
+
+    #[test]
+    fn mermaid_block_extraction() {
+        let md = "intro\n\n```mermaid\ngraph TD\nA --> B\n```\n\nafter";
+        let blocks = mermaid_blocks(md);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].0, 2..6); // ```mermaid(2), graph(3), A-->B(4), ```(5)
+        assert_eq!(blocks[0].1, "graph TD\nA --> B");
+        // A plain ``` block is not mermaid.
+        assert!(mermaid_blocks("```rust\nfn x() {}\n```").is_empty());
+        // Trailing-space lang still matches.
+        assert_eq!(mermaid_blocks("```mermaid \npie\n```").len(), 1);
     }
 
     #[test]
