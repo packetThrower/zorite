@@ -122,6 +122,10 @@ const UNDO_LIMIT: usize = 256;
 /// editor text). 1.25 matches the spacing the editor replaced.
 const LINE_HEIGHT_RATIO: f32 = 1.25;
 
+/// Caret thickness (px) — thin like a native text caret, so it doesn't blend into
+/// the first glyph at the start of a line/cell.
+const CARET_WIDTH: f32 = 1.0;
+
 /// Horizontal inset (px) of fenced-code-block text from the box's left edge, so
 /// code sits inside the padded box rather than flush against it. Mirrors the old
 /// renderer's `px(12)` left padding.
@@ -244,6 +248,9 @@ pub struct EditorState {
     /// a taller row (W2); `line_height` is the base/fallback for the empty doc
     /// and any row without a recorded height.
     line_heights: Vec<Pixels>,
+    /// Per-logical-line table-grid row (from the last paint), so a click /
+    /// Tab / caret hit-tests against cells instead of the raw source line.
+    table_rows: Vec<Option<TableRow>>,
     /// Per-logical-line flag: this row is painted as an inline image (W4), so a
     /// click on it places the caret at the line start instead of hit-testing
     /// source text. From the last paint.
@@ -308,6 +315,7 @@ impl EditorState {
             widget_rows: Vec::new(),
             offset_maps: Vec::new(),
             line_insets: Vec::new(),
+            table_rows: Vec::new(),
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -613,6 +621,13 @@ impl EditorState {
     /// spaces at the line start, caret shifts with it); elsewhere insert that many
     /// spaces at the caret (replacing any selection).
     fn indent(&mut self, _: &Indent, window: &mut Window, cx: &mut Context<Self>) {
+        // In a table, Tab moves to the next cell rather than indenting.
+        if self.caret_in_table() {
+            if let Some(offset) = self.table_cell_nav(true) {
+                self.move_to(offset, cx);
+            }
+            return;
+        }
         let cursor = self.cursor_offset();
         let line_start = self.content[..cursor].rfind('\n').map_or(0, |i| i + 1);
         let line_end = self.content[line_start..]
@@ -641,6 +656,13 @@ impl EditorState {
     /// Shift+Tab: outdent the caret's line — remove up to `tab_indent` leading
     /// spaces (or one leading tab) from the line start. No-op if there's none.
     fn outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
+        // In a table, Shift+Tab moves to the previous cell rather than outdenting.
+        if self.caret_in_table() {
+            if let Some(offset) = self.table_cell_nav(false) {
+                self.move_to(offset, cx);
+            }
+            return;
+        }
         let cursor = self.cursor_offset();
         let line_start = self.content[..cursor].rfind('\n').map_or(0, |i| i + 1);
         let line = &self.content[line_start..];
@@ -767,14 +789,23 @@ impl EditorState {
 
     // --- Mouse ---------------------------------------------------------------
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
         if let Some(src) = self.chip_at(event.position) {
             cx.emit(EditorEvent::OpenLink(src));
             return;
         }
-        let offset = self.index_for_mouse_position(event.position);
+        // A click on a table cell drops the caret inside the cell, not in the raw
+        // `| … |` source.
+        let offset = self
+            .table_offset_at(event.position, window)
+            .unwrap_or_else(|| self.index_for_mouse_position(event.position));
         self.menu = None;
         self.goal_x = None;
         self.last_edit = EditKind::Other;
@@ -811,9 +842,17 @@ impl EditorState {
         self.is_selecting = false;
     }
 
-    fn on_mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_move(
+        &mut self,
+        event: &MouseMoveEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.is_selecting {
-            self.select_to(self.index_for_mouse_position(event.position), cx);
+            let offset = self
+                .table_offset_at(event.position, window)
+                .unwrap_or_else(|| self.index_for_mouse_position(event.position));
+            self.select_to(offset, cx);
         }
     }
 
@@ -1092,6 +1131,108 @@ impl EditorState {
             }
         }
         self.chip_rows.get(row).and_then(Option::clone)
+    }
+
+    /// If `position` lands on a table grid row (not the separator), the source
+    /// byte offset of the closest cell-content position — so a click puts the
+    /// caret inside the cell rather than in the raw `| … |` source. `None`
+    /// otherwise (the caller falls back to [`Self::index_for_mouse_position`]).
+    fn table_offset_at(&self, position: Point<Pixels>, window: &mut Window) -> Option<usize> {
+        if self.wrapped.is_empty() || self.table_rows.iter().all(Option::is_none) {
+            return None;
+        }
+        let bounds = self.last_bounds.as_ref()?;
+        let rel = point(position.x - bounds.left(), position.y - bounds.top());
+        let mut row = self.wrapped.len() - 1;
+        for i in 0..self.wrapped.len() {
+            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            if rel.y < self.line_tops[i] + h {
+                row = i;
+                break;
+            }
+        }
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        if t.is_separator || t.col_widths.is_empty() {
+            return None;
+        }
+        let style = window.text_style();
+        let font = style.font();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let pad = px(TABLE_CELL_PAD);
+        // Column the click is in, and its left x.
+        let last = t.col_widths.len() - 1;
+        let mut cx = px(0.);
+        let mut cell = 0;
+        for (c, &cw) in t.col_widths.iter().enumerate() {
+            if rel.x < cx + cw || c == last {
+                cell = c;
+                break;
+            }
+            cx += cw;
+        }
+        let content = t.cells.get(cell)?;
+        let cw = t.col_widths[cell];
+        let cf = cell_font(&font, t.is_header);
+        let full_w = measure_width(window, content, &cf, font_size);
+        let avail = (cw - pad * 2.).max(px(0.));
+        let align_off = match t.aligns.get(cell) {
+            Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
+            Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
+            _ => px(0.),
+        };
+        let target = (rel.x - cx - pad - align_off).max(px(0.));
+        let in_cell = cell_offset_for_x(content, target, &cf, font_size, window);
+        Some(self.line_starts()[row] + t.cell_ranges.get(cell)?.start + in_cell)
+    }
+
+    /// Whether the caret is currently inside an editable table cell (not the
+    /// separator) — so Tab navigates cells instead of indenting.
+    fn caret_in_table(&self) -> bool {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.table_rows
+            .get(row)
+            .and_then(Option::as_ref)
+            .is_some_and(|t| !t.is_separator)
+    }
+
+    /// Target source offset to move the caret to the next (`forward`) / previous
+    /// table cell, crossing rows (skipping the separator). Stays put at the table's
+    /// final/first cell. `None` when the caret isn't in a table cell.
+    fn table_cell_nav(&self, forward: bool) -> Option<usize> {
+        let (row, col) = self.row_col(self.cursor_offset());
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        if t.is_separator {
+            return None;
+        }
+        let cell = table_cell_at(t, col);
+        let starts = self.line_starts();
+        let usable = |tr: &TableRow| !tr.is_separator && !tr.cell_ranges.is_empty();
+        if forward {
+            if cell + 1 < t.cell_ranges.len() {
+                return Some(starts[row] + t.cell_ranges[cell + 1].start);
+            }
+            for (r, slot) in self.table_rows.iter().enumerate().skip(row + 1) {
+                match slot.as_ref() {
+                    Some(nt) if usable(nt) => return Some(starts[r] + nt.cell_ranges[0].start),
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+        } else {
+            if cell > 0 {
+                return Some(starts[row] + t.cell_ranges[cell - 1].start);
+            }
+            for (r, slot) in self.table_rows.iter().enumerate().take(row).rev() {
+                match slot.as_ref() {
+                    Some(pt) if usable(pt) => {
+                        return Some(starts[r] + pt.cell_ranges[pt.cell_ranges.len() - 1].start);
+                    }
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+        }
+        Some(self.cursor_offset()) // at the boundary — no-op move (don't indent)
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -1604,6 +1745,10 @@ struct CodeBg {
 #[derive(Clone)]
 struct TableRow {
     cells: Vec<SharedString>,
+    /// Byte range of each cell's trimmed content within its source line — for
+    /// placing the caret inside a cell + hit-testing a click back to a source
+    /// offset (in-cell editing).
+    cell_ranges: Vec<Range<usize>>,
     aligns: Vec<markdown_syntax::Align>,
     col_widths: Vec<Pixels>,
     is_header: bool,
@@ -1913,12 +2058,14 @@ fn shape_document(
             None
         };
 
-        // Table row (W4c): a line inside a detected table region renders as a
-        // grid row — unless the caret is in that table (then it shows source).
+        // Table row (W4c + cell editing): renders as a grid row; the caret on a
+        // header/body row edits in place (caret rendered inside the cell). Only the
+        // caret on the `|---|` separator drops the whole table to raw source (to
+        // edit alignment), avoiding a broken outer box around a half-raw table.
         let table = regions
             .iter()
             .position(|r| r.lines.contains(&idx))
-            .filter(|&ri| !is_code && !caret_row.is_some_and(|cr| regions[ri].lines.contains(&cr)))
+            .filter(|&ri| !is_code && caret_row != Some(regions[ri].lines.start + 1))
             .map(|ri| {
                 let r = &regions[ri];
                 TableRow {
@@ -1926,6 +2073,7 @@ fn shape_document(
                         .into_iter()
                         .map(|c| SharedString::from(c.to_string()))
                         .collect(),
+                    cell_ranges: markdown_syntax::table_cell_ranges(line),
                     aligns: r.aligns.clone(),
                     col_widths: region_cols[ri].clone(),
                     is_header: idx == r.lines.start,
@@ -2199,7 +2347,7 @@ fn table_column_widths(
     wrap_width: Option<Pixels>,
 ) -> Vec<Pixels> {
     let cols = region.aligns.len().max(1);
-    let pad = px(8.);
+    let pad = px(TABLE_CELL_PAD);
     let mut widths = vec![px(0.); cols];
     for li in region.lines.clone() {
         if li == region.lines.start + 1 {
@@ -2253,6 +2401,121 @@ fn table_column_widths(
     widths
 }
 
+/// Horizontal inset (px) of a table cell's text from its column's left edge.
+const TABLE_CELL_PAD: f32 = 10.;
+
+/// The font a table cell is rendered with — bold in the header row.
+fn cell_font(font: &Font, is_header: bool) -> Font {
+    let mut f = font.clone();
+    if is_header {
+        f.weight = gpui::FontWeight::BOLD;
+    }
+    f
+}
+
+/// Shape a table cell's `content` into a single (unwrapped) line, for exact
+/// caret / hit-test geometry that matches the kerned glyphs `paint_table_row`
+/// renders (measuring prefixes in isolation drifts by their kerning).
+fn shape_cell(
+    window: &mut Window,
+    content: &str,
+    font: &Font,
+    font_size: Pixels,
+) -> Option<WrappedLine> {
+    let run = TextRun {
+        len: content.len(),
+        font: font.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let runs: &[TextRun] = if content.is_empty() {
+        &[]
+    } else {
+        std::slice::from_ref(&run)
+    };
+    window
+        .text_system()
+        .shape_text(
+            SharedString::from(content.to_string()),
+            font_size,
+            runs,
+            None,
+            None,
+        )
+        .ok()?
+        .into_iter()
+        .next()
+}
+
+/// The cell a source column `col` (line-local) falls in for a table row — clamped
+/// to the nearest cell when `col` is in a pipe/space between cells.
+fn table_cell_at(t: &TableRow, col: usize) -> usize {
+    t.cell_ranges
+        .iter()
+        .position(|r| col <= r.end)
+        .unwrap_or(t.cell_ranges.len().saturating_sub(1))
+}
+
+/// Screen position of the caret at source column `col` (line-local) inside a
+/// table row's rendered cells: `(x, cell_index, in_cell_offset)`. Mirrors
+/// `paint_table_row`'s layout (cumulative column widths + pad + alignment).
+fn table_caret_pos(
+    t: &TableRow,
+    col: usize,
+    left: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> Option<(Pixels, usize, usize)> {
+    if t.cell_ranges.is_empty() {
+        return None;
+    }
+    let pad = px(TABLE_CELL_PAD);
+    let cell = table_cell_at(t, col);
+    let range = t.cell_ranges.get(cell)?;
+    let content = t.cells.get(cell)?;
+    let in_cell = col.saturating_sub(range.start).min(content.len());
+    let cell_x = left + t.col_widths[..cell].iter().fold(px(0.), |a, &w| a + w);
+    let cw = t.col_widths.get(cell).copied().unwrap_or(px(0.));
+    // The header is bold, so shape with the bold font or the caret lands left of
+    // the (wider) bold glyphs; position_for_index gives the exact kerned x.
+    let cf = cell_font(font, t.is_header);
+    let line_h = font_size * LINE_HEIGHT_RATIO;
+    let wl = shape_cell(window, content, &cf, font_size)?;
+    let prefix_w = wl
+        .position_for_index(in_cell, line_h)
+        .map_or(px(0.), |p| p.x);
+    let full_w = wl.width();
+    let avail = (cw - pad * 2.).max(px(0.));
+    let align_off = match t.aligns.get(cell) {
+        Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
+        Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
+        _ => px(0.),
+    };
+    Some((cell_x + pad + align_off + prefix_w, cell, in_cell))
+}
+
+/// The byte offset within `content` whose rendered x (from the text's left edge)
+/// is closest to `target` — hit-tests a click inside a table cell, using the
+/// shaped line so it matches the kerned glyphs.
+fn cell_offset_for_x(
+    content: &str,
+    target: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> usize {
+    let line_h = font_size * LINE_HEIGHT_RATIO;
+    let Some(wl) = shape_cell(window, content, font, font_size) else {
+        return 0;
+    };
+    match wl.closest_index_for_position(point(target, line_h / 2.), line_h) {
+        Ok(i) | Err(i) => i,
+    }
+}
+
 /// Paint a table row as a grid (W4c): a top border (+ bottom on the last row),
 /// a left border per column + a right outer border, and each cell's text aligned
 /// within its (content-fit) column. A separator row is a single horizontal rule.
@@ -2280,7 +2543,7 @@ fn paint_table_row(
     if !t.is_header {
         window.paint_quad(fill(Bounds::new(origin, size(table_w, thick)), t.border));
     }
-    let pad = px(10.);
+    let pad = px(TABLE_CELL_PAD);
     let mut cell_font = font.clone();
     if t.is_header {
         cell_font.weight = gpui::FontWeight::BOLD;
@@ -2557,24 +2820,44 @@ impl Element for EditorElement {
 
         let (cursor, selections) = if editor.content.is_empty() {
             let c = fill(
-                Bounds::new(point(bounds.left(), bounds.top()), size(px(2.), base_lh)),
+                Bounds::new(
+                    point(bounds.left(), bounds.top()),
+                    size(px(CARET_WIDTH), base_lh),
+                ),
                 text_color,
             );
             (Some(c), Vec::new())
         } else if editor.selected_range.is_empty() {
             let (row, col) = editor.row_col(editor.cursor_offset());
             let lh = line_heights.get(row).copied().unwrap_or(base_lh);
-            let p = wrapped
-                .get(row)
-                .and_then(|l| l.position_for_index(disp_col(row, col), lh))
-                .unwrap_or_default();
             let top = line_tops.get(row).copied().unwrap_or(px(0.));
-            let inset = code_inset(row);
-            let c = fill(
-                Bounds::new(to_screen(top, point(p.x + inset, p.y)), size(px(2.), lh)),
-                text_color,
-            );
-            (Some(c), Vec::new())
+            // Caret inside a table cell: position it within the rendered cell
+            // (centered vertically like the cell text), not by the raw source line.
+            if let Some(t) = tables.get(row).and_then(Option::as_ref)
+                && let Some((x, _, _)) =
+                    table_caret_pos(t, col, bounds.left(), &font, font_size, window)
+            {
+                let y = bounds.top() + top + (lh - base_lh) / 2.;
+                let c = fill(
+                    Bounds::new(point(x, y), size(px(CARET_WIDTH), base_lh)),
+                    text_color,
+                );
+                (Some(c), Vec::new())
+            } else {
+                let p = wrapped
+                    .get(row)
+                    .and_then(|l| l.position_for_index(disp_col(row, col), lh))
+                    .unwrap_or_default();
+                let inset = code_inset(row);
+                let c = fill(
+                    Bounds::new(
+                        to_screen(top, point(p.x + inset, p.y)),
+                        size(px(CARET_WIDTH), lh),
+                    ),
+                    text_color,
+                );
+                (Some(c), Vec::new())
+            }
         } else {
             let (s, e) = (editor.selected_range.start, editor.selected_range.end);
             let starts = editor.line_starts();
@@ -2589,10 +2872,29 @@ impl Element for EditorElement {
                 };
                 let lh = line_heights.get(row).copied().unwrap_or(base_lh);
                 let top = line_tops[row];
-                let inset = code_inset(row);
                 let line_start = starts[row];
                 let a = s.max(line_start) - line_start;
                 let b = e.min(editor.line_end(row)) - line_start;
+                // Table row: highlight between the cell positions of the selection
+                // ends (not raw-source geometry).
+                if let Some(t) = tables.get(row).and_then(Option::as_ref) {
+                    if let (Some((xa, ..)), Some((xb, ..))) = (
+                        table_caret_pos(t, a, bounds.left(), &font, font_size, window),
+                        table_caret_pos(t, b, bounds.left(), &font, font_size, window),
+                    ) {
+                        let (lo, hi) = (xa.min(xb), xa.max(xb));
+                        let cy = bounds.top() + top + (lh - base_lh) / 2.;
+                        sels.push(fill(
+                            Bounds::from_corners(
+                                point(lo, cy),
+                                point(hi.max(lo + px(2.)), cy + base_lh),
+                            ),
+                            color,
+                        ));
+                    }
+                    continue;
+                }
+                let inset = code_inset(row);
                 let pa = line
                     .position_for_index(disp_col(row, a), lh)
                     .unwrap_or_default();
@@ -2899,6 +3201,7 @@ impl Element for EditorElement {
             .enumerate()
             .map(|(i, w)| w.is_some() || prepaint.tables.get(i).is_some_and(Option::is_some))
             .collect();
+        let table_rows = std::mem::take(&mut prepaint.tables);
         let line_insets: Vec<Pixels> = prepaint
             .backgrounds
             .iter()
@@ -2921,6 +3224,7 @@ impl Element for EditorElement {
             editor.offset_maps = offset_maps;
             editor.chip_rows = chip_rows;
             editor.line_insets = line_insets;
+            editor.table_rows = table_rows;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });

@@ -737,6 +737,31 @@ pub(crate) fn table_cells(line: &str) -> Vec<&str> {
     t.split('|').map(str::trim).collect()
 }
 
+/// The byte range of each cell's *trimmed content* within `line` (line-local), in
+/// the same order as [`table_cells`]. Lets the editor place the caret inside a
+/// rendered cell and hit-test a click back to a source offset. An empty cell is a
+/// zero-width range at its content position.
+pub(crate) fn table_cell_ranges(line: &str) -> Vec<Range<usize>> {
+    let (Some(first), Some(last)) = (line.find('|'), line.rfind('|')) else {
+        return Vec::new();
+    };
+    if last <= first {
+        return Vec::new();
+    }
+    let base = first + 1; // start of the inter-pipe region in `line`
+    let inner = &line[base..last];
+    let mut out = Vec::new();
+    let mut seg = 0; // offset of the current cell within `inner`
+    for piece in inner.split('|') {
+        let lead = piece.len() - piece.trim_start().len();
+        let trail = piece.len() - piece.trim_end().len();
+        let start = base + seg + lead;
+        out.push(start..(base + seg + piece.len() - trail).max(start));
+        seg += piece.len() + 1; // + the `|`
+    }
+    out
+}
+
 /// If `line` is a table separator row (every cell is dashes with optional
 /// alignment colons), return its per-column alignment, else `None`.
 fn separator_aligns(line: &str) -> Option<Vec<Align>> {
