@@ -184,6 +184,46 @@ struct DiagMenu {
     scroll: ScrollHandle,
 }
 
+/// A column edit applied to every row of a table (insert/delete a cell at index).
+#[derive(Clone, Copy)]
+enum ColEdit {
+    Insert(usize),
+    Delete(usize),
+}
+
+/// An item in the table right-click menu (Word-style table editing).
+#[derive(Clone, Copy)]
+enum TableMenuAction {
+    InsertRowAbove,
+    InsertRowBelow,
+    InsertColLeft,
+    InsertColRight,
+    DeleteRow,
+    DeleteColumn,
+}
+
+impl TableMenuAction {
+    const ITEMS: &'static [(&'static str, TableMenuAction)] = &[
+        ("Insert row above", TableMenuAction::InsertRowAbove),
+        ("Insert row below", TableMenuAction::InsertRowBelow),
+        ("Insert column left", TableMenuAction::InsertColLeft),
+        ("Insert column right", TableMenuAction::InsertColRight),
+        ("Delete row", TableMenuAction::DeleteRow),
+        ("Delete column", TableMenuAction::DeleteColumn),
+    ];
+
+    fn apply(self, editor: &mut EditorState, cx: &mut Context<EditorState>) {
+        match self {
+            TableMenuAction::InsertRowAbove => editor.insert_table_row(false, cx),
+            TableMenuAction::InsertRowBelow => editor.insert_table_row(true, cx),
+            TableMenuAction::InsertColLeft => editor.insert_table_column(false, cx),
+            TableMenuAction::InsertColRight => editor.insert_table_column(true, cx),
+            TableMenuAction::DeleteRow => editor.delete_table_row(cx),
+            TableMenuAction::DeleteColumn => editor.delete_table_column(cx),
+        }
+    }
+}
+
 /// Events the editor emits so a host can react. Subscribe with
 /// `cx.subscribe(&editor, …)` — e.g. to re-run spell-check after an edit.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -280,6 +320,10 @@ pub struct EditorState {
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
     last_edit: EditKind,
+    /// Whether the last content edit was a single typed grapheme or a single-char
+    /// backspace — the only edits auto-pairing should react to, so programmatic /
+    /// structural edits (table ops, etc.) don't trip it.
+    last_edit_keystroke: bool,
     /// Spaces inserted per Tab / one list-nesting level (`Indent`/`Outdent`); set
     /// by the host via [`Self::set_tab_indent`] to match its list-indent setting.
     tab_indent: usize,
@@ -294,6 +338,9 @@ pub struct EditorState {
     markdown_style: Option<SyntaxStyle>,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
+    /// The open table right-click menu's anchor (relative to the editor's
+    /// top-left), if any. Its actions operate on the caret's table cell.
+    table_menu: Option<Point<Pixels>>,
     /// Supplies replacement suggestions for a flagged word, fetched lazily when
     /// the user right-clicks it. Set by the host via [`Self::on_suggest`];
     /// without it, the right-click menu has nothing to offer.
@@ -334,11 +381,13 @@ impl EditorState {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_edit: EditKind::Other,
+            last_edit_keystroke: false,
             tab_indent: 4,
             goal_x: None,
             diagnostics: Vec::new(),
             markdown_style: None,
             menu: None,
+            table_menu: None,
             suggest: None,
             block_image: None,
             block_chip: None,
@@ -454,6 +503,13 @@ impl EditorState {
     /// selection). For hosts that drive a menu/completion off the caret position.
     pub fn cursor(&self) -> usize {
         self.cursor_offset()
+    }
+
+    /// Whether the last content change was a single typed character or single-char
+    /// backspace (vs a programmatic / multi-char edit). Hosts gate auto-pairing on
+    /// this so structural edits (table row/column ops, paste, …) don't trip it.
+    pub fn last_edit_was_keystroke(&self) -> bool {
+        self.last_edit_keystroke
     }
 
     /// Place the caret at `offset` (a byte offset into the document), collapsing
@@ -817,6 +873,11 @@ impl EditorState {
             self.redo_stack.clear();
         }
         self.last_edit = kind;
+        // A keystroke is one typed grapheme (incl. typed over a selection — that's
+        // an auto-pair "wrap") or a single-char backspace. Multi-char edits (paste,
+        // table ops, …) are not, so auto-pairing skips them.
+        self.last_edit_keystroke = (new_text != "\n" && new_text.graphemes(true).count() == 1)
+            || (new_text.is_empty() && self.content[range.clone()].graphemes(true).count() == 1);
     }
 
     // --- Mouse ---------------------------------------------------------------
@@ -839,6 +900,7 @@ impl EditorState {
             .table_offset_at(event.position, window)
             .unwrap_or_else(|| self.index_for_mouse_position(event.position));
         self.menu = None;
+        self.table_menu = None;
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
@@ -906,6 +968,21 @@ impl EditorState {
             self.move_to(offset, cx);
             return;
         }
+        // Right-click in a table cell: place the caret there + open the table menu
+        // (insert/delete rows + columns), instead of the spell menu.
+        if let Some(offset) = self.table_offset_at(event.position, window) {
+            self.menu = None;
+            self.focus(window, cx);
+            self.move_to(offset, cx);
+            self.table_menu = Some(
+                self.last_bounds
+                    .as_ref()
+                    .map(|b| point(event.position.x - b.left(), event.position.y - b.top()))
+                    .unwrap_or_default(),
+            );
+            cx.notify();
+            return;
+        }
         let offset = self.index_for_mouse_position(event.position);
         let anchor = self
             .last_bounds
@@ -935,7 +1012,7 @@ impl EditorState {
 
     /// Close the suggestions menu (Escape, or a click elsewhere).
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.take().is_some() {
+        if self.menu.take().is_some() || self.table_menu.take().is_some() {
             cx.notify();
         }
     }
@@ -1347,6 +1424,207 @@ impl EditorState {
         cx.notify();
     }
 
+    /// The caret's table block as `(header_line, separator_line, end_exclusive,
+    /// columns)`, or `None` outside a table.
+    fn caret_table_block(&self) -> Option<(usize, usize, usize, usize)> {
+        let (row, _) = self.row_col(self.cursor_offset());
+        let region = markdown_syntax::table_regions(&self.content)
+            .into_iter()
+            .find(|r| r.lines.contains(&row))?;
+        Some((
+            region.lines.start,
+            region.lines.start + 1,
+            region.lines.end,
+            region.aligns.len().max(1),
+        ))
+    }
+
+    /// Insert an empty row above/below the caret's row (Word-style); the caret
+    /// moves into the new row's first cell. No-op outside a table.
+    pub fn insert_table_row(&mut self, below: bool, cx: &mut Context<Self>) {
+        let (row, _) = self.row_col(self.cursor_offset());
+        let Some((header, sep, _end, cols)) = self.caret_table_block() else {
+            return;
+        };
+        // From the header a new row always lands below the separator (the first
+        // body row); above/below a body row is literal.
+        let after = if row == header {
+            sep
+        } else if below {
+            row
+        } else {
+            (row - 1).max(sep)
+        };
+        let new_row = format!("\n|{}", "  |".repeat(cols));
+        let pos = self.line_end(after);
+        let range = pos..pos;
+        self.record_edit(&range, &new_row);
+        self.content = self.content[..pos].to_owned() + &new_row + &self.content[pos..];
+        self.remap_diagnostics(&range, new_row.len());
+        self.selected_range = (pos + 3)..(pos + 3); // first cell, after "\n| "
+        self.table_menu = None;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    /// Delete the caret's table row (body rows only — the header + separator stay).
+    /// The caret keeps its cell + in-cell offset, landing on the row that takes the
+    /// deleted row's place. No-op outside a table.
+    pub fn delete_table_row(&mut self, cx: &mut Context<Self>) {
+        let Some((row, cell, in_cell)) = self.caret_table_cell_pos() else {
+            return;
+        };
+        let Some((header, sep, end, _cols)) = self.caret_table_block() else {
+            return;
+        };
+        if row == header || row == sep {
+            return;
+        }
+        let start = self.line_starts()[row];
+        let line_end = self.line_end(row);
+        // Remove the line + its trailing newline; for the last line, eat the
+        // preceding newline instead so no blank line is left behind.
+        let (del_start, del_end) = if line_end < self.content.len() {
+            (start, line_end + 1)
+        } else {
+            (start.saturating_sub(1), line_end)
+        };
+        let range = del_start..del_end;
+        self.record_edit(&range, "");
+        self.content = self.content[..del_start].to_owned() + &self.content[del_end..];
+        self.remap_diagnostics(&range, 0);
+        // Stay at the same cell/offset, on the row now at this position (shifted
+        // up), or the header if no body rows remain.
+        let target = if end <= sep + 2 {
+            header
+        } else {
+            row.min(end - 2)
+        };
+        let caret = self.caret_pos_for_cell(target, cell, in_cell);
+        self.selected_range = caret..caret;
+        self.table_menu = None;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    /// The caret's table position as `(row, cell_index, offset_within_cell)`, or
+    /// `None` outside a table. Lets structural edits keep the caret put.
+    fn caret_table_cell_pos(&self) -> Option<(usize, usize, usize)> {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.caret_table_block()?;
+        let starts = self.line_starts();
+        let row_start = starts[row];
+        let line = &self.content[row_start..self.line_end(row)];
+        let line_col = self.cursor_offset() - row_start;
+        let ranges = markdown_syntax::table_cell_ranges(line);
+        let cell = ranges
+            .iter()
+            .position(|r| line_col <= r.end)
+            .unwrap_or(ranges.len().saturating_sub(1));
+        let in_cell = ranges
+            .get(cell)
+            .map_or(0, |r| line_col.saturating_sub(r.start).min(r.len()));
+        Some((row, cell, in_cell))
+    }
+
+    /// Byte offset of `(row, cell, offset_within_cell)` in the current content,
+    /// clamping the cell + offset to what that row actually has.
+    fn caret_pos_for_cell(&self, row: usize, cell: usize, in_cell: usize) -> usize {
+        let starts = self.line_starts();
+        let Some(&row_start) = starts.get(row) else {
+            return self.content.len();
+        };
+        let line = &self.content[row_start..self.line_end(row)];
+        let ranges = markdown_syntax::table_cell_ranges(line);
+        if ranges.is_empty() {
+            return row_start;
+        }
+        let r = &ranges[cell.min(ranges.len() - 1)];
+        // Keep the caret strictly inside the cell, before its closing pipe — an
+        // empty cell's trimmed range collapses onto that pipe (the line end for the
+        // last cell), which would drop the caret out of the rendered table.
+        let bytes = line.as_bytes();
+        let close = (r.end..bytes.len())
+            .find(|&i| bytes[i] == b'|')
+            .unwrap_or(bytes.len());
+        row_start + (r.start + in_cell).min(close.saturating_sub(1))
+    }
+
+    /// Insert an empty column left/right of the caret's column (a cell added to
+    /// every row; the separator gets a default-left marker). The caret stays in its
+    /// cell. No-op outside a table.
+    pub fn insert_table_column(&mut self, right: bool, cx: &mut Context<Self>) {
+        let Some((row, cell, in_cell)) = self.caret_table_cell_pos() else {
+            return;
+        };
+        let at = if right { cell + 1 } else { cell };
+        if self.rewrite_table_columns(ColEdit::Insert(at)) {
+            // Inserting to the left shifts the caret's cell one column right.
+            let new_cell = if right { cell } else { cell + 1 };
+            let caret = self.caret_pos_for_cell(row, new_cell, in_cell);
+            self.selected_range = caret..caret;
+            self.table_menu = None;
+            cx.emit(EditorEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// Delete the caret's column from every row; the caret stays near where the
+    /// column was. No-op outside a table, or on the last remaining column.
+    pub fn delete_table_column(&mut self, cx: &mut Context<Self>) {
+        let Some((row, cell, in_cell)) = self.caret_table_cell_pos() else {
+            return;
+        };
+        if self.rewrite_table_columns(ColEdit::Delete(cell)) {
+            let caret = self.caret_pos_for_cell(row, cell, in_cell);
+            self.selected_range = caret..caret;
+            self.table_menu = None;
+            cx.emit(EditorEvent::Changed);
+            cx.notify();
+        }
+    }
+
+    /// Rewrite every row of the caret's table to insert/delete a cell, normalizing
+    /// cell spacing. Returns `false` (no edit) outside a table or when a delete
+    /// would remove the last column; the caller restores the caret.
+    fn rewrite_table_columns(&mut self, edit: ColEdit) -> bool {
+        let Some((header, sep, end, _cols)) = self.caret_table_block() else {
+            return false;
+        };
+        let lines: Vec<&str> = self.content.split('\n').collect();
+        let mut new_rows: Vec<String> = Vec::with_capacity(end - header);
+        for (i, &line) in lines[header..end].iter().enumerate() {
+            let is_sep = header + i == sep;
+            let mut cells: Vec<String> = markdown_syntax::table_cells(line)
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            match edit {
+                ColEdit::Insert(at) => cells.insert(
+                    at.min(cells.len()),
+                    if is_sep { "---".into() } else { String::new() },
+                ),
+                ColEdit::Delete(c) => {
+                    if cells.len() <= 1 || c >= cells.len() {
+                        return false; // never delete the last column
+                    }
+                    cells.remove(c);
+                }
+            }
+            new_rows.push(format!("| {} |", cells.join(" | ")));
+        }
+        let starts = self.line_starts();
+        let block_start = starts[header];
+        let block_end = self.line_end(end - 1);
+        let new_block = new_rows.join("\n");
+        let range = block_start..block_end;
+        self.record_edit(&range, &new_block);
+        self.content =
+            self.content[..block_start].to_owned() + &new_block + &self.content[block_end..];
+        self.remap_diagnostics(&range, new_block.len());
+        true
+    }
+
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
         if self.content.is_empty() || self.wrapped.is_empty() {
             return 0;
@@ -1725,6 +2003,49 @@ impl Render for EditorState {
                             .children(rows),
                     )
                     .children(thumb)
+            }))
+            // The table right-click menu (Word-style row/column editing), anchored
+            // at the click; each row runs its action on the caret's table cell.
+            .children(self.table_menu.map(|anchor| {
+                let rows: Vec<_> = TableMenuAction::ITEMS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(label, action))| {
+                        div()
+                            .id(("table-menu-row", i))
+                            .flex_shrink_0()
+                            .px(px(12.))
+                            .py(px(5.))
+                            .hover(|s| s.bg(rgb(0x2f6fd6)))
+                            .child(SharedString::from(label))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    action.apply(editor, cx);
+                                }),
+                            )
+                    })
+                    .collect();
+                div()
+                    .absolute()
+                    .left(anchor.x)
+                    .top(anchor.y)
+                    .min_w(px(170.))
+                    .cursor(CursorStyle::Arrow)
+                    .bg(rgb(0x26262b))
+                    .border_1()
+                    .border_color(rgb(0x45454c))
+                    .rounded(px(6.))
+                    .overflow_hidden()
+                    .text_color(rgb(0xe6e6e6))
+                    .text_size(px(14.))
+                    .py(px(4.))
+                    .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                        editor.table_menu = None;
+                        cx.notify();
+                    }))
+                    .children(rows)
             }))
     }
 }

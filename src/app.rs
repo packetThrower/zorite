@@ -3394,6 +3394,14 @@ impl AppView {
             return false;
         };
         let value = editor.read(cx).value().to_string();
+        // Only typed characters / single-char backspaces auto-pair. A programmatic
+        // or multi-char edit (table row/column ops, paste, …) just refreshes the
+        // baseline so the next keystroke compares correctly — without rewriting the
+        // text or moving the caret.
+        if !editor.read(cx).last_edit_was_keystroke() {
+            self.set_autopair_prev(target, value);
+            return false;
+        }
         let cursor = editor.read(cx).cursor().min(value.len());
         let prev = self.autopair_prev(target);
         // Each arm yields the rewritten text and where the caret should land.
