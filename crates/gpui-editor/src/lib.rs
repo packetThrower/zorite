@@ -194,6 +194,18 @@ pub enum EditorEvent {
     /// A file chip (e.g. a PDF embed) was left-clicked — the host opens its
     /// `src`. The chip itself stays in the document; this is a navigation hint.
     OpenLink(SharedString),
+    /// The caret / selection moved without a text change — so a host can update a
+    /// caret-anchored affordance (e.g. the table-alignment toolbar).
+    SelectionChanged,
+}
+
+/// A table column's text alignment, for the host-driven alignment toolbar
+/// ([`EditorState::caret_table_align`] / [`EditorState::set_caret_table_align`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CellAlign {
+    Left,
+    Center,
+    Right,
 }
 
 /// Provides replacement suggestions for a flagged word (best first); set by the
@@ -543,6 +555,7 @@ impl EditorState {
         // Set the caret directly (not via `move_to`) to keep the goal column.
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
+        cx.emit(EditorEvent::SelectionChanged);
         cx.notify();
     }
 
@@ -550,6 +563,7 @@ impl EditorState {
         let off = self.move_vertical(1);
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
+        cx.emit(EditorEvent::SelectionChanged);
         cx.notify();
     }
 
@@ -948,6 +962,7 @@ impl EditorState {
         // vertical-movement goal column.
         self.last_edit = EditKind::Other;
         self.goal_x = None;
+        cx.emit(EditorEvent::SelectionChanged);
         cx.notify();
     }
 
@@ -969,6 +984,7 @@ impl EditorState {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
+        cx.emit(EditorEvent::SelectionChanged);
         cx.notify();
     }
 
@@ -1251,6 +1267,84 @@ impl EditorState {
             }
         }
         Some(self.cursor_offset()) // at the boundary — no-op move (don't indent)
+    }
+
+    /// The alignment of the table column the caret sits in — but only while the
+    /// caret is in the table's HEADER row (the toolbar lives there; alignment is a
+    /// per-column property, set once from the header). `None` otherwise. Read from
+    /// the current content, since the painted `table_rows` lag a frame right after
+    /// a separator rewrite (which would highlight the just-changed-from button).
+    pub fn caret_table_align(&self) -> Option<CellAlign> {
+        let (row, col) = self.row_col(self.cursor_offset());
+        // Fast-reject via the paint: only a header row gets the toolbar.
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        if !t.is_header {
+            return None;
+        }
+        let cell = table_cell_at(t, col);
+        let regions = markdown_syntax::table_regions(&self.content);
+        let region = regions.iter().find(|r| r.lines.contains(&row))?;
+        Some(match region.aligns.get(cell) {
+            Some(markdown_syntax::Align::Center) => CellAlign::Center,
+            Some(markdown_syntax::Align::Right) => CellAlign::Right,
+            _ => CellAlign::Left,
+        })
+    }
+
+    /// Set the alignment of the caret's table column by rewriting that table's
+    /// `|---|` separator row; the caret stays put. No-op outside a table cell.
+    pub fn set_caret_table_align(&mut self, align: CellAlign, cx: &mut Context<Self>) {
+        let (row, col) = self.row_col(self.cursor_offset());
+        let Some(t) = self.table_rows.get(row).and_then(Option::as_ref) else {
+            return;
+        };
+        if t.is_separator {
+            return;
+        }
+        let cell = table_cell_at(t, col);
+        // Read the table's columns from the current content (fresh), so repeated
+        // clicks build on the latest alignment, not a stale painted snapshot.
+        let regions = markdown_syntax::table_regions(&self.content);
+        let Some(region) = regions.iter().find(|r| r.lines.contains(&row)) else {
+            return;
+        };
+        let mut aligns = region.aligns.clone();
+        if cell >= aligns.len() {
+            return;
+        }
+        aligns[cell] = match align {
+            CellAlign::Left => markdown_syntax::Align::Left,
+            CellAlign::Center => markdown_syntax::Align::Center,
+            CellAlign::Right => markdown_syntax::Align::Right,
+        };
+        let sep_row = region.lines.start + 1;
+        let mut new_sep = String::from("|");
+        for a in &aligns {
+            new_sep.push_str(match a {
+                markdown_syntax::Align::Left => " :-- |",
+                markdown_syntax::Align::Center => " :-: |",
+                markdown_syntax::Align::Right => " --: |",
+            });
+        }
+        let starts = self.line_starts();
+        let sep_start = starts[sep_row];
+        let sep_end = starts
+            .get(sep_row + 1)
+            .map_or(self.content.len(), |&s| s - 1);
+        let old_caret = self.cursor_offset();
+        let range = sep_start..sep_end;
+        self.record_edit(&range, &new_sep);
+        self.content = self.content[..sep_start].to_owned() + &new_sep + &self.content[sep_end..];
+        let delta = new_sep.len() as isize - (sep_end - sep_start) as isize;
+        let caret = if old_caret >= sep_end {
+            (old_caret as isize + delta).max(0) as usize
+        } else {
+            old_caret
+        };
+        self.selected_range = caret..caret;
+        self.remap_diagnostics(&range, new_sep.len());
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
