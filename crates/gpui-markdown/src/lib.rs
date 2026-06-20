@@ -338,7 +338,25 @@ impl RenderOnce for MarkdownView {
                 for node in &root.children {
                     collect_definitions(node, &mut ctx.definitions);
                 }
+                // A `<!-- table:STYLE -->` comment styles the next table and is
+                // itself hidden; everything else renders normally.
+                let mut pending_style = None;
                 for node in &root.children {
+                    if let mdast::Node::Html(h) = node
+                        && let Some(style) = table_style_marker(&h.value)
+                    {
+                        pending_style = Some(style);
+                        continue;
+                    }
+                    if let mdast::Node::Table(t) = node {
+                        col = col.child(render_table(
+                            t,
+                            &mut ctx,
+                            pending_style.take().unwrap_or_default(),
+                        ));
+                        continue;
+                    }
+                    pending_style = None;
                     if let Some(el) = render_block(node, &mut ctx) {
                         col = col.child(el);
                     }
@@ -492,7 +510,9 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                 .bg(ctx.style.rule_color)
                 .into_any_element(),
         ),
-        mdast::Node::Table(t) => Some(render_table(t, ctx)),
+        // Top-level tables get their style from a preceding marker (see the root
+        // loop); a nested/standalone table here renders as the default Grid.
+        mdast::Node::Table(t) => Some(render_table(t, ctx, TableStyle::default())),
         // A footnote definition: `[label] <content>`, rendered muted/smaller
         // where it sits (authors put these at the bottom).
         mdast::Node::FootnoteDefinition(f) => {
@@ -1091,42 +1111,96 @@ fn collect_definitions(node: &mdast::Node, out: &mut HashMap<String, String>) {
 }
 
 /// Render a GFM table as a bordered grid; the first row is the header.
-fn render_table(table: &mdast::Table, ctx: &mut Ctx) -> AnyElement {
+/// Per-table visual style, from a `<!-- table:STYLE -->` marker comment on the
+/// line above the table (mirrors the editor; the style names are the shared
+/// contract). `Grid` is the default (no marker).
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+enum TableStyle {
+    #[default]
+    Grid,
+    Striped,
+    Header,
+    Minimal,
+}
+
+/// Parse a `<!-- table:STYLE -->` HTML comment's value into a [`TableStyle`].
+/// `None` if it isn't a recognized table-style marker.
+fn table_style_marker(html: &str) -> Option<TableStyle> {
+    let inner = html
+        .trim()
+        .strip_prefix("<!--")?
+        .strip_suffix("-->")?
+        .trim();
+    match inner.strip_prefix("table:")?.trim() {
+        "grid" => Some(TableStyle::Grid),
+        "striped" => Some(TableStyle::Striped),
+        "header" => Some(TableStyle::Header),
+        "minimal" => Some(TableStyle::Minimal),
+        _ => None,
+    }
+}
+
+fn render_table(table: &mdast::Table, ctx: &mut Ctx, style: TableStyle) -> AnyElement {
     let border = ctx.style.muted_color;
-    let mut grid = div()
-        .flex()
-        .flex_col()
-        .border_1()
-        .border_color(border)
-        .rounded(px(6.0))
-        .overflow_hidden();
+    let shade = ctx.style.code_bg;
+    let boxed = matches!(style, TableStyle::Grid);
+    let vlines = matches!(style, TableStyle::Grid);
+    let row_lines = matches!(style, TableStyle::Grid);
+    // A single rule under the header instead of a divider between every row.
+    let header_rule = matches!(style, TableStyle::Striped | TableStyle::Minimal);
+
+    let mut grid = div().flex().flex_col();
+    if boxed {
+        grid = grid
+            .border_1()
+            .border_color(border)
+            .rounded(px(6.0))
+            .overflow_hidden();
+    }
 
     for (ri, row) in table.children.iter().enumerate() {
         let mdast::Node::TableRow(r) = row else {
             continue;
         };
+        let is_header = ri == 0;
+        // The mdast table has no separator child: row 0 is the header, row 1 the
+        // first body row (body_index 0).
+        let body_index = ri.checked_sub(1);
         let mut row_el = div().flex().flex_row();
-        if ri > 0 {
+        // Top divider: under every row (Grid), just under the header
+        // (Striped/Minimal → the first body row's top), or never (Header).
+        let top_divider = if row_lines {
+            !is_header
+        } else {
+            header_rule && body_index == Some(0)
+        };
+        if top_divider {
             row_el = row_el.border_t_1().border_color(border);
+        }
+        // Row shading: the header (Header style) or alternate body rows (Striped).
+        let shaded = match style {
+            TableStyle::Header => is_header,
+            TableStyle::Striped => body_index.is_some_and(|b| b % 2 == 1),
+            _ => false,
+        };
+        if shaded {
+            row_el = row_el.bg(shade);
         }
         for (ci, cell) in r.children.iter().enumerate() {
             let mdast::Node::TableCell(c) = cell else {
                 continue;
             };
-            let mut cell_el = div()
-                .flex_1()
-                .min_w_0()
-                .px(px(10.0))
-                .py(px(6.0))
-                .border_r_1()
-                .border_color(border);
+            let mut cell_el = div().flex_1().min_w_0().px(px(10.0)).py(px(6.0));
+            if vlines {
+                cell_el = cell_el.border_r_1().border_color(border);
+            }
             // Honor the column's GFM alignment (`:---:` / `---:`).
             match table.align.get(ci) {
                 Some(mdast::AlignKind::Center) => cell_el = cell_el.text_center(),
                 Some(mdast::AlignKind::Right) => cell_el = cell_el.text_right(),
                 _ => {}
             }
-            if ri == 0 {
+            if is_header {
                 cell_el = cell_el.font_weight(FontWeight::BOLD);
             }
             row_el = row_el.child(cell_el.child(inline_element(&c.children, ctx)));
@@ -1308,19 +1382,23 @@ pub fn find_matches(source: &str, query: &str) -> Vec<usize> {
 /// returning `Some`). Kept in sync with `render_block` so `find_matches`' block
 /// indices line up with the `track_blocks` handle's `bounds_for_item`.
 fn renders_to_block(node: &mdast::Node) -> bool {
-    matches!(
-        node,
-        mdast::Node::Paragraph(_)
-            | mdast::Node::Heading(_)
-            | mdast::Node::List(_)
-            | mdast::Node::Code(_)
-            | mdast::Node::Blockquote(_)
-            | mdast::Node::ThematicBreak(_)
-            | mdast::Node::Table(_)
-            | mdast::Node::FootnoteDefinition(_)
-            | mdast::Node::Html(_)
-            | mdast::Node::Text(_)
-    )
+    match node {
+        // A `<!-- table:STYLE -->` marker is hidden (folded into the next table),
+        // so it isn't a column child; other HTML renders as a muted block.
+        mdast::Node::Html(h) => table_style_marker(&h.value).is_none(),
+        _ => matches!(
+            node,
+            mdast::Node::Paragraph(_)
+                | mdast::Node::Heading(_)
+                | mdast::Node::List(_)
+                | mdast::Node::Code(_)
+                | mdast::Node::Blockquote(_)
+                | mdast::Node::ThematicBreak(_)
+                | mdast::Node::Table(_)
+                | mdast::Node::FootnoteDefinition(_)
+                | mdast::Node::Text(_)
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1336,6 +1414,20 @@ mod search_tests {
         assert_eq!(scan_matches("aaaa", "aa"), vec![0..2, 2..4]); // non-overlapping
         assert!(scan_matches("abc", "").is_empty());
         assert!(scan_matches("abc", "xyz").is_empty());
+    }
+
+    #[test]
+    fn table_style_marker_parses() {
+        assert_eq!(
+            table_style_marker("<!-- table:striped -->"),
+            Some(TableStyle::Striped)
+        );
+        assert_eq!(
+            table_style_marker("<!--table:header-->"),
+            Some(TableStyle::Header)
+        );
+        assert_eq!(table_style_marker("<!-- table:nope -->"), None);
+        assert_eq!(table_style_marker("<!-- ordinary -->"), None);
     }
 
     #[test]
@@ -1543,6 +1635,35 @@ pub fn indent_list_line(value: &str, cursor: usize, indent: &str) -> Option<(Str
     Some((new, cursor + indent.len()))
 }
 
+/// Re-indent every space-indented list / quote item in `content` from `old`-space
+/// nesting units to `new`-space units (e.g. when the list-indent setting changes),
+/// so existing nesting matches the new width. Each item's level is its leading
+/// spaces ÷ `old`. Non-list lines, top-level items, and tab-indented lines are
+/// left untouched. `None` when nothing changes.
+pub fn reindent(content: &str, old: usize, new: usize) -> Option<String> {
+    if old == 0 || old == new {
+        return None;
+    }
+    let mut changed = false;
+    let out = content
+        .split('\n')
+        .map(|line| {
+            let ws = line.len() - line.trim_start_matches(' ').len();
+            if ws > 0 && parse_list_marker(&line[ws..]).is_some() {
+                let new_ws = (ws / old) * new;
+                if new_ws != ws {
+                    changed = true;
+                }
+                format!("{}{}", " ".repeat(new_ws), &line[ws..])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    changed.then_some(out)
+}
+
 /// Outdent the caret's line one level: remove up to `indent`'s width of leading
 /// spaces (or one leading tab). Returns the new text and caret, or `None` if the
 /// line has no leading indent to remove.
@@ -1572,6 +1693,21 @@ mod tests {
 
     fn cont(s: &str) -> Option<ListEdit> {
         list_continuation(s, s.len())
+    }
+
+    #[test]
+    fn reindent_converts_list_widths() {
+        let content = "- a\n    - b\n        - c\nplain\n    not a list";
+        // 4 → 2 spaces/level: nested list items shrink; non-list + top-level stay.
+        assert_eq!(
+            reindent(content, 4, 2).unwrap(),
+            "- a\n  - b\n    - c\nplain\n    not a list"
+        );
+        // 4 → 8: nested items grow.
+        assert_eq!(reindent("    - b", 4, 8).unwrap(), "        - b");
+        // No-op when unchanged or nothing nested.
+        assert!(reindent(content, 4, 4).is_none());
+        assert!(reindent("- a\n- b", 4, 8).is_none());
     }
 
     #[test]

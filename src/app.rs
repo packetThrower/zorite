@@ -19,9 +19,9 @@ use std::rc::Rc;
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle,
     Entity, EventEmitter, FocusHandle, Focusable, Global, ImageFormat, InteractiveElement,
-    IntoElement, MouseButton, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels, Point, Render,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription, Task,
-    TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds, WindowDecorations,
+    IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, Render, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    Task, TitlebarOptions, WeakEntity, Window, WindowAppearance, WindowBounds, WindowDecorations,
     WindowHandle, WindowOptions, div, point, px, size,
 };
 use gpui_component::{
@@ -225,6 +225,76 @@ const RECENT_PAGES_LIMIT: usize = 10;
 /// RAM at ~100 MB while loading a photo page ~3× faster than one-at-a-time.
 const MAX_IMAGE_DECODES: usize = 3;
 
+/// Open rows×cols table-size picker (from the `/table` command). Hovering its
+/// grid sets `rows`/`cols` (1-based; 0 = nothing hovered yet); a click inserts a
+/// table of that size at `start`, replacing the `/table` query.
+/// A table visual design offered by the `/table` picker. Maps to the
+/// `<!-- table:STYLE -->` marker the renderers honor; `Grid` is the default and
+/// writes no marker (a plain table).
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableDesign {
+    #[default]
+    Grid,
+    Striped,
+    Header,
+    Minimal,
+}
+
+impl TableDesign {
+    pub const ALL: [TableDesign; 4] = [
+        TableDesign::Grid,
+        TableDesign::Striped,
+        TableDesign::Header,
+        TableDesign::Minimal,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            TableDesign::Grid => "Grid",
+            TableDesign::Striped => "Striped",
+            TableDesign::Header => "Header",
+            TableDesign::Minimal => "Minimal",
+        }
+    }
+
+    /// The hidden `<!-- table:NAME -->` marker line, or `None` for the default
+    /// `Grid` (written without a marker). The names match the editor's parser.
+    fn marker(self) -> Option<&'static str> {
+        match self {
+            TableDesign::Grid => None,
+            TableDesign::Striped => Some("<!-- table:striped -->"),
+            TableDesign::Header => Some("<!-- table:header -->"),
+            TableDesign::Minimal => Some("<!-- table:minimal -->"),
+        }
+    }
+}
+
+pub struct TablePicker {
+    target: SlashTarget,
+    /// Byte offset of the `/` to replace in the target editor.
+    start: usize,
+    /// Caret bounds (window space) to anchor the popup.
+    caret: gpui::Bounds<gpui::Pixels>,
+    pub rows: usize,
+    pub cols: usize,
+    /// The chosen visual design (its marker is prepended on insert).
+    pub style: TableDesign,
+    /// Typed custom dimensions, for tables larger than the hover grid.
+    pub rows_input: Entity<InputState>,
+    pub cols_input: Entity<InputState>,
+}
+
+/// The floating Left/Center/Right control shown while the caret is in a table
+/// cell, anchored at the caret. Clicking a button rewrites that column's
+/// alignment in the table's `|---|` separator.
+pub struct AlignToolbar {
+    editor: gpui::WeakEntity<EditorState>,
+    /// Caret bounds (window space) to anchor the toolbar.
+    caret: gpui::Bounds<gpui::Pixels>,
+    /// The column's current alignment, so its button reads as selected.
+    current: gpui_editor::CellAlign,
+}
+
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -262,6 +332,10 @@ pub struct AppView {
     check_updates: bool,
     /// Whether the update check considers pre-releases (betas), persisted.
     include_prerelease: bool,
+    /// WYSIWYG live-preview editing, persisted (default on). On = the editor
+    /// shows inline markdown formatting as you type (W1+); off = "editor mode",
+    /// plain raw markdown in edit + the rendered page on Esc (the classic flow).
+    wysiwyg: bool,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -353,6 +427,10 @@ pub struct AppView {
     pub search: crate::search::Results,
     /// Open slash-command menu, if any.
     slash: Option<Slash>,
+    /// Open `/table` rows×cols picker, if any.
+    table_picker: Option<TablePicker>,
+    /// The table-column alignment toolbar, shown while the caret is in a table.
+    align_toolbar: Option<AlignToolbar>,
     /// Debounced spell-check for the focused body editor; replacing it cancels
     /// the prior pending run so we don't hit the OS spell service per keystroke.
     spell_task: Option<Task<()>>,
@@ -524,6 +602,7 @@ impl AppView {
             list_indent: DEFAULT_LIST_INDENT,
             check_updates: true,
             include_prerelease: false,
+            wysiwyg: true,
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -554,6 +633,8 @@ impl AppView {
             collapsed_sections: HashSet::new(),
             search: crate::search::Results::default(),
             slash: None,
+            table_picker: None,
+            align_toolbar: None,
             spell_task: None,
             signal_task: None,
             templates: Vec::new(),
@@ -616,6 +697,11 @@ impl AppView {
             .get_setting("include_prerelease")
             .map(|v| v == "1")
             .unwrap_or(false);
+        this.wysiwyg = this
+            .db
+            .get_setting("wysiwyg")
+            .map(|v| v != "0")
+            .unwrap_or(true);
         // Date/time display formats for /date, /time, and {{date}}/{{time}} —
         // applied to the thread-local in `crate::dates`; validated against the
         // known ids so a stale persisted value can't stick.
@@ -655,7 +741,17 @@ impl AppView {
             .flatten()
             .map(|p| p.content)
             .unwrap_or_default();
-        let state = make_editor(&content, window, cx);
+        let state = make_editor(
+            &content,
+            self.wysiwyg,
+            self.list_indent,
+            self.image_store(),
+            self.mermaid_store(),
+            window,
+            cx,
+        );
+        self.ensure_content_images(&content, cx);
+        self.ensure_content_mermaid(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -670,7 +766,14 @@ impl AppView {
                     }
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                     this.schedule_spellcheck(st.clone(), cx);
+                    this.refresh_align_toolbar(st, cx);
                 }
+                EditorEvent::OpenLink(src) => {
+                    if let Some(path) = crate::pdf::resolve_path(src) {
+                        this.open_pdf(path, window, cx);
+                    }
+                }
+                EditorEvent::SelectionChanged => this.refresh_align_toolbar(st, cx),
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -1370,7 +1473,17 @@ impl AppView {
             }
         };
         let pid = page.id;
-        let state = make_editor(&page.content, window, cx);
+        let state = make_editor(
+            &page.content,
+            self.wysiwyg,
+            self.list_indent,
+            self.image_store(),
+            self.mermaid_store(),
+            window,
+            cx,
+        );
+        self.ensure_content_images(&page.content, cx);
+        self.ensure_content_mermaid(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -1384,7 +1497,14 @@ impl AppView {
                     }
                     this.update_slash(SlashTarget::Page(pid), cx);
                     this.schedule_spellcheck(st.clone(), cx);
+                    this.refresh_align_toolbar(st, cx);
                 }
+                EditorEvent::OpenLink(src) => {
+                    if let Some(path) = crate::pdf::resolve_path(src) {
+                        this.open_pdf(path, window, cx);
+                    }
+                }
+                EditorEvent::SelectionChanged => this.refresh_align_toolbar(st, cx),
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -1646,6 +1766,7 @@ impl AppView {
         enum Act {
             Enter(SlashLevel),
             Insert(String, usize),
+            OpenPicker(SlashTarget, usize, gpui::Bounds<gpui::Pixels>),
         }
         let act = {
             let Some(s) = self.slash.as_ref() else { return };
@@ -1656,11 +1777,28 @@ impl AppView {
             match &item.kind {
                 ItemKind::Category(level) => Act::Enter(*level),
                 ItemKind::Insert { snippet, caret } => Act::Insert(snippet.clone(), *caret),
+                ItemKind::TablePicker => Act::OpenPicker(s.target.clone(), s.start, s.caret),
             }
         };
         match act {
             Act::Enter(level) => self.enter_slash_category(level, cx),
             Act::Insert(snippet, caret) => self.insert_slash(snippet, caret, window, cx),
+            Act::OpenPicker(target, start, caret) => {
+                self.slash = None;
+                let rows_input = cx.new(|cx| InputState::new(window, cx).placeholder("rows"));
+                let cols_input = cx.new(|cx| InputState::new(window, cx).placeholder("cols"));
+                self.table_picker = Some(TablePicker {
+                    target,
+                    start,
+                    caret,
+                    rows: 0,
+                    cols: 0,
+                    style: TableDesign::Grid,
+                    rows_input,
+                    cols_input,
+                });
+                cx.notify();
+            }
         }
     }
 
@@ -1834,6 +1972,123 @@ impl AppView {
         }
     }
 
+    /// Hovering the `/table` picker grid previews a size (1-based; 0 = none).
+    pub fn table_picker_hover(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
+        if let Some(p) = self.table_picker.as_mut()
+            && (p.rows != rows || p.cols != cols)
+        {
+            p.rows = rows;
+            p.cols = cols;
+            cx.notify();
+        }
+    }
+
+    /// Select a table design in the open picker (highlighted; its marker is
+    /// prepended when a size is then chosen).
+    pub fn table_picker_set_style(&mut self, style: TableDesign, cx: &mut Context<Self>) {
+        if let Some(p) = self.table_picker.as_mut() {
+            p.style = style;
+            cx.notify();
+        }
+    }
+
+    /// Recompute the alignment toolbar from `editor`'s caret: show it (anchored at
+    /// the caret) while the caret is in a table cell, hide it otherwise. Called on
+    /// the editor's `SelectionChanged` / `Changed`; only notifies when it changes.
+    fn refresh_align_toolbar(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let ed = editor.read(cx);
+        let next = ed.caret_table_align().and_then(|current| {
+            ed.bounds_for_offset(ed.cursor()).map(|caret| AlignToolbar {
+                editor: editor.downgrade(),
+                caret,
+                current,
+            })
+        });
+        let before = self.align_toolbar.as_ref().map(|t| (t.current, t.caret));
+        let after = next.as_ref().map(|t| (t.current, t.caret));
+        self.align_toolbar = next;
+        if before != after {
+            cx.notify();
+        }
+    }
+
+    /// Close the `/table` picker without inserting.
+    pub fn cancel_table_picker(&mut self, cx: &mut Context<Self>) {
+        if self.table_picker.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Insert a `rows`×`cols` Markdown table (header + separator + body, empty
+    /// cells) at the picker's start, replacing the `/table` query, caret in the
+    /// first cell.
+    pub fn table_picker_pick(&mut self, rows: usize, cols: usize, cx: &mut Context<Self>) {
+        let Some(p) = self.table_picker.take() else {
+            return;
+        };
+        let (rows, cols) = (rows.max(1), cols.max(1));
+        let Some(editor) = self.editor_for(&p.target) else {
+            cx.notify();
+            return;
+        };
+        let row = format!("|{}", "  |".repeat(cols));
+        let sep = format!("|{}", " --- |".repeat(cols));
+        // The design's hidden marker (if any) goes on the line directly above the
+        // header, so the editor associates it with this table.
+        let mut lines = Vec::new();
+        if let Some(marker) = p.style.marker() {
+            lines.push(marker.to_string());
+        }
+        // Byte length of the marker line(s) + their newline, before the header.
+        let header_off: usize = lines.iter().map(|l| l.len() + 1).sum();
+        lines.push(row.clone());
+        lines.push(sep);
+        for _ in 1..rows {
+            lines.push(row.clone());
+        }
+        let snippet = format!("{}\n", lines.join("\n"));
+        let value = editor.read(cx).value().to_string();
+        let cursor = editor.read(cx).cursor().min(value.len());
+        let start = p.start.min(cursor);
+        let new = format!("{}{}{}", &value[..start], snippet, &value[cursor..]);
+        let caret_off = start + header_off + 2; // first header cell, just after "| "
+        editor.update(cx, |st, cx| {
+            st.set_text(new.clone(), cx);
+            st.set_cursor(caret_off, cx);
+        });
+        match &p.target {
+            SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        cx.notify();
+    }
+
+    /// Insert a table from the picker's typed custom dimensions (for sizes beyond
+    /// the hover grid). No-op unless both fields are positive numbers.
+    pub fn table_picker_insert_custom(&mut self, cx: &mut Context<Self>) {
+        let (rows, cols) = match self.table_picker.as_ref() {
+            Some(p) => (
+                p.rows_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap_or(0),
+                p.cols_input
+                    .read(cx)
+                    .value()
+                    .trim()
+                    .parse::<usize>()
+                    .unwrap_or(0),
+            ),
+            None => return,
+        };
+        if rows == 0 || cols == 0 {
+            return;
+        }
+        self.table_picker_pick(rows.min(100), cols.min(100), cx);
+    }
+
     /// On Enter with the slash menu closed: continue a markdown list / blockquote
     /// onto the next line (indent preserved, ordered numbers incremented), or
     /// remove the marker when the current item is empty. Returns whether it
@@ -1937,6 +2192,27 @@ impl AppView {
         self.mermaid_lightbox = None;
         window.focus(&self.focus_handle, cx);
         cx.notify();
+    }
+
+    /// Kick off decoding for every standalone image in `content`, so an editor in
+    /// WYSIWYG mode can render them inline (W4) rather than as raw `![](src)`.
+    /// `ensure_image_loaded` dedupes, so re-scanning is cheap; a finished decode
+    /// notifies → repaint → the editor's block-image provider finds the bitmap.
+    fn ensure_content_images(&mut self, content: &str, cx: &mut Context<Self>) {
+        for info in gpui_markdown::images(content) {
+            self.ensure_image_loaded(info.src, cx);
+        }
+    }
+
+    /// Kick off the off-thread render of every ```mermaid block in `content`, so
+    /// an editor in WYSIWYG mode can render them as diagrams. Idempotent (the
+    /// store dedupes); a finished render notifies → repaint → the editor's mermaid
+    /// provider finds the bitmap. Uses the editor's extraction so the cache key
+    /// matches what the editor looks up.
+    fn ensure_content_mermaid(&mut self, content: &str, cx: &mut Context<Self>) {
+        for source in gpui_editor::mermaid_sources(content) {
+            self.ensure_mermaid_loaded(source, cx);
+        }
     }
 
     /// Ensure the image at `src` is decoding/decoded (idempotent). Called from a
@@ -3118,6 +3394,14 @@ impl AppView {
             return false;
         };
         let value = editor.read(cx).value().to_string();
+        // Only typed characters / single-char backspaces auto-pair. A programmatic
+        // or multi-char edit (table row/column ops, paste, …) just refreshes the
+        // baseline so the next keystroke compares correctly — without rewriting the
+        // text or moving the caret.
+        if !editor.read(cx).last_edit_was_keystroke() {
+            self.set_autopair_prev(target, value);
+            return false;
+        }
         let cursor = editor.read(cx).cursor().min(value.len());
         let prev = self.autopair_prev(target);
         // Each arm yields the rewritten text and where the caret should land.
@@ -3592,8 +3876,32 @@ impl AppView {
         if !matches!(spaces, 2 | 4 | 8) || spaces == self.list_indent {
             return;
         }
+        let old = self.list_indent;
         self.list_indent = spaces;
         let _ = self.db.set_setting("list_indent", &spaces.to_string());
+        // For every open editor: update its Tab unit, then re-indent its existing
+        // list items from the old width to the new one and persist, so the change
+        // re-flows live. Collect (target, state) first to not borrow `self` across
+        // the updates.
+        let mut targets: Vec<(SlashTarget, Entity<EditorState>)> = self
+            .day_editors
+            .iter()
+            .map(|(d, de)| (SlashTarget::Day(d.clone()), de.state.clone()))
+            .collect();
+        if let Some(pe) = self.page_editor.as_ref() {
+            targets.push((SlashTarget::Page(pe.id), pe.state.clone()));
+        }
+        for (target, state) in targets {
+            state.update(cx, |editor, _| editor.set_tab_indent(spaces));
+            let content = state.read(cx).value().to_string();
+            if let Some(new) = gpui_markdown::reindent(&content, old, spaces) {
+                state.update(cx, |editor, cx| editor.set_text(new.clone(), cx));
+                match &target {
+                    SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+                    SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -3613,6 +3921,40 @@ impl AppView {
         let _ = self
             .db
             .set_setting("check_updates", if on { "1" } else { "0" });
+    }
+
+    /// Whether WYSIWYG live-preview editing is on (default). Off = "editor mode":
+    /// raw markdown while editing, rendered page on Esc.
+    pub fn wysiwyg(&self) -> bool {
+        self.wysiwyg
+    }
+
+    /// Toggle WYSIWYG live-preview editing; persists, then re-applies to every
+    /// open editor so the change takes effect without reopening notes.
+    pub fn set_wysiwyg(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.wysiwyg == on {
+            return;
+        }
+        self.wysiwyg = on;
+        let _ = self.db.set_setting("wysiwyg", if on { "1" } else { "0" });
+        // Set or clear live-preview styling on each open editor. Collect the
+        // handles first so we don't hold a borrow of `self` across `update`.
+        let states: Vec<Entity<EditorState>> = self
+            .day_editors
+            .values()
+            .map(|de| de.state.clone())
+            .chain(self.page_editor.as_ref().map(|pe| pe.state.clone()))
+            .collect();
+        for state in states {
+            state.update(cx, |editor, cx| {
+                if on {
+                    editor.set_markdown_style(theme::editor_syntax_style(), cx);
+                } else {
+                    editor.clear_markdown_style(cx);
+                }
+            });
+        }
+        cx.notify();
     }
 
     /// Include / exclude pre-releases in the update check; persists, then re-runs
@@ -4668,6 +5010,45 @@ impl Render for AppView {
             .into_any_element()
         });
 
+        // The `/table` size picker: a full-window backdrop (click outside to
+        // cancel) with the hover-grid anchored at the caret.
+        let table_picker_overlay = self.table_picker.as_ref().map(|p| {
+            gpui::deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut AppView, _: &MouseDownEvent, _, cx| {
+                            this.cancel_table_picker(cx);
+                        }),
+                    )
+                    .child(
+                        gpui::anchored()
+                            .position(p.caret.bottom_left())
+                            .snap_to_window()
+                            .child(ui::table_picker::render(p, cx)),
+                    ),
+            )
+            .into_any_element()
+        });
+
+        // The table column-alignment toolbar, floated just above the caret while
+        // it's in a table cell. No backdrop — it's a non-modal affordance.
+        let align_toolbar_overlay = self.align_toolbar.as_ref().and_then(|tb| {
+            let editor = tb.editor.upgrade()?;
+            let pos = gpui::point(tb.caret.origin.x, tb.caret.origin.y - px(30.0));
+            Some(
+                gpui::deferred(
+                    gpui::anchored()
+                        .position(pos)
+                        .snap_to_window()
+                        .child(ui::align_toolbar::render(tb.current, editor, cx)),
+                )
+                .into_any_element(),
+            )
+        });
+
         // While resizing an image, a transparent full-window layer captures the
         // mouse so the drag continues even as the pointer leaves the handle.
         let drag_overlay = self.image_drag.as_ref().map(|_| {
@@ -5034,6 +5415,8 @@ impl Render for AppView {
                     ),
             )
             .children(overlay)
+            .children(table_picker_overlay)
+            .children(align_toolbar_overlay)
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)
@@ -5263,6 +5646,10 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 /// effectively means "never scroll internally".
 fn make_editor(
     content: &str,
+    wysiwyg: bool,
+    list_indent: usize,
+    image_store: Rc<RefCell<crate::images::ImageStore>>,
+    mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -5273,13 +5660,38 @@ fn make_editor(
         let mut editor = EditorState::new(window, cx).with_text(content);
         // Right-click a flagged word → the OS's suggestions, fetched lazily.
         editor.on_suggest(|word| spellcheck::SpellChecker::new().suggestions(word));
+        // Inline images (W4): resolve a standalone image's src to its decoded
+        // bitmap from the shared store (None until decoding finishes / on fail).
+        editor.set_block_image_provider(move |src| image_store.borrow().get(src));
+        // A `![](file.pdf)` renders as a clickable chip (label = file name) that
+        // opens the PDF viewer on click — matching the reading view.
+        editor.set_block_chip_provider(|src| {
+            crate::pdf::is_pdf(src).then(|| {
+                crate::pdf::resolve_path(src)
+                    .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+                    .unwrap_or_else(|| src.to_string())
+                    .into()
+            })
+        });
+        // A ```mermaid block renders as its diagram from the shared store (None
+        // until the off-thread render finishes — the block shows raw code then).
+        editor.set_block_mermaid_provider(move |source| {
+            mermaid_store
+                .borrow()
+                .get(&gpui::SharedString::from(source))
+        });
+        // Tab / Shift+Tab indent by the configured number of spaces per level.
+        editor.set_tab_indent(list_indent);
         editor
     });
-    // Live-preview markdown styling — mirrors the rendered view's colors so
-    // formatting (bold/italic/code/links/tags) shows inline as you type (W1).
-    editor.update(cx, |editor, cx| {
-        editor.set_markdown_style(theme::editor_syntax_style(), cx)
-    });
+    // Live-preview markdown styling when WYSIWYG is on — mirrors the rendered
+    // view's colors so formatting (bold/italic/code/links/tags) shows inline as
+    // you type (W1). Off = plain raw markdown ("editor mode").
+    if wysiwyg {
+        editor.update(cx, |editor, cx| {
+            editor.set_markdown_style(theme::editor_syntax_style(), cx)
+        });
+    }
     editor
 }
 

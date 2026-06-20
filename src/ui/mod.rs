@@ -2,6 +2,7 @@
 //! journal feed and a single page). Free functions taking the `AppView`
 //! to read and a `Context<AppView>` for event listeners.
 
+pub mod align_toolbar;
 pub mod image;
 pub mod journal;
 pub mod links;
@@ -11,3 +12,4 @@ pub mod search;
 pub mod sidebar;
 pub mod slash_menu;
 pub mod tab_bar;
+pub mod table_picker;

@@ -8,9 +8,10 @@
 //! on each edit, and we re-run the checker in response.
 
 use gpui::{
-    App, AppContext, Bounds, Context, Entity, Focusable, IntoElement, KeyBinding, ParentElement,
-    Render, Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div, font, hsla,
-    px, rgb, size,
+    App, AppContext, Bounds, Context, Entity, Focusable, InteractiveElement, IntoElement,
+    KeyBinding, ParentElement, Render, ScrollHandle, SharedString, StatefulInteractiveElement,
+    Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div, font, hsla, px, rgb,
+    size,
 };
 use gpui_editor::{Diagnostic, EditorEvent, EditorState, SyntaxStyle};
 use spellcheck::SpellChecker;
@@ -21,6 +22,8 @@ struct Demo {
     editor: Entity<EditorState>,
     /// Held so the change subscription keeps firing for the window's lifetime.
     _spell_sub: Subscription,
+    /// Lets the seeded content (taller than the window) scroll.
+    scroll: ScrollHandle,
 }
 
 impl Render for Demo {
@@ -30,15 +33,22 @@ impl Render for Demo {
             .bg(rgb(0x1e1e22))
             .text_color(rgb(0xe6e6e6))
             .text_size(px(16.))
-            .p(px(28.))
             .child(
                 div()
-                    .bg(rgb(0x111114))
-                    .border_1()
-                    .border_color(rgb(0x333338))
-                    .rounded(px(8.))
-                    .p(px(14.))
-                    .child(self.editor.clone()),
+                    .id("demo-scroll")
+                    .size_full()
+                    .overflow_y_scroll()
+                    .track_scroll(&self.scroll)
+                    .p(px(28.))
+                    .child(
+                        div()
+                            .bg(rgb(0x111114))
+                            .border_1()
+                            .border_color(rgb(0x333338))
+                            .rounded(px(8.))
+                            .p(px(14.))
+                            .child(self.editor.clone()),
+                    ),
             )
     }
 }
@@ -48,11 +58,13 @@ impl Render for Demo {
 /// A dark-theme palette for the live-preview markdown styling.
 fn demo_markdown_style() -> SyntaxStyle {
     SyntaxStyle {
-        marker: hsla(0., 0., 0.5, 0.55),  // dimmed gray syntax markers
-        code: hsla(0.09, 0.6, 0.72, 1.),  // warm inline code text
-        code_bg: hsla(0., 0., 1., 0.06),  // faint code chip background
-        link: hsla(0.58, 0.75, 0.66, 1.), // blue links / wiki-links
-        tag: hsla(0.33, 0.45, 0.62, 1.),  // green tags
+        marker: hsla(0., 0., 0.5, 0.55),   // dimmed gray syntax markers
+        code: hsla(0.09, 0.6, 0.72, 1.),   // warm inline code text
+        code_bg: hsla(0., 0., 1., 0.06),   // faint code chip background
+        link: hsla(0.58, 0.75, 0.66, 1.),  // blue links / wiki-links
+        tag: hsla(0.33, 0.45, 0.62, 1.),   // green tags
+        quote: hsla(0., 0., 0.6, 1.),      // muted blockquote text/border
+        mark_bg: hsla(0.13, 1., 0.5, 0.4), // yellow <mark> highlight
         mono: font("Menlo"),
     }
 }
@@ -78,10 +90,26 @@ fn main() {
                 ..Default::default()
             },
             |window, cx| {
-                let text = "gpui-editor live-preview (W1).\n\n**Bold**, *italic*, ~~strike~~, \
-                            `inline code`, a [link](https://example.com), a [[Wiki Page]], and a \
-                            #tag all style as you type — markers stay, dimmed.\n\nSpell-check still \
-                            flags mispelled wrds; right-click one for suggestions.";
+                let text = "# Heading 1\n## Heading 2\n\nHeadings get bigger as you type (W2). \
+                            **Bold**, *italic*, ~~strike~~, `inline code`, a \
+                            [link](https://example.com), a [[Wiki Page]], and a #tag style \
+                            inline.\n\nA fenced code block (W4b):\n\n```rust\nfn main() {\n    \
+                            println!(\"hello, world\");\n}\n```\n\nA table (W4c):\n\n| Name | \
+                            Role | Score |\n| :-- | :--: | --: |\n| Ada | Engineer | 99 |\n\
+                            | Linus | Kernel | 88 |\n\n> A blockquote, *muted* with a left \
+                            border.\n\n- First bullet\n- Second bullet\n  - Nested bullet\n\n\
+                            1. First step\n2. Second step\n\n- [x] Done task\n- [ ] Pending \
+                            task\n\n![](docs/report.pdf)\n\n---\n\nA footnote reference[^1], a \
+                            [reference link][ref], and <mark>highlighted</mark> text.\n\n\
+                            [^1]: The footnote definition, shown muted.\n\
+                            [ref]: https://example.com\n\nSpell-check still flags mispelled \
+                            wrds; right-click one for suggestions.\n\nStriped:\n\
+                            <!-- table:striped -->\n| Name | Role | Score |\n| :-- | :--: | --: |\n\
+                            | Ada | Engineer | 99 |\n| Linus | Kernel | 88 |\n\
+                            | Grace | Compiler | 95 |\n\nHeader:\n<!-- table:header -->\n\
+                            | Name | Role |\n| :-- | :-- |\n| Ada | Engineer |\n| Linus | Kernel |\
+                            \n\nMinimal:\n<!-- table:minimal -->\n| Name | Role |\n| :-- | :-- |\n\
+                            | Ada | Engineer |\n| Linus | Kernel |";
                 let editor = cx.new(|cx| {
                     EditorState::new(window, cx)
                         .with_placeholder("Type here…")
@@ -94,21 +122,34 @@ fn main() {
                 editor.update(cx, |editor, cx| {
                     editor.on_suggest(|word| SpellChecker::new().suggestions(word));
                     editor.set_markdown_style(demo_markdown_style(), cx);
+                    // Treat a `![](*.pdf)` as a clickable chip (label = file name).
+                    editor.set_block_chip_provider(|src| {
+                        src.ends_with(".pdf")
+                            .then(|| SharedString::from(src.rsplit('/').next().unwrap_or(src)))
+                    });
                     editor.set_diagnostics(diagnostics_for(text), cx);
                 });
 
-                // Re-check on every edit.
+                // Re-check on every edit; log chip opens.
                 let editor_handle = editor.clone();
                 cx.new(|cx| {
                     let _spell_sub = cx.subscribe(
                         &editor_handle,
-                        |_demo: &mut Demo, editor, _: &EditorEvent, cx| {
+                        |_demo: &mut Demo, editor, event: &EditorEvent, cx| {
+                            if let EditorEvent::OpenLink(src) = event {
+                                eprintln!("open link: {src}");
+                                return;
+                            }
                             let text = editor.read(cx).text().to_string();
                             let diagnostics = diagnostics_for(&text);
                             editor.update(cx, |editor, cx| editor.set_diagnostics(diagnostics, cx));
                         },
                     );
-                    Demo { editor, _spell_sub }
+                    Demo {
+                        editor,
+                        _spell_sub,
+                        scroll: ScrollHandle::new(),
+                    }
                 })
             },
         )

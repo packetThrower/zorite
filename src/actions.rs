@@ -75,13 +75,14 @@ pub fn bind_keys(cx: &mut App) {
     // indent actions so the menu, Tab, and Esc work there too. `gpui_editor::
     // bind_keys` runs first (see `main`), so these are tried first and the
     // handlers `cx.propagate()` to fall through to the editor when not consumed.
+    // Note: Tab / Shift+Tab are NOT rebound here — gpui-editor owns them as its
+    // own `Indent`/`Outdent` (configurable, list-aware), so they work reliably in
+    // the always-live editor without depending on the app's focus flags.
     cx.bind_keys([
         KeyBinding::new("up", SlashUp, Some(EDITOR_CONTEXT)),
         KeyBinding::new("down", SlashDown, Some(EDITOR_CONTEXT)),
         KeyBinding::new("enter", SlashConfirm, Some(EDITOR_CONTEXT)),
         KeyBinding::new("escape", SlashCancel, Some(EDITOR_CONTEXT)),
-        KeyBinding::new("tab", InsertTab, Some(EDITOR_CONTEXT)),
-        KeyBinding::new("shift-tab", Outdent, Some(EDITOR_CONTEXT)),
     ]);
     // Paste-image: bind the platform's real paste chord — Cmd+V on macOS, Ctrl+V on
     // Windows/Linux. gpui treats `cmd-` and `ctrl-` as distinct chords, so a bare
