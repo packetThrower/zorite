@@ -1543,6 +1543,35 @@ pub fn indent_list_line(value: &str, cursor: usize, indent: &str) -> Option<(Str
     Some((new, cursor + indent.len()))
 }
 
+/// Re-indent every space-indented list / quote item in `content` from `old`-space
+/// nesting units to `new`-space units (e.g. when the list-indent setting changes),
+/// so existing nesting matches the new width. Each item's level is its leading
+/// spaces ÷ `old`. Non-list lines, top-level items, and tab-indented lines are
+/// left untouched. `None` when nothing changes.
+pub fn reindent(content: &str, old: usize, new: usize) -> Option<String> {
+    if old == 0 || old == new {
+        return None;
+    }
+    let mut changed = false;
+    let out = content
+        .split('\n')
+        .map(|line| {
+            let ws = line.len() - line.trim_start_matches(' ').len();
+            if ws > 0 && parse_list_marker(&line[ws..]).is_some() {
+                let new_ws = (ws / old) * new;
+                if new_ws != ws {
+                    changed = true;
+                }
+                format!("{}{}", " ".repeat(new_ws), &line[ws..])
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    changed.then_some(out)
+}
+
 /// Outdent the caret's line one level: remove up to `indent`'s width of leading
 /// spaces (or one leading tab). Returns the new text and caret, or `None` if the
 /// line has no leading indent to remove.
@@ -1572,6 +1601,21 @@ mod tests {
 
     fn cont(s: &str) -> Option<ListEdit> {
         list_continuation(s, s.len())
+    }
+
+    #[test]
+    fn reindent_converts_list_widths() {
+        let content = "- a\n    - b\n        - c\nplain\n    not a list";
+        // 4 → 2 spaces/level: nested list items shrink; non-list + top-level stay.
+        assert_eq!(
+            reindent(content, 4, 2).unwrap(),
+            "- a\n  - b\n    - c\nplain\n    not a list"
+        );
+        // 4 → 8: nested items grow.
+        assert_eq!(reindent("    - b", 4, 8).unwrap(), "        - b");
+        // No-op when unchanged or nothing nested.
+        assert!(reindent(content, 4, 4).is_none());
+        assert!(reindent("- a\n- b", 4, 8).is_none());
     }
 
     #[test]

@@ -65,6 +65,8 @@ actions!(
         WordRight,
         SelectWordLeft,
         SelectWordRight,
+        Indent,
+        Outdent,
         Dismiss,
     ]
 );
@@ -87,6 +89,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-up", SelectUp, ctx),
         KeyBinding::new("shift-down", SelectDown, ctx),
         KeyBinding::new("enter", Newline, ctx),
+        KeyBinding::new("tab", Indent, ctx),
+        KeyBinding::new("shift-tab", Outdent, ctx),
         KeyBinding::new("cmd-a", SelectAll, ctx),
         KeyBinding::new("ctrl-a", SelectAll, ctx),
         KeyBinding::new("cmd-c", Copy, ctx),
@@ -131,10 +135,6 @@ const CODE_PAD: f32 = 8.;
 /// Horizontal inset (px) of blockquote text from the editor's left edge, leaving
 /// room for the left border (2px) + a gap, matching the reading view's `pl(12)`.
 const QUOTE_INSET: f32 = 14.;
-
-/// Width (px) of a list item's bullet/number column — the body text is inset this
-/// far past the item's indent, leaving room for the painted `•` / `N.` + a gap.
-const BULLET_COL: f32 = 22.;
 
 /// Vertical padding (px) inside a file chip (e.g. a PDF embed), above + below its
 /// label, so the chip box reads as a button rather than a bare line of text.
@@ -261,6 +261,9 @@ pub struct EditorState {
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
     last_edit: EditKind,
+    /// Spaces inserted per Tab / one list-nesting level (`Indent`/`Outdent`); set
+    /// by the host via [`Self::set_tab_indent`] to match its list-indent setting.
+    tab_indent: usize,
     /// The target x for vertical (Up/Down) movement, so the caret keeps its
     /// column across short lines. `Some` only during a run of Up/Down.
     goal_x: Option<Pixels>,
@@ -311,6 +314,7 @@ impl EditorState {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_edit: EditKind::Other,
+            tab_indent: 4,
             goal_x: None,
             diagnostics: Vec::new(),
             markdown_style: None,
@@ -418,6 +422,12 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
     ) {
         self.block_mermaid = Some(Box::new(provider));
+    }
+
+    /// Spaces inserted per Tab / list-nesting level (`Indent`/`Outdent`). The host
+    /// keeps this in sync with its list-indent setting so nesting is configurable.
+    pub fn set_tab_indent(&mut self, spaces: usize) {
+        self.tab_indent = spaces.max(1);
     }
 
     /// The caret's byte offset into [`Self::text`] (the moving end of any
@@ -597,6 +607,64 @@ impl EditorState {
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
         self.replace_text_in_range(None, "\n", window, cx);
+    }
+
+    /// Tab: on a list/quote item, indent the whole item one level (`tab_indent`
+    /// spaces at the line start, caret shifts with it); elsewhere insert that many
+    /// spaces at the caret (replacing any selection).
+    fn indent(&mut self, _: &Indent, window: &mut Window, cx: &mut Context<Self>) {
+        let cursor = self.cursor_offset();
+        let line_start = self.content[..cursor].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.content[line_start..]
+            .find('\n')
+            .map_or(self.content.len(), |i| line_start + i);
+        let line = &self.content[line_start..line_end];
+        let is_item = markdown_syntax::list_prefix(line).is_some()
+            || markdown_syntax::blockquote_prefix(line).is_some();
+        let indent = " ".repeat(self.tab_indent);
+        if !is_item {
+            self.replace_text_in_range(None, &indent, window, cx);
+            return;
+        }
+        let range = line_start..line_start;
+        self.record_edit(&range, &indent);
+        self.content.insert_str(line_start, &indent);
+        let caret = cursor + indent.len();
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.goal_x = None;
+        self.remap_diagnostics(&range, indent.len());
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    /// Shift+Tab: outdent the caret's line — remove up to `tab_indent` leading
+    /// spaces (or one leading tab) from the line start. No-op if there's none.
+    fn outdent(&mut self, _: &Outdent, _: &mut Window, cx: &mut Context<Self>) {
+        let cursor = self.cursor_offset();
+        let line_start = self.content[..cursor].rfind('\n').map_or(0, |i| i + 1);
+        let line = &self.content[line_start..];
+        let removed = if line.starts_with('\t') {
+            1
+        } else {
+            line.bytes()
+                .take(self.tab_indent)
+                .take_while(|b| *b == b' ')
+                .count()
+        };
+        if removed == 0 {
+            return;
+        }
+        let range = line_start..line_start + removed;
+        self.record_edit(&range, "");
+        self.content.replace_range(range.clone(), "");
+        let caret = cursor.saturating_sub(removed).max(line_start);
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.goal_x = None;
+        self.remap_diagnostics(&range, 0);
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
@@ -1279,6 +1347,8 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::newline))
+            .on_action(cx.listener(Self::indent))
+            .on_action(cx.listener(Self::outdent))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::cut))
@@ -1437,6 +1507,32 @@ fn shape_all(
         .unwrap_or_default()
 }
 
+/// The shaped width of `text` at `font_size` — used to inset a gutter line's body
+/// to exactly where its (hidden) source prefix ends, so the rendered + raw views
+/// line up (and tab/space nesting matches the actual whitespace width).
+fn measure_width(window: &mut Window, text: &str, font: &Font, font_size: Pixels) -> Pixels {
+    if text.is_empty() {
+        return px(0.);
+    }
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line(
+            SharedString::from(text.to_string()),
+            font_size,
+            &[run],
+            None,
+        )
+        .width()
+}
+
 /// Shape `text` with pre-built `runs`, so diagnostics can underline specific
 /// spans. The plain-run [`shape_all`] is used for the placeholder + measurement.
 fn shape_runs(
@@ -1524,18 +1620,22 @@ enum LineMark {
     /// Blockquote: a muted left border; the `>` markers are hidden and the body
     /// text is muted (`SyntaxStyle::quote`).
     Quote(Hsla),
-    /// List item: a painted bullet (`•`) or number (`N.`) at `indent`, muted; the
-    /// source marker is hidden and the body inset past the bullet column.
+    /// List item: a painted bullet (`•`) or number (`N.`) at `bullet_x` (where the
+    /// hidden source marker began), muted; the body sits at `text_inset` — the
+    /// measured width of the whole source prefix, so the rendered + raw views
+    /// line up exactly and tab/space nesting stays in sync.
     List {
-        indent: Pixels,
+        bullet_x: Pixels,
+        text_inset: Pixels,
         ordered: bool,
         num: u32,
         color: Hsla,
     },
-    /// GFM task item: a painted ☐/☑ box at `indent`, muted; the source marker +
-    /// checkbox are hidden and the body inset past the bullet column.
+    /// GFM task item: a painted ☐/☑ box at `bullet_x`, muted; the body sits at
+    /// `text_inset` (measured prefix width) like a list item.
     Check {
-        indent: Pixels,
+        bullet_x: Pixels,
+        text_inset: Pixels,
         checked: bool,
         color: Hsla,
     },
@@ -1546,9 +1646,7 @@ impl LineMark {
     fn inset(self) -> Pixels {
         match self {
             LineMark::Quote(_) => px(QUOTE_INSET),
-            LineMark::List { indent, .. } | LineMark::Check { indent, .. } => {
-                indent + px(BULLET_COL)
-            }
+            LineMark::List { text_inset, .. } | LineMark::Check { text_inset, .. } => text_inset,
         }
     }
 }
@@ -1870,35 +1968,45 @@ fn shape_document(
         // body inset) shows only while the caret is OFF the line; on the line it
         // reads as plain source with the prefix revealed (a line-level reveal — the
         // whole prefix shows wherever the caret sits, unlike inline #5).
-        let gutter: Option<(usize, LineMark)> = md
-            .filter(|_| !is_code && widget.is_none() && table.is_none())
-            .and_then(|st| {
-                let indent_px = |indent: usize| px(indent as f32 * f32::from(fs) * 0.5);
-                if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
-                    Some((plen, LineMark::Quote(st.quote)))
-                } else if let Some((plen, indent, checked)) = markdown_syntax::task_prefix(line) {
-                    Some((
-                        plen,
-                        LineMark::Check {
-                            indent: indent_px(indent),
-                            checked,
-                            color: st.quote,
-                        },
-                    ))
-                } else {
-                    markdown_syntax::list_prefix(line).map(|(plen, indent, ordered, num)| {
-                        (
-                            plen,
-                            LineMark::List {
-                                indent: indent_px(indent),
-                                ordered,
-                                num,
-                                color: st.quote,
-                            },
-                        )
-                    })
-                }
-            });
+        // `bullet_x` = measured width of the leading whitespace (where the bullet
+        // paints); `text_inset` = measured width of the whole source prefix (where
+        // the body sits, matching the raw line so render + edit stay in sync).
+        let gutter: Option<(usize, LineMark)> = if let Some(st) =
+            md.filter(|_| !is_code && widget.is_none() && table.is_none())
+        {
+            if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
+                Some((plen, LineMark::Quote(st.quote)))
+            } else if let Some((plen, indent, checked)) = markdown_syntax::task_prefix(line) {
+                let bullet_x = measure_width(window, &line[..indent], base_font, base_font_size);
+                let text_inset = measure_width(window, &line[..plen], base_font, base_font_size);
+                Some((
+                    plen,
+                    LineMark::Check {
+                        bullet_x,
+                        text_inset,
+                        checked,
+                        color: st.quote,
+                    },
+                ))
+            } else if let Some((plen, indent, ordered, num)) = markdown_syntax::list_prefix(line) {
+                let bullet_x = measure_width(window, &line[..indent], base_font, base_font_size);
+                let text_inset = measure_width(window, &line[..plen], base_font, base_font_size);
+                Some((
+                    plen,
+                    LineMark::List {
+                        bullet_x,
+                        text_inset,
+                        ordered,
+                        num,
+                        color: st.quote,
+                    },
+                ))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let caret_here = caret_col.is_some();
         let mark = gutter
             .filter(|_| !caret_here && !full_source)
@@ -2308,7 +2416,14 @@ impl Element for EditorElement {
                 base_lh * rows as f32
             } else {
                 // Sum of per-line (variable) heights × each line's wrap rows.
-                let caret_row = editor.row_col(editor.cursor_offset()).0;
+                // Reveal-on-caret applies only while focused (matches prepaint).
+                let focused = editor.focus_handle.is_focused(window);
+                let caret_row = focused.then(|| editor.row_col(editor.cursor_offset()).0);
+                let selection = if focused {
+                    (editor.selected_range.start, editor.selected_range.end)
+                } else {
+                    (usize::MAX, usize::MAX)
+                };
                 let sf = window.scale_factor();
                 let (wrapped, heights, _, backgrounds, _, _, _) = shape_document(
                     window,
@@ -2319,12 +2434,12 @@ impl Element for EditorElement {
                     &editor.diagnostics,
                     editor.markdown_style.as_ref(),
                     wrap_width,
-                    Some(caret_row),
+                    caret_row,
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     sf,
-                    (editor.selected_range.start, editor.selected_range.end),
+                    selection,
                 );
                 wrapped
                     .iter()
@@ -2353,6 +2468,11 @@ impl Element for EditorElement {
         cx: &mut App,
     ) -> PrepaintState {
         let editor = self.editor.read(cx);
+        // Reveal-on-caret (markers, raw-on-caret widgets, per-construct reveal)
+        // applies only while the editor is focused. An unfocused editor — always
+        // shown in WYSIWYG mode but not being edited — renders fully, like a
+        // reading view. `caret_row = None` + a no-match selection do that.
+        let focused = editor.focus_handle.is_focused(window);
         let style = window.text_style();
         let font = style.font();
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -2362,7 +2482,12 @@ impl Element for EditorElement {
 
         // Placeholder (uniform) when empty; else shape per line so headings get
         // their own taller rows (W2) and image lines render inline (W4).
-        let caret_row = editor.row_col(editor.cursor_offset()).0;
+        let caret_row = focused.then(|| editor.row_col(editor.cursor_offset()).0);
+        let selection = if focused {
+            (editor.selected_range.start, editor.selected_range.end)
+        } else {
+            (usize::MAX, usize::MAX)
+        };
         let sf = window.scale_factor();
         let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks) =
             if editor.content.is_empty() {
@@ -2394,12 +2519,12 @@ impl Element for EditorElement {
                     &editor.diagnostics,
                     editor.markdown_style.as_ref(),
                     wrap_width,
-                    Some(caret_row),
+                    caret_row,
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     sf,
-                    (editor.selected_range.start, editor.selected_range.end),
+                    selection,
                 )
             };
 
@@ -2565,6 +2690,10 @@ impl Element for EditorElement {
         let text_color = style.color;
         let font_size = style.font_size.to_pixels(window.rem_size());
         let base_lh = font_size * LINE_HEIGHT_RATIO;
+        // Logseq-style list nesting guides: `outline` holds the bullet x of each
+        // active ancestor level, so a faint vertical line can drop from each down
+        // through its descendants. Popped on dedent, reset off the list.
+        let mut outline: Vec<Pixels> = Vec::new();
         for (i, ((line, top), lh)) in prepaint
             .wrapped
             .iter()
@@ -2573,6 +2702,33 @@ impl Element for EditorElement {
             .enumerate()
         {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
+            // Nesting guides for a list/task row: a thin vertical line at each
+            // ancestor bullet's x, spanning this row (contiguous rows stack into a
+            // continuous guide).
+            match prepaint.marks.get(i).copied().flatten() {
+                Some(LineMark::List {
+                    bullet_x, color, ..
+                })
+                | Some(LineMark::Check {
+                    bullet_x, color, ..
+                }) => {
+                    while outline.last().is_some_and(|&x| x >= bullet_x) {
+                        outline.pop();
+                    }
+                    let guide = Hsla {
+                        a: color.a * 0.5,
+                        ..color
+                    };
+                    for &gx in &outline {
+                        window.paint_quad(fill(
+                            Bounds::new(point(origin.x + gx + px(3.), origin.y), size(px(1.), *lh)),
+                            guide,
+                        ));
+                    }
+                    outline.push(bullet_x);
+                }
+                _ => outline.clear(),
+            }
             // Fenced code block: one rounded, content-fit box (sized to the
             // widest line, like a table). The first line rounds + pads the top, the
             // last rounds + pads the bottom; the pad fills the layout gap reserved
@@ -2599,13 +2755,15 @@ impl Element for EditorElement {
             if let Some(LineMark::Quote(c)) = prepaint.marks.get(i).copied().flatten() {
                 window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), c));
             }
-            // List item: a muted bullet (`•`) or number (`N.`) glyph at the item's
-            // indent; the body is inset past it (the source marker is hidden).
+            // List item: a muted bullet (`•`) or number (`N.`) glyph where the
+            // hidden source marker began (`bullet_x`); the body is inset to the
+            // measured prefix width so it lines up with the raw line.
             if let Some(LineMark::List {
-                indent,
+                bullet_x,
                 ordered,
                 num,
                 color,
+                ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
                 let glyph: SharedString = if ordered {
@@ -2625,7 +2783,7 @@ impl Element for EditorElement {
                     .text_system()
                     .shape_line(glyph, font_size, &[run], None);
                 let _ = shaped.paint(
-                    point(origin.x + indent, origin.y),
+                    point(origin.x + bullet_x, origin.y),
                     *lh,
                     gpui::TextAlign::Left,
                     None,
@@ -2636,13 +2794,14 @@ impl Element for EditorElement {
             // Task item: a crisp cap-height box (custom-drawn, not a font glyph so
             // it reads at the text's size) with a checkmark when done.
             if let Some(LineMark::Check {
-                indent,
+                bullet_x,
                 checked,
                 color,
+                ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
                 let sz = font_size * 0.78; // ~cap height
-                let bx = origin.x + indent;
+                let bx = origin.x + bullet_x;
                 let by = origin.y + (*lh - sz) / 2.; // vertically centered on the line
                 window.paint_quad(PaintQuad {
                     bounds: Bounds::new(point(bx, by), size(sz, sz)),

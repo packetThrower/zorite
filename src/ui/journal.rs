@@ -68,7 +68,10 @@ fn day_section(
         .text_color(theme::accent())
         .child(app::date_label(i));
 
-    let body = if app.is_editing_day(date) {
+    // WYSIWYG on → the live editor is the only view (it renders fully when
+    // unfocused, reveals on caret while editing). Off → the classic flow: the
+    // rendered reading view, swapped for the editor only while editing this day.
+    let body = if app.wysiwyg() || app.is_editing_day(date) {
         // gpui-editor has no chrome of its own; the wrapper sets the ambient
         // text style (size/color) the editor inherits when it shapes lines.
         div()

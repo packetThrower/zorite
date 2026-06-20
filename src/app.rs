@@ -687,6 +687,7 @@ impl AppView {
         let state = make_editor(
             &content,
             self.wysiwyg,
+            self.list_indent,
             self.image_store(),
             self.mermaid_store(),
             window,
@@ -1416,6 +1417,7 @@ impl AppView {
         let state = make_editor(
             &page.content,
             self.wysiwyg,
+            self.list_indent,
             self.image_store(),
             self.mermaid_store(),
             window,
@@ -3766,8 +3768,32 @@ impl AppView {
         if !matches!(spaces, 2 | 4 | 8) || spaces == self.list_indent {
             return;
         }
+        let old = self.list_indent;
         self.list_indent = spaces;
         let _ = self.db.set_setting("list_indent", &spaces.to_string());
+        // For every open editor: update its Tab unit, then re-indent its existing
+        // list items from the old width to the new one and persist, so the change
+        // re-flows live. Collect (target, state) first to not borrow `self` across
+        // the updates.
+        let mut targets: Vec<(SlashTarget, Entity<EditorState>)> = self
+            .day_editors
+            .iter()
+            .map(|(d, de)| (SlashTarget::Day(d.clone()), de.state.clone()))
+            .collect();
+        if let Some(pe) = self.page_editor.as_ref() {
+            targets.push((SlashTarget::Page(pe.id), pe.state.clone()));
+        }
+        for (target, state) in targets {
+            state.update(cx, |editor, _| editor.set_tab_indent(spaces));
+            let content = state.read(cx).value().to_string();
+            if let Some(new) = gpui_markdown::reindent(&content, old, spaces) {
+                state.update(cx, |editor, cx| editor.set_text(new.clone(), cx));
+                match &target {
+                    SlashTarget::Day(d) => self.save_journal(d, &new, cx),
+                    SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+                }
+            }
+        }
         cx.notify();
     }
 
@@ -5496,6 +5522,7 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 fn make_editor(
     content: &str,
     wysiwyg: bool,
+    list_indent: usize,
     image_store: Rc<RefCell<crate::images::ImageStore>>,
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     window: &mut Window,
@@ -5528,6 +5555,8 @@ fn make_editor(
                 .borrow()
                 .get(&gpui::SharedString::from(source))
         });
+        // Tab / Shift+Tab indent by the configured number of spaces per level.
+        editor.set_tab_indent(list_indent);
         editor
     });
     // Live-preview markdown styling when WYSIWYG is on — mirrors the rendered
