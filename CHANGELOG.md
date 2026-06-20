@@ -9,6 +9,27 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.2.0-beta.3] - 2026-06-20
+
+### Added
+
+- **WYSIWYG live editor** — the note editor now renders Markdown live as you type,
+  and is the single renderer when enabled (the default). Headings, bold / italic /
+  strikethrough, inline code, links, wiki-links, tags, blockquotes, lists, task
+  checkboxes, fenced code blocks, images, PDF chips, mermaid diagrams, tables,
+  thematic rules, footnotes, reference links, and `<mark>` all render formatted —
+  with the raw Markdown revealed only around the caret. No more swapping between a
+  rendered page and a raw-text line while editing.
+- **Tables, edited in place** — type directly in cells; the `/table` picker offers
+  visual designs (Grid, Striped, Header, Minimal); an alignment toolbar (left /
+  center / right) appears in the header row; and a right-click menu inserts or
+  deletes rows and columns.
+
+### Known issues
+
+- Deleting the **last** row or column of a table can drop the caret just below the
+  table; other rows and columns are unaffected.
+
 ## [0.1.2] - 2026-06-15
 
 ### Fixed

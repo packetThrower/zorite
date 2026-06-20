@@ -666,9 +666,25 @@ jobs:
             PREV_TAG=$(git describe --tags --abbrev=0 --exclude='*-*' "${CURRENT_TAG}^" 2>/dev/null || true)
           fi
 
+          # Highlights: the latest CHANGELOG.md section — the body under the first
+          # `## [x.y.z]` header, up to the next `## [`. Lets the release lead with a
+          # curated summary instead of only the raw commit list.
+          HIGHLIGHTS=$(awk '
+            /^## \[[0-9]/ { n++; if (n == 1) { grab = 1; next } }
+            grab && /^## \[/ { exit }
+            grab { print }
+          ' CHANGELOG.md)
+
           {
             if [ "$IS_PRERELEASE" = "1" ]; then
               echo "> ⚠️ **Pre-release.** Published for testing. Behaviour and artifacts are not final."
+              echo
+            fi
+
+            if [ -n "$HIGHLIGHTS" ]; then
+              echo "## Highlights"
+              echo
+              echo "$HIGHLIGHTS"
               echo
             fi
 
