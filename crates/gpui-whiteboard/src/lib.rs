@@ -91,6 +91,10 @@ const ROT_EPS: f32 = 0.05;
 const ROT_SNAP: f32 = 0.105;
 /// Default text size at creation, screen px (stored world size is this / zoom).
 const TEXT_SIZE: f32 = 18.0;
+
+/// Inset (world units) kept between a shape's inscribed text rectangle and its
+/// border, so the auto-shrunk label never touches the edge.
+const LABEL_PAD: f32 = 8.0;
 /// Rough per-character advance and line height, as fractions of the font size,
 /// for an approximate text bounding box (hit-testing / selection).
 const TEXT_CHAR_W: f32 = 0.55;
@@ -154,6 +158,17 @@ pub struct Element {
     /// is an unfilled outline. Ignored by other kinds. Absent in older boards.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<u32>,
+    /// Centered text label for closed shapes (rect / ellipse / …). Rendered at a
+    /// font size auto-shrunk so the wrapped text never crosses the shape's
+    /// border (see the shape paint path). `None` / empty = no label; ignored by
+    /// non-shape kinds. Absent in older boards → `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Color of the shape's [`label`](Self::label), packed `0xRRGGBBAA`. `None`
+    /// inks it with the shape's stroke (theme ink if that's unset too). Ignored by
+    /// non-shape kinds. Absent in older boards → `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_color: Option<u32>,
 }
 
 /// The kinds of thing a board can hold.
@@ -774,6 +789,8 @@ enum PickerTarget {
     Stroke,
     /// Shape fill (`None` = unfilled).
     Fill,
+    /// Shape label color (`None` follows the stroke / theme ink).
+    Text,
 }
 
 /// Open color-picker state: the HSVA the controls currently reflect, and which
@@ -872,6 +889,8 @@ pub struct WhiteboardView {
     active_stroke: Option<u32>,
     /// Current fill for new shapes (`None` = unfilled).
     active_fill: Option<u32>,
+    /// Current label color for new shapes (`None` follows the stroke / theme ink).
+    active_text: Option<u32>,
     /// Current stroke thickness for new elements, in screen px (stored world-space
     /// as `active_width / zoom`, like [`NIB`]). Defaults to `NIB`.
     active_width: f32,
@@ -971,6 +990,7 @@ impl WhiteboardView {
             rotating: None,
             active_stroke: None,
             active_fill: None,
+            active_text: None,
             active_width: NIB,
             picker: None,
             open_group: None,
@@ -1249,6 +1269,8 @@ impl WhiteboardView {
             }),
             stroke: None,
             fill: None,
+            label: None,
+            label_color: None,
         });
         self.selected = vec![id];
         self.tool = Tool::Select;
@@ -1289,6 +1311,8 @@ impl WhiteboardView {
             }),
             stroke: None,
             fill: None,
+            label: None,
+            label_color: None,
         });
         self.selected = vec![id];
         self.tool = Tool::Select;
@@ -1708,10 +1732,12 @@ impl WhiteboardView {
             .and_then(|e| match target {
                 PickerTarget::Stroke => e.stroke,
                 PickerTarget::Fill => e.fill,
+                PickerTarget::Text => e.label_color,
             });
         let active = match target {
             PickerTarget::Stroke => self.active_stroke,
             PickerTarget::Fill => self.active_fill,
+            PickerTarget::Text => self.active_text,
         };
         from_sel.or(active).unwrap_or(0x4080f0ff)
     }
@@ -1850,6 +1876,7 @@ impl WhiteboardView {
         match target {
             PickerTarget::Stroke => self.active_stroke = color,
             PickerTarget::Fill => self.active_fill = color,
+            PickerTarget::Text => self.active_text = color,
         }
         if !self.selected.is_empty() {
             let sel = self.selected.clone();
@@ -1859,10 +1886,15 @@ impl WhiteboardView {
                 }
                 match target {
                     PickerTarget::Stroke => e.stroke = color,
-                    // Fill only attaches to closed shapes — never lines/strokes.
+                    // Fill + label color only attach to closed shapes.
                     PickerTarget::Fill => {
                         if is_closed_shape(&e.kind) {
                             e.fill = color;
+                        }
+                    }
+                    PickerTarget::Text => {
+                        if is_closed_shape(&e.kind) {
+                            e.label_color = color;
                         }
                     }
                 }
@@ -2166,6 +2198,17 @@ impl WhiteboardView {
             .map(|e| e.id)
     }
 
+    /// The topmost closed shape (rect / ellipse / …) under a world point — for
+    /// editing its centered label.
+    fn shape_at(&self, p: [f32; 2], pad: f32) -> Option<u64> {
+        self.scene
+            .elements
+            .iter()
+            .rev()
+            .find(|e| is_closed_shape(&e.kind) && hit_test(&e.kind, p[0], p[1], pad))
+            .map(|e| e.id)
+    }
+
     /// The topmost page-card under a world point: `(element id, page id)`.
     fn embed_at(&self, p: [f32; 2], pad: f32) -> Option<(u64, i64)> {
         self.scene
@@ -2323,6 +2366,13 @@ impl WhiteboardView {
                     self.place_caret_from_click(id, p, ev, window, cx);
                     return;
                 }
+                // Double-click a closed shape edits its centered label.
+                if let Some(id) = self.shape_at(p, SELECT_PAD / zoom) {
+                    self.selected = vec![id];
+                    self.editing = Some(id);
+                    self.place_caret_from_click(id, p, ev, window, cx);
+                    return;
+                }
                 // Double-click a page-card opens its page.
                 if let Some((id, page_id)) = self.embed_at(p, SELECT_PAD / zoom) {
                     self.selected = vec![id];
@@ -2368,6 +2418,8 @@ impl WhiteboardView {
                     }),
                     stroke: self.active_stroke,
                     fill: None,
+                    label: None,
+                    label_color: None,
                 });
                 self.selected = vec![id];
                 self.begin_text_edit(id, 0, window, cx);
@@ -2613,6 +2665,8 @@ impl WhiteboardView {
                     kind: pending.kind,
                     stroke: self.active_stroke,
                     fill,
+                    label: None,
+                    label_color: self.active_text,
                 });
                 self.dirty = true;
             }
@@ -2702,10 +2756,11 @@ impl WhiteboardView {
         // while the anchor stays put.
         if self.text_selecting
             && let Some(id) = self.editing
-            && let Some(t) = self.editing_text(id)
+            && let Some(tg) = self.edit_target(id)
         {
-            let local = text_local(&t, self.event_to_world(ev.position));
-            self.caret = self.font.index_at(&t.content, t.size, local);
+            let local =
+                block_local(tg.x, tg.y, tg.rotation, tg.pivot, self.event_to_world(ev.position));
+            self.caret = self.font.index_at_wrapped(&tg.content, tg.size, tg.wrap, local);
             cx.notify();
             return;
         }
@@ -3030,18 +3085,39 @@ impl WhiteboardView {
     }
 
     /// A clone of the text element being edited (its content + size + placement).
-    fn editing_text(&self, id: u64) -> Option<TextGeom> {
-        self.scene
-            .elements
-            .iter()
-            .find(|e| e.id == id)
-            .and_then(|e| {
-                if let ElementKind::Text(t) = &e.kind {
-                    Some(t.clone())
-                } else {
-                    None
-                }
-            })
+    /// The text currently being edited — a `Text` element's content, or a closed
+    /// shape's centered label — with everything the caret math and click
+    /// hit-testing need. `wrap` is `None` for free text, `Some(inner_width)` for a
+    /// label (which word-wraps inside its shape). `x`/`y`/`w`/`h`/`rotation` place
+    /// the laid-out block in the world.
+    fn edit_target(&self, id: u64) -> Option<EditTarget> {
+        let e = self.scene.elements.iter().find(|e| e.id == id)?;
+        match &e.kind {
+            ElementKind::Text(t) => Some(EditTarget {
+                content: t.content.clone(),
+                size: t.size,
+                wrap: None,
+                x: t.x,
+                y: t.y,
+                rotation: t.rotation,
+                pivot: [t.x + t.measured_w / 2.0, t.y + t.measured_h / 2.0],
+            }),
+            kind if is_closed_shape(kind) => {
+                let (bx, by, bw, bh, rot) = box_like(kind)?;
+                let label = e.label.clone().unwrap_or_default();
+                let blk = shape_label_block(&self.font, kind, bx, by, bw, bh, &label);
+                Some(EditTarget {
+                    content: label,
+                    size: blk.size,
+                    wrap: Some(blk.wrap),
+                    x: blk.x,
+                    y: blk.y,
+                    rotation: rot,
+                    pivot: [bx + bw / 2.0, by + bh / 2.0],
+                })
+            }
+            _ => None,
+        }
     }
 
     /// The selection as an ordered byte range `[start, end)` (empty when the caret
@@ -3066,10 +3142,20 @@ impl WhiteboardView {
     /// Replace the editing text's `[s, e)` with `ins`, landing the caret just after
     /// it (collapsed). The single mutation point for typing, deletion, and paste.
     fn replace_range(&mut self, id: u64, s: usize, e: usize, ins: &str, cx: &mut Context<Self>) {
-        if let Some(el) = self.scene.elements.iter_mut().find(|el| el.id == id)
-            && let ElementKind::Text(t) = &mut el.kind
-        {
-            t.content.replace_range(s..e, ins);
+        let Some(el) = self.scene.elements.iter_mut().find(|el| el.id == id) else {
+            return;
+        };
+        // The editing target's text: a `Text` element's content, or a closed
+        // shape's label (created on first edit).
+        let content = if let ElementKind::Text(t) = &mut el.kind {
+            Some(&mut t.content)
+        } else if is_closed_shape(&el.kind) {
+            Some(el.label.get_or_insert_with(String::new))
+        } else {
+            None
+        };
+        if let Some(content) = content {
+            content.replace_range(s..e, ins);
             self.caret = s + ins.len();
             self.sel_anchor = self.caret;
             self.dirty = true;
@@ -3085,12 +3171,12 @@ impl WhiteboardView {
 
     /// The caret offset one line up (`dir = -1`) or down (`dir = 1`), keeping the
     /// current column (x). Clamps at the first / last line.
-    fn caret_vertical(&self, content: &str, size: f32, dir: i32) -> usize {
-        let pos = self.font.caret_pos(content, size, self.caret);
+    fn caret_vertical(&self, content: &str, size: f32, wrap: Option<f32>, dir: i32) -> usize {
+        let pos = self.font.caret_pos_wrapped(content, size, wrap, self.caret);
         let lh = self.font.measure("", size).1.max(1.0);
         // Aim mid-target-line so `index_at`'s floor lands on it despite rounding.
         let y = (pos[1] + dir as f32 * lh + lh * 0.5).max(0.0);
-        self.font.index_at(content, size, [pos[0], y])
+        self.font.index_at_wrapped(content, size, wrap, [pos[0], y])
     }
 
     /// Apply one key press while editing text: caret navigation (arrows / Home /
@@ -3100,11 +3186,11 @@ impl WhiteboardView {
         let Some(id) = self.editing else {
             return;
         };
-        let Some(t) = self.editing_text(id) else {
+        let Some(tg) = self.edit_target(id) else {
             self.commit_text(window, cx);
             return;
         };
-        let (content, size) = (t.content, t.size);
+        let (content, size, wrap) = (tg.content, tg.size, tg.wrap);
         // Keep the caret/anchor valid against the live content (defensive).
         self.caret = floor_boundary(&content, self.caret);
         self.sel_anchor = floor_boundary(&content, self.sel_anchor);
@@ -3164,11 +3250,11 @@ impl WhiteboardView {
                 self.move_caret(to, shift, cx);
             }
             "up" => {
-                let to = self.caret_vertical(&content, size, -1);
+                let to = self.caret_vertical(&content, size, wrap, -1);
                 self.move_caret(to, shift, cx);
             }
             "down" => {
-                let to = self.caret_vertical(&content, size, 1);
+                let to = self.caret_vertical(&content, size, wrap, 1);
                 self.move_caret(to, shift, cx);
             }
             "home" => self.move_caret(line_start(&content, self.caret), shift, cx),
@@ -3231,13 +3317,13 @@ impl WhiteboardView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(t) = self.editing_text(id) else {
+        let Some(tg) = self.edit_target(id) else {
             return;
         };
-        let local = text_local(&t, p);
-        let idx = self.font.index_at(&t.content, t.size, local);
+        let local = block_local(tg.x, tg.y, tg.rotation, tg.pivot, p);
+        let idx = self.font.index_at_wrapped(&tg.content, tg.size, tg.wrap, local);
         if ev.click_count >= 2 {
-            let (s, e) = word_range(&t.content, idx);
+            let (s, e) = word_range(&tg.content, idx);
             self.sel_anchor = s;
             self.caret = e;
             self.text_selecting = false;
@@ -3258,13 +3344,17 @@ impl WhiteboardView {
         let Some(id) = self.editing.take() else {
             return;
         };
-        let empty =
-            self.scene.elements.iter().find(|e| e.id == id).is_none_or(
-                |e| matches!(&e.kind, ElementKind::Text(t) if t.content.trim().is_empty()),
-            );
-        if empty {
-            self.scene.elements.retain(|e| e.id != id);
+        if let Some(e) = self.scene.elements.iter_mut().find(|e| e.id == id)
+            && is_closed_shape(&e.kind)
+            && e.label.as_deref().is_none_or(|s| s.trim().is_empty())
+        {
+            // A shape stays put; an empty label is just cleared (not persisted).
+            e.label = None;
         }
+        // An empty free-text element has no purpose of its own → remove it.
+        self.scene.elements.retain(|e| {
+            e.id != id || !matches!(&e.kind, ElementKind::Text(t) if t.content.trim().is_empty())
+        });
         self.dirty = true;
         cx.notify();
         self.flush(window, cx);
@@ -3884,10 +3974,77 @@ fn word_range(content: &str, at: usize) -> (usize, usize) {
 
 /// World point → text-local space (origin at the block's top-left), undoing the
 /// text's rotation about its center so a click maps to the right glyph.
-fn text_local(t: &TextGeom, p: [f32; 2]) -> [f32; 2] {
-    let (cx, cy) = (t.x + t.measured_w / 2.0, t.y + t.measured_h / 2.0);
-    let (rx, ry) = rotate_pt(p[0], p[1], cx, cy, -t.rotation);
-    [rx - t.x, ry - t.y]
+/// The text currently being edited, captured for the caret math + click
+/// hit-testing. See [`WhiteboardView::edit_target`].
+struct EditTarget {
+    content: String,
+    size: f32,
+    wrap: Option<f32>,
+    x: f32,
+    y: f32,
+    rotation: f32,
+    /// Rotation pivot (world) for click → local mapping — the shape's center.
+    pivot: [f32; 2],
+}
+
+/// A closed shape's label block: world top-left `(x, y)`, the auto-shrunk font
+/// size, and the wrap width.
+struct LabelBlock {
+    x: f32,
+    y: f32,
+    size: f32,
+    wrap: f32,
+}
+
+/// Lay out a closed shape's label inside its box (minus [`LABEL_PAD`]): the
+/// auto-shrunk font size, the wrap width, and the block's world placement,
+/// centered. Shared by the paint path and the editor so the caret matches the
+/// rendered glyphs exactly.
+fn shape_label_block(
+    font: &Font,
+    kind: &ElementKind,
+    bx: f32,
+    by: f32,
+    bw: f32,
+    bh: f32,
+    label: &str,
+) -> LabelBlock {
+    // The label wraps + shrinks to fit the shape's *inscribed rectangle* (a
+    // fraction of the bounding box), not the box itself — so text never crosses a
+    // slanted / round outline. Largest centered inscribed rect: ellipse 1/√2 each
+    // axis, diamond ½. A triangle narrows toward its apex, so its band is ½×½
+    // sitting on the base (text anchored low, not vertically centered). Star /
+    // pointy-top hexagon use a safe central band. (Rect / round-rect = the box.)
+    let (wf, hf, bottom) = match kind {
+        ElementKind::Ellipse(_) => {
+            (std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, false)
+        }
+        ElementKind::Diamond(_) => (0.5, 0.5, false),
+        ElementKind::Triangle(_) => (0.5, 0.5, true),
+        ElementKind::Star(_) => (0.5, 0.4, false),
+        ElementKind::Hexagon(_) => (0.8, 0.5, false),
+        _ => (1.0, 1.0, false),
+    };
+    let wrap = (bw * wf - 2.0 * LABEL_PAD).max(1.0);
+    let ih = (bh * hf - 2.0 * LABEL_PAD).max(1.0);
+    let size = font.fit_size(label, wrap, ih, TEXT_SIZE);
+    let (w, h) = font.measure_wrapped(label, size, Some(wrap));
+    // Always horizontally centered; the triangle's band sits on the base, every
+    // other shape is vertically centered too.
+    let x = bx + (bw - w) / 2.0;
+    let y = if bottom {
+        by + bh - LABEL_PAD - h
+    } else {
+        by + (bh - h) / 2.0
+    };
+    LabelBlock { x, y, size, wrap }
+}
+
+/// World point `p` → block-local space (origin = the block's top-left `(x, y)`),
+/// undoing rotation about `pivot` (the shape's center) — maps a click to a caret.
+fn block_local(x: f32, y: f32, rotation: f32, pivot: [f32; 2], p: [f32; 2]) -> [f32; 2] {
+    let (rx, ry) = rotate_pt(p[0], p[1], pivot[0], pivot[1], -rotation);
+    [rx - x, ry - y]
 }
 
 /// Snap target `(tx, ty)` so its angle from `(ox, oy)` is a multiple of 45°,
@@ -4085,9 +4242,12 @@ fn band_canvas(elems: Vec<ElemPaint>, cam: Camera) -> impl IntoElement {
         |_, _, _| {},
         move |bounds, _, window, _| {
             for ep in &elems {
-                match &ep.text {
-                    Some(t) => paint_text(t, cam, bounds.origin, ep.stroke, window),
-                    None => paint_element(&ep.kind, cam, bounds.origin, ep.stroke, ep.fill, window),
+                // Shapes / lines / pen paint here; Text elements are a no-op in
+                // `paint_element`. Any text outline — a Text element's content or
+                // a shape's label — then paints on top.
+                paint_element(&ep.kind, cam, bounds.origin, ep.stroke, ep.fill, window);
+                if let Some(t) = &ep.text {
+                    paint_text(t, cam, bounds.origin, window);
                 }
             }
         },
@@ -4100,11 +4260,14 @@ fn band_canvas(elems: Vec<ElemPaint>, cam: Camera) -> impl IntoElement {
 /// for the paint closure to transform (camera + rotation) and fill.
 struct TextOutline {
     segs: Vec<font::Seg>,
+    /// Glyph fill color — a Text element's ink, or a shape label's color.
+    color: Hsla,
     x: f32,
     y: f32,
     rotation: f32,
-    w: f32,
-    h: f32,
+    /// Rotation pivot (world): the shape's center, so an off-center label (a
+    /// triangle's base-anchored text) still rotates with the shape.
+    pivot: [f32; 2],
     line_height: f32,
     /// Caret's text-local top, when this text is being edited.
     caret: Option<[f32; 2]>,
@@ -4117,14 +4280,9 @@ struct TextOutline {
 /// Paint a text element's vector outlines (and, when editing, its caret). Local
 /// glyph points are placed at `(x, y)`, rotated about the block's center, then
 /// projected to the screen — so text rotates and scales like the shapes.
-fn paint_text(
-    t: &TextOutline,
-    cam: Camera,
-    origin: Point<Pixels>,
-    color: Hsla,
-    window: &mut Window,
-) {
-    let (cx, cy) = (t.x + t.w / 2.0, t.y + t.h / 2.0);
+fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, window: &mut Window) {
+    let color = t.color;
+    let (cx, cy) = (t.pivot[0], t.pivot[1]);
     let tf = |p: [f32; 2]| {
         let (rx, ry) = rotate_pt(t.x + p[0], t.y + p[1], cx, cy, t.rotation);
         to_screen(rx, ry, cam, origin)
@@ -4731,6 +4889,10 @@ impl Render for WhiteboardView {
             let id = e.id;
             let stroke = e.stroke.map_or(ink, u32_to_hsla);
             let fill = e.fill.map(u32_to_hsla);
+            // Disjoint field borrow (vs `&mut e.kind` below) so the shape-label
+            // arm can read the label + its color without cloning.
+            let label = e.label.as_deref();
+            let label_color = e.label_color;
             match &mut e.kind {
                 // Page-card: a titled box (top-aligned header + hint) that links
                 // to a host page. Subtle border — the accent is the selection.
@@ -4842,11 +5004,45 @@ impl Render for WhiteboardView {
                         };
                         Some(TextOutline {
                             segs: layout.segs,
+                            color: stroke,
                             x: t.x,
                             y: t.y,
                             rotation: t.rotation,
-                            w: layout.width,
-                            h: layout.height,
+                            pivot: [t.x + layout.width / 2.0, t.y + layout.height / 2.0],
+                            line_height: layout.line_height,
+                            caret,
+                            selection,
+                            sel_color: sel_fill,
+                        })
+                    } else if is_closed_shape(kind)
+                        && let Some((bx, by, bw, bh, rot)) = box_like(kind)
+                        && (editing == Some(id) || label.is_some_and(|s| !s.trim().is_empty()))
+                    {
+                        // Auto-shrink + word-wrap the label to fit inside the shape,
+                        // centered. Its block center coincides with the box center, so
+                        // it rotates with the shape. The shared `shape_label_block`
+                        // keeps this identical to what the editor's caret math uses.
+                        // Built while editing even when empty, so the caret shows the
+                        // moment you double-click (before the first keystroke).
+                        let active = editing == Some(id);
+                        let text = label.map_or("", str::trim);
+                        let blk = shape_label_block(&font, kind, bx, by, bw, bh, text);
+                        let layout = font.layout_wrapped(text, blk.size, Some(blk.wrap));
+                        let caret = active
+                            .then(|| font.caret_pos_wrapped(text, blk.size, Some(blk.wrap), caret_at));
+                        let (s, e) = (caret_at.min(sel_anchor), caret_at.max(sel_anchor));
+                        let selection = if active {
+                            font.selection_rects_wrapped(text, blk.size, Some(blk.wrap), s, e)
+                        } else {
+                            Vec::new()
+                        };
+                        Some(TextOutline {
+                            segs: layout.segs,
+                            color: label_color.map_or(stroke, u32_to_hsla),
+                            x: blk.x,
+                            y: blk.y,
+                            rotation: rot,
+                            pivot: [bx + bw / 2.0, by + bh / 2.0],
                             line_height: layout.line_height,
                             caret,
                             selection,
@@ -5624,6 +5820,11 @@ impl Render for WhiteboardView {
             .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
             .and_then(|e| e.fill)
             .or(self.active_fill);
+        let text_disp = self
+            .selected_single()
+            .and_then(|id| self.scene.elements.iter().find(|e| e.id == id))
+            .and_then(|e| e.label_color)
+            .or(self.active_text);
         let picker_panel = self.picker.map(|p| {
             let cur = hsva_to_u32(p.h, p.s, p.v, p.a);
             let hex = format!("#{:06X}", cur >> 8);
@@ -5678,6 +5879,17 @@ impl Render for WhiteboardView {
                     )
                     .on_click(cx.listener(|this, _ev, _w, cx| {
                         this.set_picker_target(PickerTarget::Fill, cx)
+                    })),
+                )
+                .child(
+                    tab(
+                        p.target == PickerTarget::Text,
+                        text_disp.map_or(ink, u32_to_hsla),
+                        "Text",
+                        "wb-tab-text",
+                    )
+                    .on_click(cx.listener(|this, _ev, _w, cx| {
+                        this.set_picker_target(PickerTarget::Text, cx)
                     })),
                 );
 
@@ -6124,6 +6336,8 @@ mod tests {
                     }),
                     stroke: None,
                     fill: None,
+                    label: None,
+                    label_color: None,
                 },
                 Element {
                     id: 2,
@@ -6137,6 +6351,8 @@ mod tests {
                     }),
                     stroke: Some(0xff0000ff),
                     fill: Some(0x00ff0080),
+                    label: Some("hi".into()),
+                    label_color: Some(0x112233ff),
                 },
                 Element {
                     id: 3,
@@ -6149,6 +6365,8 @@ mod tests {
                     }),
                     stroke: None,
                     fill: None,
+                    label: None,
+                    label_color: None,
                 },
             ],
         };
@@ -6161,8 +6379,63 @@ mod tests {
         // Per-element color round-trips; an uncolored element stays `None`.
         assert_eq!(restored.elements[1].stroke, Some(0xff0000ff));
         assert_eq!(restored.elements[1].fill, Some(0x00ff0080));
+        // The shape label + its color round-trip too.
+        assert_eq!(restored.elements[1].label.as_deref(), Some("hi"));
+        assert_eq!(restored.elements[1].label_color, Some(0x112233ff));
         assert_eq!(restored.elements[0].stroke, None);
         assert_eq!(restored.elements[0].fill, None);
+    }
+
+    #[test]
+    fn label_defaults_to_none_for_older_boards() {
+        // A board saved before labels existed has no `label` key → `None`, and an
+        // unlabeled element never writes the key back.
+        let old = r#"{"id":2,"kind":{"rect":{"x":0.0,"y":0.0,"w":1.0,"h":1.0,"width":1.0}}}"#;
+        let back: Element = serde_json::from_str(old).unwrap();
+        assert_eq!(back.label, None);
+        assert!(!serde_json::to_string(&back).unwrap().contains("label"));
+    }
+
+    #[test]
+    fn shape_label_block_fits_inscribed_region() {
+        let font = Font::default();
+        let bg = BoxGeom { x: 0.0, y: 0.0, w: 0.0, h: 0.0, width: 0.0, rotation: 0.0 };
+        let (bx, by, bw, bh) = (10.0, 20.0, 200.0, 120.0);
+
+        // Rect: default size for a roomy box; wraps to ~the full padded width.
+        let rect = shape_label_block(&font, &ElementKind::Rect(bg), bx, by, bw, bh, "hello world");
+        assert!(rect.size <= TEXT_SIZE + 0.01, "size {}", rect.size);
+        assert!(
+            (rect.wrap - (bw - 2.0 * LABEL_PAD)).abs() < 0.5,
+            "rect wraps full width: {}",
+            rect.wrap
+        );
+
+        // Diamond: wraps to the central inscribed rectangle (½ width), so it wraps
+        // narrower and shrinks at least as much as the rect.
+        let dia = shape_label_block(&font, &ElementKind::Diamond(bg), bx, by, bw, bh, "hello world");
+        assert!(
+            (dia.wrap - (bw * 0.5 - 2.0 * LABEL_PAD)).abs() < 0.5,
+            "diamond half width: {}",
+            dia.wrap
+        );
+        assert!(dia.size <= rect.size, "diamond shrinks ≥ rect: {} vs {}", dia.size, rect.size);
+
+        // Triangle: its band sits in the lower half (anchored near the base).
+        let tri = shape_label_block(&font, &ElementKind::Triangle(bg), bx, by, bw, bh, "hello world");
+        assert!(tri.y >= by + bh / 2.0 - 0.5, "triangle label low: y={}", tri.y);
+
+        // A long label in a small box shrinks below the default to avoid overflow.
+        let tiny = shape_label_block(
+            &font,
+            &ElementKind::Rect(bg),
+            0.0,
+            0.0,
+            44.0,
+            28.0,
+            "a long label that must shrink",
+        );
+        assert!(tiny.size < TEXT_SIZE, "shrinks: {}", tiny.size);
     }
 
     #[test]
@@ -6531,6 +6804,8 @@ mod tests {
             kind,
             stroke: None,
             fill: None,
+            label: None,
+            label_color: None,
         };
         let json = serde_json::to_string(&elem).unwrap();
         assert!(json.contains("\"image\""), "{json}");
@@ -6577,6 +6852,8 @@ mod tests {
                 kind,
                 stroke: None,
                 fill: None,
+                label: None,
+                label_color: None,
             };
             let json = serde_json::to_string(&elem).unwrap();
             assert!(json.contains(tag), "{tag} not in json: {json}");

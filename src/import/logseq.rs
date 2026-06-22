@@ -358,6 +358,8 @@ fn image_element(
         }),
         stroke: None,
         fill: None,
+        label: None,
+        label_color: None,
     }]
 }
 
@@ -443,6 +445,8 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
         kind,
         stroke,
         fill: closed.then_some(fill).flatten(),
+        label: None,
+        label_color: None,
     }];
     // A box/ellipse keeps its text in `:label`; emit it as a text element
     // centered in the shape (painted after, so it sits on top) — otherwise the
@@ -458,6 +462,8 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
             kind: ElementKind::Text(text_geom(tx, ty, label, font_size)),
             stroke, // label inks with the shape's stroke (theme ink if unset)
             fill: None,
+            label: None,
+            label_color: None,
         });
     }
     out

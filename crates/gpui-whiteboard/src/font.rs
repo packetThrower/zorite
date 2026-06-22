@@ -14,6 +14,10 @@ use std::sync::Arc;
 /// The bundled default face.
 const DEFAULT_FONT: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
 
+/// Floor for shape-label auto-shrink (world units): a label never shrinks below
+/// this, even if it then slightly overflows a very small box. See [`Font::fit_size`].
+const MIN_LABEL_SIZE: f32 = 1.0;
+
 /// One glyph-outline command in text-local space: origin at the block's
 /// top-left, x to the right, y *down* (screen-like), in the same world units as
 /// `font_size`. Curves keep their control points so they transform under
@@ -85,6 +89,19 @@ impl Font {
     /// Lay out `content` at `font_size` (world units) into local-space outlines.
     /// Newlines break lines; the block's origin is its top-left corner.
     pub fn layout(&self, content: &str, font_size: f32) -> TextLayout {
+        self.layout_wrapped(content, font_size, None)
+    }
+
+    /// Like [`layout`](Self::layout) but word-wraps to `max_width` (world units)
+    /// when `Some` — for fitting a label inside a shape. Glyph positions come
+    /// from the same [`line_stops`](Self::line_stops) the caret uses, so the
+    /// caret always lands exactly between the rendered glyphs.
+    pub fn layout_wrapped(
+        &self,
+        content: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+    ) -> TextLayout {
         let Some(face) = self.face() else {
             return TextLayout {
                 segs: Vec::new(),
@@ -97,19 +114,18 @@ impl Font {
         let upem = face.units_per_em() as f32;
         let scale = if upem > 0.0 { font_size / upem } else { 0.0 };
         let ascent = face.ascender() as f32 * scale;
-        let line_height = Self::line_height_of(&face, scale);
+        let (lines, line_height) = self.line_stops(content, font_size, max_width);
 
         let mut segs = Vec::new();
         let mut width = 0.0_f32;
-        let (mut last_pen, mut last_top, mut lines) = (0.0_f32, 0.0_f32, 0usize);
-        // `split('\n')` always yields ≥1 item, so "" is one empty line and a
-        // trailing newline yields a final empty line holding the caret.
-        for (li, line) in content.split('\n').enumerate() {
-            lines = li + 1;
-            let top = li as f32 * line_height;
-            let baseline = top + ascent;
-            let mut pen = 0.0_f32;
-            for ch in line.chars() {
+        // `line_stops` always yields ≥1 visual line, so "" is one empty line and
+        // a trailing newline yields a final empty line holding the caret.
+        for line in &lines {
+            let lstart = line.stops.first().map_or(0, |&(b, _)| b);
+            let lend = line.stops.last().map_or(lstart, |&(b, _)| b);
+            let baseline = line.top + ascent;
+            for (k, ch) in content.get(lstart..lend).unwrap_or("").chars().enumerate() {
+                let pen = line.stops.get(k).map_or(0.0, |&(_, x)| x);
                 let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
                 let mut b = Outliner {
                     segs: &mut segs,
@@ -118,49 +134,86 @@ impl Font {
                     scale,
                 };
                 face.outline_glyph(gid, &mut b);
-                pen += face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
             }
-            width = width.max(pen);
-            last_pen = pen;
-            last_top = top;
+            width = width.max(line.stops.last().map_or(0.0, |&(_, x)| x));
         }
+        let caret = lines.last().map_or([0.0, 0.0], |l| {
+            let &(_, x) = l.stops.last().unwrap();
+            [x, l.top]
+        });
         TextLayout {
             segs,
             width,
-            height: lines.max(1) as f32 * line_height,
+            height: lines.len().max(1) as f32 * line_height,
             line_height,
-            caret: [last_pen, last_top],
+            caret,
         }
     }
 
     /// The block's `(width, height)` at `font_size` without building outlines —
     /// for selection bounds and hit-testing (no `Window` needed).
     pub fn measure(&self, content: &str, font_size: f32) -> (f32, f32) {
-        let Some(face) = self.face() else {
-            return (0.0, font_size);
-        };
-        let upem = face.units_per_em() as f32;
-        let scale = if upem > 0.0 { font_size / upem } else { 0.0 };
-        let line_height = Self::line_height_of(&face, scale);
-        let mut width = 0.0_f32;
-        let mut lines = 0usize;
-        for line in content.split('\n') {
-            lines += 1;
-            let mut pen = 0.0_f32;
-            for ch in line.chars() {
-                let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
-                pen += face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
-            }
-            width = width.max(pen);
-        }
-        (width, lines.max(1) as f32 * line_height)
+        self.measure_wrapped(content, font_size, None)
     }
 
-    /// Per-line caret stops for `content`: for every line, the content **byte
-    /// offset** and local x of each caret position (before each char and after the
-    /// last), plus the line's top y. The backbone of caret placement, click
-    /// hit-testing, and selection rects. Byte offsets index into `content`.
-    fn line_stops(&self, content: &str, font_size: f32) -> (Vec<LineStops>, f32) {
+    /// Like [`measure`](Self::measure) but wraps to `max_width` (world units)
+    /// when `Some` — the height then reflects the wrapped line count.
+    pub fn measure_wrapped(
+        &self,
+        content: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+    ) -> (f32, f32) {
+        let (lines, line_height) = self.line_stops(content, font_size, max_width);
+        let width = lines.iter().fold(0.0_f32, |m, l| {
+            m.max(l.stops.last().map_or(0.0, |&(_, x)| x))
+        });
+        (width, lines.len().max(1) as f32 * line_height)
+    }
+
+    /// The largest font size in `(0, max_size]` at which `content`, wrapped to
+    /// `max_w`, fits within a `max_w × max_h` box (world units) — so a shape
+    /// label can shrink until it no longer crosses the shape's border. Returns
+    /// `max_size` for empty content or a non-positive box, and never goes below
+    /// [`MIN_LABEL_SIZE`] (a tiny box may then still be overflowed).
+    pub fn fit_size(&self, content: &str, max_w: f32, max_h: f32, max_size: f32) -> f32 {
+        if content.is_empty() || max_w <= 0.0 || max_h <= 0.0 {
+            return max_size;
+        }
+        let fits = |size: f32| {
+            let (w, h) = self.measure_wrapped(content, size, Some(max_w));
+            w <= max_w + 0.5 && h <= max_h + 0.5
+        };
+        if fits(max_size) {
+            return max_size;
+        }
+        let (mut lo, mut hi) = (MIN_LABEL_SIZE, max_size.max(MIN_LABEL_SIZE));
+        for _ in 0..20 {
+            let mid = 0.5 * (lo + hi);
+            if fits(mid) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// Per-visual-line caret stops for `content`. Lines break on `'\n'` always
+    /// and, when `max_width` is `Some(w)` (world units), also wrap greedily at
+    /// word boundaries so each visual line stays within `w`; a single word wider
+    /// than `w` is split between characters so it never overflows. For every
+    /// visual line: the content **byte offset** and local x of each caret
+    /// position (before each char and after the last), plus the line's top y.
+    /// Soft wraps consume no byte, so offsets stay contiguous across visual
+    /// lines. The backbone of caret placement, click hit-testing, and selection
+    /// rects. Byte offsets index into `content`.
+    fn line_stops(
+        &self,
+        content: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+    ) -> (Vec<LineStops>, f32) {
         let Some(face) = self.face() else {
             return (
                 vec![LineStops {
@@ -173,23 +226,73 @@ impl Font {
         let upem = face.units_per_em() as f32;
         let scale = if upem > 0.0 { font_size / upem } else { 0.0 };
         let line_height = Self::line_height_of(&face, scale);
+        let wrap = max_width.filter(|w| *w > 0.0);
+
         let mut lines = Vec::new();
         let mut byte = 0usize;
-        for (li, line) in content.split('\n').enumerate() {
-            let mut stops = Vec::with_capacity(line.chars().count() + 1);
+        let mut top = 0.0_f32;
+        for line in content.split('\n') {
+            // Flat caret stops for the whole hard line (x cumulative from its
+            // start), plus whether each char is a space (a wrap opportunity).
+            let mut flat: Vec<(usize, f32)> = Vec::with_capacity(line.len() + 1);
+            let mut space_after: Vec<bool> = Vec::with_capacity(line.len());
             let mut pen = 0.0_f32;
             let mut b = byte;
-            stops.push((b, 0.0));
+            flat.push((b, 0.0));
             for ch in line.chars() {
                 let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
                 pen += face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
                 b += ch.len_utf8();
-                stops.push((b, pen));
+                flat.push((b, pen));
+                space_after.push(ch == ' ');
             }
-            lines.push(LineStops {
-                top: li as f32 * line_height,
-                stops,
-            });
+
+            match wrap {
+                // No wrapping: the whole hard line is one visual line.
+                None => {
+                    lines.push(LineStops { top, stops: flat });
+                    top += line_height;
+                }
+                // Greedy word-wrap of `flat` into visual segments ≤ `w`.
+                Some(w) => {
+                    let n = flat.len();
+                    let mut s = 0usize; // segment start index into `flat`
+                    let mut e = 1usize; // current end index
+                    let mut last_break: Option<usize> = None; // index just past a space
+                    while e < n {
+                        if flat[e].1 - flat[s].1 > w && e - s > 1 {
+                            // Break at the last space if any, else split the word.
+                            let brk = match last_break {
+                                Some(lb) if lb > s => lb,
+                                _ => e - 1,
+                            };
+                            let base = flat[s].1;
+                            lines.push(LineStops {
+                                top,
+                                stops: flat[s..=brk]
+                                    .iter()
+                                    .map(|&(by, x)| (by, x - base))
+                                    .collect(),
+                            });
+                            top += line_height;
+                            s = brk;
+                            e = s + 1;
+                            last_break = None;
+                            continue;
+                        }
+                        if space_after.get(e - 1).copied().unwrap_or(false) {
+                            last_break = Some(e);
+                        }
+                        e += 1;
+                    }
+                    let base = flat[s].1;
+                    lines.push(LineStops {
+                        top,
+                        stops: flat[s..n].iter().map(|&(by, x)| (by, x - base)).collect(),
+                    });
+                    top += line_height;
+                }
+            }
             byte += line.len() + 1; // +1 for the '\n' (harmless past the last line)
         }
         (lines, line_height)
@@ -198,7 +301,18 @@ impl Font {
     /// Local-space top-left of the caret at content byte offset `at`. Out-of-range
     /// offsets clamp to the end of the text.
     pub fn caret_pos(&self, content: &str, font_size: f32, at: usize) -> [f32; 2] {
-        let (lines, _) = self.line_stops(content, font_size);
+        self.caret_pos_wrapped(content, font_size, None, at)
+    }
+
+    /// [`caret_pos`](Self::caret_pos) honoring a `max_width` wrap (label editing).
+    pub fn caret_pos_wrapped(
+        &self,
+        content: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+        at: usize,
+    ) -> [f32; 2] {
+        let (lines, _) = self.line_stops(content, font_size, max_width);
         for line in &lines {
             // A boundary byte belongs to exactly one line (the '\n' separates
             // line i's end from line i+1's start), so the first match is correct.
@@ -221,7 +335,18 @@ impl Font {
     /// (text-local space). Picks the line by y, then the closest caret stop by x —
     /// so a click lands the caret between letters like a real text field.
     pub fn index_at(&self, content: &str, font_size: f32, p: [f32; 2]) -> usize {
-        let (lines, line_height) = self.line_stops(content, font_size);
+        self.index_at_wrapped(content, font_size, None, p)
+    }
+
+    /// [`index_at`](Self::index_at) honoring a `max_width` wrap (label editing).
+    pub fn index_at_wrapped(
+        &self,
+        content: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+        p: [f32; 2],
+    ) -> usize {
+        let (lines, line_height) = self.line_stops(content, font_size, max_width);
         if lines.is_empty() {
             return 0;
         }
@@ -252,10 +377,22 @@ impl Font {
         start: usize,
         end: usize,
     ) -> Vec<[f32; 4]> {
+        self.selection_rects_wrapped(content, font_size, None, start, end)
+    }
+
+    /// [`selection_rects`](Self::selection_rects) honoring a `max_width` wrap.
+    pub fn selection_rects_wrapped(
+        &self,
+        content: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+        start: usize,
+        end: usize,
+    ) -> Vec<[f32; 4]> {
         if start >= end {
             return Vec::new();
         }
-        let (lines, line_height) = self.line_stops(content, font_size);
+        let (lines, line_height) = self.line_stops(content, font_size, max_width);
         let stub = font_size * 0.3; // trailing width shown for a selected newline
         let mut rects = Vec::new();
         for line in &lines {
@@ -422,5 +559,45 @@ mod tests {
         assert_eq!(r.len(), 2, "{r:?}");
         // Empty selection → nothing.
         assert!(f.selection_rects("MM", 20.0, 2, 2).is_empty());
+    }
+
+    #[test]
+    fn wrap_breaks_long_lines_at_spaces() {
+        let f = Font::default();
+        let lh = f.measure("x", 20.0).1;
+        let full = f.measure("hello world", 20.0).0;
+        // Wrapping below the phrase width forces a second line.
+        let (w, h) = f.measure_wrapped("hello world", 20.0, Some(full * 0.6));
+        assert!((h - 2.0 * lh).abs() < 0.5, "expected 2 lines: h={h} lh={lh}");
+        assert!(w <= full * 0.6 + 0.5, "lines stay within the width: {w}");
+        // A width wider than the text wraps nothing — identical to no wrap.
+        assert_eq!(
+            f.measure_wrapped("hello world", 20.0, Some(10_000.0)),
+            f.measure("hello world", 20.0),
+        );
+    }
+
+    #[test]
+    fn wrap_keeps_byte_offsets_contiguous() {
+        let f = Font::default();
+        let s = "alpha beta gamma";
+        let full = f.measure(s, 20.0).0;
+        // The end-of-content caret is still reachable (no byte dropped at a soft
+        // break) and sits lower than the single-line end (more visual lines).
+        let end = f.caret_pos_wrapped(s, 20.0, Some(full * 0.5), s.len());
+        let plain = f.caret_pos(s, 20.0, s.len());
+        assert!(end[1] > plain[1], "wrapped end lower: {end:?} vs {plain:?}");
+    }
+
+    #[test]
+    fn fit_size_shrinks_for_a_small_box() {
+        let f = Font::default();
+        let big = f.fit_size("hello world", 1000.0, 1000.0, 40.0);
+        let small = f.fit_size("hello world", 60.0, 60.0, 40.0);
+        assert_eq!(big, 40.0, "fits at max in a big box");
+        assert!(small < big, "shrinks in a small box: {small} vs {big}");
+        // The shrunk label actually fits inside its box.
+        let (w, h) = f.measure_wrapped("hello world", small, Some(60.0));
+        assert!(w <= 60.5 && h <= 60.5, "fits: {w}x{h}");
     }
 }

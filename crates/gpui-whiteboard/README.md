@@ -32,6 +32,13 @@ GPUI app on macOS, Linux, or Windows. It comes in two layers:
   gpui overlay glyphs — so it rotates, scales, and z-orders exactly like shapes, and
   you can swap in a [custom/user-uploaded face](#custom-fonts). JetBrains Mono ships
   bundled, so the crate works standalone.
+- **Auto-fitting shape labels.** Double-click any closed shape (rect / ellipse /
+  diamond / triangle / rounded-rect / star / hexagon) to type a centered label. The
+  text word-wraps and auto-shrinks to fit the shape's *inscribed* area — staying
+  inside slanted or round outlines (a diamond's center, a triangle's lower wedge),
+  not just the bounding box — and rotates with the shape, with the same caret /
+  selection / clipboard editing as free text. Color it independently of the outline
+  via the picker's **Text** tab (alongside Stroke / Fill).
 - **True z-order.** Canvas shapes and image/card overlays paint in one interleaved
   stack, so a shape can sit *above or below* an image. Bring to Front / Forward /
   Backward / Send to Back via the menu or `⌘]` / `⌘[` (± ⇧).
@@ -201,8 +208,10 @@ pub struct Camera { pub x: f32, pub y: f32, pub zoom: f32 } // pan offset + zoom
 pub struct Element {
     pub id: u64,
     pub kind: ElementKind,
-    pub stroke: Option<u32>, // packed 0xRRGGBBAA; None = follow theme ink
-    pub fill:   Option<u32>, // closed shapes only; None = unfilled outline
+    pub stroke: Option<u32>,    // packed 0xRRGGBBAA; None = follow theme ink
+    pub fill:   Option<u32>,    // closed shapes only; None = unfilled outline
+    pub label:  Option<String>, // closed shapes only; centered, word-wrapped + auto-shrunk to fit
+    pub label_color: Option<u32>, // shape label color; None = follow the stroke / theme ink
 }
 
 pub enum ElementKind {       // serialized snake_case: {"rect": {...}}, {"image": {...}}, …
@@ -291,6 +300,7 @@ The view handles these when it has focus (it focuses on a canvas click):
 | drag a handle · the round grip above a selection | resize (corners scale; edge handles stretch one axis, on a single element or a group) · rotate |
 | double-click a page-card | open its page (via `OpenPageFn`) |
 | double-click text · `T`-click text | edit it — click a letter for the caret, drag / double-click to select |
+| double-click a closed shape | edit its centered label — wraps + auto-shrinks to fit; full caret / selection / clipboard |
 | drag the dotted grip (left of the toolbar) | move the toolbar (tap `R` mid-drag to flip row ↔ column; double-click the grip resets it) |
 | right-click | context menu (z-order, copy/cut/paste, save as template) |
 
