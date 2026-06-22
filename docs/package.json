@@ -3,8 +3,8 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "prebuild": "node scripts/sync-changelog.mjs && node scripts/build-og-image.mjs",
-    "predev": "node scripts/sync-changelog.mjs",
+    "prebuild": "node scripts/sync-changelog.mjs && node scripts/sync-crate-readmes.mjs && node scripts/build-og-image.mjs",
+    "predev": "node scripts/sync-changelog.mjs && node scripts/sync-crate-readmes.mjs",
     "dev": "astro dev",
     "start": "astro dev",
     "build": "astro build",

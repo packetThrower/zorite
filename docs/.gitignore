@@ -6,6 +6,9 @@ dist/
 # regenerated reproducibly so we don't track it.
 src/content/docs/changelog.md
 
+# Synced from each crate's README.md by scripts/sync-crate-readmes.mjs.
+src/content/docs/reference/crates/
+
 # Node
 node_modules/
 .pnpm-store/

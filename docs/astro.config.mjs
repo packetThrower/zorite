@@ -96,6 +96,16 @@ export default defineConfig({
 					items: [
 						{ label: 'Requirements', slug: 'reference/requirements' },
 						{ label: 'Bundled icons', slug: 'reference/icons' },
+						{
+							label: 'Crates',
+							items: [
+								{ label: 'gpui-editor', slug: 'reference/crates/gpui-editor' },
+								{ label: 'gpui-markdown', slug: 'reference/crates/gpui-markdown' },
+								{ label: 'gpui-pdf', slug: 'reference/crates/gpui-pdf' },
+								{ label: 'gpui-whiteboard', slug: 'reference/crates/gpui-whiteboard' },
+								{ label: 'spellcheck', slug: 'reference/crates/spellcheck' },
+							],
+						},
 					],
 				},
 				{ label: 'Changelog', slug: 'changelog' },
