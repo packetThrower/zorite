@@ -5,9 +5,9 @@ Shapes, lines, arrows, freehand ink, text, images, and "page cards" on a boundle
 board — with select / move / resize / rotate / z-order, a built-in toolbar + color
 picker, templates, copy-paste, and undo/redo.
 
-Host-agnostic: it depends only on `gpui`, `serde`, and `ttf-parser` (**no
-`gpui-component`, no native libraries**), so it drops into any GPUI app on macOS,
-Linux, or Windows. It comes in two layers:
+Host-agnostic: its only dependencies are `gpui`, `serde` / `serde_json`, `log`, and
+`ttf-parser` (**no `gpui-component`, no native libraries**), so it drops into any
+GPUI app on macOS, Linux, or Windows. It comes in two layers:
 
 - a plain, serializable **scene model** ([`Scene`](#the-scene-model) / [`Element`] / …)
   that you persist as an opaque JSON string in your own store, and
@@ -167,8 +167,11 @@ Coordinates passed to hooks are **world-space** (see [`Camera`]).
 | `set_on_delete_template` | `DeleteTemplateFn` = `Fn(i64, &mut Window, &mut App)` | a template card is right-clicked → delete | remove it (by id), then `set_templates` |
 | `set_on_save_colors` | `SavedColorsFn` = `Fn(Vec<u32>, &mut Window, &mut App)` | the user adds/removes a swatch in the picker's **Saved** palette | persist the packed `0xRRGGBBAA` list, then push it back via `set_saved_colors` |
 | `set_on_pick_font` | `PickFontFn` = `Fn(FontPick, &mut Window, &mut App)` | the **Aa** Font flyout's *Upload* / *Use default* is clicked | load the `.ttf`/`.otf` (or the default) and call `set_font` — and persist the per-board choice |
+| `set_on_move_toolbar` | `MoveToolbarFn` = `Fn(Option<(f32, f32)>, bool, &mut Window, &mut App)` | the toolbar is dragged, reset (double-click the grip), or flipped row↔column | persist its new board-relative top-left (`None` = default top-center) and orientation (`bool` = vertical) |
 | `set_templates` | `fn(&mut self, Vec<Template>, &mut Context<Self>)` | — | push the current template list (on open and after any save/delete) |
 | `set_saved_colors` | `fn(&mut self, Vec<u32>, &mut Context<Self>)` | — | push the user's saved-color palette (on open and after a change) |
+| `set_toolbar_pos` | `fn(&mut self, Option<(f32, f32)>, &mut Context<Self>)` | — | push the saved toolbar position (`None` = default top-center) on open and after a change |
+| `set_toolbar_vertical` | `fn(&mut self, bool, &mut Context<Self>)` | — | push the saved toolbar orientation (vertical = a column) on open and after a change |
 | `set_font` | `fn(&mut self, Font, &mut Context<Self>)` | — | swap the text face (see [Custom fonts](#custom-fonts)) |
 
 > **Image & clipboard flow.** Images aren't stored in the scene — only a `src`

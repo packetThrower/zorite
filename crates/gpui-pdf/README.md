@@ -33,6 +33,9 @@ scrolling, rendering, and memory on its own.
   enters a *locked* state and emits an event so the host can render its own password
   prompt; `unlock(password)` retries (RC4 / AES-128 / AES-256, via hayro's standard
   security handler). See [Password-protected PDFs](#password-protected-pdfs).
+- **Outline & links.** A table-of-contents side panel from the document's outline,
+  and clickable link annotations (internal → jump to page, external → open URL),
+  both also exposed as plain functions (`outline`, `page_links`) for custom UIs.
 - **Self-contained.** `PdfView` is a gpui entity that owns its document, scroll
   position, zoom, render/evict loop, and styling. Drop the `Entity<PdfView>` into
   your element tree — no per-frame plumbing from the host.
@@ -86,14 +89,18 @@ A self-contained, page-virtualized viewer entity (`impl Render`).
 | `detach_textures` | `fn detach_textures(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Free the GPU textures but **keep** the rendered page bitmaps — for hosts moving the view to a different window (e.g. a tab drag). The kept bitmaps re-upload wherever it next paints, so pages appear there immediately, with scroll, zoom, and unlocked state intact. |
 | `set_zoom` / `zoom_in` / `zoom_out` / `reset_zoom` | `fn …(&mut self, cx: &mut Context<Self>)` (`set_zoom` also takes `zoom: f32`) | Change zoom (clamped 0.5–3.0), keeping the current page in view; the visible pages re-rasterize crisp at the new scale, with no blank. |
 | `go_to_page` / `next_page` / `prev_page` | `fn …(&mut self, cx: &mut Context<Self>)` (`go_to_page` also takes `index: usize`) | Scroll so the target page sits at the top of the viewport. |
+| `toggle_toc` / `has_outline` | `fn toggle_toc(&mut self, cx: &mut Context<Self>)` · `fn has_outline(&self) -> bool` | Toggle the table-of-contents (outline) side panel; `has_outline` reports whether the document has one (so a host can hide the control). |
 
 The viewer renders a header with these controls — including a click-to-edit page
-counter (type a number, Enter to jump). Every control also has a keyboard shortcut
-(shown in its tooltip), all handled when the viewer is focused (it focuses on click):
-PageUp / PageDown / Home / End to navigate, ⌘= / ⌘- / ⌘0 to zoom, ⌘⌥G to jump to a
-page, and (with the relevant feature) ⌘⇧H to toggle highlight mode, ⌘F to find with
-⌘G / ⌘⇧G stepping matches. Pages rasterize at the display's pixel ratio × zoom × the
-quality multiplier.
+counter (type a number, Enter to jump) and a table-of-contents toggle (≡) that opens
+a side panel of the document's outline (when it has one; clicking an entry jumps to
+its page). It also overlays the document's **link annotations** on each page —
+internal links jump to the target page, external links open the URL. Every control
+also has a keyboard shortcut (shown in its tooltip), all handled when the viewer is
+focused (it focuses on click): PageUp / PageDown / Home / End to navigate, ⌘= / ⌘- /
+⌘0 to zoom, ⌘⌥G to jump to a page, and (with the relevant feature) ⌘⇧H to toggle
+highlight mode, ⌘F to find with ⌘G / ⌘⇧G stepping matches. Pages rasterize at the
+display's pixel ratio × zoom × the quality multiplier.
 
 Quality is host-set: there's no `set_quality` method because the viewer reads the
 `PdfQualityFn` each paint, so changing the host's value re-renders every open viewer
@@ -145,6 +152,23 @@ pub fn keep_window(dims: &[(f32, f32)], page_width: f32, scroll_y: f32, viewport
 
 Parse once, then rasterize pages on demand — `hayro::Pdf` is `Send + Sync` and caches
 pages internally, so share it via `Arc` across background tasks.
+
+### Outline & links
+
+The document's outline (table of contents) and per-page link annotations are exposed
+directly (always available, no feature gate) — the bundled `PdfView` uses these for
+its TOC panel + clickable links, but a host can drive its own navigation from them:
+
+```rust
+pub struct OutlineItem { pub title: String, pub level: usize, pub page: Option<usize> }
+// `level` = nesting depth; `page` is None for an unresolved (named) destination.
+pub enum LinkTarget { Page(usize), Uri(String) }   // 0-based page index, or an external URL
+pub struct PdfLink { pub x: f32, pub y: f32, pub w: f32, pub h: f32, pub target: LinkTarget }
+// rect in normalized (0..1) page coordinates, top-left origin
+
+pub fn outline(doc: &Document) -> Vec<OutlineItem>;     // flattened depth-first; empty if no /Outlines
+pub fn page_links(doc: &Document) -> Vec<Vec<PdfLink>>; // per page; a rotated page returns empty
+```
 
 ## Password-protected PDFs
 
@@ -203,6 +227,7 @@ quote and boxes it.
 // Text layer (also usable standalone, e.g. for search):
 pub fn extract_page_text(doc: &Document, page: usize) -> Option<PageText>;
 impl PageText {
+    pub fn is_empty(&self) -> bool;                          // true for a scan with no text layer
     pub fn text(&self) -> String;                            // readable reconstruction
     pub fn locate(&self, needle: &str, occurrence: usize)
         -> Vec<NormRect>;                                    // one rect per line spanned
@@ -222,7 +247,9 @@ impl PdfView {
     // Interactive creation: ✎ turns on "highlight mode", where dragging over text
     // resolves a selection and fires the create handler.
     pub fn set_on_create_highlight(&mut self, handler: CreateHighlightFn);
-    // CreateHighlightFn = Fn(page, quote, occurrence, color_label, &mut Window, &mut App)
+    // CreateHighlightFn = Rc<dyn Fn(page: usize, quote: String, occurrence: usize,
+    //                               color_label: SharedString, &mut Window, &mut App)>
+    //   (the color_label echoes the active palette swatch's label)
     pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>);
     // Jump from a note: scroll a page in (to its first highlight) and flash them.
     pub fn reveal_highlight(&mut self, page: usize, cx: &mut Context<Self>);
