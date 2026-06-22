@@ -9,6 +9,49 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-22
+
+A major release: a brand-new editor with live WYSIWYG Markdown and native
+spell-check, tables you edit in place, and rich text on the whiteboard.
+
+### Added
+
+- **WYSIWYG live editor** — the note editor renders Markdown live as you type and
+  is the single renderer (the default): headings, bold / italic / strikethrough,
+  inline + fenced code, links, wiki-links, tags, blockquotes, lists, task
+  checkboxes, images, PDF chips, mermaid diagrams, tables, thematic breaks,
+  footnotes, reference links, and `<mark>` all render formatted, with the raw
+  Markdown revealed only around the caret.
+- **From-scratch text editor** (`gpui-editor`) under the journal and pages —
+  soft-wrap, undo / redo with coalescing, word / visual-line movement, and a
+  right-click menu.
+- **Native OS spell-check** — wavy underlines for misspellings and suggestions on
+  right-click, via the system speller (macOS + Windows).
+- **Tables, edited in place** — type directly in cells; a `/table` picker offers
+  visual designs (Grid / Striped / Header / Minimal); an alignment toolbar sits
+  in the header row; and a right-click menu inserts or deletes rows and columns.
+- **Whiteboard — text in shapes** — double-click a closed shape for a centered
+  label that auto-shrinks and wraps to fit inside the outline, editable like a
+  text box and colorable on its own.
+- **Whiteboard — rich text** — per-character bold, italic, underline,
+  strikethrough, and highlight on any board text, via ⌘B / ⌘I / ⌘U / ⇧⌘X / ⇧⌘H
+  (Ctrl on Windows / Linux), a right-click fly-out, or the toolbar.
+- **Settings** — date / time formats for `/date`, `/time`, and the `{{date}}` /
+  `{{time}}` placeholders, plus a filter box that narrows the panes as you type.
+
+### Changed
+
+- Boolean settings (live preview, update checks) are toggle switches, not
+  dropdowns.
+- **Enter** confirms the primary action in every dialog (Save, Insert, Create,
+  …); Esc cancels.
+- Logseq import stores a box's `:label` as the shape's native auto-fit label.
+
+### Known issues
+
+- Deleting the **last** row or column of a table can drop the caret just below
+  the table; other rows and columns are unaffected.
+
 ## [0.2.0-beta.3] - 2026-06-20
 
 ### Added
