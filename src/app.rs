@@ -2867,11 +2867,18 @@ impl AppView {
         let input = self.new_page_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            let input_btn = input.clone();
+            let weak_ok = weak.clone();
             let weak_btn = weak.clone();
             dialog
                 .title("Insert page card")
                 .w(px(420.0))
+                // Enter inserts (the dialog binds enter → ConfirmDialog → on_ok).
+                .on_ok(move |_, _window, cx| {
+                    let _ = weak_ok.update(cx, |this, cx| {
+                        this.insert_embed_from_input(board_id, x, y, cx)
+                    });
+                    true
+                })
                 .child(Input::new(&input))
                 .footer(
                     DialogFooter::new()
@@ -2885,12 +2892,9 @@ impl AppView {
                                 .primary()
                                 .label("Insert")
                                 .on_click(move |_, window, cx| {
-                                    let title = input_btn.read(cx).value().trim().to_string();
-                                    if !title.is_empty() {
-                                        let _ = weak_btn.update(cx, |this, cx| {
-                                            this.insert_embed(board_id, &title, x, y, cx)
-                                        });
-                                    }
+                                    let _ = weak_btn.update(cx, |this, cx| {
+                                        this.insert_embed_from_input(board_id, x, y, cx)
+                                    });
                                     window.close_dialog(cx);
                                 }),
                         ),
@@ -2921,6 +2925,15 @@ impl AppView {
         cx.notify();
     }
 
+    /// Insert the page named in the shared input as a card (no-op if blank).
+    /// Shared by the Insert button and Enter (`on_ok`).
+    fn insert_embed_from_input(&mut self, board_id: i64, x: f32, y: f32, cx: &mut Context<Self>) {
+        let title = self.new_page_input.read(cx).value().trim().to_string();
+        if !title.is_empty() {
+            self.insert_embed(board_id, &title, x, y, cx);
+        }
+    }
+
     /// Prompt for a name, then persist the selection JSON as a whiteboard
     /// template (invoked from a board's right-click "Save as template").
     fn save_template_dialog(&mut self, json: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -2929,12 +2942,20 @@ impl AppView {
         let input = self.new_page_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            let input_btn = input.clone();
+            let weak_ok = weak.clone();
+            let json_ok = json.clone();
             let weak_btn = weak.clone();
-            let json = json.clone();
+            let json_btn = json.clone();
             dialog
                 .title("Save as template")
                 .w(px(420.0))
+                // The dialog binds `enter` → ConfirmDialog → `on_ok`; without
+                // this, Enter closes the dialog without saving (looks like
+                // Cancel). Save here, same as the button.
+                .on_ok(move |_, _window, cx| {
+                    let _ = weak_ok.update(cx, |this, cx| this.save_template_named(&json_ok, cx));
+                    true
+                })
                 .child(Input::new(&input))
                 .footer(
                     DialogFooter::new()
@@ -2945,19 +2966,25 @@ impl AppView {
                         )
                         .child(Button::new("tmpl-save").primary().label("Save").on_click(
                             move |_, window, cx| {
-                                let name = input_btn.read(cx).value().trim().to_string();
-                                let name = if name.is_empty() {
-                                    "Untitled template".to_string()
-                                } else {
-                                    name
-                                };
                                 let _ = weak_btn
-                                    .update(cx, |this, cx| this.save_template(&name, &json, cx));
+                                    .update(cx, |this, cx| this.save_template_named(&json_btn, cx));
                                 window.close_dialog(cx);
                             },
                         )),
                 )
         });
+    }
+
+    /// Read the template name from the shared page-name input (blank → a default
+    /// title) and store it. Shared by the Save button and Enter (`on_ok`).
+    fn save_template_named(&mut self, json: &str, cx: &mut Context<Self>) {
+        let name = self.new_page_input.read(cx).value().trim().to_string();
+        let name = if name.is_empty() {
+            "Untitled template".to_string()
+        } else {
+            name
+        };
+        self.save_template(&name, json, cx);
     }
 
     /// Store a template and push the refreshed list to every open board.
@@ -3769,6 +3796,12 @@ impl AppView {
             dialog
                 .title("Couldn't open your notes database")
                 .w(px(480.0))
+                // Enter triggers the primary action (Quit); the temporary
+                // workspace isn't saved, so there's nothing to lose.
+                .on_ok(|_, _window, cx| {
+                    cx.quit();
+                    true
+                })
                 .child(
                     div()
                         .flex()
@@ -4629,11 +4662,20 @@ impl AppView {
     fn show_logseq_options(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
-            let (root_flat, root_list) = (root.clone(), root.clone());
-            let (weak_flat, weak_list) = (weak.clone(), weak.clone());
+            let (root_flat, root_list, root_ok) = (root.clone(), root.clone(), root.clone());
+            let (weak_flat, weak_list, weak_ok) = (weak.clone(), weak.clone(), weak.clone());
             dialog
                 .title("Import from Logseq")
                 .w(px(500.0))
+                // Enter runs the primary action (Flatten outline), like the button.
+                .on_ok(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    let root = root_ok.clone();
+                    let _ = weak_ok.update(cx, |this, cx| {
+                        this.run_logseq_import(root, true, window, cx)
+                    });
+                    false
+                })
                 .child(
                     div()
                         .flex()
@@ -4705,6 +4747,9 @@ impl AppView {
                         .text_color(theme::text_secondary())
                         .child("Copying notes and assets — this may take a minute."),
                 )
+                // A progress indicator has no confirm action — Enter shouldn't
+                // dismiss it (Escape still cancels).
+                .on_ok(|_, _window, _cx| false)
                 .on_cancel(|_, _window, _cx| true)
         });
         let data_dir = crate::paths::data_dir();
