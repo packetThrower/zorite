@@ -10,13 +10,14 @@
 use std::path::PathBuf;
 
 use gpui::{
-    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, ParentElement,
-    Render, SharedString, StatefulInteractiveElement, Styled, Subscription, WeakEntity, Window,
-    div, prelude::FluentBuilder as _, px,
+    AppContext, Context, Entity, FontWeight, InteractiveElement, IntoElement, MouseButton,
+    MouseUpEvent, ParentElement, Render, SharedString, StatefulInteractiveElement, Styled,
+    Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
     IndexPath, Root, TitleBar, WindowExt,
     dialog::DialogButtonProps,
+    input::{Input, InputEvent, InputState},
     select::{Select, SelectEvent, SelectItem, SelectState},
     slider::{Slider, SliderEvent, SliderState},
     switch::Switch,
@@ -87,6 +88,91 @@ enum Tab {
     Updates,
 }
 
+/// Every settings card: `(tab, card title, extra search keywords)`. Drives the
+/// header filter — `section_matches` / `tab_has_matches` look cards up here, so
+/// the titles MUST stay in sync with the `card(…)` / `card_list(…)` calls in
+/// `render`. Keywords (lowercase) add synonyms a user might type for a setting
+/// that aren't already in its title.
+const SECTIONS: &[(Tab, &str, &str)] = &[
+    (
+        Tab::General,
+        "Data location",
+        "folder path database directory move attachments",
+    ),
+    (
+        Tab::General,
+        "Date format",
+        "iso us european calendar day month year /date",
+    ),
+    (Tab::General, "Time format", "24 hour 12 clock am pm /time"),
+    (
+        Tab::Appearance,
+        "App Theme",
+        "skin colors palette built-in custom",
+    ),
+    (
+        Tab::Appearance,
+        "Appearance",
+        "light dark auto system mode variant",
+    ),
+    (
+        Tab::Appearance,
+        "Installed themes",
+        "custom user json reload reveal folder",
+    ),
+    (
+        Tab::Pdf,
+        "PDF render quality",
+        "dpi resolution sharpness speed scale render",
+    ),
+    (
+        Tab::Markdown,
+        "WYSIWYG editing",
+        "live preview inline formatting bold heading links",
+    ),
+    (
+        Tab::Markdown,
+        "List indentation",
+        "spaces tab nesting indent bullet",
+    ),
+    (
+        Tab::Keyboard,
+        "Application",
+        "shortcuts keys tab window quit settings find search",
+    ),
+    (
+        Tab::Keyboard,
+        "Editing",
+        "shortcuts keys slash menu copy paste undo redo indent",
+    ),
+    (
+        Tab::Keyboard,
+        "Whiteboard tools",
+        "shortcuts keys pen shape rectangle ellipse text image",
+    ),
+    (
+        Tab::Keyboard,
+        "Whiteboard editing",
+        "shortcuts keys z-order delete copy paste",
+    ),
+    (Tab::Keyboard, "PDF viewer", "shortcuts keys page zoom find"),
+    (
+        Tab::Updates,
+        "Software updates",
+        "version release github check download",
+    ),
+    (
+        Tab::Updates,
+        "Automatically check for updates",
+        "startup auto version",
+    ),
+    (
+        Tab::Updates,
+        "Include pre-releases",
+        "beta prerelease pre-release unstable",
+    ),
+];
+
 pub struct SettingsView {
     app: WeakEntity<AppView>,
     theme_select: Entity<SelectState<Vec<Opt>>>,
@@ -95,8 +181,10 @@ pub struct SettingsView {
     indent_select: Entity<SelectState<Vec<Opt>>>,
     date_format_select: Entity<SelectState<Vec<Opt>>>,
     time_format_select: Entity<SelectState<Vec<Opt>>>,
-    check_updates_select: Entity<SelectState<Vec<Opt>>>,
-    prerelease_select: Entity<SelectState<Vec<Opt>>>,
+    /// Header filter box + its current (trimmed, lowercased) text. Empty = no
+    /// filter; non-empty dims the cards + nav tabs that don't match.
+    filter_input: Entity<InputState>,
+    filter: String,
     /// The selected left-nav category.
     tab: Tab,
     _subs: Vec<Subscription>,
@@ -228,44 +316,19 @@ impl SettingsView {
             },
         ));
 
-        // Updates pane: On/Off selects for the auto-check + pre-release prefs.
-        let on_off = || vec![Opt::new("on", "On"), Opt::new("off", "Off")];
-        let cur_check = app
-            .upgrade()
-            .map(|a| a.read(cx).check_updates())
-            .unwrap_or(true);
-        let check_updates_select =
-            make_select(on_off(), if cur_check { "on" } else { "off" }, window, cx);
-        subs.push(cx.subscribe_in(
-            &check_updates_select,
-            window,
-            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
-                if let SelectEvent::Confirm(Some(id)) = ev
-                    && let Some(app) = this.app.upgrade()
-                {
-                    let on = id == "on";
-                    app.update(cx, |a, _cx| a.set_check_updates(on));
-                    cx.notify();
-                }
-            },
-        ));
-
-        let cur_pre = app
-            .upgrade()
-            .map(|a| a.read(cx).include_prerelease())
-            .unwrap_or(false);
-        let prerelease_select =
-            make_select(on_off(), if cur_pre { "on" } else { "off" }, window, cx);
-        subs.push(cx.subscribe_in(
-            &prerelease_select,
-            window,
-            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
-                if let SelectEvent::Confirm(Some(id)) = ev
-                    && let Some(app) = this.app.upgrade()
-                {
-                    let on = id == "on";
-                    app.update(cx, |a, cx| a.set_include_prerelease(on, cx));
-                    cx.notify();
+        // Header filter box — dims the cards + nav tabs that don't match as the
+        // user types (Baudrun's Settings filter). Subscribed on every keystroke
+        // (`Change`) so the dim updates live; the value drives `self.filter`.
+        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter settings…"));
+        subs.push(cx.subscribe(
+            &filter_input,
+            |this: &mut SettingsView, input, ev: &InputEvent, cx| {
+                if let InputEvent::Change = ev {
+                    let next = input.read(cx).value().trim().to_lowercase();
+                    if next != this.filter {
+                        this.filter = next;
+                        cx.notify();
+                    }
                 }
             },
         ));
@@ -278,8 +341,8 @@ impl SettingsView {
             indent_select,
             date_format_select,
             time_format_select,
-            check_updates_select,
-            prerelease_select,
+            filter_input,
+            filter: String::new(),
             tab: Tab::Appearance,
             _subs: subs,
         }
@@ -475,6 +538,170 @@ impl SettingsView {
                 .on_ok(|_, _window, _cx| true)
         });
     }
+
+    // ---- Header filter (Baudrun-style): dim cards + tabs that don't match ----
+
+    /// A settings card that fades when it doesn't match the current filter. It
+    /// stays interactive — the user can change a dimmed setting without first
+    /// clearing the filter.
+    fn section_card(
+        &self,
+        title: &'static str,
+        desc: &str,
+        control: impl IntoElement,
+    ) -> gpui::Div {
+        card(title, desc, control).opacity(self.filter_opacity(title))
+    }
+
+    /// Filter-aware wrapper for the shortcut-list cards on the Keyboard pane.
+    fn section_list(
+        &self,
+        title: &'static str,
+        desc: &str,
+        rows: Vec<(&str, Vec<&str>)>,
+    ) -> gpui::Div {
+        card_list(title, desc, rows).opacity(self.filter_opacity(title))
+    }
+
+    fn filter_opacity(&self, title: &str) -> f32 {
+        if self.section_matches(title) {
+            1.0
+        } else {
+            0.3
+        }
+    }
+
+    /// Whether `title`'s card matches the filter: an empty filter matches all;
+    /// otherwise the title or its `SECTIONS` keywords must contain the text.
+    fn section_matches(&self, title: &str) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        if title.to_lowercase().contains(self.filter.as_str()) {
+            return true;
+        }
+        SECTIONS
+            .iter()
+            .find(|(_, t, _)| *t == title)
+            .is_some_and(|(_, _, kw)| kw.contains(self.filter.as_str()))
+    }
+
+    /// Whether `tab` has at least one matching card — drives the rail dim.
+    fn tab_has_matches(&self, tab: Tab) -> bool {
+        if self.filter.is_empty() {
+            return true;
+        }
+        SECTIONS.iter().any(|(t, title, kw)| {
+            *t == tab
+                && (title.to_lowercase().contains(self.filter.as_str())
+                    || kw.contains(self.filter.as_str()))
+        })
+    }
+
+    /// Left-nav rail. Tabs whose cards all miss the filter render dimmed but
+    /// stay clickable, so a typo doesn't lock you out of the other panes.
+    fn nav(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let active = self.tab;
+        div()
+            .flex_shrink_0()
+            .w(px(184.0))
+            .pl(px(20.0))
+            .pr(px(8.0))
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(nav_item(
+                "nav-general",
+                "General",
+                Tab::General,
+                active,
+                !self.tab_has_matches(Tab::General),
+                cx,
+            ))
+            .child(nav_item(
+                "nav-appearance",
+                "Appearance",
+                Tab::Appearance,
+                active,
+                !self.tab_has_matches(Tab::Appearance),
+                cx,
+            ))
+            .child(nav_item(
+                "nav-pdf",
+                "PDF",
+                Tab::Pdf,
+                active,
+                !self.tab_has_matches(Tab::Pdf),
+                cx,
+            ))
+            .child(nav_item(
+                "nav-markdown",
+                "Markdown",
+                Tab::Markdown,
+                active,
+                !self.tab_has_matches(Tab::Markdown),
+                cx,
+            ))
+            .child(nav_item(
+                "nav-keyboard",
+                "Keyboard",
+                Tab::Keyboard,
+                active,
+                !self.tab_has_matches(Tab::Keyboard),
+                cx,
+            ))
+            .child(nav_item(
+                "nav-updates",
+                "Updates",
+                Tab::Updates,
+                active,
+                !self.tab_has_matches(Tab::Updates),
+                cx,
+            ))
+    }
+
+    /// The header filter box: a 220px input + a hand-rolled × clear that shows
+    /// once there's text (gpui-component's built-in clear icon needs an SVG we
+    /// don't bundle — Baudrun's approach).
+    fn filter_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .relative()
+            .w(px(220.0))
+            .child(
+                Input::new(&self.filter_input)
+                    .appearance(true)
+                    .text_size(px(13.0)),
+            )
+            .when(!self.filter.is_empty(), |row| {
+                row.child(
+                    div()
+                        .id("settings-filter-clear")
+                        .absolute()
+                        .top(px(0.0))
+                        .right(px(8.0))
+                        .h_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(15.0))
+                        .text_color(theme::text_tertiary())
+                        .cursor_pointer()
+                        .hover(|h| h.text_color(theme::text_primary()))
+                        .child("\u{00D7}")
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                                this.filter_input
+                                    .update(cx, |state, cx| state.set_value("", window, cx));
+                                if !this.filter.is_empty() {
+                                    this.filter.clear();
+                                    cx.notify();
+                                }
+                            }),
+                        ),
+                )
+            })
+    }
 }
 
 impl Render for SettingsView {
@@ -515,6 +742,35 @@ impl Render for SettingsView {
                         app.update(cx, |a, cx| a.set_wysiwyg(*checked, cx));
                     }
                 });
+
+        // Updates pane toggles — switches, like the WYSIWYG one. Controlled by
+        // the persisted prefs; the click persists + (for pre-releases) re-checks.
+        let check_on = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).check_updates())
+            .unwrap_or(true);
+        let check_app = self.app.clone();
+        let check_updates_switch = Switch::new("check-updates-toggle")
+            .checked(check_on)
+            .on_click(move |checked, _window, cx| {
+                if let Some(app) = check_app.upgrade() {
+                    app.update(cx, |a, _cx| a.set_check_updates(*checked));
+                }
+            });
+        let pre_on = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).include_prerelease())
+            .unwrap_or(false);
+        let pre_app = self.app.clone();
+        let prerelease_switch = Switch::new("prerelease-toggle").checked(pre_on).on_click(
+            move |checked, _window, cx| {
+                if let Some(app) = pre_app.upgrade() {
+                    app.update(cx, |a, cx| a.set_include_prerelease(*checked, cx));
+                }
+            },
+        );
 
         // Installed-themes card body: the actions + the list (or empty state).
         let actions = div()
@@ -706,7 +962,9 @@ impl Render for SettingsView {
                             .font_weight(FontWeight::BOLD)
                             .child("Settings"),
                     )
-                    .child(version_chip()),
+                    .child(version_chip())
+                    .child(div().flex_1())
+                    .child(self.filter_bar(cx)),
             )
             .child(
                 div()
@@ -714,7 +972,7 @@ impl Render for SettingsView {
                     .min_h_0()
                     .flex()
                     .flex_row()
-                    .child(nav(self.tab, cx))
+                    .child(self.nav(cx))
                     .child({
                         let content = div()
                             .id("settings-content")
@@ -728,58 +986,58 @@ impl Render for SettingsView {
                             .gap(px(16.0));
                         match self.tab {
                             Tab::General => content
-                                .child(card(
+                                .child(self.section_card(
                                     "Data location",
                                     "Where Zorite keeps your database, settings, and \
                                          attachments. Changing it moves your data to the new \
                                          folder, then reopens Zorite.",
                                     location_control,
                                 ))
-                                .child(card(
+                                .child(self.section_card(
                                     "Date format",
                                     "How /date and the {{date}} template placeholder are \
                                          inserted. Journal day headers are unaffected.",
                                     Select::new(&self.date_format_select).w_full(),
                                 ))
-                                .child(card(
+                                .child(self.section_card(
                                     "Time format",
                                     "How /time and the {{time}} template placeholder are \
                                          inserted.",
                                     Select::new(&self.time_format_select).w_full(),
                                 )),
                             Tab::Appearance => content
-                                .child(card(
+                                .child(self.section_card(
                                     "App Theme",
                                     "Pick a built-in theme or one of your own.",
                                     Select::new(&self.theme_select).w_full(),
                                 ))
-                                .child(card(
+                                .child(self.section_card(
                                     "Appearance",
                                     "Light or dark variant of the active theme. Auto follows \
                                          your system.",
                                     Select::new(&self.appearance_select).w_full(),
                                 ))
-                                .child(card(
+                                .child(self.section_card(
                                     "Installed themes",
                                     "Drop .json theme files in your themes folder, then Reload. \
                                          Any color you omit falls back to the base palette.",
                                     installed,
                                 )),
-                            Tab::Pdf => content.child(card(
+                            Tab::Pdf => content.child(self.section_card(
                                 "PDF render quality",
                                 "Higher is sharper but slower; lower speeds up rendering on \
                                      slower machines. 100% = your display's native resolution.",
                                 quality_control,
                             )),
                             Tab::Markdown => content
-                                .child(card(
+                                .child(self.section_card(
                                     "WYSIWYG editing",
                                     "On shows formatting (bold, headings, links) inline as you \
                                      type. Off edits plain Markdown and shows the rendered page \
                                      on Esc.",
                                     wysiwyg_switch,
                                 ))
-                                .child(card(
+                                .child(self.section_card(
                                     "List indentation",
                                     "Spaces per nesting level for Tab and bullet nesting. Editing \
                                      and the rendered view use the same width, so they line up.",
@@ -859,52 +1117,52 @@ impl Render for SettingsView {
                                     ("Go to page", vec![keys::MOD, keys::ALT, "G"]),
                                 ];
                                 content
-                                    .child(card_list(
+                                    .child(self.section_list(
                                         "Application",
                                         "App-wide commands — they work anywhere. ⌘ on macOS, \
                                              Ctrl on Windows and Linux.",
                                         app_rows,
                                     ))
-                                    .child(card_list(
+                                    .child(self.section_list(
                                         "Editing",
                                         "The slash menu and text shortcuts, while a note is \
                                              focused.",
                                         edit_rows,
                                     ))
-                                    .child(card_list(
+                                    .child(self.section_list(
                                         "Whiteboard tools",
                                         "Press a letter to pick a tool while a board is focused.",
                                         wb_tool_rows,
                                     ))
-                                    .child(card_list(
+                                    .child(self.section_list(
                                         "Whiteboard editing",
                                         "Acting on the selection while a board is focused.",
                                         wb_edit_rows,
                                     ))
-                                    .child(card_list(
+                                    .child(self.section_list(
                                         "PDF viewer",
                                         "While a PDF tab is focused.",
                                         pdf_rows,
                                     ))
                             }
                             Tab::Updates => content
-                                .child(card(
+                                .child(self.section_card(
                                     "Software updates",
                                     "Zorite checks GitHub for newer releases at startup. It never \
                                          installs automatically — you review and download from the \
                                          release page.",
                                     updates_control,
                                 ))
-                                .child(card(
+                                .child(self.section_card(
                                     "Automatically check for updates",
                                     "Check for a newer version each time Zorite starts.",
-                                    Select::new(&self.check_updates_select).w_full(),
+                                    check_updates_switch,
                                 ))
-                                .child(card(
+                                .child(self.section_card(
                                     "Include pre-releases",
                                     "Also offer beta builds (vX.Y.Z-beta.N), not just stable \
                                          releases.",
-                                    Select::new(&self.prerelease_select).w_full(),
+                                    prerelease_switch,
                                 )),
                         }
                     }),
@@ -914,41 +1172,6 @@ impl Render for SettingsView {
             // does), or the data-location confirm dialog stays invisible.
             .children(Root::render_dialog_layer(window, cx))
     }
-}
-
-fn nav(active: Tab, cx: &mut Context<SettingsView>) -> impl IntoElement {
-    div()
-        .flex_shrink_0()
-        .w(px(184.0))
-        .pl(px(20.0))
-        .pr(px(8.0))
-        .flex()
-        .flex_col()
-        .gap(px(2.0))
-        .child(nav_item("nav-general", "General", Tab::General, active, cx))
-        .child(nav_item(
-            "nav-appearance",
-            "Appearance",
-            Tab::Appearance,
-            active,
-            cx,
-        ))
-        .child(nav_item("nav-pdf", "PDF", Tab::Pdf, active, cx))
-        .child(nav_item(
-            "nav-markdown",
-            "Markdown",
-            Tab::Markdown,
-            active,
-            cx,
-        ))
-        .child(nav_item(
-            "nav-keyboard",
-            "Keyboard",
-            Tab::Keyboard,
-            active,
-            cx,
-        ))
-        .child(nav_item("nav-updates", "Updates", Tab::Updates, active, cx))
 }
 
 /// Open a URL in the user's default browser (the "View release" button).
@@ -968,6 +1191,7 @@ fn nav_item(
     label: &'static str,
     tab: Tab,
     active: Tab,
+    dimmed: bool,
     cx: &mut Context<SettingsView>,
 ) -> impl IntoElement {
     div()
@@ -977,6 +1201,7 @@ fn nav_item(
         .rounded(px(8.0))
         .text_size(px(14.0))
         .cursor_pointer()
+        .when(dimmed, |d| d.opacity(0.35))
         .when(tab == active, |d| {
             d.bg(theme::accent_tint()).text_color(theme::text_primary())
         })
@@ -1005,7 +1230,7 @@ fn version_chip() -> impl IntoElement {
 }
 
 /// A settings card: bold title, muted description, then the control.
-fn card(title: &str, desc: &str, control: impl IntoElement) -> impl IntoElement {
+fn card(title: &str, desc: &str, control: impl IntoElement) -> gpui::Div {
     div()
         .flex()
         .flex_col()
@@ -1055,7 +1280,7 @@ mod keys {
 }
 
 /// A settings card whose body is a list of `(label, key combo)` shortcut rows.
-fn card_list(title: &str, desc: &str, rows: Vec<(&str, Vec<&str>)>) -> impl IntoElement {
+fn card_list(title: &str, desc: &str, rows: Vec<(&str, Vec<&str>)>) -> gpui::Div {
     let mut list = div().flex().flex_col().gap(px(2.0));
     for (label, combo) in rows {
         list = list.child(shortcut_row(label, &combo));
