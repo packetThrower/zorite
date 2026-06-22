@@ -281,7 +281,11 @@ fn normalize_styles(mut segs: Vec<(usize, usize, RunStyle)>) -> Vec<StyleSpan> {
             last.end = b;
             continue;
         }
-        out.push(StyleSpan { start: a, end: b, style: st });
+        out.push(StyleSpan {
+            start: a,
+            end: b,
+            style: st,
+        });
     }
     out
 }
@@ -3004,9 +3008,16 @@ impl WhiteboardView {
             && let Some(id) = self.editing
             && let Some(tg) = self.edit_target(id)
         {
-            let local =
-                block_local(tg.x, tg.y, tg.rotation, tg.pivot, self.event_to_world(ev.position));
-            self.caret = self.font.index_at_wrapped(&tg.content, tg.size, tg.wrap, local);
+            let local = block_local(
+                tg.x,
+                tg.y,
+                tg.rotation,
+                tg.pivot,
+                self.event_to_world(ev.position),
+            );
+            self.caret = self
+                .font
+                .index_at_wrapped(&tg.content, tg.size, tg.wrap, local);
             cx.notify();
             return;
         }
@@ -3401,7 +3412,9 @@ impl WhiteboardView {
             t.content.replace_range(s..e, ins);
             true
         } else if is_closed_shape(&el.kind) {
-            el.label.get_or_insert_with(String::new).replace_range(s..e, ins);
+            el.label
+                .get_or_insert_with(String::new)
+                .replace_range(s..e, ins);
             true
         } else {
             false
@@ -3430,7 +3443,9 @@ impl WhiteboardView {
             return RunStyle::default();
         };
         let (s, e) = self.sel_range();
-        if s >= e && let Some(p) = self.pending_style {
+        if s >= e
+            && let Some(p) = self.pending_style
+        {
             return p;
         }
         self.scene
@@ -3483,7 +3498,14 @@ impl WhiteboardView {
     /// The formatting menu panel — a ✓-marked toggle per format — shared by the
     /// right-click submenu and the toolbar fly-out. Toggling a row keeps the menu
     /// open so the checkmarks update live.
-    fn format_menu(&self, ink: Hsla, text: Hsla, grid: Hsla, bg: Hsla, cx: &mut Context<Self>) -> Div {
+    fn format_menu(
+        &self,
+        ink: Hsla,
+        text: Hsla,
+        grid: Hsla,
+        bg: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let st = self.selection_style();
         let frow = |id: &'static str, label: &'static str, sc: &'static str, on: bool| {
             div()
@@ -3512,20 +3534,33 @@ impl WhiteboardView {
             .border_color(grid)
             .flex()
             .flex_col()
-            .child(frow("wb-fmt-bold", "Bold", "⌘B", st.bold).on_click(
-                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Bold, cx)),
-            ))
-            .child(frow("wb-fmt-italic", "Italic", "⌘I", st.italic).on_click(
-                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Italic, cx)),
-            ))
-            .child(frow("wb-fmt-underline", "Underline", "⌘U", st.underline).on_click(
-                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Underline, cx)),
-            ))
-            .child(frow("wb-fmt-strike", "Strikethrough", "⇧⌘X", st.strike).on_click(
-                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Strike, cx)),
-            ))
             .child(
-                frow("wb-fmt-highlight", "Highlight", "⇧⌘H", st.highlight.is_some()).on_click(
+                frow("wb-fmt-bold", "Bold", "⌘B", st.bold)
+                    .on_click(cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Bold, cx))),
+            )
+            .child(
+                frow("wb-fmt-italic", "Italic", "⌘I", st.italic).on_click(
+                    cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Italic, cx)),
+                ),
+            )
+            .child(
+                frow("wb-fmt-underline", "Underline", "⌘U", st.underline).on_click(
+                    cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Underline, cx)),
+                ),
+            )
+            .child(
+                frow("wb-fmt-strike", "Strikethrough", "⇧⌘X", st.strike).on_click(
+                    cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Strike, cx)),
+                ),
+            )
+            .child(
+                frow(
+                    "wb-fmt-highlight",
+                    "Highlight",
+                    "⇧⌘H",
+                    st.highlight.is_some(),
+                )
+                .on_click(
                     cx.listener(|this, _ev, _w, cx| this.apply_highlight(HIGHLIGHT_DEFAULT, cx)),
                 ),
             )
@@ -3688,7 +3723,9 @@ impl WhiteboardView {
             return;
         };
         let local = block_local(tg.x, tg.y, tg.rotation, tg.pivot, p);
-        let idx = self.font.index_at_wrapped(&tg.content, tg.size, tg.wrap, local);
+        let idx = self
+            .font
+            .index_at_wrapped(&tg.content, tg.size, tg.wrap, local);
         if ev.click_count >= 2 {
             let (s, e) = word_range(&tg.content, idx);
             self.sel_anchor = s;
@@ -4396,9 +4433,11 @@ fn shape_label_block(
     // sitting on the base (text anchored low, not vertically centered). Star /
     // pointy-top hexagon use a safe central band. (Rect / round-rect = the box.)
     let (wf, hf, bottom) = match kind {
-        ElementKind::Ellipse(_) => {
-            (std::f32::consts::FRAC_1_SQRT_2, std::f32::consts::FRAC_1_SQRT_2, false)
-        }
+        ElementKind::Ellipse(_) => (
+            std::f32::consts::FRAC_1_SQRT_2,
+            std::f32::consts::FRAC_1_SQRT_2,
+            false,
+        ),
         ElementKind::Diamond(_) => (0.5, 0.5, false),
         ElementKind::Triangle(_) => (0.5, 0.5, true),
         ElementKind::Star(_) => (0.5, 0.4, false),
@@ -5455,8 +5494,9 @@ impl Render for WhiteboardView {
                         let layout = font.layout_styled(text, blk.size, Some(blk.wrap), |b| {
                             glyph_style(style_at(styles, b))
                         });
-                        let caret = active
-                            .then(|| font.caret_pos_wrapped(text, blk.size, Some(blk.wrap), caret_at));
+                        let caret = active.then(|| {
+                            font.caret_pos_wrapped(text, blk.size, Some(blk.wrap), caret_at)
+                        });
                         let (s, e) = (caret_at.min(sel_anchor), caret_at.max(sel_anchor));
                         let selection = if active {
                             font.selection_rects_wrapped(text, blk.size, Some(blk.wrap), s, e)
@@ -5906,7 +5946,10 @@ impl Render for WhiteboardView {
         // The toolbar's text-formatting fly-out (the same panel as the right-click
         // submenu), shown while the "Format" button is toggled on during a text edit.
         let format_panel = (self.editing.is_some() && self.format_flyout).then(|| {
-            popover_anchor().child(self.format_menu(ink, text, grid, panel_strong, cx).occlude())
+            popover_anchor().child(
+                self.format_menu(ink, text, grid, panel_strong, cx)
+                    .occlude(),
+            )
         });
 
         // Thickness flyout (centered below the toolbar): a row of preset weights
@@ -6890,7 +6933,14 @@ mod tests {
     #[test]
     fn shape_label_block_fits_inscribed_region() {
         let font = Font::default();
-        let bg = BoxGeom { x: 0.0, y: 0.0, w: 0.0, h: 0.0, width: 0.0, rotation: 0.0 };
+        let bg = BoxGeom {
+            x: 0.0,
+            y: 0.0,
+            w: 0.0,
+            h: 0.0,
+            width: 0.0,
+            rotation: 0.0,
+        };
         let (bx, by, bw, bh) = (10.0, 20.0, 200.0, 120.0);
 
         // Rect: default size for a roomy box; wraps to ~the full padded width.
@@ -6904,17 +6954,42 @@ mod tests {
 
         // Diamond: wraps to the central inscribed rectangle (½ width), so it wraps
         // narrower and shrinks at least as much as the rect.
-        let dia = shape_label_block(&font, &ElementKind::Diamond(bg), bx, by, bw, bh, "hello world");
+        let dia = shape_label_block(
+            &font,
+            &ElementKind::Diamond(bg),
+            bx,
+            by,
+            bw,
+            bh,
+            "hello world",
+        );
         assert!(
             (dia.wrap - (bw * 0.5 - 2.0 * LABEL_PAD)).abs() < 0.5,
             "diamond half width: {}",
             dia.wrap
         );
-        assert!(dia.size <= rect.size, "diamond shrinks ≥ rect: {} vs {}", dia.size, rect.size);
+        assert!(
+            dia.size <= rect.size,
+            "diamond shrinks ≥ rect: {} vs {}",
+            dia.size,
+            rect.size
+        );
 
         // Triangle: its band sits in the lower half (anchored near the base).
-        let tri = shape_label_block(&font, &ElementKind::Triangle(bg), bx, by, bw, bh, "hello world");
-        assert!(tri.y >= by + bh / 2.0 - 0.5, "triangle label low: y={}", tri.y);
+        let tri = shape_label_block(
+            &font,
+            &ElementKind::Triangle(bg),
+            bx,
+            by,
+            bw,
+            bh,
+            "hello world",
+        );
+        assert!(
+            tri.y >= by + bh / 2.0 - 0.5,
+            "triangle label low: y={}",
+            tri.y
+        );
 
         // A long label in a small box shrinks below the default to avoid overflow.
         let tiny = shape_label_block(
@@ -6931,7 +7006,10 @@ mod tests {
 
     #[test]
     fn style_span_toggle_and_layer() {
-        let bold = RunStyle { bold: true, ..Default::default() };
+        let bold = RunStyle {
+            bold: true,
+            ..Default::default()
+        };
         let s = toggle_format(&[], 0, 4, Format::Bold);
         assert_eq!(s.len(), 1);
         assert_eq!((s[0].start, s[0].end, s[0].style), (0, 4, bold));
@@ -6956,9 +7034,15 @@ mod tests {
     fn active_style_reports_common_formatting() {
         let s = toggle_format(&[], 2, 5, Format::Bold); // bytes 2..5 bold
         assert!(active_style(&s, 2, 5).bold, "whole selection bold");
-        assert!(!active_style(&s, 0, 5).bold, "selection spills onto plain text");
+        assert!(
+            !active_style(&s, 0, 5).bold,
+            "selection spills onto plain text"
+        );
         // Collapsed caret inherits the char to its left.
-        assert!(active_style(&s, 5, 5).bold, "just after the run inherits bold");
+        assert!(
+            active_style(&s, 5, 5).bold,
+            "just after the run inherits bold"
+        );
         assert!(!active_style(&s, 2, 2).bold, "just before it is plain");
     }
 
@@ -6976,7 +7060,10 @@ mod tests {
         let full = toggle_format(&[], 0, 6, Format::Bold);
         let c = splice_styles(&full, 2, 4, 2, plain);
         assert_eq!(c.len(), 2, "{c:?}");
-        assert_eq!(((c[0].start, c[0].end), (c[1].start, c[1].end)), ((0, 2), (4, 6)));
+        assert_eq!(
+            ((c[0].start, c[0].end), (c[1].start, c[1].end)),
+            ((0, 2), (4, 6))
+        );
     }
 
     #[test]
@@ -6999,7 +7086,11 @@ mod tests {
             styles: vec![StyleSpan {
                 start: 0,
                 end: 5,
-                style: RunStyle { bold: true, highlight: Some(0xffff00ff), ..Default::default() },
+                style: RunStyle {
+                    bold: true,
+                    highlight: Some(0xffff00ff),
+                    ..Default::default()
+                },
             }],
         };
         let back: Element = serde_json::from_str(&serde_json::to_string(&el).unwrap()).unwrap();
@@ -7008,7 +7099,12 @@ mod tests {
         assert_eq!(back.styles[0].style.highlight, Some(0xffff00ff));
         // A board saved before rich text loads with no styles.
         let old = r#"{"id":2,"kind":{"rect":{"x":0.0,"y":0.0,"w":1.0,"h":1.0,"width":1.0}}}"#;
-        assert!(serde_json::from_str::<Element>(old).unwrap().styles.is_empty());
+        assert!(
+            serde_json::from_str::<Element>(old)
+                .unwrap()
+                .styles
+                .is_empty()
+        );
     }
 
     #[test]

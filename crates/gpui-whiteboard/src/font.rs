@@ -205,19 +205,38 @@ impl Font {
                 let shear = if st.italic { SHEAR } else { 0.0 };
                 let start = segs.len();
                 {
-                    let mut b = Outliner { segs: &mut segs, pen, baseline, scale, shear };
+                    let mut b = Outliner {
+                        segs: &mut segs,
+                        pen,
+                        baseline,
+                        scale,
+                        shear,
+                    };
                     face.outline_glyph(gid, &mut b);
                 }
                 if st.bold {
                     bold_segs.extend_from_slice(&segs[start..]);
                 }
                 // Track the decoration run; flush when underline/strike/highlight change.
-                let deco = GlyphStyle { bold: false, italic: false, ..st };
+                let deco = GlyphStyle {
+                    bold: false,
+                    italic: false,
+                    ..st
+                };
                 let has_deco = deco.underline || deco.strike || deco.highlight.is_some();
                 let same = matches!(&run, Some((rs, _)) if *rs == deco);
                 if !same {
                     if let Some((rs, x0)) = run.take() {
-                        flush_deco(&mut decorations, rs, x0, pen, line.top, line_height, baseline, bar);
+                        flush_deco(
+                            &mut decorations,
+                            rs,
+                            x0,
+                            pen,
+                            line.top,
+                            line_height,
+                            baseline,
+                            bar,
+                        );
                     }
                     run = has_deco.then_some((deco, pen));
                 }
@@ -225,7 +244,16 @@ impl Font {
             }
             if let Some((rs, x0)) = run.take() {
                 let x1 = line.stops.last().map_or(x0, |&(_, x)| x);
-                flush_deco(&mut decorations, rs, x0, x1, line.top, line_height, baseline, bar);
+                flush_deco(
+                    &mut decorations,
+                    rs,
+                    x0,
+                    x1,
+                    line.top,
+                    line_height,
+                    baseline,
+                    bar,
+                );
             }
             width = width.max(line.stops.last().map_or(0.0, |&(_, x)| x));
         }
@@ -569,6 +597,9 @@ pub struct StyledLayout {
 
 /// Emit the highlight / underline / strikethrough rects for a decoration run
 /// spanning local x `[x0, x1)` on one line.
+// Each argument is a distinct glyph-run geometry/style value; bundling them into
+// a struct would obscure more than it clarifies.
+#[allow(clippy::too_many_arguments)]
 fn flush_deco(
     out: &mut Vec<Decoration>,
     st: GlyphStyle,
@@ -584,10 +615,16 @@ fn flush_deco(
     }
     let w = x1 - x0;
     if let Some(c) = st.highlight {
-        out.push(Decoration { rect: [x0, top, w, line_height], kind: DecoKind::Highlight(c) });
+        out.push(Decoration {
+            rect: [x0, top, w, line_height],
+            kind: DecoKind::Highlight(c),
+        });
     }
     if st.underline {
-        out.push(Decoration { rect: [x0, baseline + bar, w, bar], kind: DecoKind::Underline });
+        out.push(Decoration {
+            rect: [x0, baseline + bar, w, bar],
+            kind: DecoKind::Underline,
+        });
     }
     if st.strike {
         // Through the x-height (about halfway from the line top to the baseline).
@@ -746,7 +783,10 @@ mod tests {
         let full = f.measure("hello world", 20.0).0;
         // Wrapping below the phrase width forces a second line.
         let (w, h) = f.measure_wrapped("hello world", 20.0, Some(full * 0.6));
-        assert!((h - 2.0 * lh).abs() < 0.5, "expected 2 lines: h={h} lh={lh}");
+        assert!(
+            (h - 2.0 * lh).abs() < 0.5,
+            "expected 2 lines: h={h} lh={lh}"
+        );
         assert!(w <= full * 0.6 + 0.5, "lines stay within the width: {w}");
         // A width wider than the text wraps nothing — identical to no wrap.
         assert_eq!(
@@ -783,8 +823,10 @@ mod tests {
     fn styled_layout_bolds_and_decorates() {
         let f = Font::default();
         let plain = f.layout_styled("Ab", 20.0, None, |_| GlyphStyle::default());
-        let bold =
-            f.layout_styled("Ab", 20.0, None, |_| GlyphStyle { bold: true, ..Default::default() });
+        let bold = f.layout_styled("Ab", 20.0, None, |_| GlyphStyle {
+            bold: true,
+            ..Default::default()
+        });
         assert!(
             !bold.bold_segs.is_empty() && plain.bold_segs.is_empty(),
             "bold collects outlines to stroke"
@@ -794,12 +836,20 @@ mod tests {
             underline: true,
             ..Default::default()
         });
-        assert!(und.decorations.iter().any(|d| d.kind == DecoKind::Underline));
+        assert!(
+            und.decorations
+                .iter()
+                .any(|d| d.kind == DecoKind::Underline)
+        );
         let hi = f.layout_styled("Ab", 20.0, None, |_| GlyphStyle {
             highlight: Some(0xffff00ff),
             ..Default::default()
         });
-        assert!(hi.decorations.iter().any(|d| d.kind == DecoKind::Highlight(0xffff00ff)));
+        assert!(
+            hi.decorations
+                .iter()
+                .any(|d| d.kind == DecoKind::Highlight(0xffff00ff))
+        );
     }
 
     #[test]
@@ -810,10 +860,17 @@ mod tests {
             underline: b == 0,
             ..Default::default()
         });
-        let unders: Vec<_> =
-            l.decorations.iter().filter(|d| d.kind == DecoKind::Underline).collect();
+        let unders: Vec<_> = l
+            .decorations
+            .iter()
+            .filter(|d| d.kind == DecoKind::Underline)
+            .collect();
         assert_eq!(unders.len(), 1, "{:?}", l.decorations);
         let adv = f.measure("M", 20.0).0;
-        assert!((unders[0].rect[2] - adv).abs() < 0.5, "≈1 advance: {}", unders[0].rect[2]);
+        assert!(
+            (unders[0].rect[2] - adv).abs() < 0.5,
+            "≈1 advance: {}",
+            unders[0].rect[2]
+        );
     }
 }
