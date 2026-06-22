@@ -184,7 +184,7 @@ fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Sel
 fn on_suggest(&mut self, provider: impl Fn(&str) -> Vec<String> + 'static)
 ```
 
-The host computes [`Diagnostic`] spans (e.g. with the [`spellcheck`] crate) and
+The host computes [`Diagnostic`] spans (e.g. with the [`os-spellcheck`] crate) and
 feeds them in — each underlined with a red squiggle. `on_suggest` installs the
 provider consulted **only on right-click** of a flagged word (kept lazy because
 the OS suggestion call can be slow); it returns replacements, best first, shown
@@ -287,7 +287,7 @@ A flagged span to underline. `&text[range]` is the offending word.
 
 ## Demo
 
-A standalone window wired to the real OS spell checker (via the [`spellcheck`]
+A standalone window wired to the real OS spell checker (via the [`os-spellcheck`]
 crate), live Markdown styling, a PDF-style file chip, and styled tables:
 
 ```sh
@@ -315,4 +315,4 @@ GPL-3.0-or-later.
 [`set_text`]: #content
 [`set_tab_indent`]: #indentation
 [`mermaid_sources`]: #fn-mermaid_sourcescontent-str---vecsharedstring
-[`spellcheck`]: ../spellcheck
+[`os-spellcheck`]: ../os-spellcheck

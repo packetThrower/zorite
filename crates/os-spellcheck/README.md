@@ -1,4 +1,4 @@
-# spellcheck
+# os-spellcheck
 
 Native **OS spell-checking** with a tiny, host-agnostic API:
 
@@ -26,7 +26,7 @@ without ever paying for suggestions until the user actually asks for them.
 
 ```toml
 [dependencies]
-spellcheck = { path = "crates/spellcheck" }
+os-spellcheck = "0.1"
 ```
 
 No features to configure — the platform backend is selected by `cfg`. On macOS it
@@ -37,7 +37,7 @@ dependencies.
 ## Quick start
 
 ```rust
-use spellcheck::SpellChecker;
+use os_spellcheck::SpellChecker;
 
 let checker = SpellChecker::new();
 let text = "Some mispelled wrds.";
@@ -92,7 +92,7 @@ suggestion provider:
 
 ```rust
 use gpui_editor::Diagnostic;
-use spellcheck::SpellChecker;
+use os_spellcheck::SpellChecker;
 
 // On each edit: feed the misspelled ranges in as diagnostics (red squiggles).
 let diagnostics = SpellChecker::new()

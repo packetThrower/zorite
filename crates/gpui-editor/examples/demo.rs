@@ -14,7 +14,7 @@ use gpui::{
     size,
 };
 use gpui_editor::{Diagnostic, EditorEvent, EditorState, SyntaxStyle};
-use spellcheck::SpellChecker;
+use os_spellcheck::SpellChecker;
 
 actions!(demo, [Quit]);
 

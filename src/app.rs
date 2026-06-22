@@ -5659,7 +5659,7 @@ fn make_editor(
     let editor = cx.new(|cx| {
         let mut editor = EditorState::new(window, cx).with_text(content);
         // Right-click a flagged word → the OS's suggestions, fetched lazily.
-        editor.on_suggest(|word| spellcheck::SpellChecker::new().suggestions(word));
+        editor.on_suggest(|word| os_spellcheck::SpellChecker::new().suggestions(word));
         // Inline images (W4): resolve a standalone image's src to its decoded
         // bitmap from the shared store (None until decoding finishes / on fail).
         editor.set_block_image_provider(move |src| image_store.borrow().get(src));
@@ -5699,7 +5699,7 @@ fn make_editor(
 /// diagnostic (a red wavy underline). Detection only — suggestions are fetched
 /// lazily on right-click via the editor's `on_suggest` provider.
 fn spell_diagnostics(text: &str) -> Vec<Diagnostic> {
-    spellcheck::SpellChecker::new()
+    os_spellcheck::SpellChecker::new()
         .check(text)
         .into_iter()
         .map(|range| Diagnostic { range })

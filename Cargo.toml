@@ -12,7 +12,7 @@ name = "zorite"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/spellcheck"]
+members = ["crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-spellcheck"]
 resolver = "2"
 
 [dependencies]
@@ -32,7 +32,7 @@ gpui-editor = { path = "crates/gpui-editor" }
 
 # Native OS spell-check (NSSpellChecker / ISpellChecker), feeding the editor's
 # diagnostics; a no-op on Linux. A workspace crate.
-spellcheck = { path = "crates/spellcheck" }
+os-spellcheck = { path = "crates/os-spellcheck" }
 
 # Mermaid diagrams: a pure-Rust mermaid → SVG renderer (zed-industries — the
 # same crate Zed's markdown preview uses; no JS/Node). We rasterize its SVG to a

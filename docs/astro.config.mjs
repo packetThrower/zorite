@@ -103,7 +103,7 @@ export default defineConfig({
 								{ label: 'gpui-markdown', slug: 'reference/crates/gpui-markdown' },
 								{ label: 'gpui-pdf', slug: 'reference/crates/gpui-pdf' },
 								{ label: 'gpui-whiteboard', slug: 'reference/crates/gpui-whiteboard' },
-								{ label: 'spellcheck', slug: 'reference/crates/spellcheck' },
+								{ label: 'os-spellcheck', slug: 'reference/crates/os-spellcheck' },
 							],
 						},
 					],

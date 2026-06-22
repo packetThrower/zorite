@@ -46,7 +46,7 @@ const crates = [
 			'An infinite, pannable and zoomable freeform whiteboard canvas for GPUI.',
 	},
 	{
-		name: 'spellcheck',
+		name: 'os-spellcheck',
 		description:
 			'Native OS spell-checking (NSSpellChecker / ISpellChecker) with a tiny, host-agnostic API.',
 	},
