@@ -132,6 +132,7 @@ impl Font {
                     pen,
                     baseline,
                     scale,
+                    shear: 0.0,
                 };
                 face.outline_glyph(gid, &mut b);
             }
@@ -143,6 +144,100 @@ impl Font {
         });
         TextLayout {
             segs,
+            width,
+            height: lines.len().max(1) as f32 * line_height,
+            line_height,
+            caret,
+        }
+    }
+
+    /// Like [`layout_wrapped`](Self::layout_wrapped) but applies a per-character
+    /// [`GlyphStyle`] from `style_at` (keyed by byte offset): synthetic italic
+    /// (shear) and bold (a doubled, offset pass) are baked into the glyph
+    /// outlines, and underline / strikethrough / highlight runs become
+    /// [`Decoration`]s. Wrapping — and therefore the caret geometry — is identical
+    /// to the unstyled path (synthetic styling doesn't change advances).
+    pub fn layout_styled(
+        &self,
+        content: &str,
+        font_size: f32,
+        max_width: Option<f32>,
+        style_at: impl Fn(usize) -> GlyphStyle,
+    ) -> StyledLayout {
+        let Some(face) = self.face() else {
+            return StyledLayout {
+                segs: Vec::new(),
+                bold_segs: Vec::new(),
+                bold_width: 0.0,
+                decorations: Vec::new(),
+                width: 0.0,
+                height: font_size,
+                line_height: font_size,
+                caret: [0.0, 0.0],
+            };
+        };
+        let upem = face.units_per_em() as f32;
+        let scale = if upem > 0.0 { font_size / upem } else { 0.0 };
+        let ascent = face.ascender() as f32 * scale;
+        let (lines, line_height) = self.line_stops(content, font_size, max_width);
+
+        const SHEAR: f32 = 0.22; // ~12° oblique
+        let bar = (font_size * 0.07).max(1.0); // underline / strike thickness
+
+        let mut segs = Vec::new();
+        // Bold glyphs' outlines, stroked over the solid fill (`bold_width`). A
+        // doubled fill would cancel under even-odd winding → hollow glyphs.
+        let mut bold_segs = Vec::new();
+        let mut decorations = Vec::new();
+        let mut width = 0.0_f32;
+        for line in &lines {
+            let lstart = line.stops.first().map_or(0, |&(b, _)| b);
+            let lend = line.stops.last().map_or(lstart, |&(b, _)| b);
+            let baseline = line.top + ascent;
+            // The current decoration run: its style and starting local x. Only the
+            // underline/strike/highlight bits matter (bold/italic are glyph-baked).
+            let mut run: Option<(GlyphStyle, f32)> = None;
+            let mut byte = lstart;
+            for (k, ch) in content.get(lstart..lend).unwrap_or("").chars().enumerate() {
+                let st = style_at(byte);
+                let pen = line.stops.get(k).map_or(0.0, |&(_, x)| x);
+                let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+                let shear = if st.italic { SHEAR } else { 0.0 };
+                let start = segs.len();
+                {
+                    let mut b = Outliner { segs: &mut segs, pen, baseline, scale, shear };
+                    face.outline_glyph(gid, &mut b);
+                }
+                if st.bold {
+                    bold_segs.extend_from_slice(&segs[start..]);
+                }
+                // Track the decoration run; flush when underline/strike/highlight change.
+                let deco = GlyphStyle { bold: false, italic: false, ..st };
+                let has_deco = deco.underline || deco.strike || deco.highlight.is_some();
+                let same = matches!(&run, Some((rs, _)) if *rs == deco);
+                if !same {
+                    if let Some((rs, x0)) = run.take() {
+                        flush_deco(&mut decorations, rs, x0, pen, line.top, line_height, baseline, bar);
+                    }
+                    run = has_deco.then_some((deco, pen));
+                }
+                byte += ch.len_utf8();
+            }
+            if let Some((rs, x0)) = run.take() {
+                let x1 = line.stops.last().map_or(x0, |&(_, x)| x);
+                flush_deco(&mut decorations, rs, x0, x1, line.top, line_height, baseline, bar);
+            }
+            width = width.max(line.stops.last().map_or(0.0, |&(_, x)| x));
+        }
+        let caret = lines.last().map_or([0.0, 0.0], |l| {
+            let &(_, x) = l.stops.last().unwrap();
+            [x, l.top]
+        });
+        StyledLayout {
+            segs,
+            bold_segs,
+            bold_width: font_size * 0.06,
+            decorations,
             width,
             height: lines.len().max(1) as f32 * line_height,
             line_height,
@@ -427,18 +522,101 @@ struct LineStops {
     stops: Vec<(usize, f32)>,
 }
 
+/// The renderable style of one character — what [`Font::layout_styled`] needs.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct GlyphStyle {
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub strike: bool,
+    /// Highlight color behind the glyphs, packed `0xRRGGBBAA`.
+    pub highlight: Option<u32>,
+}
+
+/// A non-glyph text decoration in text-local space — transformed like the
+/// glyphs at paint time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decoration {
+    /// `[x, y, w, h]`.
+    pub rect: [f32; 4],
+    pub kind: DecoKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DecoKind {
+    /// Filled rect behind the glyphs, in this color (`0xRRGGBBAA`).
+    Highlight(u32),
+    /// A bar drawn in the text color.
+    Underline,
+    Strike,
+}
+
+/// A laid-out styled block: glyph outlines (italic / bold baked in) plus
+/// decoration rects, all text-local. Like [`TextLayout`] otherwise.
+#[derive(Clone, Debug)]
+pub struct StyledLayout {
+    pub segs: Vec<Seg>,
+    /// The bold glyphs' outlines, stroked over the fill for synthetic bold.
+    pub bold_segs: Vec<Seg>,
+    /// Local stroke width for `bold_segs` (scale to screen px by the zoom).
+    pub bold_width: f32,
+    pub decorations: Vec<Decoration>,
+    pub width: f32,
+    pub height: f32,
+    pub line_height: f32,
+    pub caret: [f32; 2],
+}
+
+/// Emit the highlight / underline / strikethrough rects for a decoration run
+/// spanning local x `[x0, x1)` on one line.
+fn flush_deco(
+    out: &mut Vec<Decoration>,
+    st: GlyphStyle,
+    x0: f32,
+    x1: f32,
+    top: f32,
+    line_height: f32,
+    baseline: f32,
+    bar: f32,
+) {
+    if x1 <= x0 {
+        return;
+    }
+    let w = x1 - x0;
+    if let Some(c) = st.highlight {
+        out.push(Decoration { rect: [x0, top, w, line_height], kind: DecoKind::Highlight(c) });
+    }
+    if st.underline {
+        out.push(Decoration { rect: [x0, baseline + bar, w, bar], kind: DecoKind::Underline });
+    }
+    if st.strike {
+        // Through the x-height (about halfway from the line top to the baseline).
+        out.push(Decoration {
+            rect: [x0, (top + baseline) * 0.5, w, bar],
+            kind: DecoKind::Strike,
+        });
+    }
+}
+
 /// Accumulates a glyph's outline into local space as `ttf-parser` walks it.
 struct Outliner<'a> {
     segs: &'a mut Vec<Seg>,
     pen: f32,
     baseline: f32,
     scale: f32,
+    /// Synthetic-italic slant: local x shifts right with height above the
+    /// baseline (`0.0` = upright).
+    shear: f32,
 }
 
 impl Outliner<'_> {
-    /// Font units (y-up, baseline origin) → text-local (y-down, top-left origin).
+    /// Font units (y-up, baseline origin) → text-local (y-down, top-left origin),
+    /// applying the italic shear.
     fn pt(&self, x: f32, y: f32) -> [f32; 2] {
-        [self.pen + x * self.scale, self.baseline - y * self.scale]
+        [
+            self.pen + (x + self.shear * y) * self.scale,
+            self.baseline - y * self.scale,
+        ]
     }
 }
 
@@ -599,5 +777,43 @@ mod tests {
         // The shrunk label actually fits inside its box.
         let (w, h) = f.measure_wrapped("hello world", small, Some(60.0));
         assert!(w <= 60.5 && h <= 60.5, "fits: {w}x{h}");
+    }
+
+    #[test]
+    fn styled_layout_bolds_and_decorates() {
+        let f = Font::default();
+        let plain = f.layout_styled("Ab", 20.0, None, |_| GlyphStyle::default());
+        let bold =
+            f.layout_styled("Ab", 20.0, None, |_| GlyphStyle { bold: true, ..Default::default() });
+        assert!(
+            !bold.bold_segs.is_empty() && plain.bold_segs.is_empty(),
+            "bold collects outlines to stroke"
+        );
+        assert!(plain.decorations.is_empty());
+        let und = f.layout_styled("Ab", 20.0, None, |_| GlyphStyle {
+            underline: true,
+            ..Default::default()
+        });
+        assert!(und.decorations.iter().any(|d| d.kind == DecoKind::Underline));
+        let hi = f.layout_styled("Ab", 20.0, None, |_| GlyphStyle {
+            highlight: Some(0xffff00ff),
+            ..Default::default()
+        });
+        assert!(hi.decorations.iter().any(|d| d.kind == DecoKind::Highlight(0xffff00ff)));
+    }
+
+    #[test]
+    fn styled_layout_decoration_runs_split() {
+        let f = Font::default();
+        // Underline only the first of two chars → one underline run ~1 advance wide.
+        let l = f.layout_styled("MM", 20.0, None, |b| GlyphStyle {
+            underline: b == 0,
+            ..Default::default()
+        });
+        let unders: Vec<_> =
+            l.decorations.iter().filter(|d| d.kind == DecoKind::Underline).collect();
+        assert_eq!(unders.len(), 1, "{:?}", l.decorations);
+        let adv = f.measure("M", 20.0).0;
+        assert!((unders[0].rect[2] - adv).abs() < 0.5, "≈1 advance: {}", unders[0].rect[2]);
     }
 }

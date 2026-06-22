@@ -39,6 +39,12 @@ GPUI app on macOS, Linux, or Windows. It comes in two layers:
   not just the bounding box — and rotates with the shape, with the same caret /
   selection / clipboard editing as free text. Color it independently of the outline
   via the picker's **Text** tab (alongside Stroke / Fill).
+- **Rich text formatting.** Per-character **bold**, italic, underline,
+  strikethrough, and highlight on any text — free text or shape labels. Toggle via
+  keyboard (⌘B / ⌘I / ⌘U / ⇧⌘X / ⇧⌘H), a right-click **Text ▸** fly-out, or the
+  toolbar's **A** fly-out — each showing a ✓ on the formats active across the
+  selection. Bold and italic are synthetic (so they work with any uploaded face);
+  the styling is stored as runs in the scene and survives edits.
 - **True z-order.** Canvas shapes and image/card overlays paint in one interleaved
   stack, so a shape can sit *above or below* an image. Bring to Front / Forward /
   Backward / Send to Back via the menu or `⌘]` / `⌘[` (± ⇧).
@@ -212,6 +218,7 @@ pub struct Element {
     pub fill:   Option<u32>,    // closed shapes only; None = unfilled outline
     pub label:  Option<String>, // closed shapes only; centered, word-wrapped + auto-shrunk to fit
     pub label_color: Option<u32>, // shape label color; None = follow the stroke / theme ink
+    pub styles: Vec<StyleSpan>,   // per-character bold/italic/underline/strike/highlight runs
 }
 
 pub enum ElementKind {       // serialized snake_case: {"rect": {...}}, {"image": {...}}, …
@@ -301,8 +308,9 @@ The view handles these when it has focus (it focuses on a canvas click):
 | double-click a page-card | open its page (via `OpenPageFn`) |
 | double-click text · `T`-click text | edit it — click a letter for the caret, drag / double-click to select |
 | double-click a closed shape | edit its centered label — wraps + auto-shrinks to fit; full caret / selection / clipboard |
+| `⌘B` `⌘I` `⌘U` `⇧⌘X` `⇧⌘H` (editing text) | bold / italic / underline / strikethrough / highlight the selection (toggle) |
 | drag the dotted grip (left of the toolbar) | move the toolbar (tap `R` mid-drag to flip row ↔ column; double-click the grip resets it) |
-| right-click | context menu (z-order, copy/cut/paste, save as template) |
+| right-click | context menu (z-order, copy/cut/paste, save as template); while editing text, a **Text ▸** fly-out toggles bold / italic / underline / strike / highlight (✓ marks active) |
 
 While editing a text element it behaves like a normal text field: click to place the
 caret, click-drag or double-click to select, arrows / Home / End (⇧ extends), ⌘A, and

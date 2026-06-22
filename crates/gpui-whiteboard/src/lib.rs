@@ -95,6 +95,10 @@ const TEXT_SIZE: f32 = 18.0;
 /// Inset (world units) kept between a shape's inscribed text rectangle and its
 /// border, so the auto-shrunk label never touches the edge.
 const LABEL_PAD: f32 = 8.0;
+
+/// Default highlighter color (packed `0xRRGGBBAA`) for the highlight toggle —
+/// translucent yellow so the text stays readable.
+const HIGHLIGHT_DEFAULT: u32 = 0xffe06680;
 /// Rough per-character advance and line height, as fractions of the font size,
 /// for an approximate text bounding box (hit-testing / selection).
 const TEXT_CHAR_W: f32 = 0.55;
@@ -169,6 +173,233 @@ pub struct Element {
     /// non-shape kinds. Absent in older boards → `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label_color: Option<u32>,
+    /// Rich-text formatting runs over the element's text (a Text element's
+    /// content, or a shape's label): bold / italic / underline / strikethrough /
+    /// highlight, each over a byte range. Empty = unstyled. Kept sorted +
+    /// non-overlapping and maintained across edits; absent in older boards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub styles: Vec<StyleSpan>,
+}
+
+/// Whether a [`RunStyle`] flag is unset — its default, kept out of the JSON.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// The formatting of a run of characters; `default()` is plain text.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct RunStyle {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub underline: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub strike: bool,
+    /// Highlight color behind the glyphs, packed `0xRRGGBBAA`; `None` = none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub highlight: Option<u32>,
+}
+
+impl RunStyle {
+    /// No formatting — needn't be stored (plain runs are implicit gaps).
+    fn is_plain(&self) -> bool {
+        *self == RunStyle::default()
+    }
+}
+
+/// A toggleable boolean format. (Highlight is a color, toggled on its own.)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Format {
+    Bold,
+    Italic,
+    Underline,
+    Strike,
+}
+
+impl Format {
+    fn get(self, s: &RunStyle) -> bool {
+        match self {
+            Format::Bold => s.bold,
+            Format::Italic => s.italic,
+            Format::Underline => s.underline,
+            Format::Strike => s.strike,
+        }
+    }
+    fn set(self, s: &mut RunStyle, on: bool) {
+        match self {
+            Format::Bold => s.bold = on,
+            Format::Italic => s.italic = on,
+            Format::Underline => s.underline = on,
+            Format::Strike => s.strike = on,
+        }
+    }
+}
+
+/// A [`RunStyle`] over the byte range `[start, end)` of an element's text. Runs
+/// are kept sorted, non-overlapping, and non-plain. See [`Element::styles`].
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct StyleSpan {
+    pub start: usize,
+    pub end: usize,
+    pub style: RunStyle,
+}
+
+/// `[s, e)` as contiguous `(start, end, style)` segments — existing runs plus
+/// plain gaps. Assumes `spans` is sorted + non-overlapping.
+fn style_segments(spans: &[StyleSpan], s: usize, e: usize) -> Vec<(usize, usize, RunStyle)> {
+    let mut out = Vec::new();
+    let mut pos = s;
+    for sp in spans.iter().filter(|sp| sp.start < e && sp.end > s) {
+        let a = sp.start.max(s);
+        if a > pos {
+            out.push((pos, a, RunStyle::default()));
+        }
+        out.push((a, sp.end.min(e), sp.style));
+        pos = sp.end.min(e);
+    }
+    if pos < e {
+        out.push((pos, e, RunStyle::default()));
+    }
+    out
+}
+
+/// Re-sort, merge touching equal runs, and drop plain runs.
+fn normalize_styles(mut segs: Vec<(usize, usize, RunStyle)>) -> Vec<StyleSpan> {
+    segs.retain(|(a, b, _)| a < b);
+    segs.sort_by_key(|(a, _, _)| *a);
+    let mut out: Vec<StyleSpan> = Vec::new();
+    for (a, b, st) in segs {
+        if st.is_plain() {
+            continue;
+        }
+        if let Some(last) = out.last_mut()
+            && last.end == a
+            && last.style == st
+        {
+            last.end = b;
+            continue;
+        }
+        out.push(StyleSpan { start: a, end: b, style: st });
+    }
+    out
+}
+
+/// The style covering byte `offset` (the char starting there), else plain.
+fn style_at(spans: &[StyleSpan], offset: usize) -> RunStyle {
+    spans
+        .iter()
+        .find(|sp| sp.start <= offset && offset < sp.end)
+        .map_or(RunStyle::default(), |sp| sp.style)
+}
+
+/// The formatting common to *every* char in `[s, e)` — for menu checkmarks. A
+/// collapsed range reports the style just left of the caret (what typing
+/// inherits).
+fn active_style(spans: &[StyleSpan], s: usize, e: usize) -> RunStyle {
+    if s >= e {
+        return style_at(spans, s.saturating_sub(1));
+    }
+    let segs = style_segments(spans, s, e);
+    let mut it = segs.iter().map(|&(_, _, st)| st);
+    let Some(mut acc) = it.next() else {
+        return RunStyle::default();
+    };
+    for st in it {
+        acc.bold &= st.bold;
+        acc.italic &= st.italic;
+        acc.underline &= st.underline;
+        acc.strike &= st.strike;
+        acc.highlight = match (acc.highlight, st.highlight) {
+            (Some(a), Some(b)) if a == b => Some(a),
+            _ => None,
+        };
+    }
+    acc
+}
+
+/// Replace the styling of `[s, e)` with `mid` (which covers `[s, e)`), keeping
+/// runs outside (splitting any that straddle), then normalize.
+fn replace_segment(
+    spans: &[StyleSpan],
+    s: usize,
+    e: usize,
+    mid: Vec<(usize, usize, RunStyle)>,
+) -> Vec<StyleSpan> {
+    let mut segs: Vec<(usize, usize, RunStyle)> = Vec::new();
+    for sp in spans {
+        if sp.start < s {
+            segs.push((sp.start, sp.end.min(s), sp.style));
+        }
+        if sp.end > e {
+            segs.push((sp.start.max(e), sp.end, sp.style));
+        }
+    }
+    segs.extend(mid);
+    normalize_styles(segs)
+}
+
+/// Toggle `format` over `[s, e)`: removed if every char already has it, else
+/// added.
+fn toggle_format(spans: &[StyleSpan], s: usize, e: usize, format: Format) -> Vec<StyleSpan> {
+    if s >= e {
+        return spans.to_vec();
+    }
+    let segs = style_segments(spans, s, e);
+    let add = !segs.iter().all(|(_, _, st)| format.get(st));
+    let mid = segs
+        .into_iter()
+        .map(|(a, b, mut st)| {
+            format.set(&mut st, add);
+            (a, b, st)
+        })
+        .collect();
+    replace_segment(spans, s, e, mid)
+}
+
+/// Set/clear the highlight color over `[s, e)`: cleared if every char already
+/// has `color`, else set to it.
+fn toggle_highlight(spans: &[StyleSpan], s: usize, e: usize, color: u32) -> Vec<StyleSpan> {
+    if s >= e {
+        return spans.to_vec();
+    }
+    let segs = style_segments(spans, s, e);
+    let on = !segs.iter().all(|(_, _, st)| st.highlight == Some(color));
+    let mid = segs
+        .into_iter()
+        .map(|(a, b, mut st)| {
+            st.highlight = on.then_some(color);
+            (a, b, st)
+        })
+        .collect();
+    replace_segment(spans, s, e, mid)
+}
+
+/// Shift/clip runs when the text `[s, e)` becomes `ins_len` bytes; the inserted
+/// bytes take `insert_style`. Keeps runs aligned to the edited text.
+fn splice_styles(
+    spans: &[StyleSpan],
+    s: usize,
+    e: usize,
+    ins_len: usize,
+    insert_style: RunStyle,
+) -> Vec<StyleSpan> {
+    let delta = ins_len as isize - (e - s) as isize;
+    let after = |p: usize| (p as isize + delta).max(0) as usize;
+    let mut segs: Vec<(usize, usize, RunStyle)> = Vec::new();
+    for sp in spans {
+        if sp.start < s {
+            segs.push((sp.start, sp.end.min(s), sp.style));
+        }
+        if sp.end > e {
+            segs.push((after(sp.start.max(e)), after(sp.end), sp.style));
+        }
+    }
+    if ins_len > 0 && !insert_style.is_plain() {
+        segs.push((s, s + ins_len, insert_style));
+    }
+    normalize_styles(segs)
 }
 
 /// The kinds of thing a board can hold.
@@ -844,6 +1075,10 @@ pub struct WhiteboardView {
     /// Screen position of an open right-click context menu (a selection's
     /// "save as template"), or `None`.
     context_menu: Option<Point<Pixels>>,
+    /// Whether the context menu's "Text ▸" formatting submenu is expanded.
+    ctx_text_sub: bool,
+    /// Whether the toolbar's text-formatting fly-out is open.
+    format_flyout: bool,
     /// The face used to render text as vector outlines. Defaults to the bundled
     /// JetBrains Mono; the host can swap in a custom/user-uploaded font.
     font: Font,
@@ -891,6 +1126,9 @@ pub struct WhiteboardView {
     active_fill: Option<u32>,
     /// Current label color for new shapes (`None` follows the stroke / theme ink).
     active_text: Option<u32>,
+    /// Formatting to apply to the next typed text when there's no selection (set
+    /// by a ⌘B/etc. toggle with a collapsed caret); cleared on caret move.
+    pending_style: Option<RunStyle>,
     /// Current stroke thickness for new elements, in screen px (stored world-space
     /// as `active_width / zoom`, like [`NIB`]). Defaults to `NIB`.
     active_width: f32,
@@ -970,6 +1208,8 @@ impl WhiteboardView {
             saved_colors: Vec::new(),
             templates: Vec::new(),
             context_menu: None,
+            ctx_text_sub: false,
+            format_flyout: false,
             font: Font::default(),
             tool: Tool::Pan,
             focus: cx.focus_handle(),
@@ -991,6 +1231,7 @@ impl WhiteboardView {
             active_stroke: None,
             active_fill: None,
             active_text: None,
+            pending_style: None,
             active_width: NIB,
             picker: None,
             open_group: None,
@@ -1271,6 +1512,7 @@ impl WhiteboardView {
             fill: None,
             label: None,
             label_color: None,
+            styles: Vec::new(),
         });
         self.selected = vec![id];
         self.tool = Tool::Select;
@@ -1313,6 +1555,7 @@ impl WhiteboardView {
             fill: None,
             label: None,
             label_color: None,
+            styles: Vec::new(),
         });
         self.selected = vec![id];
         self.tool = Tool::Select;
@@ -2420,6 +2663,7 @@ impl WhiteboardView {
                     fill: None,
                     label: None,
                     label_color: None,
+                    styles: Vec::new(),
                 });
                 self.selected = vec![id];
                 self.begin_text_edit(id, 0, window, cx);
@@ -2667,6 +2911,7 @@ impl WhiteboardView {
                     fill,
                     label: None,
                     label_color: self.active_text,
+                    styles: Vec::new(),
                 });
                 self.dirty = true;
             }
@@ -2693,6 +2938,7 @@ impl WhiteboardView {
                 ev.position.x - b.origin.x,
                 ev.position.y - b.origin.y,
             ));
+            self.ctx_text_sub = false;
         }
         cx.notify();
     }
@@ -3136,26 +3382,33 @@ impl WhiteboardView {
         if !extend {
             self.sel_anchor = to;
         }
+        self.pending_style = None; // a deliberate move ends a pending toggle
         cx.notify();
     }
 
     /// Replace the editing text's `[s, e)` with `ins`, landing the caret just after
     /// it (collapsed). The single mutation point for typing, deletion, and paste.
     fn replace_range(&mut self, id: u64, s: usize, e: usize, ins: &str, cx: &mut Context<Self>) {
+        let pending = self.pending_style;
         let Some(el) = self.scene.elements.iter_mut().find(|el| el.id == id) else {
             return;
         };
-        // The editing target's text: a `Text` element's content, or a closed
-        // shape's label (created on first edit).
-        let content = if let ElementKind::Text(t) = &mut el.kind {
-            Some(&mut t.content)
+        // The inserted text takes a pending toggle (⌘B with no selection), else it
+        // inherits the run to the left of the caret.
+        let insert_style = pending.unwrap_or_else(|| style_at(&el.styles, s.saturating_sub(1)));
+        // Mutate the text — a `Text` element's content, or a closed shape's label.
+        let edited = if let ElementKind::Text(t) = &mut el.kind {
+            t.content.replace_range(s..e, ins);
+            true
         } else if is_closed_shape(&el.kind) {
-            Some(el.label.get_or_insert_with(String::new))
+            el.label.get_or_insert_with(String::new).replace_range(s..e, ins);
+            true
         } else {
-            None
+            false
         };
-        if let Some(content) = content {
-            content.replace_range(s..e, ins);
+        if edited {
+            // Keep the styling aligned to the edited text.
+            el.styles = splice_styles(&el.styles, s, e, ins.len(), insert_style);
             self.caret = s + ins.len();
             self.sel_anchor = self.caret;
             self.dirty = true;
@@ -3167,6 +3420,115 @@ impl WhiteboardView {
     fn replace_selection(&mut self, id: u64, ins: &str, cx: &mut Context<Self>) {
         let (s, e) = self.sel_range();
         self.replace_range(id, s, e, ins, cx);
+    }
+
+    /// The formatting active across the current selection (or, collapsed, the
+    /// pending toggle / the run left of the caret) — for menu checkmarks. Plain
+    /// when not editing text.
+    fn selection_style(&self) -> RunStyle {
+        let Some(id) = self.editing else {
+            return RunStyle::default();
+        };
+        let (s, e) = self.sel_range();
+        if s >= e && let Some(p) = self.pending_style {
+            return p;
+        }
+        self.scene
+            .elements
+            .iter()
+            .find(|el| el.id == id)
+            .map_or(RunStyle::default(), |el| active_style(&el.styles, s, e))
+    }
+
+    /// Toggle a boolean format over the selection while editing text; with a
+    /// collapsed caret, arm a pending toggle for the next typed text instead.
+    fn apply_format(&mut self, format: Format, cx: &mut Context<Self>) {
+        let Some(id) = self.editing else {
+            return;
+        };
+        let (s, e) = self.sel_range();
+        if s < e {
+            if let Some(el) = self.scene.elements.iter_mut().find(|el| el.id == id) {
+                el.styles = toggle_format(&el.styles, s, e, format);
+                self.dirty = true;
+            }
+        } else {
+            let mut p = self.selection_style();
+            let on = !format.get(&p);
+            format.set(&mut p, on);
+            self.pending_style = Some(p);
+        }
+        cx.notify();
+    }
+
+    /// Like [`apply_format`](Self::apply_format) for the highlight color.
+    fn apply_highlight(&mut self, color: u32, cx: &mut Context<Self>) {
+        let Some(id) = self.editing else {
+            return;
+        };
+        let (s, e) = self.sel_range();
+        if s < e {
+            if let Some(el) = self.scene.elements.iter_mut().find(|el| el.id == id) {
+                el.styles = toggle_highlight(&el.styles, s, e, color);
+                self.dirty = true;
+            }
+        } else {
+            let mut p = self.selection_style();
+            p.highlight = (p.highlight != Some(color)).then_some(color);
+            self.pending_style = Some(p);
+        }
+        cx.notify();
+    }
+
+    /// The formatting menu panel — a ✓-marked toggle per format — shared by the
+    /// right-click submenu and the toolbar fly-out. Toggling a row keeps the menu
+    /// open so the checkmarks update live.
+    fn format_menu(&self, ink: Hsla, text: Hsla, grid: Hsla, bg: Hsla, cx: &mut Context<Self>) -> Div {
+        let st = self.selection_style();
+        let frow = |id: &'static str, label: &'static str, sc: &'static str, on: bool| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(5.0))
+                .mx(px(4.0))
+                .rounded(px(6.0))
+                .text_size(px(12.0))
+                .text_color(ink)
+                .hover(|s| s.bg(grid))
+                .child(div().w(px(12.0)).child(if on { "✓" } else { "" }))
+                .child(div().flex_1().child(label))
+                .child(div().text_size(px(11.0)).text_color(text).child(sc))
+        };
+        div()
+            .min_w(px(184.0))
+            .py(px(4.0))
+            .rounded(px(8.0))
+            .bg(bg)
+            .shadow_lg()
+            .border_1()
+            .border_color(grid)
+            .flex()
+            .flex_col()
+            .child(frow("wb-fmt-bold", "Bold", "⌘B", st.bold).on_click(
+                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Bold, cx)),
+            ))
+            .child(frow("wb-fmt-italic", "Italic", "⌘I", st.italic).on_click(
+                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Italic, cx)),
+            ))
+            .child(frow("wb-fmt-underline", "Underline", "⌘U", st.underline).on_click(
+                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Underline, cx)),
+            ))
+            .child(frow("wb-fmt-strike", "Strikethrough", "⇧⌘X", st.strike).on_click(
+                cx.listener(|this, _ev, _w, cx| this.apply_format(Format::Strike, cx)),
+            ))
+            .child(
+                frow("wb-fmt-highlight", "Highlight", "⇧⌘H", st.highlight.is_some()).on_click(
+                    cx.listener(|this, _ev, _w, cx| this.apply_highlight(HIGHLIGHT_DEFAULT, cx)),
+                ),
+            )
     }
 
     /// The caret offset one line up (`dir = -1`) or down (`dir = 1`), keeping the
@@ -3209,6 +3571,11 @@ impl WhiteboardView {
                     self.caret = content.len();
                     cx.notify();
                 }
+                "b" => self.apply_format(Format::Bold, cx),
+                "i" => self.apply_format(Format::Italic, cx),
+                "u" => self.apply_format(Format::Underline, cx),
+                "x" if shift => self.apply_format(Format::Strike, cx),
+                "h" if shift => self.apply_highlight(HIGHLIGHT_DEFAULT, cx),
                 "c" | "x" => {
                     let (s, e) = self.sel_range();
                     if s < e {
@@ -3341,6 +3708,8 @@ impl WhiteboardView {
     /// Finish editing the current text element, dropping it if it's empty.
     fn commit_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.text_selecting = false;
+        self.pending_style = None;
+        self.format_flyout = false;
         let Some(id) = self.editing.take() else {
             return;
         };
@@ -3996,6 +4365,17 @@ struct LabelBlock {
     wrap: f32,
 }
 
+/// Map a model [`RunStyle`] to the renderer's [`font::GlyphStyle`].
+fn glyph_style(s: RunStyle) -> font::GlyphStyle {
+    font::GlyphStyle {
+        bold: s.bold,
+        italic: s.italic,
+        underline: s.underline,
+        strike: s.strike,
+        highlight: s.highlight,
+    }
+}
+
 /// Lay out a closed shape's label inside its box (minus [`LABEL_PAD`]): the
 /// auto-shrunk font size, the wrap width, and the block's world placement,
 /// centered. Shared by the paint path and the editor so the caret matches the
@@ -4260,6 +4640,10 @@ fn band_canvas(elems: Vec<ElemPaint>, cam: Camera) -> impl IntoElement {
 /// for the paint closure to transform (camera + rotation) and fill.
 struct TextOutline {
     segs: Vec<font::Seg>,
+    /// Bold glyphs' outlines, stroked over the fill (synthetic bold), + the
+    /// local stroke width.
+    bold_segs: Vec<font::Seg>,
+    bold_width: f32,
     /// Glyph fill color — a Text element's ink, or a shape label's color.
     color: Hsla,
     x: f32,
@@ -4275,6 +4659,8 @@ struct TextOutline {
     selection: Vec<[f32; 4]>,
     /// Fill color for the selection highlight.
     sel_color: Hsla,
+    /// Underline / strikethrough / highlight runs (text-local), from the styling.
+    decorations: Vec<font::Decoration>,
 }
 
 /// Paint a text element's vector outlines (and, when editing, its caret). Local
@@ -4295,9 +4681,9 @@ fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, window: &mut 
             px(f32::from(a.y) + (f32::from(b.y) - f32::from(a.y)) * 2.0 / 3.0),
         )
     };
-    // Selection highlight first (behind the glyphs), each text-local rect
-    // transformed like the outlines so it follows the text's rotation.
-    for r in &t.selection {
+    // A text-local `[x, y, w, h]` rect → a screen-space fill path (rotated like
+    // the glyphs). Shared by highlights, the selection, and under/strike bars.
+    let rect_path = |r: [f32; 4]| {
         let (x, y, w, h) = (r[0], r[1], r[2], r[3]);
         let mut pb = PathBuilder::fill();
         pb.move_to(tf([x, y]));
@@ -4305,14 +4691,25 @@ fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, window: &mut 
         pb.line_to(tf([x + w, y + h]));
         pb.line_to(tf([x, y + h]));
         pb.close();
-        if let Ok(path) = pb.build() {
+        pb.build().ok()
+    };
+    // Highlights, then the editing selection — both behind the glyphs.
+    for d in &t.decorations {
+        if let font::DecoKind::Highlight(c) = d.kind
+            && let Some(path) = rect_path(d.rect)
+        {
+            window.paint_path(path, u32_to_hsla(c));
+        }
+    }
+    for r in &t.selection {
+        if let Some(path) = rect_path(*r) {
             window.paint_path(path, t.sel_color);
         }
     }
-    if !t.segs.is_empty() {
-        let mut pb = PathBuilder::fill();
+    // Walk glyph segments into `pb` (a fill or a stroke path).
+    let emit = |pb: &mut PathBuilder, segs: &[font::Seg]| {
         let mut cur = point(px(0.0), px(0.0));
-        for seg in &t.segs {
+        for seg in segs {
             match *seg {
                 font::Seg::Move(p) => {
                     cur = tf(p);
@@ -4335,7 +4732,29 @@ fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, window: &mut 
                 font::Seg::Close => pb.close(),
             }
         }
+    };
+    if !t.segs.is_empty() {
+        let mut pb = PathBuilder::fill();
+        emit(&mut pb, &t.segs);
         if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
+        }
+    }
+    // Synthetic bold: stroke the bold glyphs' outlines over the solid fill (a
+    // doubled fill would cancel under even-odd winding and read as hollow).
+    if !t.bold_segs.is_empty() {
+        let zoom = cam.zoom.max(MIN_ZOOM);
+        let mut pb = PathBuilder::stroke(px((t.bold_width * zoom).max(0.5)));
+        emit(&mut pb, &t.bold_segs);
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
+        }
+    }
+    // Underline / strikethrough bars, in the text color, over the glyphs.
+    for d in &t.decorations {
+        if matches!(d.kind, font::DecoKind::Underline | font::DecoKind::Strike)
+            && let Some(path) = rect_path(d.rect)
+        {
             window.paint_path(path, color);
         }
     }
@@ -4889,10 +5308,11 @@ impl Render for WhiteboardView {
             let id = e.id;
             let stroke = e.stroke.map_or(ink, u32_to_hsla);
             let fill = e.fill.map(u32_to_hsla);
-            // Disjoint field borrow (vs `&mut e.kind` below) so the shape-label
-            // arm can read the label + its color without cloning.
+            // Disjoint field borrows (vs `&mut e.kind` below) so the text arms can
+            // read the label, its color, and the styling without cloning.
             let label = e.label.as_deref();
             let label_color = e.label_color;
+            let styles = e.styles.as_slice();
             match &mut e.kind {
                 // Page-card: a titled box (top-aligned header + hint) that links
                 // to a host page. Subtle border — the accent is the selection.
@@ -4989,7 +5409,9 @@ impl Render for WhiteboardView {
                 // Canvas-drawn kinds: shapes / lines / pen / text.
                 kind => {
                     let text = if let ElementKind::Text(t) = kind {
-                        let layout = font.layout(&t.content, t.size);
+                        let layout = font.layout_styled(&t.content, t.size, None, |b| {
+                            glyph_style(style_at(styles, b))
+                        });
                         t.measured_w = layout.width;
                         t.measured_h = layout.height;
                         // While editing: the caret at its byte offset and the
@@ -5004,6 +5426,8 @@ impl Render for WhiteboardView {
                         };
                         Some(TextOutline {
                             segs: layout.segs,
+                            bold_segs: layout.bold_segs,
+                            bold_width: layout.bold_width,
                             color: stroke,
                             x: t.x,
                             y: t.y,
@@ -5013,6 +5437,7 @@ impl Render for WhiteboardView {
                             caret,
                             selection,
                             sel_color: sel_fill,
+                            decorations: layout.decorations,
                         })
                     } else if is_closed_shape(kind)
                         && let Some((bx, by, bw, bh, rot)) = box_like(kind)
@@ -5027,7 +5452,9 @@ impl Render for WhiteboardView {
                         let active = editing == Some(id);
                         let text = label.map_or("", str::trim);
                         let blk = shape_label_block(&font, kind, bx, by, bw, bh, text);
-                        let layout = font.layout_wrapped(text, blk.size, Some(blk.wrap));
+                        let layout = font.layout_styled(text, blk.size, Some(blk.wrap), |b| {
+                            glyph_style(style_at(styles, b))
+                        });
                         let caret = active
                             .then(|| font.caret_pos_wrapped(text, blk.size, Some(blk.wrap), caret_at));
                         let (s, e) = (caret_at.min(sel_anchor), caret_at.max(sel_anchor));
@@ -5038,6 +5465,8 @@ impl Render for WhiteboardView {
                         };
                         Some(TextOutline {
                             segs: layout.segs,
+                            bold_segs: layout.bold_segs,
+                            bold_width: layout.bold_width,
                             color: label_color.map_or(stroke, u32_to_hsla),
                             x: blk.x,
                             y: blk.y,
@@ -5047,6 +5476,7 @@ impl Render for WhiteboardView {
                             caret,
                             selection,
                             sel_color: sel_fill,
+                            decorations: layout.decorations,
                         })
                     } else {
                         None
@@ -5323,6 +5753,30 @@ impl Render for WhiteboardView {
             .child(dot_row())
             .child(dot_row())
             .child(dot_row());
+        // A "Format" button — shown only while editing text — toggling the
+        // text-formatting fly-out.
+        let format_btn = self.editing.is_some().then(|| {
+            let mut b = div()
+                .id("wb-format-btn")
+                .size(px(30.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.0))
+                .text_size(px(14.0))
+                .text_color(ink)
+                .tooltip(self.tip("Text formatting"))
+                .child("A");
+            if self.format_flyout {
+                b = b.bg(accent);
+            } else {
+                b = b.hover(|s| s.bg(grid));
+            }
+            b.on_click(cx.listener(|this, _ev, _w, cx| {
+                this.format_flyout = !this.format_flyout;
+                cx.notify();
+            }))
+        });
         let mut pill = div()
             .relative()
             .flex()
@@ -5356,6 +5810,7 @@ impl Render for WhiteboardView {
             .child(color_btn)
             .child(width_btn)
             .children(font_btn)
+            .children(format_btn)
             .child(toolbar_divider(grid, vertical))
             // tool categories (each opens a flyout of its tools)
             .children(cats)
@@ -5446,6 +5901,12 @@ impl Render for WhiteboardView {
                 );
             }
             popover_anchor().child(row)
+        });
+
+        // The toolbar's text-formatting fly-out (the same panel as the right-click
+        // submenu), shown while the "Format" button is toggled on during a text edit.
+        let format_panel = (self.editing.is_some() && self.format_flyout).then(|| {
+            popover_anchor().child(self.format_menu(ink, text, grid, panel_strong, cx).occlude())
         });
 
         // Thickness flyout (centered below the toolbar): a row of preset weights
@@ -5625,6 +6086,17 @@ impl Render for WhiteboardView {
                     .border_color(grid)
                     .flex()
                     .flex_col();
+                // While editing text, a "Text ▸" row expands the formatting submenu.
+                if self.editing.is_some() {
+                    panel = panel
+                        .child(row("wb-ctx-text", "Text", "▸").on_click(cx.listener(
+                            |this, _ev, _w, cx| {
+                                this.ctx_text_sub = !this.ctx_text_sub;
+                                cx.notify();
+                            },
+                        )))
+                        .child(divider());
+                }
                 // Z-order + copy / cut act on the selection, so they show only with one.
                 if has_sel {
                     panel =
@@ -5689,6 +6161,20 @@ impl Render for WhiteboardView {
                     );
                 }
                 panel
+            });
+
+        // The "Text ▸" formatting submenu — a fly-out beside the context menu with
+        // a ✓ on each active format. Toggling a row keeps the menu open so the
+        // checkmarks update live; clicking off (anywhere else) dismisses it.
+        let text_submenu = self
+            .context_menu
+            .filter(|_| self.ctx_text_sub && self.editing.is_some())
+            .map(|pos| {
+                self.format_menu(ink, text, grid, panel_strong, cx)
+                    .absolute()
+                    .left(pos.x + px(184.0))
+                    .top(pos.y)
+                    .occlude()
             });
 
         // Templates gallery modal: a dimming scrim (click to dismiss) centering a
@@ -6278,9 +6764,11 @@ impl Render for WhiteboardView {
             .child(chrome_layer)
             .child(toolbar)
             .children(flyout)
+            .children(format_panel)
             .children(width_flyout)
             .children(font_flyout)
             .children(menu)
+            .children(text_submenu)
             .children(picker_panel)
             .children(templates_modal)
             .child(
@@ -6338,6 +6826,7 @@ mod tests {
                     fill: None,
                     label: None,
                     label_color: None,
+                    styles: Vec::new(),
                 },
                 Element {
                     id: 2,
@@ -6353,6 +6842,7 @@ mod tests {
                     fill: Some(0x00ff0080),
                     label: Some("hi".into()),
                     label_color: Some(0x112233ff),
+                    styles: Vec::new(),
                 },
                 Element {
                     id: 3,
@@ -6367,6 +6857,7 @@ mod tests {
                     fill: None,
                     label: None,
                     label_color: None,
+                    styles: Vec::new(),
                 },
             ],
         };
@@ -6436,6 +6927,88 @@ mod tests {
             "a long label that must shrink",
         );
         assert!(tiny.size < TEXT_SIZE, "shrinks: {}", tiny.size);
+    }
+
+    #[test]
+    fn style_span_toggle_and_layer() {
+        let bold = RunStyle { bold: true, ..Default::default() };
+        let s = toggle_format(&[], 0, 4, Format::Bold);
+        assert_eq!(s.len(), 1);
+        assert_eq!((s[0].start, s[0].end, s[0].style), (0, 4, bold));
+        assert!(style_at(&s, 2).bold && !style_at(&s, 4).bold);
+        // Toggling the same range off clears it.
+        assert!(toggle_format(&s, 0, 4, Format::Bold).is_empty());
+        // Extending past the run (partly unstyled) adds, merging into one run.
+        let s2 = toggle_format(&s, 2, 6, Format::Bold);
+        assert_eq!((s2.len(), s2[0].start, s2[0].end), (1, 0, 6));
+        // Layering italic over part of the bold run yields three runs.
+        let s3 = toggle_format(&s, 1, 3, Format::Italic);
+        assert_eq!(s3.len(), 3, "{s3:?}");
+        assert!(style_at(&s3, 1).bold && style_at(&s3, 1).italic);
+        assert!(style_at(&s3, 0).bold && !style_at(&s3, 0).italic);
+        // Highlight toggles its color independently.
+        let h = toggle_highlight(&[], 0, 3, 0xffff00ff);
+        assert_eq!(style_at(&h, 1).highlight, Some(0xffff00ff));
+        assert!(toggle_highlight(&h, 0, 3, 0xffff00ff).is_empty());
+    }
+
+    #[test]
+    fn active_style_reports_common_formatting() {
+        let s = toggle_format(&[], 2, 5, Format::Bold); // bytes 2..5 bold
+        assert!(active_style(&s, 2, 5).bold, "whole selection bold");
+        assert!(!active_style(&s, 0, 5).bold, "selection spills onto plain text");
+        // Collapsed caret inherits the char to its left.
+        assert!(active_style(&s, 5, 5).bold, "just after the run inherits bold");
+        assert!(!active_style(&s, 2, 2).bold, "just before it is plain");
+    }
+
+    #[test]
+    fn splice_keeps_runs_aligned() {
+        let plain = RunStyle::default();
+        let s = toggle_format(&[], 2, 5, Format::Bold);
+        // Insert two chars at the start → the run shifts right.
+        let a = splice_styles(&s, 0, 0, 2, plain);
+        assert_eq!((a[0].start, a[0].end), (4, 7));
+        // Delete a char inside the run → it shrinks by one.
+        let b = splice_styles(&s, 3, 4, 0, plain);
+        assert_eq!((b[0].start, b[0].end), (2, 4), "{b:?}");
+        // Replacing a middle slice of a bold run with plain text splits it.
+        let full = toggle_format(&[], 0, 6, Format::Bold);
+        let c = splice_styles(&full, 2, 4, 2, plain);
+        assert_eq!(c.len(), 2, "{c:?}");
+        assert_eq!(((c[0].start, c[0].end), (c[1].start, c[1].end)), ((0, 2), (4, 6)));
+    }
+
+    #[test]
+    fn styles_round_trip_and_back_compat() {
+        let el = Element {
+            id: 1,
+            kind: ElementKind::Text(TextGeom {
+                x: 0.0,
+                y: 0.0,
+                content: "hello world".into(),
+                size: 12.0,
+                rotation: 0.0,
+                measured_w: 0.0,
+                measured_h: 0.0,
+            }),
+            stroke: None,
+            fill: None,
+            label: None,
+            label_color: None,
+            styles: vec![StyleSpan {
+                start: 0,
+                end: 5,
+                style: RunStyle { bold: true, highlight: Some(0xffff00ff), ..Default::default() },
+            }],
+        };
+        let back: Element = serde_json::from_str(&serde_json::to_string(&el).unwrap()).unwrap();
+        assert_eq!(back.styles.len(), 1);
+        assert!(back.styles[0].style.bold);
+        assert_eq!(back.styles[0].style.highlight, Some(0xffff00ff));
+        // A board saved before rich text loads with no styles.
+        let old = r#"{"id":2,"kind":{"rect":{"x":0.0,"y":0.0,"w":1.0,"h":1.0,"width":1.0}}}"#;
+        assert!(serde_json::from_str::<Element>(old).unwrap().styles.is_empty());
     }
 
     #[test]
@@ -6806,6 +7379,7 @@ mod tests {
             fill: None,
             label: None,
             label_color: None,
+            styles: Vec::new(),
         };
         let json = serde_json::to_string(&elem).unwrap();
         assert!(json.contains("\"image\""), "{json}");
@@ -6854,6 +7428,7 @@ mod tests {
                 fill: None,
                 label: None,
                 label_color: None,
+                styles: Vec::new(),
             };
             let json = serde_json::to_string(&elem).unwrap();
             assert!(json.contains(tag), "{tag} not in json: {json}");

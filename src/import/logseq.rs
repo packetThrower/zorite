@@ -360,6 +360,7 @@ fn image_element(
         fill: None,
         label: None,
         label_color: None,
+        styles: Vec::new(),
     }]
 }
 
@@ -447,6 +448,7 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
         fill: closed.then_some(fill).flatten(),
         label: None,
         label_color: None,
+        styles: Vec::new(),
     }];
     // A box/ellipse keeps its text in `:label`; emit it as a text element
     // centered in the shape (painted after, so it sits on top) — otherwise the
@@ -464,6 +466,7 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
             fill: None,
             label: None,
             label_color: None,
+            styles: Vec::new(),
         });
     }
     out
