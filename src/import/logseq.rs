@@ -450,24 +450,13 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
         label_color: None,
         styles: Vec::new(),
     }];
-    // A box/ellipse keeps its text in `:label`; emit it as a text element
-    // centered in the shape (painted after, so it sits on top) — otherwise the
-    // box imports blank.
+    // A box/ellipse keeps its text in `:label` → the shape's native label, which
+    // the renderer centers and auto-shrinks to fit inside the outline.
     if closed
         && let Some(label) = shape.get("label").and_then(Edn::as_str)
         && !label.trim().is_empty()
     {
-        let label = label.trim();
-        let (tx, ty) = centered_text_origin(label, font_size, px, py, w, h);
-        out.push(Element {
-            id: id + 1,
-            kind: ElementKind::Text(text_geom(tx, ty, label, font_size)),
-            stroke, // label inks with the shape's stroke (theme ink if unset)
-            fill: None,
-            label: None,
-            label_color: None,
-            styles: Vec::new(),
-        });
+        out[0].label = Some(label.trim().to_string());
     }
     out
 }
@@ -484,19 +473,6 @@ fn text_geom(x: f32, y: f32, content: &str, size: f32) -> TextGeom {
         measured_w: 0.0,
         measured_h: 0.0,
     }
-}
-
-/// Top-left origin that roughly centers `label` in a box at `(px,py)` sized
-/// `(w,h)`. The render font isn't available at import time, so glyph width is
-/// estimated (~0.52·fontSize); a label wider than its box overflows evenly, the
-/// way Logseq draws it.
-fn centered_text_origin(label: &str, size: f32, px: f64, py: f64, w: f64, h: f64) -> (f32, f32) {
-    let est_w = label.chars().count() as f32 * size * 0.52;
-    let est_h = size * 1.2;
-    (
-        px as f32 + (w as f32 - est_w) / 2.0,
-        py as f32 + (h as f32 - est_h) / 2.0,
-    )
 }
 
 fn box_geom(x: f64, y: f64, w: f64, h: f64, width: f32) -> BoxGeom {
@@ -1518,29 +1494,23 @@ mod tests {
     }
 
     #[test]
-    fn labeled_box_yields_rect_plus_centered_text() {
-        // A tldraw box carries its text in `:label`, not a separate shape.
+    fn labeled_box_imports_a_native_label() {
+        // A tldraw box carries its text in `:label` → the shape's own label
+        // (the renderer centers + auto-shrinks it), not a separate text element.
         let shape = edn::parse(
             r#"{:type "box" :point [128 96] :size [128 40] :fontSize 20 :label "Fault Ind"}"#,
         )
         .unwrap();
         let els = shape_to_element(&shape, 5);
-        assert_eq!(els.len(), 2, "box + its label");
+        assert_eq!(els.len(), 1, "just the box, carrying its label");
         assert!(matches!(els[0].kind, ElementKind::Rect(_)));
         assert_eq!(els[0].id, 5);
-        match &els[1].kind {
-            ElementKind::Text(t) => {
-                assert_eq!(t.content, "Fault Ind");
-                // Centered within the box [128..256] × [96..136].
-                assert!(t.x > 128.0 && t.x < 256.0, "x={} not inside box", t.x);
-                assert!(t.y > 96.0 && t.y < 136.0, "y={} not inside box", t.y);
-            }
-            other => panic!("expected label text, got {other:?}"),
-        }
-        assert_eq!(els[1].id, 6, "label id follows the box id");
-        // An empty label adds no text element.
+        assert_eq!(els[0].label.as_deref(), Some("Fault Ind"));
+        // An empty label leaves the box unlabeled.
         let blank = edn::parse(r#"{:type "box" :point [0 0] :size [40 40] :label ""}"#).unwrap();
-        assert_eq!(shape_to_element(&blank, 1).len(), 1);
+        let blank_els = shape_to_element(&blank, 1);
+        assert_eq!(blank_els.len(), 1);
+        assert_eq!(blank_els[0].label, None);
     }
 
     #[test]
