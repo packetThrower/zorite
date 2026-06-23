@@ -109,6 +109,13 @@ jpeg-decoder = "0.3"
 ureq = { version = "2", features = ["json", "tls"] }
 semver = "1"
 
+# Pure-Rust HEIF/HEIC/AVIF decoder (ente-io): HEVC via scuffle-h265, AV1 via
+# rav1d. gpui's `image` stack can't decode these, so `images::decode_heif`
+# routes .heic/.heif/.avif here. NOTE: AGPL-3.0 — the license gate before any
+# release that bundles this. Grid-tiled primary items are unsupported (rare —
+# they fall back to the placeholder). Added on the heic-avif-test branch.
+heic_decoder = { git = "https://github.com/ente-io/heic-decoder" }
+
 # Embeds the Windows .exe icon (resources/icon.rc -> resources/icons/icon.ico)
 # into the PE resource section via build.rs. `embed_resource::compile` is a
 # no-op on macOS / Linux, so this build-dep is harmless off-Windows.

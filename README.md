@@ -295,3 +295,7 @@ independent of the total (it's capped to recently-viewed pages).
 [GNU General Public License v3.0 or later](LICENSE). Forks are welcome;
 derivative works must stay open under the same license. Commercial use is
 permitted but can't close the source.
+
+Third-party dependencies keep their own licenses (see
+[`THIRD-PARTY-LICENSES.html`](THIRD-PARTY-LICENSES.html)); HEIC/AVIF decoding
+bundles an AGPL-3.0 component (`heic_decoder`).
