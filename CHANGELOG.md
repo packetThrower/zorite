@@ -9,6 +9,11 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Added
+
+- **HEIC, HEIF, and AVIF images render** — iPhone photos (HEIC) and AVIF images
+  now display inline like JPEG and PNG, on macOS, Windows, and Linux.
+
 ## [0.2.1] - 2026-06-22
 
 Image fixes for the WYSIWYG editor (the single renderer since 0.2.0).
