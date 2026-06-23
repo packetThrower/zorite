@@ -220,10 +220,12 @@ pub struct ImageDrag {
 /// How many recently-viewed pages the sidebar's page tree is capped to.
 const RECENT_PAGES_LIMIT: usize = 10;
 
-/// How many image decodes may run concurrently. Each holds one transient
-/// full-resolution buffer (~35 MB for a 12 MP photo), so this bounds peak decode
-/// RAM at ~100 MB while loading a photo page ~3× faster than one-at-a-time.
-const MAX_IMAGE_DECODES: usize = 3;
+/// How many image decodes may run concurrently. JPEGs now decode at a reduced
+/// size (DCT scaling — see `images::decode_jpeg_reduced`), so their transient
+/// buffer is small; only a non-JPEG fallback holds a full-resolution buffer
+/// (~35 MB for a 12 MP photo). With that, a typical photo page decodes in a
+/// single wave on any multi-core machine.
+const MAX_IMAGE_DECODES: usize = 6;
 
 /// Open rows×cols table-size picker (from the `/table` command). Hovering its
 /// grid sets `rows`/`cols` (1-based; 0 = nothing hovered yet); a click inserts a

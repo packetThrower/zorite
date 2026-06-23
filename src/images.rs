@@ -213,8 +213,47 @@ impl ImageStore {
 /// most [`MAX_IMAGE_EDGE`]. Runs off the UI thread. `None` if the file can't be
 /// decoded.
 pub fn decode_scaled(path: &Path) -> Option<Arc<RenderImage>> {
-    let buf = scale_and_bgra(image::open(path).ok()?);
+    // Fast path for JPEGs: decode at a reduced size (DCT scaling at the decoder),
+    // a fraction of the work + memory of a full-resolution decode; fall back to a
+    // full `image::open` for other formats or any decode hiccup.
+    let img = decode_jpeg_reduced(path).or_else(|| image::open(path).ok())?;
+    let buf = scale_and_bgra(img);
     Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
+}
+
+/// Decode a JPEG **downscaled at the decoder** (DCT scaling to ~[`MAX_IMAGE_EDGE`]
+/// on the long edge), so a 12-megapixel phone photo costs a fraction of a
+/// full-resolution decode + buffer (which then gets thumbnailed away anyway).
+/// `None` for non-JPEGs, already-small images, uncommon pixel formats
+/// (CMYK / 16-bit), or any decode error — the caller falls back to `image::open`.
+fn decode_jpeg_reduced(path: &Path) -> Option<image::DynamicImage> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if ext != "jpg" && ext != "jpeg" {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut dec = jpeg_decoder::Decoder::new(std::io::BufReader::new(file));
+    dec.read_info().ok()?;
+    let info = dec.info()?;
+    let (ow, oh) = (info.width as u32, info.height as u32);
+    if ow.max(oh) <= MAX_IMAGE_EDGE {
+        return None; // already small — the normal path is exact + cheap enough
+    }
+    let scale = MAX_IMAGE_EDGE as f32 / ow.max(oh) as f32;
+    let req_w = ((ow as f32 * scale).round() as u16).max(1);
+    let req_h = ((oh as f32 * scale).round() as u16).max(1);
+    let (sw, sh) = dec.scale(req_w, req_h).ok()?;
+    let pixels = dec.decode().ok()?;
+    let (sw, sh) = (sw as u32, sh as u32);
+    match info.pixel_format {
+        jpeg_decoder::PixelFormat::RGB24 => {
+            image::RgbImage::from_raw(sw, sh, pixels).map(image::DynamicImage::ImageRgb8)
+        }
+        jpeg_decoder::PixelFormat::L8 => {
+            image::GrayImage::from_raw(sw, sh, pixels).map(image::DynamicImage::ImageLuma8)
+        }
+        _ => None, // CMYK32 / L16 — let image::open handle it
+    }
 }
 
 /// Rotate a decoded bitmap by a multiple of 90° clockwise — `deg` is rounded to
