@@ -23,11 +23,12 @@ use std::sync::Arc;
 use gpui::{
     App, AvailableSpace, BorderStyle, Bounds, ClipboardItem, Context, Corners, CursorStyle, Edges,
     Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, Font, GlobalElementId, Hsla, InspectorElementId, InteractiveElement, IntoElement,
-    KeyBinding, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    ParentElement, PathBuilder, Pixels, Point, Render, RenderImage, ScrollHandle, SharedString,
-    StatefulInteractiveElement, Style, Styled, TextRun, UTF16Selection, Window, WrappedLine,
-    actions, div, fill, hsla, point, px, relative, rgb, rgba, size,
+    Focusable, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, PathBuilder, Pixels, Point, Render,
+    RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement, Style, Styled, TextRun,
+    UTF16Selection, Window, WrappedLine, actions, div, fill, hsla, point, px, relative, rgb, rgba,
+    size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -147,6 +148,25 @@ const CHIP_PAD: f32 = 5.;
 /// Total vertical breathing room (px) reserved around an inline image — split
 /// above + below — so consecutive images (a bulleted photo list) don't touch.
 const IMG_ROW_PAD: f32 = 12.;
+
+/// Side length (px) of the square drag-to-resize grip painted at an inline
+/// image's bottom-right corner (matching the reading view's 14px handle).
+const IMG_GRIP: f32 = 14.;
+
+/// Smallest width (px) a drag may shrink an inline image to, so it can't vanish.
+const IMG_MIN_W: f32 = 40.;
+
+/// An in-progress drag of an inline image's corner grip: which logical line's
+/// `![](src)` is being resized, its display width when the drag began, the
+/// pointer x at grab, and the live (preview) width the drag has reached. The
+/// image paints at `width` (aspect-preserved) until release writes `{width=N}`.
+#[derive(Clone, Copy)]
+struct ImageResize {
+    line: usize,
+    start_width: f32,
+    start_x: Pixels,
+    width: f32,
+}
 
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
@@ -361,6 +381,13 @@ pub struct EditorState {
     /// Per-logical-line `src` for rows painted as a file chip (from the last
     /// paint), so a left-click can open it and a right-click can edit it.
     chip_rows: Vec<Option<SharedString>>,
+    /// Window-space painted bounds of each inline image, with its logical line
+    /// index (from the last paint), so a press near a corner can start a resize
+    /// and know which `![](src)` line to rewrite. One entry per rendered image.
+    image_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
+    /// that image paints at the live width and other mouse handling is suppressed.
+    image_resize: Option<ImageResize>,
 }
 
 impl EditorState {
@@ -397,6 +424,8 @@ impl EditorState {
             block_chip: None,
             block_mermaid: None,
             chip_rows: Vec::new(),
+            image_rects: Vec::new(),
+            image_resize: None,
         }
     }
 
@@ -892,6 +921,23 @@ impl EditorState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // A press on an image's corner grip starts a resize drag — this takes
+        // precedence over placing the caret on the image row (which the press
+        // would otherwise do). The image keeps its bounds; the drag previews a new
+        // width and release writes `{width=N}` (see on_mouse_move / on_mouse_up).
+        if let Some((line, width)) = self.grip_at(event.position) {
+            self.image_resize = Some(ImageResize {
+                line,
+                start_width: width,
+                start_x: event.position.x,
+                width,
+            });
+            self.is_selecting = false;
+            self.menu = None;
+            self.table_menu = None;
+            cx.notify();
+            return;
+        }
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
         if let Some(src) = self.chip_at(event.position) {
@@ -936,7 +982,16 @@ impl EditorState {
         }
     }
 
-    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // End an image-resize drag by persisting the rounded width as `{width=N}`
+        // in that image's source line (through the normal mutation path, so it
+        // joins the undo history + emits Changed); the next paint shows the saved
+        // size and the live override clears.
+        if let Some(resize) = self.image_resize.take() {
+            self.commit_image_resize(resize, cx);
+            cx.notify();
+            return;
+        }
         self.is_selecting = false;
     }
 
@@ -946,12 +1001,56 @@ impl EditorState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // While dragging an image's grip, track the pointer: the new width is the
+        // grab width plus the horizontal travel, floored at `IMG_MIN_W` and capped
+        // to the content width left of the image's inset (so a bulleted image's cap
+        // matches `block_img`, no snap-back on release, and it can't run off the
+        // page). The paint reads this live width for the dragged image (aspect
+        // preserved).
+        if let Some(resize) = self.image_resize {
+            let avail = self
+                .last_bounds
+                .map_or(f32::MAX, |b| f32::from(b.size.width))
+                - f32::from(self.line_inset(resize.line));
+            let max_w = avail.max(IMG_MIN_W);
+            let dx = f32::from(event.position.x - resize.start_x);
+            let width = (resize.start_width + dx).clamp(IMG_MIN_W, max_w);
+            if let Some(r) = self.image_resize.as_mut() {
+                r.width = width;
+            }
+            cx.notify();
+            return;
+        }
         if self.is_selecting {
             let offset = self
                 .table_offset_at(event.position, window)
                 .unwrap_or_else(|| self.index_for_mouse_position(event.position));
             self.select_to(offset, cx);
         }
+    }
+
+    /// Persist a finished grip drag: replace the resized image's source line with
+    /// one carrying the rounded `{width=N}`, going through `record_edit` so it's
+    /// one undoable edit and emits `Changed`. A no-op if the line vanished or
+    /// isn't an image any more (it shaped to an image last paint, but guard
+    /// anyway), or if the width didn't actually change.
+    fn commit_image_resize(&mut self, resize: ImageResize, cx: &mut Context<Self>) {
+        let starts = self.line_starts();
+        let Some(&start) = starts.get(resize.line) else {
+            return;
+        };
+        let end = self.line_end(resize.line);
+        let line = &self.content[start..end];
+        let new_line = set_image_width(line, resize.width.round().max(IMG_MIN_W) as u32);
+        if new_line == line {
+            return;
+        }
+        let range = start..end;
+        self.record_edit(&range, &new_line);
+        self.content = self.content[..start].to_owned() + &new_line + &self.content[end..];
+        self.remap_diagnostics(&range, new_line.len());
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
     }
 
     /// Right-click: if the click lands on a flagged word, fetch its suggestions
@@ -1246,6 +1345,31 @@ impl EditorState {
             }
         }
         self.chip_rows.get(row).and_then(Option::clone)
+    }
+
+    /// If `position` lands on an inline image's bottom-right resize grip, the
+    /// `(logical line, current display width)` of that image — so a press can
+    /// start a corner-grip drag. The grip is the `IMG_GRIP`-side square pinned to
+    /// each image's painted corner (see [`Self::image_grip`]); checked against the
+    /// last paint's window-space `image_rects`.
+    fn grip_at(&self, position: Point<Pixels>) -> Option<(usize, f32)> {
+        self.image_rects.iter().find_map(|&(line, rect)| {
+            Self::image_grip(rect)
+                .contains(&position)
+                .then_some((line, f32::from(rect.size.width)))
+        })
+    }
+
+    /// The window-space bounds of an image's corner grip, given the image's
+    /// painted `rect`. A small square overhanging the bottom-right corner (its
+    /// center on the corner, like the reading view's), so it's easy to grab
+    /// without covering much of the image.
+    fn image_grip(rect: Bounds<Pixels>) -> Bounds<Pixels> {
+        let s = px(IMG_GRIP);
+        Bounds::new(
+            point(rect.right() - s / 2., rect.bottom() - s / 2.),
+            size(s, s),
+        )
     }
 
     /// If `position` lands on a table grid row (not the separator), the source
@@ -2283,6 +2407,36 @@ fn block_img(
     })
 }
 
+/// An inline image's painted size: the saved `BlockImg` size, unless its grip is
+/// being dragged (`resize.line == line`), in which case the live drag width wins
+/// and the height scales with it (aspect preserved). Used by both the prepaint
+/// (grip hitbox) and the paint (image + grip), so the preview stays consistent.
+fn image_display_size(w: &BlockImg, resize: Option<ImageResize>, line: usize) -> (Pixels, Pixels) {
+    match resize {
+        Some(r) if r.line == line => (px(r.width), w.height * (r.width / f32::from(w.width))),
+        _ => (w.width, w.height),
+    }
+}
+
+/// Rewrite an image source `line` to carry an explicit `{width=N}` after the
+/// `![alt](src)` (replacing any existing `{width=...}`), preserving a leading
+/// list marker and any trailing whitespace. Used to persist a corner-grip resize
+/// back into the document. Returns `line` unchanged if it isn't an image row.
+fn set_image_width(line: &str, width: u32) -> String {
+    let Some((_, _, marker_len)) = markdown_syntax::image_row(line) else {
+        return line.to_string();
+    };
+    // Split off any trailing whitespace so the attr lands right after `)` (or the
+    // existing `{width=…}`), with the original trailing run re-appended.
+    let trimmed_end = line.trim_end_matches([' ', '\t']);
+    let trailing_ws = &line[trimmed_end.len()..];
+    // The image body always ends at the first `)` after the list marker; an
+    // existing `{width=…}` (only valid right after it) is dropped.
+    let close = marker_len + line[marker_len..].find(')').map_or(0, |i| i + 1);
+    let body = trimmed_end[..close.min(trimmed_end.len())].trim_end();
+    format!("{body}{{width={width}}}{trailing_ws}")
+}
+
 /// Invert a display→source offset map: the display column for `source_col`. The
 /// map is ascending, so a source column that is hidden (a collapsed marker)
 /// snaps to the next visible display column. `None` map → identity (a row shown
@@ -2350,6 +2504,10 @@ fn shape_document(
     // The selected byte range; a line it touches keeps full source (markers
     // shown), the rest hide their markers (W6, reveal-on-caret).
     selection: (usize, usize),
+    // An in-progress grip resize: the dragged image is *sized* to its live width
+    // here (driving its row height) so the layout reflows live, rather than the
+    // image painting over a stale, saved-size row.
+    resize: Option<ImageResize>,
 ) -> ShapedLines {
     let mut wrapped = Vec::new();
     let mut heights = Vec::new();
@@ -2517,9 +2675,15 @@ fn shape_document(
                 block_image
                     .and_then(|f| f(src))
                     .and_then(|img| {
+                        // A live grip resize sizes the image to the drag width, so
+                        // its row height tracks the drag and the layout reflows.
+                        let width_attr = match resize {
+                            Some(r) if r.line == idx => Some(r.width),
+                            _ => w_attr,
+                        };
                         block_img(
                             img,
-                            w_attr,
+                            width_attr,
                             wrap_width.map(|w| (w - img_inset).max(px(1.))),
                             scale_factor,
                         )
@@ -3186,6 +3350,10 @@ struct PrepaintState {
     maps: Vec<Option<Vec<usize>>>,
     /// Per-line gutter decoration (blockquote / list / checkbox).
     marks: Vec<Option<LineMark>>,
+    /// Corner-grip hitbox for each painted inline image, in `widgets` order — so
+    /// paint can set the resize cursor over each (hitboxes must be inserted in
+    /// prepaint). Parallels the images paint walks, indexed by image count.
+    image_grips: Vec<Hitbox>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -3271,6 +3439,7 @@ impl Element for EditorElement {
                     editor.block_mermaid.as_ref(),
                     sf,
                     selection,
+                    editor.image_resize,
                 );
                 wrapped
                     .iter()
@@ -3304,6 +3473,9 @@ impl Element for EditorElement {
         // shown in WYSIWYG mode but not being edited — renders fully, like a
         // reading view. `caret_row = None` + a no-match selection do that.
         let focused = editor.focus_handle.is_focused(window);
+        // The active image-resize drag (if any), so a dragged image's grip hitbox
+        // tracks its live preview size (copied out — `editor` stays borrowed below).
+        let image_resize = editor.image_resize;
         let style = window.text_style();
         let font = style.font();
         let font_size = style.font_size.to_pixels(window.rem_size());
@@ -3356,6 +3528,7 @@ impl Element for EditorElement {
                     editor.block_mermaid.as_ref(),
                     sf,
                     selection,
+                    editor.image_resize,
                 )
             };
 
@@ -3373,6 +3546,32 @@ impl Element for EditorElement {
             y += top_pad;
             line_tops.push(y);
             y += *lh * (line.wrap_boundaries().len() + 1) as f32 + bot_pad;
+        }
+
+        // Corner-grip hitboxes for each inline image, in `widgets` order (matching
+        // the order paint walks them) — hitboxes must be inserted during prepaint,
+        // but the resize cursor is set during paint via these. Mirrors the paint's
+        // image-bounds math (row inset + IMG_ROW_PAD, live drag size) exactly so
+        // the grip pins to the painted corner (incl. list-item images, which inset
+        // past their bullet).
+        let mut image_grips = Vec::new();
+        for (i, w) in widgets.iter().enumerate() {
+            if let Some(Block::Image(img)) = w {
+                let inset = row_inset(
+                    backgrounds.get(i).copied().flatten(),
+                    marks.get(i).copied().flatten(),
+                );
+                let (img_w, img_h) = image_display_size(img, image_resize, i);
+                let img_bounds = Bounds::new(
+                    point(
+                        bounds.origin.x + inset,
+                        bounds.origin.y + line_tops[i] + px(IMG_ROW_PAD / 2.),
+                    ),
+                    size(img_w, img_h),
+                );
+                let grip = EditorState::image_grip(img_bounds);
+                image_grips.push(window.insert_hitbox(grip, HitboxBehavior::Normal));
+            }
         }
 
         // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
@@ -3529,6 +3728,7 @@ impl Element for EditorElement {
             tables,
             maps,
             marks,
+            image_grips,
             cursor,
             selections,
         }
@@ -3560,6 +3760,18 @@ impl Element for EditorElement {
         let text_color = style.color;
         let font_size = style.font_size.to_pixels(window.rem_size());
         let base_lh = font_size * LINE_HEIGHT_RATIO;
+        // Inline-image resize: the accent color for the corner grips, and the
+        // active drag (if any) so the dragged image paints at its live width.
+        let grip_color = self
+            .editor
+            .read(cx)
+            .markdown_style
+            .as_ref()
+            .map_or(text_color, |s| s.link);
+        let image_resize = self.editor.read(cx).image_resize;
+        // Window-space bounds of each painted image + its logical line, collected
+        // for the next frame's grip hit-testing (committed below).
+        let mut image_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
         // Logseq-style list nesting guides: `outline` holds the bullet x of each
         // active ancestor level, so a faint vertical line can drop from each down
         // through its descendants. Popped on dedent, reset off the list.
@@ -3737,11 +3949,24 @@ impl Element for EditorElement {
                     prepaint.backgrounds.get(i).copied().flatten(),
                     prepaint.marks.get(i).copied().flatten(),
                 );
+                // While this image's grip is being dragged, preview the live width
+                // (aspect-preserved from the saved size) instead of the saved
+                // `{width=N}` — the source isn't rewritten until release.
+                let (img_w, img_h) = image_display_size(w, image_resize, i);
                 let img_bounds = Bounds::new(
                     point(origin.x + inset, origin.y + px(IMG_ROW_PAD / 2.)),
-                    size(w.width, w.height),
+                    size(img_w, img_h),
                 );
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
+                // A draggable corner grip (accent square) + the resize cursor over
+                // it, via the hitbox inserted in prepaint. Recorded in `image_rects`
+                // for the next frame's grip hit-testing.
+                let grip = EditorState::image_grip(img_bounds);
+                window.paint_quad(fill(grip, grip_color).corner_radii(Corners::all(px(3.))));
+                if let Some(hitbox) = prepaint.image_grips.get(image_rects.len()) {
+                    window.set_cursor_style(CursorStyle::ResizeLeftRight, hitbox);
+                }
+                image_rects.push((i, img_bounds));
             } else if let Some(Block::Chip {
                 label,
                 link,
@@ -3816,8 +4041,45 @@ impl Element for EditorElement {
             editor.chip_rows = chip_rows;
             editor.line_insets = line_insets;
             editor.table_rows = table_rows;
+            editor.image_rects = image_rects;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::set_image_width;
+
+    #[test]
+    fn image_width_splice() {
+        // No existing attr: append `{width=N}` right after `)`.
+        assert_eq!(
+            set_image_width("![a](b.png)", 200),
+            "![a](b.png){width=200}"
+        );
+        // Existing `{width=N}` is replaced (not duplicated).
+        assert_eq!(
+            set_image_width("![a](b.png){width=320}", 200),
+            "![a](b.png){width=200}"
+        );
+        // The `px` unit form is replaced too.
+        assert_eq!(
+            set_image_width("![a](b.png){width=320px}", 200),
+            "![a](b.png){width=200}"
+        );
+        // List-item image: the leading marker is preserved, attr lands after `)`.
+        assert_eq!(
+            set_image_width("- ![](x){width=10}", 50),
+            "- ![](x){width=50}"
+        );
+        // Trailing whitespace is preserved (attr lands before it).
+        assert_eq!(
+            set_image_width("![a](b.png)  ", 80),
+            "![a](b.png){width=80}  "
+        );
+        // Not an image row: returned unchanged.
+        assert_eq!(set_image_width("just text", 100), "just text");
     }
 }
