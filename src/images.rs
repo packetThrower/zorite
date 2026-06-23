@@ -18,10 +18,11 @@ use image::{Frame, RgbaImage};
 
 use crate::paths;
 
-/// Extensions the renderer (gpui's image stack) can actually decode. AVIF is
-/// deliberately absent — gpui can't decode it.
+/// Extensions the renderer can decode: gpui's `image` stack for the common
+/// formats, plus the pure-Rust `heic_decoder` for HEIC/HEIF/AVIF — see
+/// [`decode_heif`].
 const SUPPORTED: &[&str] = &[
-    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "ico", "svg",
+    "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "ico", "svg", "heic", "heif", "avif",
 ];
 
 /// Whether `path` looks like an image we can render (by extension).
@@ -214,9 +215,12 @@ impl ImageStore {
 /// decoded.
 pub fn decode_scaled(path: &Path) -> Option<Arc<RenderImage>> {
     // Fast path for JPEGs: decode at a reduced size (DCT scaling at the decoder),
-    // a fraction of the work + memory of a full-resolution decode; fall back to a
-    // full `image::open` for other formats or any decode hiccup.
-    let img = decode_jpeg_reduced(path).or_else(|| image::open(path).ok())?;
+    // a fraction of the work + memory of a full-resolution decode. Then the HEIF
+    // decoder for HEIC/HEIF/AVIF (gpui's `image` stack can't read those). Else a
+    // full `image::open`; the first to yield a bitmap wins, any miss falls through.
+    let img = decode_jpeg_reduced(path)
+        .or_else(|| decode_heif(path))
+        .or_else(|| image::open(path).ok())?;
     let buf = scale_and_bgra(img);
     Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
 }
@@ -253,6 +257,47 @@ fn decode_jpeg_reduced(path: &Path) -> Option<image::DynamicImage> {
             image::GrayImage::from_raw(sw, sh, pixels).map(image::DynamicImage::ImageLuma8)
         }
         _ => None, // CMYK32 / L16 — let image::open handle it
+    }
+}
+
+/// Decode a HEIF-family image (`.heic`/`.heif`/`.avif`) via the pure-Rust
+/// `heic_decoder` — HEVC through `scuffle-h265`, AV1 through `rav1d` — since
+/// gpui's `image` stack can't. The decoder applies the container's own
+/// `clap`/`irot`/`imir` transforms but not EXIF rotation, so we apply that here;
+/// the hint declines when the primary item already carries a transform, so there
+/// is no double-rotation. `None` for non-HEIF extensions, oversized input
+/// (guardrails), or any decode error — including grid-tiled primary items, which
+/// aren't supported — so the caller falls back and the note shows a placeholder.
+fn decode_heif(path: &Path) -> Option<image::DynamicImage> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(ext.as_str(), "heic" | "heif" | "avif") {
+        return None;
+    }
+    let guardrails = heic_decoder::DecodeGuardrails {
+        max_input_bytes: Some(256 * 1024 * 1024),
+        max_pixels: Some(100_000_000),
+        max_temp_spool_bytes: Some(256 * 1024 * 1024),
+        temp_spool_directory: None,
+    };
+    let decoded = heic_decoder::decode_path_to_rgba_with_guardrails(path, guardrails).ok()?;
+    // The decoder leaves EXIF orientation unapplied (libheif parity); apply it so
+    // portrait phone photos aren't sideways. `orientation_to_apply` returns `None`
+    // when the primary item already carries the rotation, avoiding double-turns.
+    let decoded = match heic_decoder::exif_orientation_hint_from_path(path)
+        .ok()
+        .and_then(|hint| hint.orientation_to_apply())
+    {
+        Some(orientation) => decoded.apply_exif_orientation(orientation).ok()?,
+        None => decoded,
+    };
+    let (w, h) = (decoded.width, decoded.height);
+    match decoded.pixels {
+        heic_decoder::DecodedRgbaPixels::U8(p) => {
+            image::RgbaImage::from_raw(w, h, p).map(image::DynamicImage::ImageRgba8)
+        }
+        heic_decoder::DecodedRgbaPixels::U16(p) => {
+            image::ImageBuffer::from_raw(w, h, p).map(image::DynamicImage::ImageRgba16)
+        }
     }
 }
 

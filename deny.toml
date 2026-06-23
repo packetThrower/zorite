@@ -55,6 +55,14 @@ allow = ["bzip2-1.0.6"]
 crate = "libfuzzer-sys"
 allow = ["NCSA"]
 
+[[licenses.exceptions]]
+# heic_decoder (HEIC/HEIF/AVIF decode — src/images.rs) is AGPL-3.0. AGPL-3.0 is
+# GPL-3-compatible, and for a local-first desktop app its network clause never
+# triggers, so it behaves like GPL here. Scoped to this crate rather than
+# blessing AGPL-3.0 project-wide.
+crate = "heic_decoder"
+allow = ["AGPL-3.0-only"]
+
 # `unescaper` ships with the deprecated `GPL-3.0/MIT` SPDX
 # expression in its Cargo.toml. The slash form means "user picks
 # either"; the modern equivalent is `GPL-3.0-or-later OR MIT`.
@@ -63,6 +71,14 @@ allow = ["NCSA"]
 [[licenses.clarify]]
 crate = "unescaper"
 expression = "MIT"
+license-files = []
+
+# heic_decoder uses `license-file` (no SPDX `license` field) and cargo-deny's
+# auto-detection doesn't confidently match its AGPL-3.0 LICENSE, so force the
+# expression here. The per-crate exception above then allows it for this crate.
+[[licenses.clarify]]
+crate = "heic_decoder"
+expression = "AGPL-3.0-only"
 license-files = []
 
 [bans]
@@ -90,4 +106,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
 
 [sources.allow-org]
-github = ["zed-industries", "longbridge"]
+# ente-io: heic_decoder + its rav1d (AV1) fork — the pure-Rust HEIC/AVIF
+# decode stack used by src/images.rs.
+github = ["zed-industries", "longbridge", "ente-io"]

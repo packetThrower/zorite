@@ -1,0 +1,49 @@
+# cargo-about config. `cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html`
+# renders the attribution list for every dependency. Any license not in `accepted`
+# is reported as an error, surfacing unexpected or incompatible licenses.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "MPL-2.0",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "0BSD",
+    "BSL-1.0",
+    "OpenSSL",
+    "CDLA-Permissive-2.0",
+    "GPL-3.0",
+    "GPL-3.0-or-later",
+    "AGPL-3.0-only",
+    "AGPL-3.0-or-later",
+    "bzip2-1.0.6",        # libbz2-rs-sys
+    "NCSA",               # libfuzzer-sys (fuzzing dep, not linked into the shipped binary)
+]
+
+# heic_decoder ships its license as a LICENSE file with no `license` field, so
+# cargo-about can't auto-detect it. Pin it to AGPL-3.0-only (verified: the file is
+# the "GNU AFFERO GENERAL PUBLIC LICENSE").
+[heic_decoder.clarify]
+license = "AGPL-3.0-only"
+[[heic_decoder.clarify.files]]
+path = "LICENSE"
+checksum = "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+
+# gpui's helper crates ship a LICENSE-APACHE file but omit the `license` field
+# upstream; gpui itself is Apache-2.0, so pin them to match.
+[gpui_shared_string.clarify]
+license = "Apache-2.0"
+[[gpui_shared_string.clarify.files]]
+path = "LICENSE-APACHE"
+checksum = "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a"
+
+[gpui_util.clarify]
+license = "Apache-2.0"
+[[gpui_util.clarify.files]]
+path = "LICENSE-APACHE"
+checksum = "752daf2fb234ca4a1fa372c073fe127f44b7b90fd2529ae44273a64f9d53da7a"
