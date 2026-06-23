@@ -9,6 +9,25 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-06-22
+
+Image fixes for the WYSIWYG editor (the single renderer since 0.2.0).
+
+### Fixed
+
+- **Images in lists render again** — a bulleted image (`- ![](src)`) renders as
+  the image with its bullet, instead of falling back to raw source.
+- **Drag-to-resize is back** — inline images have a bottom-right corner grip;
+  dragging it resizes the image while the surrounding content reflows live, and
+  the width persists as `{width=N}`.
+
+### Changed
+
+- **Photos load faster** — JPEGs decode at a reduced size directly (DCT scaling)
+  instead of a full-resolution decode-then-downscale, roughly halving photo-page
+  load time and cutting peak memory.
+- A little vertical breathing room between stacked inline images.
+
 ## [0.2.0] - 2026-06-22
 
 A major release: a brand-new editor with live WYSIWYG Markdown and native
