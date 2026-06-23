@@ -385,6 +385,9 @@ pub struct EditorState {
     /// index (from the last paint), so a press near a corner can start a resize
     /// and know which `![](src)` line to rewrite. One entry per rendered image.
     image_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// Window-space bounds of each painted task checkbox, with its logical line —
+    /// so a click on the box toggles `[ ]`↔`[x]` instead of placing the caret.
+    checkbox_rects: Vec<(usize, Bounds<Pixels>)>,
     /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
     /// that image paints at the live width and other mouse handling is suppressed.
     image_resize: Option<ImageResize>,
@@ -425,6 +428,7 @@ impl EditorState {
             block_mermaid: None,
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
+            checkbox_rects: Vec::new(),
             image_resize: None,
         }
     }
@@ -938,6 +942,23 @@ impl EditorState {
             cx.notify();
             return;
         }
+        // A press on a task checkbox toggles it (☐↔☑) instead of placing the
+        // caret — the box sits in the gutter, so this never competes with editing
+        // the body text. Same length swap, so the caret/selection stay valid.
+        if let Some(row) = self.checkbox_at(event.position) {
+            let range = self.line_starts()[row]..self.line_end(row);
+            if let Some(new_line) =
+                markdown_syntax::toggle_task_checkbox(&self.content[range.clone()])
+            {
+                self.record_edit(&range, &new_line);
+                self.content =
+                    self.content[..range.start].to_owned() + &new_line + &self.content[range.end..];
+                self.remap_diagnostics(&range, new_line.len());
+                cx.emit(EditorEvent::Changed);
+                cx.notify();
+            }
+            return;
+        }
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
         if let Some(src) = self.chip_at(event.position) {
@@ -1370,6 +1391,21 @@ impl EditorState {
             point(rect.right() - s / 2., rect.bottom() - s / 2.),
             size(s, s),
         )
+    }
+
+    /// If `position` lands on a task checkbox painted last frame, the logical line
+    /// of that task — so a click can toggle it. The hit area is the box padded a
+    /// little, to stay easy to tap without swallowing the body text beside it.
+    fn checkbox_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let pad = px(4.);
+        self.checkbox_rects.iter().find_map(|&(line, rect)| {
+            Bounds::new(
+                point(rect.origin.x - pad, rect.origin.y - pad),
+                size(rect.size.width + pad * 2., rect.size.height + pad * 2.),
+            )
+            .contains(&position)
+            .then_some(line)
+        })
     }
 
     /// If `position` lands on a table grid row (not the separator), the source
@@ -3354,6 +3390,11 @@ struct PrepaintState {
     /// paint can set the resize cursor over each (hitboxes must be inserted in
     /// prepaint). Parallels the images paint walks, indexed by image count.
     image_grips: Vec<Hitbox>,
+    /// Pointer-cursor hitboxes (`(line, hitbox)`) for clickable gutter checkboxes
+    /// and file chips, so the cursor flips to a hand over them (like the image
+    /// grips' resize cursor). Set in paint via `set_cursor_style`.
+    checkbox_grips: Vec<(usize, Hitbox)>,
+    chip_grips: Vec<(usize, Hitbox)>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -3574,6 +3615,35 @@ impl Element for EditorElement {
             }
         }
 
+        // Pointer-cursor hitboxes for clickable gutter checkboxes + file chips, so
+        // the cursor flips to a hand over them. Bounds mirror the paint math; keyed
+        // by line so paint sets the cursor on each (see `set_cursor_style`).
+        let mut checkbox_grips = Vec::new();
+        let mut chip_grips = Vec::new();
+        for (i, lh) in line_heights.iter().enumerate() {
+            if let Some(LineMark::Check { bullet_x, .. }) = marks.get(i).copied().flatten() {
+                let sz = font_size * 0.78;
+                let pad = px(4.);
+                let bx = bounds.origin.x + bullet_x;
+                let by = bounds.origin.y + line_tops[i] + (*lh - sz) / 2.;
+                let hit = Bounds::new(
+                    point(bx - pad, by - pad),
+                    size(sz + pad * 2., sz + pad * 2.),
+                );
+                checkbox_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+            if matches!(
+                widgets.get(i).and_then(Option::as_ref),
+                Some(Block::Chip { .. })
+            ) {
+                let hit = Bounds::new(
+                    point(bounds.origin.x, bounds.origin.y + line_tops[i]),
+                    size(bounds.size.width, *lh),
+                );
+                chip_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+        }
+
         // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
         // only, so `line_tops` stays free to move into the prepaint state.
         let to_screen =
@@ -3729,6 +3799,8 @@ impl Element for EditorElement {
             maps,
             marks,
             image_grips,
+            checkbox_grips,
+            chip_grips,
             cursor,
             selections,
         }
@@ -3772,6 +3844,9 @@ impl Element for EditorElement {
         // Window-space bounds of each painted image + its logical line, collected
         // for the next frame's grip hit-testing (committed below).
         let mut image_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
+        // Window-space box bounds of each painted task checkbox + its line, for the
+        // next frame's click-to-toggle hit-testing (committed below).
+        let mut checkbox_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
         // Logseq-style list nesting guides: `outline` holds the bullet x of each
         // active ancestor level, so a faint vertical line can drop from each down
         // through its descendants. Popped on dedent, reset off the list.
@@ -3891,8 +3966,17 @@ impl Element for EditorElement {
                 let sz = font_size * 0.78; // ~cap height
                 let bx = origin.x + bullet_x;
                 let by = origin.y + (*lh - sz) / 2.; // vertically centered on the line
+                let box_bounds = Bounds::new(point(bx, by), size(sz, sz));
+                checkbox_rects.push((i, box_bounds));
+                if let Some(hb) = prepaint
+                    .checkbox_grips
+                    .iter()
+                    .find_map(|(l, hb)| (*l == i).then_some(hb))
+                {
+                    window.set_cursor_style(CursorStyle::PointingHand, hb);
+                }
                 window.paint_quad(PaintQuad {
-                    bounds: Bounds::new(point(bx, by), size(sz, sz)),
+                    bounds: box_bounds,
                     corner_radii: Corners::all(px(3.)),
                     background: hsla(0., 0., 0., 0.).into(),
                     border_widths: Edges::all(px(1.5)),
@@ -3979,6 +4063,13 @@ impl Element for EditorElement {
                 paint_chip(
                     label, *link, *bg, *border, origin, *lh, &font, font_size, window, cx,
                 );
+                if let Some(hb) = prepaint
+                    .chip_grips
+                    .iter()
+                    .find_map(|(l, hb)| (*l == i).then_some(hb))
+                {
+                    window.set_cursor_style(CursorStyle::PointingHand, hb);
+                }
             } else {
                 // Code blocks + gutter marks inset their text (kept in sync with
                 // `EditorState::line_inset` / the fresh prepaint inset).
@@ -4042,6 +4133,7 @@ impl Element for EditorElement {
             editor.line_insets = line_insets;
             editor.table_rows = table_rows;
             editor.image_rects = image_rects;
+            editor.checkbox_rects = checkbox_rects;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });

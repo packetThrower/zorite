@@ -853,7 +853,7 @@ impl AppView {
     /// Save a journal day's content on every keystroke — but NOT its
     /// links/tags. Link re-indexing (which creates target pages) happens
     /// on blur, so a half-typed `#tag` doesn't spawn a page per keystroke.
-    fn save_journal(&mut self, date: &str, content: &str, cx: &mut Context<Self>) {
+    pub(crate) fn save_journal(&mut self, date: &str, content: &str, cx: &mut Context<Self>) {
         if let Ok(page) = self.db.get_or_create_journal(date) {
             self.save_page_content(page.id, content, cx);
         }
@@ -861,7 +861,7 @@ impl AppView {
 
     /// Save a page's content to the DB and signal other windows to refresh. The
     /// single choke point for content writes, so every save reaches other windows.
-    fn save_page_content(&mut self, id: i64, content: &str, cx: &mut Context<Self>) {
+    pub(crate) fn save_page_content(&mut self, id: i64, content: &str, cx: &mut Context<Self>) {
         if let Err(e) = self.db.set_page_content(id, content) {
             log::error!("save page {id}: {e}");
         }
@@ -870,7 +870,7 @@ impl AppView {
 
     /// Notify every window (including this one) that content changed, so each
     /// reloads any now-stale journal days / active page from the shared database.
-    fn signal_doc_changed(&self, cx: &mut Context<Self>) {
+    pub(crate) fn signal_doc_changed(&self, cx: &mut Context<Self>) {
         self.doc_signal.update(cx, |_, cx| cx.emit(DocChanged));
     }
 

@@ -701,6 +701,17 @@ pub(crate) fn task_prefix(line: &str) -> Option<(usize, usize, bool)> {
     None
 }
 
+/// Toggle a GFM task item's checkbox in `line` — flip the char between the
+/// brackets (`[ ]`↔`[x]`). Returns the rewritten line, or `None` if `line` isn't
+/// a task item. The length is unchanged (one ASCII byte swapped).
+pub(crate) fn toggle_task_checkbox(line: &str) -> Option<String> {
+    let (prefix_len, _indent, checked) = task_prefix(line)?;
+    let box_byte = prefix_len - 3; // the char between `[` and `]`
+    let mut out = line.to_string();
+    out.replace_range(box_byte..box_byte + 1, if checked { " " } else { "x" });
+    Some(out)
+}
+
 /// If `line` is a standalone image — `![alt](src)`, optionally followed by a
 /// `{width=N}` / `{width=Npx}` attribute, with only whitespace around it —
 /// return `(src, explicit_width)`. The editor renders such a line as the image
@@ -1257,5 +1268,26 @@ mod tests {
         let (disp, _, map) = hidden_runs("- [x] go", &font, c, &[], None, 0, &st);
         assert_eq!(disp, "go");
         assert_eq!(map[0], 6); // display 0 ('g') ← source 6
+    }
+
+    #[test]
+    fn toggle_task_checkbox_flips() {
+        assert_eq!(
+            toggle_task_checkbox("- [ ] todo").as_deref(),
+            Some("- [x] todo")
+        );
+        assert_eq!(
+            toggle_task_checkbox("- [x] done").as_deref(),
+            Some("- [ ] done")
+        );
+        assert_eq!(
+            toggle_task_checkbox("- [X] done").as_deref(),
+            Some("- [ ] done")
+        );
+        assert_eq!(
+            toggle_task_checkbox("  - [ ] nested").as_deref(),
+            Some("  - [x] nested")
+        );
+        assert_eq!(toggle_task_checkbox("- plain"), None);
     }
 }
