@@ -728,6 +728,21 @@ pub(crate) fn image_line(line: &str) -> Option<(&str, Option<f32>)> {
     (!src.is_empty()).then_some((src, width))
 }
 
+/// Like [`image_line`], but also matches an image that is the sole body of a
+/// list item — `- ![](src)` / `1. ![](src){width=N}`. Returns `(src, width,
+/// marker_len)`, where `marker_len` is the byte length of the leading list
+/// marker (0 for a plain standalone image). The editor renders the image inset
+/// past the marker so a bulleted image keeps its bullet, instead of the row
+/// collapsing to the image or falling back to raw source.
+pub(crate) fn image_row(line: &str) -> Option<(&str, Option<f32>, usize)> {
+    if let Some((src, width)) = image_line(line) {
+        return Some((src, width, 0));
+    }
+    let (plen, ..) = list_prefix(line)?;
+    let (src, width) = image_line(&line[plen..])?;
+    Some((src, width, plen))
+}
+
 /// Font-size multiplier for a line — larger for headings (matching the reading
 /// view's scale), 1.0 for body text. Drives the editor's variable line heights.
 pub(crate) fn line_scale(line: &str) -> f32 {
@@ -1047,6 +1062,14 @@ mod tests {
             Some(("b.png", Some(320.0)))
         );
         assert_eq!(image_line("text ![a](b.png)"), None);
+        // A list item whose sole body is an image renders too (its bullet stays).
+        assert_eq!(
+            image_row("- ![a](b.png){width=452}"),
+            Some(("b.png", Some(452.0), 2))
+        );
+        assert_eq!(image_row("1. ![a](b.png)"), Some(("b.png", None, 3)));
+        assert_eq!(image_row("![a](b.png)"), Some(("b.png", None, 0)));
+        assert_eq!(image_row("- text ![a](b.png)"), None);
     }
 
     fn test_style() -> SyntaxStyle {

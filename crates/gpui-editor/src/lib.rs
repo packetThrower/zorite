@@ -144,6 +144,10 @@ const QUOTE_INSET: f32 = 14.;
 /// label, so the chip box reads as a button rather than a bare line of text.
 const CHIP_PAD: f32 = 5.;
 
+/// Total vertical breathing room (px) reserved around an inline image — split
+/// above + below — so consecutive images (a bulleted photo list) don't touch.
+const IMG_ROW_PAD: f32 = 12.;
+
 /// A restorable editor state, for undo/redo. Stores the caret offset (not a
 /// selection), so undo/redo place the caret rather than re-selecting text.
 #[derive(Clone)]
@@ -2482,10 +2486,23 @@ fn shape_document(
         // Block widget (non-code): a standalone `![](src)` line that isn't the
         // caret's renders as a file chip (if the host classifies `src` as one,
         // e.g. a PDF) or else its decoded image, fit to width.
-        let widget: Option<Block> = if !is_code
-            && Some(idx) != caret_row
+        // A renderable image: a standalone `![](src)` line, or the sole body of a
+        // list item (`- ![](src)`). For the list case `marker_len` > 0, so the
+        // image renders inset past the bullet (still painted by the gutter) and
+        // sized to the remaining width — instead of the row collapsing to the
+        // image (losing its bullet) or falling back to raw source.
+        let img_row = (!is_code)
+            .then(|| markdown_syntax::image_row(line))
+            .flatten();
+        let img_inset = match img_row {
+            Some((_, _, marker_len)) if marker_len > 0 => {
+                measure_width(window, &line[..marker_len], base_font, base_font_size)
+            }
+            _ => px(0.),
+        };
+        let widget: Option<Block> = if Some(idx) != caret_row
             && let Some(st) = md
-            && let Some((src, w_attr)) = markdown_syntax::image_line(line)
+            && let Some((src, w_attr, _)) = img_row
         {
             if let Some(label) = block_chip.and_then(|f| f(src)) {
                 Some(Block::Chip {
@@ -2499,7 +2516,14 @@ fn shape_document(
             } else {
                 block_image
                     .and_then(|f| f(src))
-                    .and_then(|img| block_img(img, w_attr, wrap_width, scale_factor))
+                    .and_then(|img| {
+                        block_img(
+                            img,
+                            w_attr,
+                            wrap_width.map(|w| (w - img_inset).max(px(1.))),
+                            scale_factor,
+                        )
+                    })
                     .map(Block::Image)
             }
         } else {
@@ -2546,7 +2570,7 @@ fn shape_document(
         // An `![](src)` line (image/chip candidate) shows full raw source while the
         // caret is on it, so editing reveals the whole `![](src)` rather than the
         // per-construct view (where the caret at the `!` would hide the link).
-        let widget_line = md.is_some() && markdown_syntax::image_line(line).is_some();
+        let widget_line = md.is_some() && img_row.is_some();
         let full_source = (!sel_empty && selection.0 <= line_end && selection.1 >= line_start)
             || (caret_col.is_some() && widget_line);
         // This line's diagnostics, clipped + shifted to line-local byte offsets —
@@ -2570,9 +2594,11 @@ fn shape_document(
         // `bullet_x` = measured width of the leading whitespace (where the bullet
         // paints); `text_inset` = measured width of the whole source prefix (where
         // the body sits, matching the raw line so render + edit stay in sync).
-        let gutter: Option<(usize, LineMark)> = if let Some(st) =
-            md.filter(|_| !is_code && widget.is_none() && table.is_none())
-        {
+        let gutter: Option<(usize, LineMark)> = if let Some(st) = md.filter(|_| {
+            // A list-item image keeps its bullet: allow the List gutter even
+            // though the row also carries an (inset) image widget.
+            !is_code && table.is_none() && (widget.is_none() || img_inset > px(0.))
+        }) {
             if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
                 Some((plen, LineMark::Quote(st.quote)))
             } else if let Some((plen, indent, checked)) = markdown_syntax::task_prefix(line) {
@@ -2722,9 +2748,13 @@ fn shape_document(
                     // becomes the header/body border.
                     Some(t) if t.is_separator => px(0.),
                     Some(_) => table_row_h,
-                    None => widget
-                        .as_ref()
-                        .map_or(fs * LINE_HEIGHT_RATIO, Block::height),
+                    None => match widget.as_ref() {
+                        // Reserve a little space around an inline image so a list
+                        // of photos doesn't stack edge-to-edge.
+                        Some(Block::Image(i)) => i.height + px(IMG_ROW_PAD),
+                        Some(b) => b.height(),
+                        None => fs * LINE_HEIGHT_RATIO,
+                    },
                 }
             };
             let line_w = wl.width();
@@ -3700,8 +3730,17 @@ impl Element for EditorElement {
                     t, origin, *lh, &font, font_size, base_lh, text_color, window, cx,
                 );
             } else if let Some(Block::Image(w)) = prepaint.widgets.get(i).and_then(Option::as_ref) {
-                // Inline image (W4a): paint the decoded image instead of source.
-                let img_bounds = Bounds::new(origin, size(w.width, w.height));
+                // Inline image (W4a): paint the decoded image instead of source,
+                // inset to the row's gutter so a list-item image sits past its
+                // bullet (painted above, like any list row).
+                let inset = row_inset(
+                    prepaint.backgrounds.get(i).copied().flatten(),
+                    prepaint.marks.get(i).copied().flatten(),
+                );
+                let img_bounds = Bounds::new(
+                    point(origin.x + inset, origin.y + px(IMG_ROW_PAD / 2.)),
+                    size(w.width, w.height),
+                );
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
             } else if let Some(Block::Chip {
                 label,
