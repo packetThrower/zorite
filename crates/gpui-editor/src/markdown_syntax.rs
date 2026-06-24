@@ -39,6 +39,16 @@ pub struct SyntaxStyle {
     pub quote: Hsla,
     /// `<mark>` highlight background.
     pub mark_bg: Hsla,
+    /// Popover/menu surface background (e.g. the right-click table menu).
+    pub popover_bg: Hsla,
+    /// Popover/menu border.
+    pub popover_border: Hsla,
+    /// Popover/menu foreground text.
+    pub popover_fg: Hsla,
+    /// Popover/menu hovered-row background (a soft accent tint).
+    pub popover_hover: Hsla,
+    /// Popover/menu group divider.
+    pub popover_divider: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
 }
@@ -701,6 +711,17 @@ pub(crate) fn task_prefix(line: &str) -> Option<(usize, usize, bool)> {
     None
 }
 
+/// Toggle a GFM task item's checkbox in `line` — flip the char between the
+/// brackets (`[ ]`↔`[x]`). Returns the rewritten line, or `None` if `line` isn't
+/// a task item. The length is unchanged (one ASCII byte swapped).
+pub(crate) fn toggle_task_checkbox(line: &str) -> Option<String> {
+    let (prefix_len, _indent, checked) = task_prefix(line)?;
+    let box_byte = prefix_len - 3; // the char between `[` and `]`
+    let mut out = line.to_string();
+    out.replace_range(box_byte..box_byte + 1, if checked { " " } else { "x" });
+    Some(out)
+}
+
 /// If `line` is a standalone image — `![alt](src)`, optionally followed by a
 /// `{width=N}` / `{width=Npx}` attribute, with only whitespace around it —
 /// return `(src, explicit_width)`. The editor renders such a line as the image
@@ -881,7 +902,15 @@ pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
         {
             let start = i;
             let mut end = i + 2; // header + separator
-            while end < lines.len() && is_table_row(lines[end]) {
+            // Stop before a new table jammed directly below: a row that is itself
+            // immediately followed by a `|---|` separator is the next table's
+            // header, not a body row of this one — otherwise adjacent tables (no
+            // blank line between) merge into one grid and the second separator
+            // shows up as `---` cells.
+            while end < lines.len()
+                && is_table_row(lines[end])
+                && separator_aligns(lines.get(end + 1).copied().unwrap_or("")).is_none()
+            {
                 end += 1;
             }
             // A `<!-- table:STYLE -->` comment on the line directly above sets the
@@ -1053,6 +1082,19 @@ mod tests {
     }
 
     #[test]
+    fn adjacent_tables_split_into_two_regions() {
+        // Two tables jammed together with no blank line between must not merge: the
+        // second table's header + `|---|` start a new region (otherwise the second
+        // separator rendered as `---` cells in one merged grid).
+        let r = table_regions(
+            "| a | b |\n| --- | --- |\n| 1 | 2 |\n| c | d |\n| --- | --- |\n| 3 | 4 |",
+        );
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].lines, 0..3);
+        assert_eq!(r[1].lines, 3..6);
+    }
+
+    #[test]
     fn heading_and_image_line() {
         assert_eq!(heading_level("## Hi"), Some(2));
         assert_eq!(heading_level("#notaheading"), None);
@@ -1082,6 +1124,11 @@ mod tests {
             tag: c,
             quote: c,
             mark_bg: c,
+            popover_bg: c,
+            popover_border: c,
+            popover_fg: c,
+            popover_hover: c,
+            popover_divider: c,
             mono: gpui::font("monospace"),
         }
     }
@@ -1257,5 +1304,26 @@ mod tests {
         let (disp, _, map) = hidden_runs("- [x] go", &font, c, &[], None, 0, &st);
         assert_eq!(disp, "go");
         assert_eq!(map[0], 6); // display 0 ('g') ← source 6
+    }
+
+    #[test]
+    fn toggle_task_checkbox_flips() {
+        assert_eq!(
+            toggle_task_checkbox("- [ ] todo").as_deref(),
+            Some("- [x] todo")
+        );
+        assert_eq!(
+            toggle_task_checkbox("- [x] done").as_deref(),
+            Some("- [ ] done")
+        );
+        assert_eq!(
+            toggle_task_checkbox("- [X] done").as_deref(),
+            Some("- [ ] done")
+        );
+        assert_eq!(
+            toggle_task_checkbox("  - [ ] nested").as_deref(),
+            Some("  - [x] nested")
+        );
+        assert_eq!(toggle_task_checkbox("- plain"), None);
     }
 }

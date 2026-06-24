@@ -149,6 +149,9 @@ fn rendered_day(
         let weak = cx.entity().downgrade();
         let click_weak = cx.entity().downgrade();
         let click_date = d.clone();
+        let toggle_weak = cx.entity().downgrade();
+        let toggle_content = content.to_string();
+        let toggle_date = d.clone();
         let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
             .style(theme::markdown_style(app.list_indent()))
             .on_image(crate::ui::image::renderer(
@@ -170,6 +173,15 @@ fn rendered_day(
                         this.edit_day_at_offset(&date, offset, click_y, window, cx)
                     });
                 });
+            }))
+            // Click a task checkbox → toggle it in the source + persist immediately.
+            .on_task_toggle(std::rc::Rc::new(move |offset, _window, cx| {
+                if let Some(new) = gpui_markdown::toggle_task_at(&toggle_content, offset) {
+                    let _ = toggle_weak.update(cx, |this, cx| {
+                        this.save_journal(&toggle_date, &new, cx);
+                        this.signal_doc_changed(cx);
+                    });
+                }
             }));
         // Track the markdown root's bounds — click-to-caret's scroll anchor.
         if let Some(de) = app.day_editors.get(date) {

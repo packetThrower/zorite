@@ -213,6 +213,11 @@ pub type MermaidRenderer = Rc<dyn Fn(SharedString) -> AnyElement>;
 /// edit mode. Set via [`MarkdownView::on_click_source`].
 pub type ClickSourceHandler = Rc<dyn Fn(usize, Pixels, &mut Window, &mut App)>;
 
+/// Toggle the task checkbox of a clicked list item — the argument is the source
+/// byte offset of that task item (feed it to [`toggle_task_at`]). Set via
+/// [`MarkdownView::on_task_toggle`].
+pub type TaskToggleHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+
 /// A rendered markdown document element.
 #[derive(IntoElement)]
 pub struct MarkdownView {
@@ -230,6 +235,8 @@ pub struct MarkdownView {
     block_scroll: Option<ScrollHandle>,
     /// Click-to-caret: maps a click on the rendered text to its source offset.
     on_click_source: Option<ClickSourceHandler>,
+    /// Click a task checkbox to toggle it (the host applies + persists).
+    on_task_toggle: Option<TaskToggleHandler>,
 }
 
 impl MarkdownView {
@@ -247,6 +254,7 @@ impl MarkdownView {
             current_match: 0,
             block_scroll: None,
             on_click_source: None,
+            on_task_toggle: None,
         }
     }
 
@@ -303,6 +311,14 @@ impl MarkdownView {
         self.on_click_source = Some(handler);
         self
     }
+
+    /// Make task checkboxes clickable: clicking a `☐`/`☑` calls `handler` with the
+    /// task item's source byte offset, so the host can flip it (see [`toggle_task_at`])
+    /// and persist. Without this, checkboxes render but aren't interactive.
+    pub fn on_task_toggle(mut self, handler: TaskToggleHandler) -> Self {
+        self.on_task_toggle = Some(handler);
+        self
+    }
 }
 
 impl RenderOnce for MarkdownView {
@@ -322,6 +338,7 @@ impl RenderOnce for MarkdownView {
             current_match: self.current_match,
             match_ix: 0,
             on_click_source: self.on_click_source,
+            on_task_toggle: self.on_task_toggle,
             suppress_heading_top: false,
         };
 
@@ -389,6 +406,7 @@ struct Ctx {
     current_match: usize,
     match_ix: usize,
     on_click_source: Option<ClickSourceHandler>,
+    on_task_toggle: Option<TaskToggleHandler>,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
@@ -714,19 +732,34 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
         };
         let marker_top = px(f32::from(ctx.style.text_size) * (lead_scale - 1.0) * 1.618_034 / 2.0);
 
+        // The marker is a plain glyph, except a task's ☐/☑ is clickable: a click
+        // calls back with the item's source offset so the host can flip + persist.
+        let mut marker_el = div()
+            .flex_shrink_0()
+            .pt(marker_top)
+            .text_color(ctx.style.muted_color)
+            .child(marker);
+        if li.checked.is_some()
+            && let (Some(off), Some(toggle)) = (
+                li.position.as_ref().map(|p| p.start.offset),
+                ctx.on_task_toggle.clone(),
+            )
+        {
+            marker_el = marker_el.cursor_pointer().on_mouse_down(
+                MouseButton::Left,
+                move |_: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    toggle(off, window, cx);
+                },
+            );
+        }
         col = col.child(
             div()
                 .flex()
                 .flex_row()
                 .gap(px(8.0))
                 .items_start()
-                .child(
-                    div()
-                        .flex_shrink_0()
-                        .pt(marker_top)
-                        .text_color(ctx.style.muted_color)
-                        .child(marker),
-                )
+                .child(marker_el)
                 .child(div().flex_1().min_w_0().child(content)),
         );
     }
@@ -1047,6 +1080,35 @@ fn push_text(
 /// Source byte offset where `node` begins (0 if the parser recorded none).
 fn node_src(node: &mdast::Node) -> usize {
     node.position().map_or(0, |p| p.start.offset)
+}
+
+/// Toggle the GFM task checkbox on the source line containing byte `offset` (a task
+/// item's offset, as reported by [`MarkdownView::on_task_toggle`]). Returns the full
+/// `content` with that one checkbox flipped (`[ ]`↔`[x]`), or `None` if there's no
+/// task checkbox on that line. Length is unchanged (one ASCII byte swapped).
+pub fn toggle_task_at(content: &str, offset: usize) -> Option<String> {
+    if offset > content.len() {
+        return None;
+    }
+    let line_start = content[..offset].rfind('\n').map_or(0, |p| p + 1);
+    let line_end = content[offset..]
+        .find('\n')
+        .map_or(content.len(), |p| offset + p);
+    let line = &content.as_bytes()[line_start..line_end];
+    // The checkbox is the first `[ ]`/`[x]` on the line (it precedes any body text).
+    let lb = line.iter().position(|&b| b == b'[')?;
+    if lb + 2 < line.len() && line[lb + 2] == b']' && matches!(line[lb + 1], b' ' | b'x' | b'X') {
+        let box_byte = line_start + lb + 1; // the status char, in `content`
+        let flipped = if matches!(line[lb + 1], b'x' | b'X') {
+            " "
+        } else {
+            "x"
+        };
+        let mut out = content.to_string();
+        out.replace_range(box_byte..box_byte + 1, flipped);
+        return Some(out);
+    }
+    None
 }
 
 /// Map a rendered byte index to a source byte offset via the checkpoints recorded

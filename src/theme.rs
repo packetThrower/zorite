@@ -221,6 +221,11 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
         tag: p.tag,
         quote: p.text_tertiary,
         mark_bg: gpui::rgba(0xFFD60066).into(),
+        popover_bg: p.bg_sidebar,
+        popover_border: p.border_subtle,
+        popover_fg: p.text_primary,
+        popover_hover: p.accent_tint,
+        popover_divider: p.divider,
         mono: gpui::font(mono_font()),
     }
 }
