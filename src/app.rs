@@ -760,7 +760,9 @@ impl AppView {
                         this.open_pdf(path, window, cx);
                     }
                 }
-                EditorEvent::SelectionChanged => {}
+                EditorEvent::SelectionChanged => {
+                    this.scroll_caret_into_view(st, &this.feed_scroll, cx)
+                }
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -1430,6 +1432,36 @@ impl AppView {
         self.page_scroll.set_offset(gpui::point(px(0.0), new_y));
     }
 
+    /// Scroll `scroll` so the editor's caret stays comfortably in view — used on
+    /// caret moves (arrow keys) so it doesn't slip off-screen as it crosses the
+    /// viewport edge. Mirrors `scroll_to_current_match`'s clamp-at-top behavior.
+    fn scroll_caret_into_view(
+        &self,
+        editor: &Entity<EditorState>,
+        scroll: &ScrollHandle,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(cb) = editor.read(cx).caret_screen_bounds() else {
+            return;
+        };
+        let viewport = scroll.bounds();
+        if viewport.size.height <= px(0.0) {
+            return;
+        }
+        let margin = px(24.0);
+        let (c_top, c_bottom) = (cb.origin.y, cb.origin.y + cb.size.height);
+        let (v_top, v_bottom) = (viewport.origin.y, viewport.origin.y + viewport.size.height);
+        if c_top >= v_top + margin && c_bottom <= v_bottom - margin {
+            return; // already comfortably visible
+        }
+        let new_y = if c_top < v_top + margin {
+            scroll.offset().y + (v_top + margin - c_top)
+        } else {
+            scroll.offset().y - (c_bottom - (v_bottom - margin))
+        };
+        scroll.set_offset(gpui::point(px(0.0), new_y.min(px(0.0))));
+    }
+
     /// Close the in-page find bar.
     pub fn close_page_find(&mut self, cx: &mut Context<Self>) {
         if self.page_find.take().is_some() {
@@ -1490,7 +1522,9 @@ impl AppView {
                         this.open_pdf(path, window, cx);
                     }
                 }
-                EditorEvent::SelectionChanged => {}
+                EditorEvent::SelectionChanged => {
+                    this.scroll_caret_into_view(st, &this.page_scroll, cx)
+                }
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
