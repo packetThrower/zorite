@@ -1411,6 +1411,25 @@ impl EditorState {
         cx.notify();
     }
 
+    /// The caret's bounds in window space (its painted Y range), or `None` before
+    /// the first paint. Lets a host scroll the caret into view; computed from the
+    /// layout stored at the last paint, so it's valid for caret moves that don't
+    /// change the text (arrow keys, click).
+    pub fn caret_screen_bounds(&self) -> Option<Bounds<Pixels>> {
+        let bounds = self.last_bounds?;
+        let (row, col) = self.row_col(self.cursor_offset());
+        let lh = self.line_h(row);
+        let p = self
+            .wrapped
+            .get(row)?
+            .position_for_index(self.display_col(row, col), lh)?;
+        let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
+        Some(Bounds::from_corners(
+            point(bounds.left(), top),
+            point(bounds.left(), top + lh),
+        ))
+    }
+
     fn cursor_offset(&self) -> usize {
         if self.selection_reversed {
             self.selected_range.start
