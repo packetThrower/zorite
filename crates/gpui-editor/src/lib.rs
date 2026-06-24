@@ -1521,6 +1521,13 @@ impl EditorState {
                 break;
             }
         }
+        // A reserved gutter gap (a table's top/bottom, a code block's pads) belongs
+        // to no row, and the loop assigns it to the row *after* it — right going
+        // down, but going up that strands the caret on the far side of the gap (e.g.
+        // just below a table). Going up, target the row before the gap instead.
+        if dir < 0 && trow > 0 && target_y < self.line_tops[trow] {
+            trow -= 1;
+        }
         // A table separator (`|---|`) row isn't editable — skip past it (in the
         // direction of travel) so the caret lands on the header/body row rather
         // than dropping the whole table to raw source.
@@ -4198,16 +4205,18 @@ impl Element for EditorElement {
             .zip(backgrounds.iter())
             .enumerate()
         {
-            let (mut top_pad, bot_pad) = code_pads(*bg);
-            // Reserve a top gutter above each table for the column-delete "−" handles
-            // (mirrors the left gutter from TABLE_GUTTER). Baked into line_tops so the
-            // caret / click / paint all shift with it.
-            if tables
-                .get(idx)
-                .and_then(Option::as_ref)
-                .is_some_and(|t| t.is_header)
-            {
-                top_pad += px(TABLE_GUTTER);
+            let (mut top_pad, mut bot_pad) = code_pads(*bg);
+            // Reserve a gutter above the header (column-delete "−" handles) and below
+            // the last row (the add-row "+" strip), mirroring the left gutter from
+            // TABLE_GUTTER — baked into line_tops so the caret / click / paint all
+            // shift with it, and neither affordance overlaps the adjacent line.
+            if let Some(t) = tables.get(idx).and_then(Option::as_ref) {
+                if t.is_header {
+                    top_pad += px(TABLE_GUTTER);
+                }
+                if t.is_last {
+                    bot_pad += px(TABLE_GUTTER);
+                }
             }
             y += top_pad;
             line_tops.push(y);
