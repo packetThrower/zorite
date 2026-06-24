@@ -286,17 +286,6 @@ pub struct TablePicker {
     pub cols_input: Entity<InputState>,
 }
 
-/// The floating Left/Center/Right control shown while the caret is in a table
-/// cell, anchored at the caret. Clicking a button rewrites that column's
-/// alignment in the table's `|---|` separator.
-pub struct AlignToolbar {
-    editor: gpui::WeakEntity<EditorState>,
-    /// Caret bounds (window space) to anchor the toolbar.
-    caret: gpui::Bounds<gpui::Pixels>,
-    /// The column's current alignment, so its button reads as selected.
-    current: gpui_editor::CellAlign,
-}
-
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -431,8 +420,6 @@ pub struct AppView {
     slash: Option<Slash>,
     /// Open `/table` rows×cols picker, if any.
     table_picker: Option<TablePicker>,
-    /// The table-column alignment toolbar, shown while the caret is in a table.
-    align_toolbar: Option<AlignToolbar>,
     /// Debounced spell-check for the focused body editor; replacing it cancels
     /// the prior pending run so we don't hit the OS spell service per keystroke.
     spell_task: Option<Task<()>>,
@@ -636,7 +623,6 @@ impl AppView {
             search: crate::search::Results::default(),
             slash: None,
             table_picker: None,
-            align_toolbar: None,
             spell_task: None,
             signal_task: None,
             templates: Vec::new(),
@@ -768,14 +754,13 @@ impl AppView {
                     }
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                     this.schedule_spellcheck(st.clone(), cx);
-                    this.refresh_align_toolbar(st, cx);
                 }
                 EditorEvent::OpenLink(src) => {
                     if let Some(path) = crate::pdf::resolve_path(src) {
                         this.open_pdf(path, window, cx);
                     }
                 }
-                EditorEvent::SelectionChanged => this.refresh_align_toolbar(st, cx),
+                EditorEvent::SelectionChanged => {}
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -1499,14 +1484,13 @@ impl AppView {
                     }
                     this.update_slash(SlashTarget::Page(pid), cx);
                     this.schedule_spellcheck(st.clone(), cx);
-                    this.refresh_align_toolbar(st, cx);
                 }
                 EditorEvent::OpenLink(src) => {
                     if let Some(path) = crate::pdf::resolve_path(src) {
                         this.open_pdf(path, window, cx);
                     }
                 }
-                EditorEvent::SelectionChanged => this.refresh_align_toolbar(st, cx),
+                EditorEvent::SelectionChanged => {}
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -1997,23 +1981,6 @@ impl AppView {
     /// Recompute the alignment toolbar from `editor`'s caret: show it (anchored at
     /// the caret) while the caret is in a table cell, hide it otherwise. Called on
     /// the editor's `SelectionChanged` / `Changed`; only notifies when it changes.
-    fn refresh_align_toolbar(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
-        let ed = editor.read(cx);
-        let next = ed.caret_table_align().and_then(|current| {
-            ed.bounds_for_offset(ed.cursor()).map(|caret| AlignToolbar {
-                editor: editor.downgrade(),
-                caret,
-                current,
-            })
-        });
-        let before = self.align_toolbar.as_ref().map(|t| (t.current, t.caret));
-        let after = next.as_ref().map(|t| (t.current, t.caret));
-        self.align_toolbar = next;
-        if before != after {
-            cx.notify();
-        }
-    }
-
     /// Close the `/table` picker without inserting.
     pub fn cancel_table_picker(&mut self, cx: &mut Context<Self>) {
         if self.table_picker.take().is_some() {
@@ -5080,22 +5047,6 @@ impl Render for AppView {
             .into_any_element()
         });
 
-        // The table column-alignment toolbar, floated just above the caret while
-        // it's in a table cell. No backdrop — it's a non-modal affordance.
-        let align_toolbar_overlay = self.align_toolbar.as_ref().and_then(|tb| {
-            let editor = tb.editor.upgrade()?;
-            let pos = gpui::point(tb.caret.origin.x, tb.caret.origin.y - px(30.0));
-            Some(
-                gpui::deferred(
-                    gpui::anchored()
-                        .position(pos)
-                        .snap_to_window()
-                        .child(ui::align_toolbar::render(tb.current, editor, cx)),
-                )
-                .into_any_element(),
-            )
-        });
-
         // While resizing an image, a transparent full-window layer captures the
         // mouse so the drag continues even as the pointer leaves the handle.
         let drag_overlay = self.image_drag.as_ref().map(|_| {
@@ -5463,7 +5414,6 @@ impl Render for AppView {
             )
             .children(overlay)
             .children(table_picker_overlay)
-            .children(align_toolbar_overlay)
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)

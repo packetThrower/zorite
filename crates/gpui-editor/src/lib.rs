@@ -224,6 +224,9 @@ enum TableMenuAction {
     InsertColRight,
     DeleteRow,
     DeleteColumn,
+    AlignLeft,
+    AlignCenter,
+    AlignRight,
 }
 
 impl TableMenuAction {
@@ -234,6 +237,9 @@ impl TableMenuAction {
         ("Insert column right", TableMenuAction::InsertColRight),
         ("Delete row", TableMenuAction::DeleteRow),
         ("Delete column", TableMenuAction::DeleteColumn),
+        ("Align left", TableMenuAction::AlignLeft),
+        ("Align center", TableMenuAction::AlignCenter),
+        ("Align right", TableMenuAction::AlignRight),
     ];
 
     fn apply(self, editor: &mut EditorState, cx: &mut Context<EditorState>) {
@@ -244,6 +250,9 @@ impl TableMenuAction {
             TableMenuAction::InsertColRight => editor.insert_table_column(true, cx),
             TableMenuAction::DeleteRow => editor.delete_table_row(cx),
             TableMenuAction::DeleteColumn => editor.delete_table_column(cx),
+            TableMenuAction::AlignLeft => editor.set_caret_table_align(CellAlign::Left, cx),
+            TableMenuAction::AlignCenter => editor.set_caret_table_align(CellAlign::Center, cx),
+            TableMenuAction::AlignRight => editor.set_caret_table_align(CellAlign::Right, cx),
         }
     }
 }
@@ -340,6 +349,13 @@ pub struct EditorState {
     /// The affordance region the pointer was last in — `(table index, 0 = zone /
     /// 1 = below strip / 2 = right strip)` — so the repaint fires only on change.
     table_hover_region: Option<(usize, u8)>,
+    /// Committed delete-handle rects (issue #16): the hovered row's "−" `(bounds,
+    /// row)` and the hovered column's "−" `(bounds, row, col)`, hit-tested on click.
+    table_row_del: Option<(Bounds<Pixels>, usize)>,
+    table_col_del: Option<(Bounds<Pixels>, usize, usize)>,
+    /// The table cell `(row, col)` the pointer was last over, so `on_mouse_move`
+    /// repaints the delete handles when it changes.
+    table_hover_cell: Option<(usize, usize)>,
     /// Per-logical-line flag: this row is painted as an inline image (W4), so a
     /// click on it places the caret at the line start instead of hit-testing
     /// source text. From the last paint.
@@ -375,9 +391,11 @@ pub struct EditorState {
     markdown_style: Option<SyntaxStyle>,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
-    /// The open table right-click menu's anchor (relative to the editor's
-    /// top-left), if any. Its actions operate on the caret's table cell.
+    /// The open table right-click menu's anchor (window space), if any. Its actions
+    /// operate on the caret's table cell.
     table_menu: Option<Point<Pixels>>,
+    /// Scroll state for the table menu, so its overflow scrolls + shows a thumb.
+    table_menu_scroll: ScrollHandle,
     /// Supplies replacement suggestions for a flagged word, fetched lazily when
     /// the user right-clicks it. Set by the host via [`Self::on_suggest`];
     /// without it, the right-click menu has nothing to offer.
@@ -426,6 +444,9 @@ impl EditorState {
             table_col_add_rects: Vec::new(),
             table_hover_zones: Vec::new(),
             table_hover_region: None,
+            table_row_del: None,
+            table_col_del: None,
+            table_hover_cell: None,
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -439,6 +460,7 @@ impl EditorState {
             markdown_style: None,
             menu: None,
             table_menu: None,
+            table_menu_scroll: ScrollHandle::new(),
             suggest: None,
             block_image: None,
             block_chip: None,
@@ -1012,6 +1034,26 @@ impl EditorState {
             }
             return;
         }
+        // A press on a row/column delete "−" handle removes that row/column (seat
+        // the caret in it, then reuse the caret-driven delete APIs).
+        if let Some((rect, row)) = self.table_row_del
+            && rect.contains(&event.position)
+        {
+            if let Some(off) = self.cell_start_offset(row, 0) {
+                self.selected_range = off..off;
+                self.delete_table_row(cx);
+            }
+            return;
+        }
+        if let Some((rect, row, col)) = self.table_col_del
+            && rect.contains(&event.position)
+        {
+            if let Some(off) = self.cell_start_offset(row, col) {
+                self.selected_range = off..off;
+                self.delete_table_column(cx);
+            }
+            return;
+        }
         // A click on a table cell drops the caret inside the cell, not in the raw
         // `| … |` source.
         let offset = self
@@ -1096,12 +1138,19 @@ impl EditorState {
             self.select_to(offset, cx);
             return;
         }
+        // While the right-click menu is open it owns the pointer — don't let the
+        // table hover (highlight/handles) track the mouse behind it.
+        if self.table_menu.is_some() {
+            return;
+        }
         // Repaint table "+" affordances when the pointer's region changes, so the
         // hover fill + cursor track the mouse live (the editor otherwise only
         // repaints on the caret blink).
         let region = self.table_hover_region_at(event.position);
-        if region != self.table_hover_region {
+        let cell = self.hovered_table_cell(event.position);
+        if region != self.table_hover_region || cell != self.table_hover_cell {
             self.table_hover_region = region;
+            self.table_hover_cell = cell;
             cx.notify();
         }
     }
@@ -1154,12 +1203,7 @@ impl EditorState {
             self.menu = None;
             self.focus(window, cx);
             self.move_to(offset, cx);
-            self.table_menu = Some(
-                self.last_bounds
-                    .as_ref()
-                    .map(|b| point(event.position.x - b.left(), event.position.y - b.top()))
-                    .unwrap_or_default(),
-            );
+            self.table_menu = Some(event.position);
             cx.notify();
             return;
         }
@@ -1490,6 +1534,53 @@ impl EditorState {
         Some((i, strip))
     }
 
+    /// The table cell `(row, col)` the pointer is over, or `None` off any table —
+    /// drives the delete-handle repaint + reveal.
+    fn hovered_table_cell(&self, pos: Point<Pixels>) -> Option<(usize, usize)> {
+        let bounds = self.last_bounds.as_ref()?;
+        // Hover bands start at the left gutter and extend a header's band up into the
+        // top gutter, so moving onto a delete handle keeps its cell "hovered".
+        let gutter_left = bounds.left();
+        if pos.x < gutter_left {
+            return None;
+        }
+        let rel_y = pos.y - bounds.top();
+        let g = px(TABLE_GUTTER);
+        let row = (0..self.wrapped.len()).find(|&i| {
+            let Some(t) = self.table_rows.get(i).and_then(Option::as_ref) else {
+                return false;
+            };
+            if t.is_separator {
+                return false;
+            }
+            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let lo = if t.is_header {
+                self.line_tops[i] - g
+            } else {
+                self.line_tops[i]
+            };
+            rel_y >= lo && rel_y < self.line_tops[i] + h
+        })?;
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        if t.col_widths.is_empty() {
+            return None;
+        }
+        let table_left = gutter_left + g;
+        let table_w: Pixels = t.col_widths.iter().copied().sum();
+        if pos.x >= table_left + table_w {
+            return None;
+        }
+        let rel_x = (pos.x - table_left).max(px(0.));
+        let mut colx = px(0.);
+        for (col, &cw) in t.col_widths.iter().enumerate() {
+            if rel_x < colx + cw {
+                return Some((row, col));
+            }
+            colx += cw;
+        }
+        Some((row, t.col_widths.len() - 1))
+    }
+
     /// Hit-test the table add-row "+" strips → the row a new row lands after.
     fn table_add_row_at(&self, position: Point<Pixels>) -> Option<usize> {
         self.table_row_add_rects
@@ -1527,7 +1618,10 @@ impl EditorState {
             return None;
         }
         let bounds = self.last_bounds.as_ref()?;
-        let rel = point(position.x - bounds.left(), position.y - bounds.top());
+        let rel = point(
+            position.x - bounds.left() - px(TABLE_GUTTER),
+            position.y - bounds.top(),
+        );
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
             let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
@@ -2301,25 +2395,64 @@ impl Render for EditorState {
                             )
                     })
                     .collect();
-                div()
-                    .absolute()
-                    .left(anchor.x)
-                    .top(anchor.y)
-                    .min_w(px(170.))
-                    .cursor(CursorStyle::Arrow)
-                    .bg(rgb(0x26262b))
-                    .border_1()
-                    .border_color(rgb(0x45454c))
-                    .rounded(px(6.))
-                    .overflow_hidden()
-                    .text_color(rgb(0xe6e6e6))
-                    .text_size(px(14.))
-                    .py(px(4.))
-                    .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
-                        editor.table_menu = None;
-                        cx.notify();
-                    }))
-                    .children(rows)
+                // A thin scrollbar thumb, shown when the items overflow the cap so the
+                // scroll affordance is visible — sized from the row count + positioned
+                // from the live scroll offset (a wheel scroll re-renders this).
+                const ROW_H: f32 = 28.0;
+                const PAD: f32 = 4.0;
+                const MAX_H: f32 = 240.0;
+                let rows_h = TableMenuAction::ITEMS.len() as f32 * ROW_H;
+                let view_h = MAX_H - 2.0 * PAD;
+                let thumb = (rows_h > view_h).then(|| {
+                    let scrolled =
+                        (-f32::from(self.table_menu_scroll.offset().y)).clamp(0.0, rows_h - view_h);
+                    let thumb_h = (view_h * view_h / rows_h).max(24.0);
+                    let thumb_top = PAD + scrolled / (rows_h - view_h) * (view_h - thumb_h);
+                    div()
+                        .absolute()
+                        .top(px(thumb_top))
+                        .right(px(2.))
+                        .w(px(6.))
+                        .h(px(thumb_h))
+                        .rounded(px(3.))
+                        .bg(rgba(0xffffff66))
+                });
+                gpui::deferred(
+                    gpui::anchored().position(anchor).snap_to_window().child(
+                        div()
+                            .relative()
+                            .occlude()
+                            .min_w(px(170.))
+                            .cursor(CursorStyle::Arrow)
+                            .bg(rgb(0x26262b))
+                            .border_1()
+                            .border_color(rgb(0x45454c))
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .text_color(rgb(0xe6e6e6))
+                            .text_size(px(14.))
+                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                                editor.table_menu = None;
+                                cx.notify();
+                            }))
+                            .child(
+                                // Inner scroll viewport: caps the height + scrolls the
+                                // overflow (max_h on a separate flex-col div, like the
+                                // suggestion menu — combining it with the styled box
+                                // above doesn't cap).
+                                div()
+                                    .id("table-menu")
+                                    .max_h(px(MAX_H))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.table_menu_scroll)
+                                    .flex()
+                                    .flex_col()
+                                    .py(px(PAD))
+                                    .children(rows),
+                            )
+                            .children(thumb),
+                    ),
+                )
             }))
     }
 }
@@ -3266,6 +3399,9 @@ fn table_column_widths(
 
 /// Horizontal inset (px) of a table cell's text from its column's left edge.
 const TABLE_CELL_PAD: f32 = 10.;
+/// Left indent for tables, so per-row delete "−" handles sit in a gutter beside the
+/// grid instead of over the first cell (issue #16).
+const TABLE_GUTTER: f32 = 22.;
 
 /// The font a table cell is rendered with — bold in the header row.
 fn cell_font(font: &Font, is_header: bool) -> Font {
@@ -3475,6 +3611,24 @@ fn paint_table_row(
 
 /// Paint a table add-row / add-column affordance: a thin strip with a centered
 /// "+". Subtle by default; on hover a faint fill + a brighter glyph.
+/// Paint a row/column delete handle: a small rounded button with a "−". Filled on
+/// hover, a muted glyph otherwise.
+fn paint_del_handle(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
+    let mut bg = border;
+    bg.a = if hot { 0.22 } else { 0.10 };
+    window.paint_quad(fill(bounds, bg).corner_radii(Corners::all(px(4.))));
+    let mut glyph = border;
+    glyph.a = if hot { 0.95 } else { 0.6 };
+    let cx = bounds.origin.x + bounds.size.width / 2.;
+    let cy = bounds.origin.y + bounds.size.height / 2.;
+    let arm = px(5.);
+    let th = px(1.5);
+    window.paint_quad(fill(
+        Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
+        glyph,
+    ));
+}
+
 fn paint_add_strip(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
     let b = bounds;
     if hot {
@@ -3548,6 +3702,21 @@ struct TableAdds {
     border: Hsla,
 }
 
+/// A per-row or per-column delete handle for the hovered table cell (issue #16):
+/// where to paint the "−", its hover-cursor hitbox, and the row/column to remove.
+struct DelHandle {
+    bounds: Bounds<Pixels>,
+    /// The whole row's / column's cell rect, tinted on hover so the delete target
+    /// is obvious.
+    highlight: Bounds<Pixels>,
+    hit: Hitbox,
+    row: usize,
+    col: usize,
+    border: Hsla,
+    /// Paint the row/column tint (kept for borderless tables to show the grid).
+    show_highlight: bool,
+}
+
 struct PrepaintState {
     wrapped: Vec<WrappedLine>,
     /// Top offset of each logical line relative to the editor's top.
@@ -3575,6 +3744,9 @@ struct PrepaintState {
     chip_grips: Vec<(usize, Hitbox)>,
     /// Per-table hover-revealed add-row/add-column "+" affordances (issue #16).
     table_adds: Vec<TableAdds>,
+    /// Hovered-cell delete handles (issue #16): the "−" for the hovered row + column.
+    row_del: Option<DelHandle>,
+    col_del: Option<DelHandle>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -3758,12 +3930,23 @@ impl Element for EditorElement {
         // own space (no overlap with the adjacent line, no blank line required).
         let mut line_tops = Vec::with_capacity(wrapped.len());
         let mut y = px(0.);
-        for ((line, lh), bg) in wrapped
+        for (idx, ((line, lh), bg)) in wrapped
             .iter()
             .zip(line_heights.iter())
             .zip(backgrounds.iter())
+            .enumerate()
         {
-            let (top_pad, bot_pad) = code_pads(*bg);
+            let (mut top_pad, bot_pad) = code_pads(*bg);
+            // Reserve a top gutter above each table for the column-delete "−" handles
+            // (mirrors the left gutter from TABLE_GUTTER). Baked into line_tops so the
+            // caret / click / paint all shift with it.
+            if tables
+                .get(idx)
+                .and_then(Option::as_ref)
+                .is_some_and(|t| t.is_header)
+            {
+                top_pad += px(TABLE_GUTTER);
+            }
             y += top_pad;
             line_tops.push(y);
             y += *lh * (line.wrap_boundaries().len() + 1) as f32 + bot_pad;
@@ -3829,7 +4012,10 @@ impl Element for EditorElement {
         // a "+" strip below (adds a row) and to the right (adds a column); bounds
         // follow the painted rows. Paint shows/cursors them only while the zone is
         // hovered; on_mouse_down hit-tests the committed strip rects.
+        let mouse = window.mouse_position();
         let mut table_adds: Vec<TableAdds> = Vec::new();
+        let mut row_del: Option<DelHandle> = None;
+        let mut col_del: Option<DelHandle> = None;
         let mut tbl_top: Option<Pixels> = None;
         let mut tbl_header = 0usize;
         for (i, slot) in tables.iter().enumerate() {
@@ -3841,7 +4027,7 @@ impl Element for EditorElement {
             if t.is_last && !t.col_widths.is_empty() {
                 let top = tbl_top.unwrap_or(bounds.origin.y + line_tops[i]);
                 let bottom = bounds.origin.y + line_tops[i] + line_heights[i];
-                let left = bounds.origin.x;
+                let left = bounds.origin.x + px(TABLE_GUTTER);
                 let width: Pixels = t.col_widths.iter().copied().sum();
                 // Full-edge "+" tabs: a strip along the bottom (adds a row) and the
                 // right (adds a column), each the table's full extent like the box.
@@ -3861,6 +4047,70 @@ impl Element for EditorElement {
                     right_row: tbl_header,
                     border: t.border,
                 });
+
+                // Per-row + per-column delete "−" handles (issue #16): full-height in
+                // the left gutter, full-width in the top gutter. Hover bands reach
+                // into the gutters so moving onto a handle keeps it shown.
+                let g = px(TABLE_GUTTER);
+                // Always available on hover (people delete rows/columns while editing,
+                // too). The highlight stays for borderless (lineless) tables so the
+                // otherwise-invisible grid still shows.
+                let has_lines = matches!(t.style, markdown_syntax::TableStyle::Grid);
+                let show_highlight = !has_lines;
+                if mouse.x >= bounds.origin.x && mouse.x < left + width {
+                    for line in tbl_header..=i {
+                        let Some(rt) = tables.get(line).and_then(Option::as_ref) else {
+                            continue;
+                        };
+                        if rt.is_separator || rt.is_header {
+                            continue;
+                        }
+                        let rtop = bounds.origin.y + line_tops[line];
+                        let rh = line_heights[line];
+                        if mouse.y >= rtop && mouse.y < rtop + rh {
+                            let rb = Bounds::new(
+                                point(bounds.origin.x + px(2.), rtop + px(1.)),
+                                size((g - px(5.)).max(px(12.)), (rh - px(2.)).max(px(8.))),
+                            );
+                            row_del = Some(DelHandle {
+                                bounds: rb,
+                                highlight: Bounds::new(point(left, rtop), size(width, rh)),
+                                hit: window.insert_hitbox(rb, HitboxBehavior::Normal),
+                                row: line,
+                                col: 0,
+                                border: rt.border,
+                                show_highlight,
+                            });
+                            break;
+                        }
+                    }
+                }
+                if mouse.y >= top - g
+                    && mouse.y < bottom
+                    && mouse.x >= left
+                    && mouse.x < left + width
+                {
+                    let mut colx = left;
+                    for (col, &cw) in t.col_widths.iter().enumerate() {
+                        if mouse.x < colx + cw || col + 1 == t.col_widths.len() {
+                            let cb = Bounds::new(
+                                point(colx + px(2.), top - g + px(2.)),
+                                size((cw - px(4.)).max(px(12.)), (g - px(4.)).max(px(8.))),
+                            );
+                            col_del = Some(DelHandle {
+                                bounds: cb,
+                                highlight: Bounds::new(point(colx, top), size(cw, bottom - top)),
+                                hit: window.insert_hitbox(cb, HitboxBehavior::Normal),
+                                row: tbl_header,
+                                col,
+                                border: t.border,
+                                show_highlight,
+                            });
+                            break;
+                        }
+                        colx += cw;
+                    }
+                }
                 tbl_top = None;
             }
         }
@@ -3899,8 +4149,14 @@ impl Element for EditorElement {
             // Caret inside a table cell: position it within the rendered cell
             // (centered vertically like the cell text), not by the raw source line.
             if let Some(t) = tables.get(row).and_then(Option::as_ref)
-                && let Some((x, _, _)) =
-                    table_caret_pos(t, col, bounds.left(), &font, font_size, window)
+                && let Some((x, _, _)) = table_caret_pos(
+                    t,
+                    col,
+                    bounds.left() + px(TABLE_GUTTER),
+                    &font,
+                    font_size,
+                    window,
+                )
             {
                 let y = bounds.top() + top + (lh - base_lh) / 2.;
                 let c = fill(
@@ -3944,8 +4200,22 @@ impl Element for EditorElement {
                 // ends (not raw-source geometry).
                 if let Some(t) = tables.get(row).and_then(Option::as_ref) {
                     if let (Some((xa, ..)), Some((xb, ..))) = (
-                        table_caret_pos(t, a, bounds.left(), &font, font_size, window),
-                        table_caret_pos(t, b, bounds.left(), &font, font_size, window),
+                        table_caret_pos(
+                            t,
+                            a,
+                            bounds.left() + px(TABLE_GUTTER),
+                            &font,
+                            font_size,
+                            window,
+                        ),
+                        table_caret_pos(
+                            t,
+                            b,
+                            bounds.left() + px(TABLE_GUTTER),
+                            &font,
+                            font_size,
+                            window,
+                        ),
                     ) {
                         let (lo, hi) = (xa.min(xb), xa.max(xb));
                         let cy = bounds.top() + top + (lh - base_lh) / 2.;
@@ -4023,6 +4293,8 @@ impl Element for EditorElement {
             checkbox_grips,
             chip_grips,
             table_adds,
+            row_del,
+            col_del,
             cursor,
             selections,
         }
@@ -4236,7 +4508,10 @@ impl Element for EditorElement {
                     }
                     let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
                     window.paint_quad(PaintQuad {
-                        bounds: Bounds::new(origin, size(table_w, total_h)),
+                        bounds: Bounds::new(
+                            point(origin.x + px(TABLE_GUTTER), origin.y),
+                            size(table_w, total_h),
+                        ),
                         corner_radii: Corners::all(px(6.)),
                         background: hsla(0., 0., 0., 0.).into(),
                         border_widths: Edges::all(px(1.)),
@@ -4245,7 +4520,15 @@ impl Element for EditorElement {
                     });
                 }
                 paint_table_row(
-                    t, origin, *lh, &font, font_size, base_lh, text_color, window, cx,
+                    t,
+                    point(origin.x + px(TABLE_GUTTER), origin.y),
+                    *lh,
+                    &font,
+                    font_size,
+                    base_lh,
+                    text_color,
+                    window,
+                    cx,
                 );
             } else if let Some(Block::Image(w)) = prepaint.widgets.get(i).and_then(Option::as_ref) {
                 // Inline image (W4a): paint the decoded image instead of source,
@@ -4344,6 +4627,30 @@ impl Element for EditorElement {
             table_col_add_rects.push((ta.right, ta.right_row));
         }
 
+        // Per-row / per-column delete "−" handles for the hovered cell (issue #16).
+        let mut table_row_del = None;
+        if let Some(d) = &prepaint.row_del {
+            if d.show_highlight {
+                let mut hi = d.border;
+                hi.a = 0.10;
+                window.paint_quad(fill(d.highlight, hi));
+            }
+            paint_del_handle(d.bounds, d.border, d.bounds.contains(&mouse), window);
+            window.set_cursor_style(CursorStyle::PointingHand, &d.hit);
+            table_row_del = Some((d.bounds, d.row));
+        }
+        let mut table_col_del = None;
+        if let Some(d) = &prepaint.col_del {
+            if d.show_highlight {
+                let mut hi = d.border;
+                hi.a = 0.10;
+                window.paint_quad(fill(d.highlight, hi));
+            }
+            paint_del_handle(d.bounds, d.border, d.bounds.contains(&mouse), window);
+            window.set_cursor_style(CursorStyle::PointingHand, &d.hit);
+            table_col_del = Some((d.bounds, d.row, d.col));
+        }
+
         let wrapped = std::mem::take(&mut prepaint.wrapped);
         let line_tops = std::mem::take(&mut prepaint.line_tops);
         let line_heights = std::mem::take(&mut prepaint.line_heights);
@@ -4383,6 +4690,8 @@ impl Element for EditorElement {
             editor.table_row_add_rects = table_row_add_rects;
             editor.table_col_add_rects = table_col_add_rects;
             editor.table_hover_zones = table_hover_zones;
+            editor.table_row_del = table_row_del;
+            editor.table_col_del = table_col_del;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });
