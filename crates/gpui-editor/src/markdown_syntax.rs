@@ -39,6 +39,16 @@ pub struct SyntaxStyle {
     pub quote: Hsla,
     /// `<mark>` highlight background.
     pub mark_bg: Hsla,
+    /// Popover/menu surface background (e.g. the right-click table menu).
+    pub popover_bg: Hsla,
+    /// Popover/menu border.
+    pub popover_border: Hsla,
+    /// Popover/menu foreground text.
+    pub popover_fg: Hsla,
+    /// Popover/menu hovered-row background (a soft accent tint).
+    pub popover_hover: Hsla,
+    /// Popover/menu group divider.
+    pub popover_divider: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
 }
@@ -1093,6 +1103,11 @@ mod tests {
             tag: c,
             quote: c,
             mark_bg: c,
+            popover_bg: c,
+            popover_border: c,
+            popover_fg: c,
+            popover_hover: c,
+            popover_divider: c,
             mono: gpui::font("monospace"),
         }
     }

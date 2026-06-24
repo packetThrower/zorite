@@ -199,7 +199,7 @@ pub struct Diagnostic {
 /// An open right-click suggestions menu for a diagnostic.
 #[derive(Clone)]
 struct DiagMenu {
-    /// Popup top-left, relative to the editor's top-left.
+    /// Popup top-left, in window space (rendered on a deferred/anchored layer).
     anchor: Point<Pixels>,
     /// The diagnostic's byte range, replaced when a suggestion is chosen.
     range: Range<usize>,
@@ -1208,11 +1208,8 @@ impl EditorState {
             return;
         }
         let offset = self.index_for_mouse_position(event.position);
-        let anchor = self
-            .last_bounds
-            .as_ref()
-            .map(|b| point(event.position.x - b.left(), event.position.y - b.top()))
-            .unwrap_or_default();
+        // Window-space — the popup renders on a `deferred`/`anchored` layer.
+        let anchor = event.position;
         let hit = self.diagnostic_at(offset).map(|d| d.range.clone());
         self.menu = hit.and_then(|range| {
             let word = self.content[range.clone()].to_string();
@@ -2274,6 +2271,15 @@ impl Render for EditorState {
                     scroll,
                 } = menu;
                 let count = suggestions.len();
+                // Menu chrome from the host's theme (fallbacks match the former
+                // hardcoded dark menu when no markdown style is set).
+                let st = self.markdown_style.as_ref();
+                let menu_bg = st.map_or(rgb(0x26262b).into(), |s| s.popover_bg);
+                let menu_border = st.map_or(rgb(0x45454c).into(), |s| s.popover_border);
+                let menu_fg = st.map_or(rgb(0xe6e6e6).into(), |s| s.popover_fg);
+                let hover = st.map_or(rgba(0x2f6fd628).into(), |s| s.popover_hover);
+                let mut thumb_c = st.map_or(rgba(0xffffff66).into(), |s| s.marker);
+                thumb_c.a = 0.5;
                 // Collected eagerly (not a lazy iterator) so `cx` is only
                 // borrowed here and stays free for the menu's own listeners below.
                 let rows: Vec<_> = suggestions
@@ -2294,7 +2300,7 @@ impl Render for EditorState {
                             .px(px(12.))
                             .py(px(5.))
                             // Highlight the row under the pointer.
-                            .hover(|s| s.bg(rgb(0x2f6fd6)))
+                            .hover(move |s| s.bg(hover))
                             .child(sugg)
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -2332,59 +2338,89 @@ impl Render for EditorState {
                         .w(px(6.))
                         .h(px(thumb_h))
                         .rounded(px(3.))
-                        .bg(rgba(0xffffff66))
+                        .bg(thumb_c)
                 });
 
-                div()
-                    .absolute()
-                    .left(anchor.x)
-                    .top(anchor.y)
-                    .min_w(px(150.))
-                    // Override the editor's I-beam — the menu is a normal pointer
-                    // surface, not text (children inherit this hitbox's cursor).
-                    .cursor(CursorStyle::Arrow)
-                    .bg(rgb(0x26262b))
-                    .border_1()
-                    .border_color(rgb(0x45454c))
-                    .rounded(px(6.))
-                    // Clip rows + thumb to the rounded box.
-                    .overflow_hidden()
-                    .text_color(rgb(0xe6e6e6))
-                    .text_size(px(14.))
-                    // A click anywhere outside the menu (elsewhere in the
-                    // window) dismisses it.
-                    .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
-                        editor.menu = None;
-                        cx.notify();
-                    }))
-                    .child(
-                        // The scroll viewport: shows ~6 rows, the rest scroll.
+                // Deferred + anchored to a window-space top layer with `.occlude()`,
+                // so it renders above the page chrome and captures the wheel — else a
+                // scroll over the popup scrolls the page behind it.
+                gpui::deferred(
+                    gpui::anchored().position(anchor).snap_to_window().child(
                         div()
-                            // Stable id so the scroll offset persists across frames.
-                            .id("suggestion-menu")
-                            .max_h(px(MAX_H))
-                            .overflow_y_scroll()
-                            .track_scroll(&scroll)
-                            .flex()
-                            .flex_col()
-                            .py(px(PAD))
-                            .children(rows),
-                    )
-                    .children(thumb)
+                            .relative()
+                            .occlude()
+                            .min_w(px(150.))
+                            // Override the editor's I-beam — the menu is a normal
+                            // pointer surface (children inherit this hitbox's cursor).
+                            .cursor(CursorStyle::Arrow)
+                            .bg(menu_bg)
+                            .border_1()
+                            .border_color(menu_border)
+                            .rounded(px(6.))
+                            // Clip rows + thumb to the rounded box.
+                            .overflow_hidden()
+                            .text_color(menu_fg)
+                            .text_size(px(14.))
+                            // A click anywhere outside the menu dismisses it.
+                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                                editor.menu = None;
+                                cx.notify();
+                            }))
+                            .child(
+                                // The scroll viewport: shows ~6 rows, the rest scroll.
+                                div()
+                                    .id("suggestion-menu")
+                                    .max_h(px(MAX_H))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&scroll)
+                                    .flex()
+                                    .flex_col()
+                                    .py(px(PAD))
+                                    .children(rows),
+                            )
+                            .children(thumb),
+                    ),
+                )
             }))
             // The table right-click menu (Word-style row/column editing), anchored
             // at the click; each row runs its action on the caret's table cell.
             .children(self.table_menu.map(|anchor| {
-                let rows: Vec<_> = TableMenuAction::ITEMS
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &(label, action))| {
+                // Menu chrome from the host's theme (fallbacks match the former
+                // hardcoded dark menu when no markdown style is set).
+                let st = self.markdown_style.as_ref();
+                let menu_bg = st.map_or(rgb(0x26262b).into(), |s| s.popover_bg);
+                let menu_border = st.map_or(rgb(0x45454c).into(), |s| s.popover_border);
+                let menu_fg = st.map_or(rgb(0xe6e6e6).into(), |s| s.popover_fg);
+                let hover = st.map_or(rgba(0x2f6fd628).into(), |s| s.popover_hover);
+                let divider = st.map_or(rgba(0xffffff2e).into(), |s| s.popover_divider);
+                let mut thumb_c = st.map_or(rgba(0xffffff66).into(), |s| s.marker);
+                thumb_c.a = 0.5;
+                const ROW_H: f32 = 28.0;
+                const DIV_H: f32 = 9.0;
+                const PAD: f32 = 4.0;
+                const MAX_H: f32 = 240.0;
+                // Rows in three groups (insert / delete / align) with a divider before
+                // the delete group (index 4) and the align group (index 6).
+                let mut rows: Vec<gpui::AnyElement> = Vec::new();
+                for (i, &(label, action)) in TableMenuAction::ITEMS.iter().enumerate() {
+                    if i == 4 || i == 6 {
+                        rows.push(
+                            div()
+                                .flex_shrink_0()
+                                .h(px(1.))
+                                .my(px(4.))
+                                .mx(px(8.))
+                                .bg(divider)
+                                .into_any_element(),
+                        );
+                    }
+                    rows.push(
                         div()
                             .id(("table-menu-row", i))
                             .flex_shrink_0()
                             .px(px(12.))
                             .py(px(5.))
-                            .hover(|s| s.bg(rgb(0x2f6fd6)))
+                            .hover(move |s| s.bg(hover))
                             .child(SharedString::from(label))
                             .on_mouse_down(
                                 MouseButton::Left,
@@ -2393,15 +2429,12 @@ impl Render for EditorState {
                                     action.apply(editor, cx);
                                 }),
                             )
-                    })
-                    .collect();
-                // A thin scrollbar thumb, shown when the items overflow the cap so the
-                // scroll affordance is visible — sized from the row count + positioned
-                // from the live scroll offset (a wheel scroll re-renders this).
-                const ROW_H: f32 = 28.0;
-                const PAD: f32 = 4.0;
-                const MAX_H: f32 = 240.0;
-                let rows_h = TableMenuAction::ITEMS.len() as f32 * ROW_H;
+                            .into_any_element(),
+                    );
+                }
+                // Scrollbar thumb, shown when the items overflow the cap — sized from
+                // the content height + positioned from the live scroll offset.
+                let rows_h = TableMenuAction::ITEMS.len() as f32 * ROW_H + 2.0 * DIV_H;
                 let view_h = MAX_H - 2.0 * PAD;
                 let thumb = (rows_h > view_h).then(|| {
                     let scrolled =
@@ -2415,7 +2448,7 @@ impl Render for EditorState {
                         .w(px(6.))
                         .h(px(thumb_h))
                         .rounded(px(3.))
-                        .bg(rgba(0xffffff66))
+                        .bg(thumb_c)
                 });
                 gpui::deferred(
                     gpui::anchored().position(anchor).snap_to_window().child(
@@ -2424,12 +2457,12 @@ impl Render for EditorState {
                             .occlude()
                             .min_w(px(170.))
                             .cursor(CursorStyle::Arrow)
-                            .bg(rgb(0x26262b))
+                            .bg(menu_bg)
                             .border_1()
-                            .border_color(rgb(0x45454c))
+                            .border_color(menu_border)
                             .rounded(px(6.))
                             .overflow_hidden()
-                            .text_color(rgb(0xe6e6e6))
+                            .text_color(menu_fg)
                             .text_size(px(14.))
                             .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
                                 editor.table_menu = None;
@@ -3630,43 +3663,13 @@ fn paint_del_handle(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mu
 }
 
 fn paint_add_strip(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
-    let b = bounds;
-    if hot {
-        // A filled tab whose outer edge bows out in one smooth arc — flat against
-        // the table edge, peaking at the bounds' far edge mid-way, tapering back to
-        // the table corners. Wide bounds = the below strip (bow down); tall = the
-        // right strip (bow right). The quadratic control sits at twice the depth so
-        // the curve peaks at the bounds edge.
-        let mut pb = PathBuilder::fill();
-        if b.size.width >= b.size.height {
-            pb.move_to(b.origin);
-            pb.line_to(point(b.origin.x + b.size.width, b.origin.y));
-            pb.curve_to(
-                b.origin,
-                point(
-                    b.origin.x + b.size.width / 2.,
-                    b.origin.y + b.size.height * 2.,
-                ),
-            );
-        } else {
-            pb.move_to(b.origin);
-            pb.line_to(point(b.origin.x, b.origin.y + b.size.height));
-            pb.curve_to(
-                b.origin,
-                point(
-                    b.origin.x + b.size.width * 2.,
-                    b.origin.y + b.size.height / 2.,
-                ),
-            );
-        }
-        if let Ok(p) = pb.build() {
-            let mut fill_c = border;
-            fill_c.a = 0.16;
-            window.paint_path(p, fill_c);
-        }
-    }
+    // A rounded box matching the delete handles — filled faintly, brighter on hover
+    // — with a centered "+".
+    let mut bg = border;
+    bg.a = if hot { 0.22 } else { 0.10 };
+    window.paint_quad(fill(bounds, bg).corner_radii(Corners::all(px(4.))));
     let mut glyph = border;
-    glyph.a = if hot { 0.95 } else { 0.5 };
+    glyph.a = if hot { 0.95 } else { 0.6 };
     let cx = bounds.origin.x + bounds.size.width / 2.;
     let cy = bounds.origin.y + bounds.size.height / 2.;
     let arm = px(5.);
@@ -4185,7 +4188,15 @@ impl Element for EditorElement {
             let (s_row, _) = editor.row_col(s);
             let (e_row, _) = editor.row_col(e);
             let right = bounds.size.width;
-            let color = rgba(0x3b82f640);
+            // Selection tint = the theme accent at low alpha (fallback: a fixed blue).
+            let color = editor
+                .markdown_style
+                .as_ref()
+                .map_or(rgba(0x3b82f640).into(), |s| {
+                    let mut c = s.link;
+                    c.a = 0.25;
+                    c
+                });
             let mut sels = Vec::new();
             for row in s_row..=e_row {
                 let Some(line) = wrapped.get(row) else {
