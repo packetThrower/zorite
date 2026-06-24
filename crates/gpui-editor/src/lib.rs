@@ -982,19 +982,33 @@ impl EditorState {
             cx.emit(EditorEvent::OpenLink(src));
             return;
         }
-        // A press on a table's hover "+" strip adds a row (below) or column (right):
-        // seat the caret in the table, then reuse the row/column insert APIs.
+        // A press on a table's hover "+" strip adds a row (below) or column (right).
+        // The insert APIs are caret-driven, so seat the caret in the table to target
+        // them — but capture the user's cell first and restore it after, so the
+        // caret stays put instead of following the new row/column.
         if let Some(row) = self.table_add_row_at(event.position) {
+            let keep = self.caret_table_cell_pos();
             if let Some(off) = self.cell_start_offset(row, 0) {
                 self.selected_range = off..off;
                 self.insert_table_row(true, cx);
             }
+            if let Some((r, c, ic)) = keep {
+                let caret = self.caret_pos_for_cell(r, c, ic);
+                self.selected_range = caret..caret;
+                cx.notify();
+            }
             return;
         }
         if let Some(row) = self.table_add_col_at(event.position) {
+            let keep = self.caret_table_cell_pos();
             if let Some(off) = self.last_cell_start_offset(row) {
                 self.selected_range = off..off;
                 self.insert_table_column(true, cx);
+            }
+            if let Some((r, c, ic)) = keep {
+                let caret = self.caret_pos_for_cell(r, c, ic);
+                self.selected_range = caret..caret;
+                cx.notify();
             }
             return;
         }
@@ -3462,10 +3476,40 @@ fn paint_table_row(
 /// Paint a table add-row / add-column affordance: a thin strip with a centered
 /// "+". Subtle by default; on hover a faint fill + a brighter glyph.
 fn paint_add_strip(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
+    let b = bounds;
     if hot {
-        let mut fill_c = border;
-        fill_c.a = 0.14;
-        window.paint_quad(fill(bounds, fill_c).corner_radii(Corners::all(px(3.))));
+        // A filled tab whose outer edge bows out in one smooth arc — flat against
+        // the table edge, peaking at the bounds' far edge mid-way, tapering back to
+        // the table corners. Wide bounds = the below strip (bow down); tall = the
+        // right strip (bow right). The quadratic control sits at twice the depth so
+        // the curve peaks at the bounds edge.
+        let mut pb = PathBuilder::fill();
+        if b.size.width >= b.size.height {
+            pb.move_to(b.origin);
+            pb.line_to(point(b.origin.x + b.size.width, b.origin.y));
+            pb.curve_to(
+                b.origin,
+                point(
+                    b.origin.x + b.size.width / 2.,
+                    b.origin.y + b.size.height * 2.,
+                ),
+            );
+        } else {
+            pb.move_to(b.origin);
+            pb.line_to(point(b.origin.x, b.origin.y + b.size.height));
+            pb.curve_to(
+                b.origin,
+                point(
+                    b.origin.x + b.size.width * 2.,
+                    b.origin.y + b.size.height / 2.,
+                ),
+            );
+        }
+        if let Ok(p) = pb.build() {
+            let mut fill_c = border;
+            fill_c.a = 0.16;
+            window.paint_path(p, fill_c);
+        }
     }
     let mut glyph = border;
     glyph.a = if hot { 0.95 } else { 0.5 };
@@ -3799,13 +3843,14 @@ impl Element for EditorElement {
                 let bottom = bounds.origin.y + line_tops[i] + line_heights[i];
                 let left = bounds.origin.x;
                 let width: Pixels = t.col_widths.iter().copied().sum();
-                let thick = (line_heights[i] * 0.75).max(px(12.));
-                let below = Bounds::new(point(left, bottom), size(width, thick));
-                let right = Bounds::new(point(left + width, top), size(thick, bottom - top));
-                let zone = Bounds::new(
-                    point(left, top),
-                    size(width + thick, (bottom - top) + thick),
-                );
+                // Full-edge "+" tabs: a strip along the bottom (adds a row) and the
+                // right (adds a column), each the table's full extent like the box.
+                // paint rounds the two outer corners so the edge bulging away from
+                // the table reads as a half-moon.
+                let r = (line_heights[i] * 0.75).max(px(12.));
+                let below = Bounds::new(point(left, bottom), size(width, r));
+                let right = Bounds::new(point(left + width, top), size(r, bottom - top));
+                let zone = Bounds::new(point(left, top), size(width + r, (bottom - top) + r));
                 table_adds.push(TableAdds {
                     zone,
                     below,
