@@ -327,6 +327,19 @@ pub struct EditorState {
     /// Per-logical-line table-grid row (from the last paint), so a click /
     /// Tab / caret hit-tests against cells instead of the raw source line.
     table_rows: Vec<Option<TableRow>>,
+    /// Hover-revealed "+" add-row / add-column strips for each table (issue #16),
+    /// each paired with the table row to seat the caret in before inserting. From
+    /// the last paint, committed only while the table is hovered; hit-tested on
+    /// mouse-down.
+    table_row_add_rects: Vec<(Bounds<Pixels>, usize)>,
+    table_col_add_rects: Vec<(Bounds<Pixels>, usize)>,
+    /// Each table's hover zone (grid + a thin margin), committed every paint so
+    /// `on_mouse_move` can repaint when the pointer's table-affordance region
+    /// changes (the editor otherwise only repaints on the caret blink).
+    table_hover_zones: Vec<Bounds<Pixels>>,
+    /// The affordance region the pointer was last in — `(table index, 0 = zone /
+    /// 1 = below strip / 2 = right strip)` — so the repaint fires only on change.
+    table_hover_region: Option<(usize, u8)>,
     /// Per-logical-line flag: this row is painted as an inline image (W4), so a
     /// click on it places the caret at the line start instead of hit-testing
     /// source text. From the last paint.
@@ -409,6 +422,10 @@ impl EditorState {
             offset_maps: Vec::new(),
             line_insets: Vec::new(),
             table_rows: Vec::new(),
+            table_row_add_rects: Vec::new(),
+            table_col_add_rects: Vec::new(),
+            table_hover_zones: Vec::new(),
+            table_hover_region: None,
             last_bounds: None,
             line_height: px(20.),
             is_selecting: false,
@@ -965,6 +982,22 @@ impl EditorState {
             cx.emit(EditorEvent::OpenLink(src));
             return;
         }
+        // A press on a table's hover "+" strip adds a row (below) or column (right):
+        // seat the caret in the table, then reuse the row/column insert APIs.
+        if let Some(row) = self.table_add_row_at(event.position) {
+            if let Some(off) = self.cell_start_offset(row, 0) {
+                self.selected_range = off..off;
+                self.insert_table_row(true, cx);
+            }
+            return;
+        }
+        if let Some(row) = self.table_add_col_at(event.position) {
+            if let Some(off) = self.last_cell_start_offset(row) {
+                self.selected_range = off..off;
+                self.insert_table_column(true, cx);
+            }
+            return;
+        }
         // A click on a table cell drops the caret inside the cell, not in the raw
         // `| … |` source.
         let offset = self
@@ -1047,6 +1080,15 @@ impl EditorState {
                 .table_offset_at(event.position, window)
                 .unwrap_or_else(|| self.index_for_mouse_position(event.position));
             self.select_to(offset, cx);
+            return;
+        }
+        // Repaint table "+" affordances when the pointer's region changes, so the
+        // hover fill + cursor track the mouse live (the editor otherwise only
+        // repaints on the caret blink).
+        let region = self.table_hover_region_at(event.position);
+        if region != self.table_hover_region {
+            self.table_hover_region = region;
+            cx.notify();
         }
     }
 
@@ -1406,6 +1448,60 @@ impl EditorState {
             .contains(&position)
             .then_some(line)
         })
+    }
+
+    /// The table-affordance region the pointer is in — `(table index, 0 = in the
+    /// hover zone / 1 = on the below "+" strip / 2 = on the right "+" strip)`, or
+    /// `None` off every table. Drives `on_mouse_move`'s repaint-on-change.
+    fn table_hover_region_at(&self, pos: Point<Pixels>) -> Option<(usize, u8)> {
+        let i = self
+            .table_hover_zones
+            .iter()
+            .position(|z| z.contains(&pos))?;
+        let strip = if self
+            .table_row_add_rects
+            .iter()
+            .any(|(b, _)| b.contains(&pos))
+        {
+            1
+        } else if self
+            .table_col_add_rects
+            .iter()
+            .any(|(b, _)| b.contains(&pos))
+        {
+            2
+        } else {
+            0
+        };
+        Some((i, strip))
+    }
+
+    /// Hit-test the table add-row "+" strips → the row a new row lands after.
+    fn table_add_row_at(&self, position: Point<Pixels>) -> Option<usize> {
+        self.table_row_add_rects
+            .iter()
+            .find_map(|&(rect, row)| rect.contains(&position).then_some(row))
+    }
+
+    /// Hit-test the table add-column "+" strips → a row of that table (to seat the
+    /// caret in its last cell).
+    fn table_add_col_at(&self, position: Point<Pixels>) -> Option<usize> {
+        self.table_col_add_rects
+            .iter()
+            .find_map(|&(rect, row)| rect.contains(&position).then_some(row))
+    }
+
+    /// Source offset at the start of `cell`'s content in table `row` (last paint).
+    fn cell_start_offset(&self, row: usize, cell: usize) -> Option<usize> {
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        Some(self.line_starts()[row] + t.cell_ranges.get(cell)?.start)
+    }
+
+    /// Source offset at the start of the last cell's content in table `row`.
+    fn last_cell_start_offset(&self, row: usize) -> Option<usize> {
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        let last = t.cell_ranges.len().checked_sub(1)?;
+        Some(self.line_starts()[row] + t.cell_ranges.get(last)?.start)
     }
 
     /// If `position` lands on a table grid row (not the separator), the source
@@ -3363,11 +3459,49 @@ fn paint_table_row(
     }
 }
 
+/// Paint a table add-row / add-column affordance: a thin strip with a centered
+/// "+". Subtle by default; on hover a faint fill + a brighter glyph.
+fn paint_add_strip(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
+    if hot {
+        let mut fill_c = border;
+        fill_c.a = 0.14;
+        window.paint_quad(fill(bounds, fill_c).corner_radii(Corners::all(px(3.))));
+    }
+    let mut glyph = border;
+    glyph.a = if hot { 0.95 } else { 0.5 };
+    let cx = bounds.origin.x + bounds.size.width / 2.;
+    let cy = bounds.origin.y + bounds.size.height / 2.;
+    let arm = px(5.);
+    let th = px(1.5);
+    window.paint_quad(fill(
+        Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
+        glyph,
+    ));
+    window.paint_quad(fill(
+        Bounds::new(point(cx - th / 2., cy - arm), size(th, arm * 2.)),
+        glyph,
+    ));
+}
+
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
 /// and selection, and wires the input handler. Height is content-driven via a
 /// measured layout (it depends on the resolved width once soft-wrap is applied).
 struct EditorElement {
     editor: Entity<EditorState>,
+}
+
+/// Per-table hover-revealed "+" affordances (issue #16): a hover zone (the table
+/// plus a thin margin) that gates visibility, plus the below/right "+" strips with
+/// their own hitboxes (hover cursor) and the table row to seat the caret in.
+struct TableAdds {
+    zone: Bounds<Pixels>,
+    below: Bounds<Pixels>,
+    below_hit: Hitbox,
+    below_row: usize,
+    right: Bounds<Pixels>,
+    right_hit: Hitbox,
+    right_row: usize,
+    border: Hsla,
 }
 
 struct PrepaintState {
@@ -3395,6 +3529,8 @@ struct PrepaintState {
     /// grips' resize cursor). Set in paint via `set_cursor_style`.
     checkbox_grips: Vec<(usize, Hitbox)>,
     chip_grips: Vec<(usize, Hitbox)>,
+    /// Per-table hover-revealed add-row/add-column "+" affordances (issue #16).
+    table_adds: Vec<TableAdds>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
 }
@@ -3644,6 +3780,46 @@ impl Element for EditorElement {
             }
         }
 
+        // Per-table add-row / add-column "+" affordances (issue #16), revealed on
+        // hover. Each table contributes a hover zone (the grid + a thin margin) plus
+        // a "+" strip below (adds a row) and to the right (adds a column); bounds
+        // follow the painted rows. Paint shows/cursors them only while the zone is
+        // hovered; on_mouse_down hit-tests the committed strip rects.
+        let mut table_adds: Vec<TableAdds> = Vec::new();
+        let mut tbl_top: Option<Pixels> = None;
+        let mut tbl_header = 0usize;
+        for (i, slot) in tables.iter().enumerate() {
+            let Some(t) = slot else { continue };
+            if t.is_header {
+                tbl_top = Some(bounds.origin.y + line_tops[i]);
+                tbl_header = i;
+            }
+            if t.is_last && !t.col_widths.is_empty() {
+                let top = tbl_top.unwrap_or(bounds.origin.y + line_tops[i]);
+                let bottom = bounds.origin.y + line_tops[i] + line_heights[i];
+                let left = bounds.origin.x;
+                let width: Pixels = t.col_widths.iter().copied().sum();
+                let thick = (line_heights[i] * 0.75).max(px(12.));
+                let below = Bounds::new(point(left, bottom), size(width, thick));
+                let right = Bounds::new(point(left + width, top), size(thick, bottom - top));
+                let zone = Bounds::new(
+                    point(left, top),
+                    size(width + thick, (bottom - top) + thick),
+                );
+                table_adds.push(TableAdds {
+                    zone,
+                    below,
+                    below_hit: window.insert_hitbox(below, HitboxBehavior::Normal),
+                    below_row: i,
+                    right,
+                    right_hit: window.insert_hitbox(right, HitboxBehavior::Normal),
+                    right_row: tbl_header,
+                    border: t.border,
+                });
+                tbl_top = None;
+            }
+        }
+
         // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
         // only, so `line_tops` stays free to move into the prepaint state.
         let to_screen =
@@ -3801,6 +3977,7 @@ impl Element for EditorElement {
             image_grips,
             checkbox_grips,
             chip_grips,
+            table_adds,
             cursor,
             selections,
         }
@@ -4098,6 +4275,30 @@ impl Element for EditorElement {
             window.paint_quad(cursor);
         }
 
+        // Table "+" affordances (issue #16): while the pointer is over a table's
+        // hover zone, paint its add-row (below) + add-column (right) strips, cursor
+        // them (unconditionally, so gpui applies the hand from its cached map as the
+        // pointer moves onto a strip), and commit their rects for on_mouse_down. The
+        // hovered strip fills; on_mouse_move drives the repaints (the editor
+        // otherwise only repaints on the caret blink). Zones are committed every
+        // frame so on_mouse_move knows where the tables are.
+        let mouse = window.mouse_position();
+        let mut table_hover_zones: Vec<Bounds<Pixels>> = Vec::new();
+        let mut table_row_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
+        let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
+        for ta in &prepaint.table_adds {
+            table_hover_zones.push(ta.zone);
+            if !ta.zone.contains(&mouse) {
+                continue;
+            }
+            paint_add_strip(ta.below, ta.border, ta.below.contains(&mouse), window);
+            window.set_cursor_style(CursorStyle::PointingHand, &ta.below_hit);
+            table_row_add_rects.push((ta.below, ta.below_row));
+            paint_add_strip(ta.right, ta.border, ta.right.contains(&mouse), window);
+            window.set_cursor_style(CursorStyle::PointingHand, &ta.right_hit);
+            table_col_add_rects.push((ta.right, ta.right_row));
+        }
+
         let wrapped = std::mem::take(&mut prepaint.wrapped);
         let line_tops = std::mem::take(&mut prepaint.line_tops);
         let line_heights = std::mem::take(&mut prepaint.line_heights);
@@ -4134,6 +4335,9 @@ impl Element for EditorElement {
             editor.table_rows = table_rows;
             editor.image_rects = image_rects;
             editor.checkbox_rects = checkbox_rects;
+            editor.table_row_add_rects = table_row_add_rects;
+            editor.table_col_add_rects = table_col_add_rects;
+            editor.table_hover_zones = table_hover_zones;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
         });
