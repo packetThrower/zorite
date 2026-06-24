@@ -236,6 +236,7 @@ enum TableMenuAction {
     AlignLeft,
     AlignCenter,
     AlignRight,
+    DeleteTable,
 }
 
 impl TableMenuAction {
@@ -249,6 +250,7 @@ impl TableMenuAction {
         ("Align left", TableMenuAction::AlignLeft),
         ("Align center", TableMenuAction::AlignCenter),
         ("Align right", TableMenuAction::AlignRight),
+        ("Delete table", TableMenuAction::DeleteTable),
     ];
 
     fn apply(self, editor: &mut EditorState, cx: &mut Context<EditorState>) {
@@ -262,6 +264,7 @@ impl TableMenuAction {
             TableMenuAction::AlignLeft => editor.set_caret_table_align(CellAlign::Left, cx),
             TableMenuAction::AlignCenter => editor.set_caret_table_align(CellAlign::Center, cx),
             TableMenuAction::AlignRight => editor.set_caret_table_align(CellAlign::Right, cx),
+            TableMenuAction::DeleteTable => editor.delete_table(cx),
         }
     }
 }
@@ -2146,6 +2149,44 @@ impl EditorState {
         cx.notify();
     }
 
+    /// Delete the whole table the caret is in — its grid lines plus an optional
+    /// `<!-- table:STYLE -->` marker line directly above — joining the surrounding
+    /// text. The caret lands where the table was.
+    pub fn delete_table(&mut self, cx: &mut Context<Self>) {
+        let Some((header, _sep, end, _cols)) = self.caret_table_block() else {
+            return;
+        };
+        let starts = self.line_starts();
+        let mut first = header;
+        if first > 0
+            && markdown_syntax::table_style_marker(
+                &self.content[starts[first - 1]..starts[first] - 1],
+            )
+            .is_some()
+        {
+            first -= 1;
+        }
+        let line_end_last = self.line_end(end - 1);
+        // Remove the table's lines + the trailing newline; at the document end, eat
+        // the preceding newline instead so no blank line is left behind.
+        let (del_start, del_end) = if line_end_last < self.content.len() {
+            (starts[first], line_end_last + 1)
+        } else {
+            (starts[first].saturating_sub(1), line_end_last)
+        };
+        let range = del_start..del_end;
+        self.record_edit(&range, "");
+        self.content = self.content[..del_start].to_owned() + &self.content[del_end..];
+        self.remap_diagnostics(&range, 0);
+        let caret = del_start.min(self.content.len());
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.goal_x = None;
+        self.table_menu = None;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
     /// The caret's table position as `(row, cell_index, offset_within_cell)`, or
     /// `None` outside a table. Lets structural edits keep the caret put.
     fn caret_table_cell_pos(&self) -> Option<(usize, usize, usize)> {
@@ -2680,7 +2721,7 @@ impl Render for EditorState {
                 // the delete group (index 4) and the align group (index 6).
                 let mut rows: Vec<gpui::AnyElement> = Vec::new();
                 for (i, &(label, action)) in TableMenuAction::ITEMS.iter().enumerate() {
-                    if i == 4 || i == 6 {
+                    if i == 4 || i == 6 || i == 9 {
                         rows.push(
                             div()
                                 .flex_shrink_0()
@@ -2711,7 +2752,7 @@ impl Render for EditorState {
                 }
                 // Scrollbar thumb, shown when the items overflow the cap — sized from
                 // the content height + positioned from the live scroll offset.
-                let rows_h = TableMenuAction::ITEMS.len() as f32 * ROW_H + 2.0 * DIV_H;
+                let rows_h = TableMenuAction::ITEMS.len() as f32 * ROW_H + 3.0 * DIV_H;
                 let view_h = MAX_H - 2.0 * PAD;
                 let thumb = (rows_h > view_h).then(|| {
                     let scrolled =
