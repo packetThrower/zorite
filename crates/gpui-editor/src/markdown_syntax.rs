@@ -902,7 +902,15 @@ pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
         {
             let start = i;
             let mut end = i + 2; // header + separator
-            while end < lines.len() && is_table_row(lines[end]) {
+            // Stop before a new table jammed directly below: a row that is itself
+            // immediately followed by a `|---|` separator is the next table's
+            // header, not a body row of this one — otherwise adjacent tables (no
+            // blank line between) merge into one grid and the second separator
+            // shows up as `---` cells.
+            while end < lines.len()
+                && is_table_row(lines[end])
+                && separator_aligns(lines.get(end + 1).copied().unwrap_or("")).is_none()
+            {
                 end += 1;
             }
             // A `<!-- table:STYLE -->` comment on the line directly above sets the
@@ -1071,6 +1079,19 @@ mod tests {
         let g = table_regions("| h |\n| --- |\n| x |");
         assert_eq!(g[0].style, TableStyle::Grid);
         assert_eq!(g[0].marker_line, None);
+    }
+
+    #[test]
+    fn adjacent_tables_split_into_two_regions() {
+        // Two tables jammed together with no blank line between must not merge: the
+        // second table's header + `|---|` start a new region (otherwise the second
+        // separator rendered as `---` cells in one merged grid).
+        let r = table_regions(
+            "| a | b |\n| --- | --- |\n| 1 | 2 |\n| c | d |\n| --- | --- |\n| 3 | 4 |",
+        );
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].lines, 0..3);
+        assert_eq!(r[1].lines, 3..6);
     }
 
     #[test]
