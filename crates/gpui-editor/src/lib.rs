@@ -676,22 +676,42 @@ impl EditorState {
     // --- Cursor movement -----------------------------------------------------
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.move_to(self.previous_boundary(self.cursor_offset()), cx);
-        } else {
+        if !self.selected_range.is_empty() {
             self.move_to(self.selected_range.start, cx);
+            return;
         }
+        if self.caret_in_table()
+            && let Some(off) = self.table_move_horizontal(-1)
+        {
+            self.move_to(off, cx);
+            return;
+        }
+        self.move_to(self.previous_boundary(self.cursor_offset()), cx);
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            self.move_to(self.next_boundary(self.cursor_offset()), cx);
-        } else {
+        if !self.selected_range.is_empty() {
             self.move_to(self.selected_range.end, cx);
+            return;
         }
+        if self.caret_in_table()
+            && let Some(off) = self.table_move_horizontal(1)
+        {
+            self.move_to(off, cx);
+            return;
+        }
+        self.move_to(self.next_boundary(self.cursor_offset()), cx);
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
+        // In a table, step cell-to-cell keeping the column; at the table's edge
+        // `table_move_vertical` returns `None` and a normal move exits the table.
+        if self.caret_in_table()
+            && let Some(off) = self.table_move_vertical(-1)
+        {
+            self.move_to(off, cx);
+            return;
+        }
         let off = self.move_vertical(-1);
         // Set the caret directly (not via `move_to`) to keep the goal column.
         self.selected_range = off..off;
@@ -701,6 +721,12 @@ impl EditorState {
     }
 
     fn down(&mut self, _: &Down, _: &mut Window, cx: &mut Context<Self>) {
+        if self.caret_in_table()
+            && let Some(off) = self.table_move_vertical(1)
+        {
+            self.move_to(off, cx);
+            return;
+        }
         let off = self.move_vertical(1);
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
@@ -1495,7 +1521,25 @@ impl EditorState {
                 break;
             }
         }
-        let rel = point(goal, target_y - self.line_tops[trow]);
+        // A table separator (`|---|`) row isn't editable — skip past it (in the
+        // direction of travel) so the caret lands on the header/body row rather
+        // than dropping the whole table to raw source.
+        if self
+            .table_rows
+            .get(trow)
+            .and_then(Option::as_ref)
+            .is_some_and(|t| t.is_separator)
+        {
+            let skip = if dir >= 0 {
+                trow + 1
+            } else {
+                trow.wrapping_sub(1)
+            };
+            if skip < self.wrapped.len() {
+                trow = skip;
+            }
+        }
+        let rel = point(goal, (target_y - self.line_tops[trow]).max(px(0.)));
         let col = match self.wrapped[trow].closest_index_for_position(rel, self.line_h(trow)) {
             Ok(i) | Err(i) => i,
         };
@@ -1776,6 +1820,111 @@ impl EditorState {
             .get(row)
             .and_then(Option::as_ref)
             .is_some_and(|t| !t.is_separator)
+    }
+
+    /// Cell-aware vertical caret move inside a table: keep the same column (cell +
+    /// the offset within that cell) on the adjacent row, skipping the `|---|`
+    /// separator. `None` when the caret isn't in a table cell, or the move would
+    /// leave the table — the caller then does a normal vertical move (exiting it).
+    fn table_move_vertical(&self, dir: i32) -> Option<usize> {
+        let (row, col) = self.row_col(self.cursor_offset());
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        if t.is_separator || t.cell_ranges.is_empty() {
+            return None;
+        }
+        let cell = table_cell_at(t, col);
+        let intra = col.saturating_sub(t.cell_ranges[cell].start);
+        let starts = self.line_starts();
+        let mut r = row as isize + dir as isize;
+        loop {
+            if r < 0 {
+                return None;
+            }
+            let ru = r as usize;
+            match self.table_rows.get(ru) {
+                Some(Some(nt)) if !nt.is_separator && !nt.cell_ranges.is_empty() => {
+                    let tc = cell.min(nt.cell_ranges.len() - 1);
+                    let cr = &nt.cell_ranges[tc];
+                    return Some(starts[ru] + cr.start + intra.min(cr.end - cr.start));
+                }
+                Some(Some(_)) => r += dir as isize, // separator — skip past it
+                // A non-table row next to the table: exit onto it at the same byte
+                // column (clamped to a char boundary). Done here rather than via
+                // `move_vertical`, whose handling of the table's top gutter would
+                // otherwise trap an upward exit back onto the header row.
+                Some(None) => {
+                    let end = self.line_end(ru);
+                    // Skip the table's own `<!-- table:STYLE -->` style-marker line
+                    // (a hidden directive) so an upward exit lands on real content,
+                    // the way a downward move already skips its zero-height row.
+                    if markdown_syntax::table_style_marker(&self.content[starts[ru]..end]).is_some()
+                    {
+                        r += dir as isize;
+                        continue;
+                    }
+                    let mut target = starts[ru] + col.min(end - starts[ru]);
+                    while !self.content.is_char_boundary(target) {
+                        target -= 1;
+                    }
+                    return Some(target);
+                }
+                None => return None, // past the document edge — let move_vertical exit
+            }
+        }
+    }
+
+    /// Cell-aware horizontal caret move inside a table: step a character within the
+    /// cell, hopping to the adjacent cell (the next/previous row's edge cell at a
+    /// row boundary) so the caret never has to cross the hidden `|`/padding.
+    /// `None` when the caret isn't in a table cell or the move would leave it.
+    fn table_move_horizontal(&self, dir: i32) -> Option<usize> {
+        let (row, col) = self.row_col(self.cursor_offset());
+        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
+        if t.is_separator || t.cell_ranges.is_empty() {
+            return None;
+        }
+        let cell = table_cell_at(t, col);
+        let starts = self.line_starts();
+        let cur = self.cursor_offset();
+        let cell_start = starts[row] + t.cell_ranges[cell].start;
+        let cell_end = starts[row] + t.cell_ranges[cell].end;
+        if dir > 0 {
+            if cur < cell_end {
+                return Some(self.next_boundary(cur).min(cell_end));
+            }
+            if cell + 1 < t.cell_ranges.len() {
+                return Some(starts[row] + t.cell_ranges[cell + 1].start);
+            }
+            // Last cell of the row → first cell of the next table row, else exit.
+            for (r, slot) in self.table_rows.iter().enumerate().skip(row + 1) {
+                match slot.as_ref() {
+                    Some(nt) if !nt.is_separator && !nt.cell_ranges.is_empty() => {
+                        return Some(starts[r] + nt.cell_ranges[0].start);
+                    }
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+            None
+        } else {
+            if cur > cell_start {
+                return Some(self.previous_boundary(cur).max(cell_start));
+            }
+            if cell > 0 {
+                return Some(starts[row] + t.cell_ranges[cell - 1].end);
+            }
+            // First cell of the row → last cell of the previous table row, else exit.
+            for (r, slot) in self.table_rows.iter().enumerate().take(row).rev() {
+                match slot.as_ref() {
+                    Some(pt) if !pt.is_separator && !pt.cell_ranges.is_empty() => {
+                        return Some(starts[r] + pt.cell_ranges[pt.cell_ranges.len() - 1].end);
+                    }
+                    Some(_) => continue,
+                    None => break,
+                }
+            }
+            None
+        }
     }
 
     /// Target source offset to move the caret to the next (`forward`) / previous
