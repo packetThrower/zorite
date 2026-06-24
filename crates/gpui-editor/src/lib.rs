@@ -795,10 +795,21 @@ impl EditorState {
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
-        // Inside a table, the caret sits at a source offset *within a cell*, so a
-        // raw newline would split the row's `| … |` markup. Instead, exit the
-        // table: drop the caret onto a fresh line just below it.
+        // Inside a table, a raw newline would split the row's `| … |` markup.
+        // Enter instead moves to the cell directly below (next row, same column,
+        // spreadsheet-style); from the last row it exits onto a fresh line below
+        // the table.
         if self.caret_in_table() {
+            if let Some(off) = self.table_move_vertical(1)
+                && self
+                    .table_rows
+                    .get(self.row_col(off).0)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|t| !t.is_separator)
+            {
+                self.move_to(off, cx);
+                return;
+            }
             let (row, _) = self.row_col(self.cursor_offset());
             let mut last = row;
             while self
