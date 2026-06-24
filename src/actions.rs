@@ -128,8 +128,16 @@ pub fn bind_keys(cx: &mut App) {
 /// the keymap, so this must run *after* [`bind_keys`]. The Edit items reuse
 /// gpui-component's input actions, which it already binds in focused editors.
 pub fn set_app_menu(cx: &mut App) {
+    // The native (macOS) menu bar, plus a mirror into gpui-component's GlobalState
+    // so the Windows/Linux titlebar `AppMenuBar` renders the same items.
+    cx.set_menus(build_app_menus());
+    let owned = build_app_menus().into_iter().map(|m| m.owned()).collect();
+    gpui_component::GlobalState::global_mut(cx).set_app_menus(owned);
+}
+
+fn build_app_menus() -> Vec<Menu> {
     use gpui_component::input;
-    cx.set_menus([
+    vec![
         Menu {
             name: "Zorite".into(),
             items: vec![
@@ -177,5 +185,5 @@ pub fn set_app_menu(cx: &mut App) {
             ],
             disabled: false,
         },
-    ]);
+    ]
 }

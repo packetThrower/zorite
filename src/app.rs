@@ -338,6 +338,10 @@ pub struct AppView {
     pub day_editors: HashMap<String, DayEditor>,
     pub feed_scroll: ScrollHandle,
 
+    /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
+    /// native menu bar instead; this gives the other OSes visual parity.
+    app_menu_bar: Entity<gpui_component::menu::AppMenuBar>,
+
     // Single-page view.
     pub page_editor: Option<PageEditor>,
 
@@ -608,6 +612,7 @@ impl AppView {
             pdf_views: HashMap::new(),
             whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
+            app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
             whiteboards: Vec::new(),
@@ -5377,17 +5382,25 @@ impl Render for AppView {
                     .text_color(theme::text_secondary())
                     .child("Zorite");
                 let row = div().flex().flex_row().items_center().w_full();
-                // Put the toggle opposite the platform's window controls: right on
-                // macOS (traffic lights sit left), left on Windows/Linux (min /
-                // max / close sit right).
+                // macOS: the native menu bar carries File/Edit/View, so the titlebar
+                // keeps just the title + theme toggle. Windows/Linux: the AppMenuBar
+                // leads (it already includes the "Zorite" app menu), then the toggle —
+                // and the redundant title label is dropped. `.occlude()` keeps clicks
+                // off the titlebar's drag region.
                 if cfg!(target_os = "macos") {
                     row.justify_between()
                         .child(label)
                         .child(div().mr_2().child(toggle))
                 } else {
-                    row.child(div().ml_1().mr_2().child(toggle))
-                        .child(label)
-                        .child(div().flex_1())
+                    row.child(
+                        div()
+                            .occlude()
+                            .flex()
+                            .items_center()
+                            .child(self.app_menu_bar.clone()),
+                    )
+                    .child(div().mr_2().child(toggle))
+                    .child(div().flex_1())
                 }
             }))
             .child(
