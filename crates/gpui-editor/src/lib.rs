@@ -68,6 +68,9 @@ actions!(
         SelectWordRight,
         Indent,
         Outdent,
+        Bold,
+        Italic,
+        Code,
         Dismiss,
     ]
 );
@@ -110,6 +113,12 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-right", WordRight, ctx),
         KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
         KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
+        KeyBinding::new("cmd-b", Bold, ctx),
+        KeyBinding::new("ctrl-b", Bold, ctx),
+        KeyBinding::new("cmd-i", Italic, ctx),
+        KeyBinding::new("ctrl-i", Italic, ctx),
+        KeyBinding::new("cmd-e", Code, ctx),
+        KeyBinding::new("ctrl-e", Code, ctx),
         KeyBinding::new("escape", Dismiss, ctx),
     ]);
 }
@@ -777,8 +786,106 @@ impl EditorState {
             let starts = self.line_starts();
             let end = starts.get(last + 1).map_or(self.content.len(), |&s| s - 1);
             self.selected_range = end..end;
+            self.replace_text_in_range(None, "\n", window, cx);
+            return;
+        }
+        // List auto-continuation: Enter on a list/task item opens the next item
+        // (same marker + indent; ordered numbers increment); Enter on an *empty*
+        // item removes the marker, exiting the list. Only with a collapsed
+        // selection — a selection is just replaced by the newline.
+        if self.selected_range.is_empty() {
+            let cursor = self.cursor_offset();
+            let line_start = self.content[..cursor].rfind('\n').map_or(0, |i| i + 1);
+            let line_end = self.content[line_start..]
+                .find('\n')
+                .map_or(self.content.len(), |i| line_start + i);
+            let line = &self.content[line_start..line_end];
+            if let Some((prefix_len, indent, ordered, num)) = markdown_syntax::list_prefix(line) {
+                let task = markdown_syntax::task_prefix(line);
+                let content_start = task.map_or(prefix_len, |(l, ..)| l);
+                let empty = line.get(content_start..).unwrap_or("").trim().is_empty();
+                let cont = if empty {
+                    None
+                } else {
+                    let ws = &line[..indent];
+                    let bullet = line.as_bytes()[indent] as char;
+                    Some(if task.is_some() {
+                        format!("\n{ws}{bullet} [ ] ")
+                    } else if ordered {
+                        format!("\n{ws}{}. ", num + 1)
+                    } else {
+                        format!("\n{ws}{bullet} ")
+                    })
+                };
+                match cont {
+                    // Empty item: clear the marker, leaving an empty line.
+                    None => {
+                        self.selected_range = line_start..line_end;
+                        self.replace_text_in_range(None, "", window, cx);
+                    }
+                    Some(text) => self.replace_text_in_range(None, &text, window, cx),
+                }
+                return;
+            }
         }
         self.replace_text_in_range(None, "\n", window, cx);
+    }
+
+    /// Toggle an inline wrapping marker (`**` bold, `*` italic, `` ` `` code)
+    /// around the selection. No-op on an empty selection. Unwraps when the
+    /// selection is already wrapped (markers just inside or just outside it),
+    /// otherwise wraps — keeping the same text selected so presses toggle.
+    fn toggle_wrap(&mut self, marker: &str, cx: &mut Context<Self>) {
+        let sel = self.selected_range.clone();
+        if sel.start >= sel.end {
+            return;
+        }
+        let ml = marker.len();
+        let sel_text = &self.content[sel.clone()];
+        let (range, new, new_sel) = if sel_text.len() >= 2 * ml
+            && sel_text.starts_with(marker)
+            && sel_text.ends_with(marker)
+        {
+            // `**foo**` selected → strip the markers inside the selection.
+            let inner = self.content[sel.start + ml..sel.end - ml].to_string();
+            (sel.clone(), inner, sel.start..sel.end - 2 * ml)
+        } else if self.content[..sel.start].ends_with(marker)
+            && self.content[sel.end..].starts_with(marker)
+        {
+            // `foo` selected with the markers just outside → strip them.
+            (
+                sel.start - ml..sel.end + ml,
+                sel_text.to_string(),
+                sel.start - ml..sel.end - ml,
+            )
+        } else {
+            // Plain → wrap.
+            (
+                sel.clone(),
+                format!("{marker}{sel_text}{marker}"),
+                sel.start + ml..sel.end + ml,
+            )
+        };
+        self.record_edit(&range, &new);
+        self.content.replace_range(range.clone(), &new);
+        self.selected_range = new_sel;
+        self.selection_reversed = false;
+        self.goal_x = None;
+        self.remap_diagnostics(&range, new.len());
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    fn bold(&mut self, _: &Bold, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_wrap("**", cx);
+    }
+
+    fn italic(&mut self, _: &Italic, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_wrap("*", cx);
+    }
+
+    fn code(&mut self, _: &Code, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_wrap("`", cx);
     }
 
     /// Tab: on a list/quote item, indent the whole item one level (`tab_indent`
@@ -2243,6 +2350,9 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::newline))
+            .on_action(cx.listener(Self::bold))
+            .on_action(cx.listener(Self::italic))
+            .on_action(cx.listener(Self::code))
             .on_action(cx.listener(Self::indent))
             .on_action(cx.listener(Self::outdent))
             .on_action(cx.listener(Self::paste))
