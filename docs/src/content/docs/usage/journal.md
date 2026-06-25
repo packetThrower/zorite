@@ -57,6 +57,21 @@ or inline formatting — or a **Template**, or insert the current date or time w
 `/date` and `/time`. Typing filters across everything; click an item or press
 Enter to insert it.
 
+## Editing tables, lists, and text
+
+Everything you insert stays editable in place:
+
+- **Tables** behave like a small spreadsheet. The arrow keys move from cell to
+  cell and keep your column; `Tab` / `Shift+Tab` step through cells, and `Enter`
+  drops to the row below. Hover a table for `+` / `−` handles to add or delete a
+  row or column, or right-click it for the same plus per-column alignment and
+  **Delete table**.
+- **Lists and to-dos continue themselves** — press `Enter` and the `-`, `1.`, or
+  `- [ ]` marker carries to the next line; press it again on an empty item to end
+  the list. Click a to-do's checkbox to toggle it.
+- **Inline formatting** — select text and press `⌘B` / `⌘I` / `⌘E` (`Ctrl` on
+  Windows and Linux) to wrap it in bold, italic, or inline code.
+
 ## Templates
 
 Create a page named `Templates` and define snippets with `!name` headers. Every

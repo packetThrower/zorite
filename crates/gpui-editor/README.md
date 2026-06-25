@@ -16,20 +16,23 @@ selection.
 - **Editing:** insert / backspace / delete / newline, arrow + Home/End +
   word-wise navigation, visual-row up/down, copy / cut / paste, IME, undo / redo
   (coalesced), click + drag selection, double-click word / triple-click line.
+  **Lists continue on Enter** (an empty item exits the list), and **bold /
+  italic / inline-code** toggles (`cmd`/`ctrl`-`b`/`i`/`e`).
 - **Soft-wrap** with content-driven height.
 - **Spell-check squiggles:** the host feeds in misspelled byte ranges
   ([`Diagnostic`]); a right-click menu offers replacements via a lazy provider.
 - **Live-preview Markdown ("WYSIWYG"):** with a [`SyntaxStyle`] installed, the
   editor styles its own content as you type — headings (variable line height),
   bold / italic / strikethrough, inline code, links / wiki-links / tags,
-  blockquotes, lists, task checkboxes, fenced code blocks, thematic rules,
+  blockquotes, lists, clickable task checkboxes, fenced code blocks, thematic rules,
   footnotes, reference links, `<mark>` — with the raw Markdown markers hidden and
   revealed only around the caret.
 - **Block widgets:** standalone images, file chips (e.g. PDF embeds), and mermaid
   diagrams render in place via host-supplied providers (raw source under the
   caret).
-- **Tables:** rendered as a grid and edited *in the cells*; host-driven column
-  alignment and row/column insert/delete.
+- **Tables:** rendered as a grid and edited *in the cells* — arrow keys move
+  cell-to-cell keeping the column and Enter drops to the row below; host-driven
+  column alignment, row/column insert/delete, and whole-table delete.
 
 ## Adding the dependency
 
@@ -100,6 +103,7 @@ equivalent.
 | `alt-←` / `alt-→` | word left / right |
 | `shift-` + any move | extend selection |
 | `cmd-a` | select all |
+| `cmd-b` / `cmd-i` / `cmd-e` | bold / italic / inline code (toggle on selection) |
 | `tab` / `shift-tab` | indent / outdent (list-aware) |
 | `cmd-c` / `cmd-x` / `cmd-v` | copy / cut / paste |
 | `cmd-z` / `cmd-shift-z` (`ctrl-y`) | undo / redo |
@@ -108,7 +112,9 @@ equivalent.
 
 `tab`/`shift-tab` indent or outdent the caret's list item by [`set_tab_indent`]
 spaces (or insert/remove that many spaces elsewhere), and move between cells when
-the caret is in a table.
+the caret is in a table. **Enter** continues a list or task (an empty item exits)
+and, inside a table, moves to the cell below; the **arrow keys** walk a table
+cell-by-cell, keeping your column.
 
 ## Events
 
@@ -240,6 +246,7 @@ fn insert_table_row(&mut self, below: bool, cx: &mut Context<Self>)   // above /
 fn delete_table_row(&mut self, cx: &mut Context<Self>)                // body rows only
 fn insert_table_column(&mut self, right: bool, cx: &mut Context<Self>)  // left / right of the caret's column
 fn delete_table_column(&mut self, cx: &mut Context<Self>)             // not the last column
+fn delete_table(&mut self, cx: &mut Context<Self>)                    // the whole table block
 ```
 
 `caret_table_align` returns `Some` only while the caret is in the **header** row

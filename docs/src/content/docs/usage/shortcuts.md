@@ -38,6 +38,7 @@ The tab-switch chords are `Ctrl+Tab` / `Ctrl+Shift+Tab` on every platform
 | Close the slash menu | `Esc` |
 | Indent / nest list item | `Tab` |
 | Outdent | `Shift+Tab` |
+| Bold / italic / inline code | `⌘B` / `⌘I` / `⌘E` |
 | Copy | `⌘C` / `Ctrl+C` |
 | Cut | `⌘X` / `Ctrl+X` |
 | Paste (image-aware) | `⌘V` / `Ctrl+V` |
@@ -48,6 +49,11 @@ The tab-switch chords are `Ctrl+Tab` / `Ctrl+Shift+Tab` on every platform
 Click into a note to edit its raw Markdown; click away (or press `Esc` out of the
 slash menu and click out) to re-render. `⌘V` / `Ctrl+V` pastes an image from the
 clipboard if there is one, and otherwise pastes text as usual.
+
+**Enter** continues a list or to-do — the `-`, `1.`, or `- [ ]` marker carries to
+the next line, and an empty item ends the list. **Inside a table**, `Tab` /
+`Shift+Tab` and the arrow keys move from cell to cell (the arrows keep your
+column) and `Enter` drops to the row below.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-edit-light.png" />
@@ -114,8 +120,13 @@ A few things are mouse-driven rather than keyboard-bound:
 - **Drag a tab** to reorder it, drop it on another window to move it there, or
   release it on empty space to tear it off into a new window.
 - **Drag a corner handle** on an inline image to resize it.
+- **Click a to-do checkbox** to toggle it.
+- **Hover a table** for `+` / `−` handles to add or delete a row or column, or
+  **right-click** it for insert / delete, column alignment, and **Delete table**.
 - **Drag to highlight** a passage in the PDF viewer.
 - The **⚙ Settings** button and a quick **light/dark toggle** live in the title
   bar.
 
-> **Import from Logseq** lives in the **File** menu and has no keyboard shortcut.
+> **Import from Logseq** lives in the **File** menu — the native menu bar on
+> macOS, the in-titlebar **File / Edit / View** menu on Windows and Linux — and
+> has no keyboard shortcut.
