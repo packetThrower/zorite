@@ -95,13 +95,15 @@ enum Command {
     OpLimits(&'static str),
     /// A big operator with only a lower limit box (lim); caret into it.
     OpSub(&'static str),
+    /// A matrix — a 2×2 grid of empty cells (caret into the top-left).
+    Matrix,
 }
 
 /// The known `\commands`. Table order is the autocomplete order.
 #[rustfmt::skip]
 const COMMANDS: &[(&str, Command)] = &[
     // structures
-    ("frac", Command::Frac), ("sqrt", Command::Sqrt),
+    ("frac", Command::Frac), ("sqrt", Command::Sqrt), ("matrix", Command::Matrix),
     // operators / functions
     ("int", Command::OpLimits(r"\int")), ("iint", Command::OpLimits(r"\iint")),
     ("oint", Command::OpLimits(r"\oint")), ("sum", Command::OpLimits(r"\sum")),
@@ -199,6 +201,12 @@ pub fn commit_command(top: &mut Row, cursor: &mut Cursor, name: &str) -> bool {
                 },
             );
         }
+        Some(Command::Matrix) => cursor.insert(
+            top,
+            Atom::Matrix {
+                rows: vec![vec![Row::new(), Row::new()], vec![Row::new(), Row::new()]],
+            },
+        ),
         None => return false,
     }
     true
@@ -217,7 +225,7 @@ pub fn command_matches(prefix: &str) -> Vec<&'static str> {
 /// feeds [`commit_command`], so the palette and `\command` typing share one source.
 #[rustfmt::skip]
 pub const PALETTE: &[(&str, &str)] = &[
-    ("x/y", "frac"), ("√", "sqrt"),
+    ("x/y", "frac"), ("√", "sqrt"), ("▦", "matrix"),
     ("∫", "int"),    ("∑", "sum"),     ("∏", "prod"),   ("∞", "infty"),
     ("π", "pi"),     ("θ", "theta"),   ("α", "alpha"),  ("β", "beta"),
     ("γ", "gamma"),  ("δ", "delta"),   ("λ", "lambda"), ("μ", "mu"),
