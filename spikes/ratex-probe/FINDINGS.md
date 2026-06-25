@@ -37,3 +37,22 @@ glyphs (reusing RaTeX's own positioning math). `loc` is only needed for a *secon
 RaTeX = KaTeX port, MIT, `github.com/erweixin/RaTeX`. Probed **v0.1.11** (the `0.1.9`
 requirement resolved up; the API read against 0.1.9 compiled unchanged against 0.1.11,
 so the surface is stable across the 0.1.x patch line).
+
+## Update — RaTeX is multi-backend; rendering in gpui is turnkey
+
+The full repo has 16 crates, including **`ratex-render`** (raster → PNG/Pixmap via
+tiny-skia), `ratex-svg`, `ratex-pdf`, `ratex-cairo`, **`ratex-gtk4`** (a real GUI widget),
+`ratex-wasm`, `ratex-ffi`. Run the raster probe:
+
+```sh
+cargo run --manifest-path spikes/ratex-probe/Cargo.toml --bin render   # → /tmp/ratex-out/*.png
+```
+
+- `render_to_png(&DisplayList, &RenderOptions) -> Vec<u8>` (fonts embeddable via
+  `embed-fonts`). Output is **KaTeX-grade** → feeds straight into `gpui::RenderImage`,
+  exactly zorite's Mermaid/PDF path. So *displaying* RaTeX math in gpui is a few lines.
+- `ratex-gtk4` ("GTK4 widget for native RaTeX rendering") is a display-only widget — it
+  proves the per-GUI-adapter model; a `ratex-gpui` would be its analog.
+- **No editor anywhere in RaTeX** (grepped all crates + iOS/RN platforms + demos for
+  cursor/caret/editable/keypress). Every crate is parse/layout/render/font/backend. So
+  rendering is turnkey; the structural editor (model + interaction) is net-new + GUI-agnostic.
