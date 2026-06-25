@@ -56,3 +56,22 @@ cargo run --manifest-path spikes/ratex-probe/Cargo.toml --bin render   # → /tm
 - **No editor anywhere in RaTeX** (grepped all crates + iOS/RN platforms + demos for
   cursor/caret/editable/keypress). Every crate is parse/layout/render/font/backend. So
   rendering is turnkey; the structural editor (model + interaction) is net-new + GUI-agnostic.
+
+## Update — interactive gpui demo (the editor loop, proven)
+
+`src/bin/demo.rs` (needs the `gpui` dep added here): a live gpui window with a 3-slot
+**structural editor** for ∫ — lower limit, upper limit, integrand. Tab / ←/→ move the
+caret between slots; type into the active one; RaTeX re-layouts + re-renders per keystroke;
+the caret is positioned from the fresh `LayoutBox` (integrand exact via HBox widths; limits
+from the `SupSub` shift/scale fields — approximate). Caret turns red while the input is
+transiently unparseable (e.g. a lone `^`).
+
+```sh
+cargo run --manifest-path spikes/ratex-probe/Cargo.toml --bin demo
+```
+
+Proves the **full editor loop end-to-end** on RaTeX, in gpui, in ~250 lines: key → mutate
+model → re-typeset → reposition caret → repaint. RaTeX does typesetting + rendering; this
+glue is the editor. Render path is `ratex-render` PNG → gpui `img` (could be `RenderImage`).
+The exact limit-slot caret rects are the one thing the real crate computes properly — a
+positioned `LayoutBox` walk, or a `to_display_list` that emits slot rects.
