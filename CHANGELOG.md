@@ -9,10 +9,41 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-24
+
+WYSIWYG table editing matures, inline-formatting shortcuts, and a Windows/Linux
+menu bar — plus inline HEIC/AVIF images.
+
 ### Added
 
-- **HEIC, HEIF, and AVIF images render** — iPhone photos (HEIC) and AVIF images
-  now display inline like JPEG and PNG, on macOS, Windows, and Linux.
+- **HEIC, HEIF, and AVIF images render** inline like JPEG and PNG, on macOS,
+  Windows, and Linux.
+- **Edit tables like a spreadsheet** — arrow keys move cell-to-cell keeping your
+  column (skipping the separator row), Enter drops to the cell below, and the
+  caret enters and leaves the table cleanly at the top and bottom.
+- **Table editing handles** — hover a table for "+" strips to add a row or
+  column and "−" handles to delete one; a right-click menu adds insert/delete,
+  per-column alignment, and "Delete table".
+- **Lists continue themselves** — Enter in a list or task carries the marker to
+  the next line; Enter on an empty item exits the list.
+- **Inline formatting shortcuts** — ⌘B / ⌘I / ⌘E (Ctrl on Windows/Linux) toggle
+  bold, italic, and code around the selection.
+- **Clickable task checkboxes** — toggle ☐/☑ with a click; the cursor turns to a
+  pointer over anything clickable.
+- **Menu bar on Windows and Linux** — a File / Edit / View menu now lives in the
+  titlebar on those platforms (macOS keeps its native menu bar).
+
+### Changed
+
+- **Menus follow your theme** — the table right-click menu and spell-check
+  suggestions use the active theme's colors instead of a fixed dark style.
+
+### Fixed
+
+- **Adjacent tables stay separate** — two tables with no blank line between them
+  no longer merge into one grid.
+- **The caret stays in view** — arrowing up or down now scrolls the page so the
+  caret never slips off-screen.
 
 ## [0.2.1] - 2026-06-22
 
@@ -246,7 +277,10 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
-[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/packetThrower/zorite/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/packetThrower/zorite/compare/v0.2.1...v0.3.0
+[0.2.1]: https://github.com/packetThrower/zorite/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/packetThrower/zorite/compare/v0.1.2...v0.2.0
 [0.1.2]: https://github.com/packetThrower/zorite/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/packetThrower/zorite/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/packetThrower/zorite/compare/v0.1.0-beta.2...v0.1.0
