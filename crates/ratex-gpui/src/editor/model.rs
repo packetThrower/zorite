@@ -31,6 +31,8 @@ pub enum Atom {
         body: Row,
         close: String,
     },
+    /// A matrix: a rectangular grid of cells (`rows[r][c]`), rendered with parentheses.
+    Matrix { rows: Vec<Vec<Row>> },
 }
 
 impl Row {
@@ -89,6 +91,19 @@ impl Atom {
             },
             Atom::Delim { open, body, close } => {
                 format!(r"\left{} {} \right{}", open, body.to_latex(), close)
+            }
+            Atom::Matrix { rows } => {
+                let body = rows
+                    .iter()
+                    .map(|row| {
+                        row.iter()
+                            .map(Row::to_latex)
+                            .collect::<Vec<_>>()
+                            .join(" & ")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(r" \\ ");
+                format!(r"\begin{{pmatrix}} {body} \end{{pmatrix}}")
             }
         }
     }
@@ -211,5 +226,22 @@ mod tests {
         let nodes = ratex_parser::parse(&latex).expect("RaTeX should parse our LaTeX");
         let lbox = ratex_layout::layout(&nodes, &ratex_layout::LayoutOptions::default());
         assert!(lbox.width > 0.0, "lays out to a non-empty box");
+    }
+
+    #[test]
+    fn matrix_serializes_and_lays_out() {
+        let m = Atom::Matrix {
+            rows: vec![
+                vec![Row::syms("a"), Row::syms("b")],
+                vec![Row::syms("c"), Row::syms("d")],
+            ],
+        };
+        assert_eq!(
+            m.to_latex(),
+            r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}"
+        );
+        let nodes = ratex_parser::parse(&m.to_latex()).expect("RaTeX parses pmatrix");
+        let lbox = ratex_layout::layout(&nodes, &ratex_layout::LayoutOptions::default());
+        assert!(lbox.width > 0.0);
     }
 }

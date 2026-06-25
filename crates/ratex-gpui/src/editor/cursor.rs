@@ -22,6 +22,8 @@ pub enum Slot {
     Body,
     Sup,
     Sub,
+    /// A matrix cell at (row, column).
+    Cell(usize, usize),
 }
 
 /// One descent: into `slot` of the structural atom at `atom` in the parent row.
@@ -50,6 +52,9 @@ fn nav_slots(atom: &Atom) -> Vec<Slot> {
             }
         }
         Atom::Delim { .. } => vec![Slot::Body],
+        Atom::Matrix { rows } => (0..rows.len())
+            .flat_map(|r| (0..rows[r].len()).map(move |c| Slot::Cell(r, c)))
+            .collect(),
         Atom::SupSub { sup, sub } => {
             // Present scripts only; subscript first (matching the serialized order).
             let mut s = Vec::new();
@@ -74,6 +79,7 @@ fn slot_row(atom: &Atom, slot: Slot) -> &Row {
         (Atom::Delim { body, .. }, Slot::Body) => body,
         (Atom::SupSub { sub: Some(r), .. }, Slot::Sub) => r,
         (Atom::SupSub { sup: Some(r), .. }, Slot::Sup) => r,
+        (Atom::Matrix { rows }, Slot::Cell(r, c)) => &rows[r][c],
         _ => unreachable!("cursor invariant: slot {slot:?} does not exist on this atom"),
     }
 }
@@ -87,6 +93,7 @@ fn slot_row_mut(atom: &mut Atom, slot: Slot) -> &mut Row {
         (Atom::Delim { body, .. }, Slot::Body) => body,
         (Atom::SupSub { sub: Some(r), .. }, Slot::Sub) => r,
         (Atom::SupSub { sup: Some(r), .. }, Slot::Sup) => r,
+        (Atom::Matrix { rows }, Slot::Cell(r, c)) => &mut rows[r][c],
         _ => unreachable!("cursor invariant: slot {slot:?} does not exist on this atom"),
     }
 }
@@ -221,6 +228,22 @@ impl Cursor {
         let Some(step) = self.path.last().copied() else {
             return;
         };
+        // Matrix cells move between rows of the same column.
+        if let Slot::Cell(r, c) = step.slot {
+            let Some(tr) = (if up { r.checked_sub(1) } else { Some(r + 1) }) else {
+                return;
+            };
+            let parent = resolve(top, &self.path[..self.path.len() - 1]);
+            if let Atom::Matrix { rows } = &parent.atoms[step.atom]
+                && tr < rows.len()
+                && c < rows[tr].len()
+            {
+                self.path.last_mut().unwrap().slot = Slot::Cell(tr, c);
+                let len = self.row(top).atoms.len();
+                self.index = self.index.min(len);
+            }
+            return;
+        }
         let target = match (step.slot, up) {
             (Slot::Den, true) => Slot::Num,
             (Slot::Num, false) => Slot::Den,
@@ -411,5 +434,49 @@ mod tests {
         cur.move_right(&top); // sup end -> out after the script
         assert_eq!(cur.path, vec![]);
         assert_eq!(cur.index, 2);
+    }
+
+    #[test]
+    fn matrix_cell_navigation() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        cur.insert(
+            &mut top,
+            Atom::Matrix {
+                rows: vec![vec![Row::new(), Row::new()], vec![Row::new(), Row::new()]],
+            },
+        );
+        // insert descends into cell (0,0)
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Cell(0, 0)
+            }]
+        );
+        cur.move_right(&top); // -> (0,1)
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Cell(0, 1)
+            }]
+        );
+        cur.move_down(&top); // -> (1,1)
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Cell(1, 1)
+            }]
+        );
+        cur.move_up(&top); // -> (0,1)
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Cell(0, 1)
+            }]
+        );
     }
 }
