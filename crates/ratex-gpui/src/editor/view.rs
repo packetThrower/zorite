@@ -62,16 +62,12 @@ impl MathEditor {
         cx.notify();
     }
 
-    /// Caret rect in logical px. Only the top-level row is exact today; inside a structure
-    /// we hide the bar (nested-slot geometry is the next increment) and let the live
-    /// render be the feedback.
+    /// Caret rect in logical px from the geometry walk (top row + fraction/script slots).
+    /// `None` — hidden — for slots the walk doesn't handle yet (roots, delimiters, limits).
     fn caret_px(&self) -> Option<(f32, f32, f32)> {
-        if !self.cursor.path.is_empty() {
-            return None;
-        }
-        let r = geometry::caret_in_top_row(&self.root, self.cursor.index);
+        let r = geometry::caret_rect(&self.root, &self.cursor)?;
         let fs = self.font_size;
-        let h = (r.h as f32 * fs).max(fs * 0.5);
+        let h = (r.h as f32 * fs).max(fs * 0.3);
         Some((PAD + r.x as f32 * fs, PAD + r.y as f32 * fs, h))
     }
 }
