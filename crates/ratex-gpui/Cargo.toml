@@ -22,3 +22,12 @@ gpui = { git = "https://github.com/zed-industries/zed" }
 # Decode RaTeX's PNG into BGRA frames for `RenderImage`. Pin to gpui's `image` minor
 # (0.25), like `gpui-pdf`, so `Frame`/`RgbaImage` unify with what `RenderImage::new` wants.
 image = "0.25"
+
+[dev-dependencies]
+# Opens a real window for `examples/editor.rs` (same git gpui). The Linux backends are
+# harmless no-ops on macOS; mirrors gpui-editor's example setup.
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "wayland",
+    "x11",
+] }

@@ -5727,6 +5727,7 @@ name = "ratex-gpui"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "gpui_platform",
  "image",
  "ratex-layout",
  "ratex-parser",
