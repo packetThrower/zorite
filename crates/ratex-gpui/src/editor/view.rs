@@ -3,7 +3,7 @@
 //! input, while all editing logic stays in the gpui-free `editor::{model, cursor, input,
 //! geometry}`.
 
-use crate::editor::cursor::Cursor;
+use crate::editor::cursor::{Cursor, Slot, Step};
 use crate::editor::geometry;
 use crate::editor::input;
 use crate::editor::model::Row;
@@ -232,6 +232,66 @@ impl MathEditor {
             .child(handle)
             .child(buttons)
     }
+
+    /// A small contextual toolbar — shown only when the caret is in a matrix — for growing
+    /// or shrinking the grid. Columns have no natural keyboard gesture, so a visible control
+    /// is the most discoverable; it doubles as the way to remove a row/column.
+    fn matrix_toolbar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        if !matches!(
+            self.cursor.path.last(),
+            Some(Step {
+                slot: Slot::Cell(..),
+                ..
+            })
+        ) {
+            return None;
+        }
+        let btn = |label: &'static str, op: fn(&mut Cursor, &mut Row)| {
+            div()
+                .id(label)
+                .flex()
+                .items_center()
+                .justify_center()
+                .px_2()
+                .h(px(24.0))
+                .bg(rgb(0xffffff))
+                .border_1()
+                .border_color(rgb(0xe2e8f0))
+                .rounded_md()
+                .text_size(px(13.0))
+                .text_color(rgb(0x334155))
+                .cursor_pointer()
+                .hover(|s| s.bg(rgb(0xeff6ff)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    op(&mut this.cursor, &mut this.root);
+                    let old = this.rendered.take();
+                    this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
+                    if let Some(old) = old {
+                        cx.drop_image(old.image, Some(window));
+                    }
+                    this.focus.focus(window, cx);
+                    cx.notify();
+                }))
+                .child(label)
+        };
+        Some(
+            div()
+                .absolute()
+                .top(px(16.0))
+                .right(px(16.0))
+                .flex()
+                .gap_1()
+                .p_2()
+                .bg(rgb(0xf8fafc))
+                .border_1()
+                .border_color(rgb(0xcbd5e1))
+                .rounded_md()
+                .child(btn("+ row", Cursor::matrix_add_row))
+                .child(btn("− row", Cursor::matrix_remove_row))
+                .child(btn("+ col", Cursor::matrix_add_col))
+                .child(btn("− col", Cursor::matrix_remove_col)),
+        )
+    }
 }
 
 impl Render for MathEditor {
@@ -334,6 +394,7 @@ impl Render for MathEditor {
             .justify_center()
             .bg(rgb(0xffffff))
             .child(self.palette(cx))
+            .children(self.matrix_toolbar(cx))
             .child(
                 div()
                     .relative()
