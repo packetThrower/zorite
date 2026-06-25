@@ -189,6 +189,20 @@ pub fn command_matches(prefix: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// A curated click-to-insert palette: `(display glyph, command name)`. The command name
+/// feeds [`commit_command`], so the palette and `\command` typing share one source.
+#[rustfmt::skip]
+pub const PALETTE: &[(&str, &str)] = &[
+    ("x/y", "frac"), ("√", "sqrt"),
+    ("∫", "int"),    ("∑", "sum"),     ("∏", "prod"),   ("∞", "infty"),
+    ("π", "pi"),     ("θ", "theta"),   ("α", "alpha"),  ("β", "beta"),
+    ("γ", "gamma"),  ("δ", "delta"),   ("λ", "lambda"), ("μ", "mu"),
+    ("σ", "sigma"),  ("φ", "phi"),     ("ω", "omega"),  ("Δ", "Delta"),
+    ("≤", "le"),     ("≥", "ge"),      ("≠", "ne"),     ("≈", "approx"),
+    ("×", "times"),  ("÷", "div"),     ("·", "cdot"),   ("±", "pm"),
+    ("→", "to"),     ("∂", "partial"), ("∇", "nabla"),  ("∈", "in"),
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;

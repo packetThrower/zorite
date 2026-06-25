@@ -150,6 +150,51 @@ impl MathEditor {
         let h = (r.h as f32 * fs).max(fs * 0.3);
         Some((PAD + r.x as f32 * fs, PAD + r.y as f32 * fs, h))
     }
+
+    /// The click-to-insert symbol palette (a floating panel). Shares the command table
+    /// with `\command` typing, so a click is just a keyboard-free `commit_command`.
+    fn palette(&self, cx: &mut Context<Self>) -> Div {
+        div()
+            .absolute()
+            .top_4()
+            .left_4()
+            .flex()
+            .flex_wrap()
+            .w(px(200.0))
+            .gap_1()
+            .p_2()
+            .bg(rgb(0xf8fafc))
+            .border_1()
+            .border_color(rgb(0xcbd5e1))
+            .rounded_md()
+            .children(input::PALETTE.iter().map(|(label, cmd)| {
+                let cmd = *cmd;
+                div()
+                    .id(cmd)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(32.0))
+                    .bg(rgb(0xffffff))
+                    .border_1()
+                    .border_color(rgb(0xe2e8f0))
+                    .rounded_md()
+                    .text_size(px(17.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(0xeff6ff)))
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        input::commit_command(&mut this.root, &mut this.cursor, cmd);
+                        let old = this.rendered.take();
+                        this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
+                        if let Some(old) = old {
+                            cx.drop_image(old.image, Some(window));
+                        }
+                        this.focus.focus(window, cx);
+                        cx.notify();
+                    }))
+                    .child(*label)
+            }))
+    }
 }
 
 impl Render for MathEditor {
@@ -230,11 +275,13 @@ impl Render for MathEditor {
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .relative()
             .size_full()
             .flex()
             .items_center()
             .justify_center()
             .bg(rgb(0xffffff))
+            .child(self.palette(cx))
             .child(
                 div()
                     .relative()
