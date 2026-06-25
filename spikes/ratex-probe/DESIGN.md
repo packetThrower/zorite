@@ -1,6 +1,7 @@
 # Design — a structural math editor on RaTeX
 
-Working name: **`mathcaret`** _(TBD — alts: `nabla`, `equate`, `glyphwright`)_
+**Crate:** `ratex-gpui` — a single crate in zorite's workspace (`crates/ratex-gpui/`), beside the
+other `gpui-*` crates. The math **editor is a module inside it**, not a separate crate.
 
 ## 0. Status
 
@@ -22,7 +23,8 @@ ours, and it's the unique, worth-building piece.
 
 **Goals**
 - A 2-D structural ("Casio Natural Display" / MathQuill-class) math editor.
-- **GUI-agnostic core**; thin per-GUI adapters (gpui first, for zorite).
+- **gpui-native, but the editor logic stays GUI-free** (its own module), so a lift to other
+  GUIs later is mechanical rather than a rewrite.
 - **WYSIWYG**: editing manipulates the *structure*, rendered in 2-D — not raw LaTeX text.
 - Two insertion paths: a **palette** of starters and **`\command` typing** for the long tail.
 - **Export**: copy a (sub-)expression as LaTeX / SVG / PNG.
@@ -32,23 +34,25 @@ ours, and it's the unique, worth-building piece.
 - Not every TeX package — exactly what RaTeX/KaTeX supports.
 - Not reimplementing layout or fonts — RaTeX owns those.
 
-## 2. Architecture — three layers
+## 2. Architecture — one crate, modular inside
+
+`ratex-gpui` (a zorite workspace member) has two faces, kept in separate modules:
 
 ```
-RaTeX (external, MIT)         parse → LayoutBox → DisplayList / SVG / PNG     [typeset + render]
+RaTeX (external, MIT)    parse → LayoutBox → DisplayList / SVG / PNG    [typeset + render]
    │
-mathcaret-core (no GUI dep)   model + interaction + RaTeX integration         [the editor]
-   │   apply(event) → mutate model → re-typeset → produce a `View`
-   ▼
-mathcaret-gpui (thin)         draw the View's image + caret/selection,        [the adapter]
-                              forward key/mouse events                         (≈ ratex-gtk4)
+ratex-gpui          render :  LaTeX → a gpui element (image)           (the ratex-gtk4 analog)
+(crates/ratex-gpui) editor :  model + cursor + LaTeX-serialize + slot rects   <- gpui-free logic
+                              view  + caret/selection + keys/mouse + palette   <- gpui glue
 ```
 
-**The seam (why it stays agnostic):** the core takes input *events* and emits a **`View`** —
-a render artifact (image or display list) plus the **caret rect, selection rects, and the
-active-slot rect**, all in one coordinate space. The host just paints the View and forwards
-events. That's the same agnostic shape RaTeX itself has, and it's what lets the gpui binding
-be ~thin while the editor logic stays portable (egui / web adapters later, same core).
+**Why a module, not a separate crate:** the editor's *logic* — model, cursor, LaTeX
+serialization, slot-rect geometry — needs nothing from gpui, so it lives in gpui-free modules:
+unit-testable without a window, and mechanically liftable into a standalone `*-core` crate later
+**if** cross-GUI reuse ever becomes real. Only the `view`/input glue is gpui-coupled. No second
+crate, no API ceremony now; the seam is a module boundary we can promote to a crate boundary later
+for free. (RaTeX is the precedent that the *render* side is thin — `ratex-gtk4` is `set_latex()` +
+draw; the editor is the part RaTeX has none of.)
 
 ## 3. Document model
 
@@ -64,7 +68,7 @@ Atom = Sym(char/command) | Frac{num: Row, den: Row} | Script{base, sup?: Row, su
 The **cursor** is a path to a `Row` + an index between its atoms (plus a selection anchor) —
 MathQuill's model. Empty `Row`s render as a placeholder `□` and are the editable holes.
 
-**Decision — our own edit-tree, serialized to LaTeX (not RaTeX's `ParseNode` directly).**
+**Decided — our own edit-tree, serialized to LaTeX (not RaTeX's `ParseNode` directly).**
 RaTeX's `ParseNode` is public + constructible, but it's a *typeset-oriented* AST tied to
 0.1.x churn. A slim edit-tree that **serializes to LaTeX** keeps editing logic clean and
 decouples us from RaTeX internals; LaTeX is also the natural interchange (export + round-trip
@@ -111,9 +115,9 @@ everything.
   (Common · Greek · Operators · Big operators · Delimiters · Arrows · Accents · Matrices…).
 - **Click an item → insert at the caret** (same insert API as a `\command`); the structure
   is created with the caret in the first slot. The palette is repositionable and dismissable.
-- The **core owns the catalog** of insertable items (name → LaTeX template + slot count); the
-  **adapter renders the palette** and calls `insert`. So the palette is a gpui concern but
-  every other adapter gets the same catalog for free.
+- The **`editor` logic owns the catalog** of insertable items (name → LaTeX template + slot
+  count); the **`view` module renders the palette** and calls `insert`. So the palette is a
+  gpui concern but the catalog comes from the GUI-free side and any future adapter reuses it.
 
 ### 4.5 Structural backspace
 Backspace at a slot start, when the slot is empty, **deletes the enclosing template** and
@@ -157,40 +161,48 @@ the natural first upstream contribution.
 - **Display math `$$…$$`** — a block widget in the gpui-editor, mirroring the existing
   **Mermaid block provider** (`set_block_mermaid_provider` + `markdown_syntax::mermaid_blocks`
   → a `set_block_math_provider`). Focused = the structural editor; unfocused = the rendered
-  image; raw `$$…$$` under the caret. The easy, well-trodden win.
-- **Inline math `$…$`** — the harder case: the gpui-editor's inline layer is styled *text*
-  only, no inline widgets. v1 = render inline math as an image with edit-as-raw on caret (a
-  stepping stone); full inline structural editing later (needs inline-widget support in the
-  flat-string `Element` model).
+  image; raw `$$…$$` under the caret. The easy, well-trodden win — and **all of v1**.
+- **Inline math `$…$`** — **deferred to a later milestone (decided, M7).** v1 ships display
+  `$$` only. Inline structural editing needs inline-widget support in the gpui-editor's
+  flat-string `Element` model (today the inline layer is styled *text* only). As an interim it
+  can render inline math as a read-only image with edit-as-raw on caret; full inline editing is
+  the M7 piece.
 - Slash menu + palette hook into zorite's slash system + a floating overlay.
 
 ## 7. Crate & repo
 
-**Own repo** (per your plan), a small workspace:
-- **`mathcaret-core`** — model + interaction + RaTeX integration. GUI-agnostic. Depends on
-  `ratex-*` (and, for slot rects, a forked/patched `ratex-layout`).
-- **`mathcaret-gpui`** — the gpui adapter (an `Element` + the palette + event plumbing). zorite
-  consumes this.
-- **`examples/`** — the standalone demo (this spike, evolved); optionally an **egui** adapter
-  to prove the core is genuinely agnostic.
+**Lives in zorite's workspace** — `crates/ratex-gpui/`, beside `gpui-editor`, `gpui-markdown`,
+`gpui-pdf`, `gpui-whiteboard`, `os-spellcheck`. **Not** a separate repo. Modules per §2:
+`render` (display) · `editor::{model, geometry}` (gpui-free) · `editor::view` (gpui glue + palette).
+Optional cargo feature `editor` so a render-only consumer can skip it; zorite turns it on.
 
-License: MIT (matches RaTeX); KaTeX fonts (OFL) ride along in the render path.
+Depends on `ratex-*` (and, for exact slot rects, a forked/patched `ratex-layout` — §5).
 
-**Incubation:** start the core + gpui adapter here in `spikes/` for fast iteration against
-zorite, **extract to its own repo once the core API stabilizes** (≈ after M3). Avoids premature
-repo overhead while the shape is still moving.
+**Future split — only if needed:** since the editor logic is already gpui-free, lifting
+`editor::{model, geometry}` into a standalone `ratex-edit-core` + thin adapters (gpui / egui /
+web) is mechanical, no rewrite. The option costs nothing to keep now.
+
+License: MIT (matches RaTeX); KaTeX fonts (OFL) ride along in the render path. The name
+`ratex-gpui` reads as "RaTeX's gpui companion" — apt. If it's ever published, decide then whether
+to propose it upstream as RaTeX's official gpui adapter (they have gtk4/cairo, no gpui) or pick a
+distinct name so it doesn't imply it's part of RaTeX.
 
 ## 8. Milestones
 
 - **M0 — done.** Feasibility spike (layout / render / edit proven).
-- **M1.** Core model + LaTeX serializer + **exact slot-rect geometry** (the `to_display_list`
-  extension or a precise walk). Caret/slots pixel-correct. _(Fixes the bottom-caret wart for real.)_
+- **M1.** `editor::model` + LaTeX serializer + **exact slot-rect geometry** (`editor::geometry` —
+  the `to_display_list` extension or a precise walk). Caret/slots pixel-correct. _(Fixes the
+  bottom-caret wart for real.)_
 - **M2.** Editing interactions — nav, typing, WYSIWYG `/` `^` `_`, structural backspace, selection.
-- **M3.** gpui adapter — `Element`, draw, events. The demo becomes a real editor. **← extract to own repo around here.**
+- **M3.** The gpui `editor::view`/input — `Element`, draw, events. The demo becomes a real editor
+  living in `crates/ratex-gpui/`.
 - **M4.** `\command` autocomplete + the movable palette.
 - **M5.** Right-click copy-as (LaTeX / SVG / PNG).
-- **M6.** zorite integration — `/math`, the display-math block widget.
-- **M7+.** Inline math, more templates (matrices / cases / aligned), an egui adapter, publish to crates.io.
+- **M6.** zorite integration — `/math`, the display-`$$` block widget. **← v1 done here.**
+- **M7.** Inline `$…$` math (the deferred piece) — inline-widget support in the gpui-editor +
+  inline structural editing.
+- **M8.** Reach — more templates (matrices / cases / aligned), an egui adapter (proves the
+  GUI-free split), publish to crates.io.
 
 ## 9. Risks & open questions
 
@@ -198,12 +210,13 @@ repo overhead while the shape is still moving.
   version; aim to contribute the `loc`-threading upstream.
 - **Slot-rect computation** — the core engineering risk, but *bounded*: RaTeX computes the
   geometry; we only need it tagged to slots. The spike proved the data is all there.
-- **Inline math in zorite** — gated on inline-widget support in the editor; defer or stepping-stone.
 - **WYSIWYG `/`→fraction rules** — borrow MathQuill's conventions; don't reinvent.
 - **`\command` long tail** — enumerate RaTeX's commands for autocomplete; pass unknown `\cmd`
   straight through so coverage == RaTeX's coverage.
-- **Name** — decide it before the repo extraction (M3).
 
 ---
 
-_Decisions that want your call: (a) the edit-tree-vs-`ParseNode` model choice (§3), (b) incubate-then-extract vs fresh-repo-now (§7), (c) the name, (d) whether inline math is in scope for v1 or deferred (§6)._
+_Design decisions locked: **one `ratex-gpui` crate** in zorite's workspace, editor as a gpui-free
+module (§2, §7); **our own edit-tree → LaTeX** model (§3); **inline math deferred to M7** (§6, §8).
+Next concrete step when build starts: **M1** — the exact slot-rect geometry that retires the
+approximate bottom-caret._
