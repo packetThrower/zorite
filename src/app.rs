@@ -366,6 +366,10 @@ pub struct AppView {
     // mermaid renderer (no `cx`) so it can read a ready diagram during paint while
     // `ensure_mermaid_loaded` drives the off-thread render. See `mermaid::MermaidStore`.
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
+    // Typeset `$$…$$` math, cached by LaTeX. Shared into the markdown math renderer (no
+    // `cx`) so it can read a ready formula during paint; `ensure_math_loaded` drives the
+    // off-thread render. See `math::MathStore`.
+    math_store: Rc<RefCell<crate::math::MathStore>>,
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
@@ -605,6 +609,7 @@ impl AppView {
             image_store: Rc::new(RefCell::new(crate::images::ImageStore::default())),
             rotated_images: std::collections::HashMap::new(),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
+            math_store: Rc::new(RefCell::new(crate::math::MathStore::default())),
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             image_queue: std::collections::VecDeque::new(),
@@ -2151,6 +2156,11 @@ impl AppView {
         self.mermaid_store.clone()
     }
 
+    /// The typeset-formula cache, shared into the markdown math renderer.
+    pub fn math_store(&self) -> Rc<RefCell<crate::math::MathStore>> {
+        self.math_store.clone()
+    }
+
     /// Ensure the ```mermaid block `source` is rendering/rendered (idempotent).
     /// Called from a not-yet-rendered diagram's placeholder the first time it
     /// paints: claims the slot, then renders mermaid → SVG → bitmap off-thread
@@ -2173,6 +2183,32 @@ impl AppView {
             let result = cx
                 .background_executor()
                 .spawn(async move { crate::mermaid::render_to_image(&src, theme, &svg, 1.0) })
+                .await;
+            store.borrow_mut().finish(source, result);
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
+    /// Ensure the `$$…$$` block `source` is typesetting/typeset (idempotent). Called from
+    /// a not-yet-rendered formula's placeholder the first time it paints: claims the slot,
+    /// then typesets the LaTeX via RaTeX off-thread and repaints when it lands.
+    pub fn ensure_math_loaded(&mut self, source: SharedString, cx: &mut Context<Self>) {
+        {
+            let mut store = self.math_store.borrow_mut();
+            if store.started(&source) {
+                return; // already rendering / ready / failed
+            }
+            store.begin(source.clone());
+        }
+        let store = self.math_store.clone();
+        cx.spawn(async move |this, cx| {
+            let src = source.to_string();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::math::render_to_image(&src, crate::math::FONT_SIZE, crate::math::DPR)
+                })
                 .await;
             store.borrow_mut().finish(source, result);
             let _ = this.update(cx, |_, cx| cx.notify());

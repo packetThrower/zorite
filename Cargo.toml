@@ -19,6 +19,9 @@ resolver = "2"
 # Our own markdown renderer (clickable wiki-links), a workspace crate.
 gpui-markdown = { path = "crates/gpui-markdown" }
 
+# Our structural math editor + LaTeX renderer (RaTeX port), a workspace crate.
+ratex-gpui = { path = "crates/ratex-gpui" }
+
 # Our own page-virtualized PDF viewer (pure-Rust hayro), a workspace crate.
 # `markup` adds the text-extraction layer + highlight rendering (Logseq-style).
 gpui-pdf = { path = "crates/gpui-pdf", features = ["markup", "search"] }

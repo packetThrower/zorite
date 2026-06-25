@@ -17,6 +17,7 @@ mod db;
 mod hierarchy;
 mod images;
 mod import;
+mod math;
 mod mermaid;
 mod migration;
 mod models;

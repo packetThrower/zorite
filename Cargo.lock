@@ -9773,6 +9773,7 @@ dependencies = [
  "log",
  "mermaid-rs-renderer",
  "os-spellcheck",
+ "ratex-gpui",
  "rusqlite",
  "semver",
  "serde",

@@ -5,6 +5,7 @@
 pub mod image;
 pub mod journal;
 pub mod links;
+pub mod math;
 pub mod mermaid;
 pub mod page_view;
 pub mod search;
