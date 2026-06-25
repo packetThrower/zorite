@@ -828,6 +828,31 @@ pub(crate) fn mermaid_blocks(content: &str) -> Vec<(Range<usize>, String)> {
     out
 }
 
+/// `$$…$$` math blocks: each entry is `(line_range, source)` — the range covering both
+/// `$$` fence lines (so it collapses) and the LaTeX between them. The fences are bare
+/// `$$` lines (markdown's `math_flow` form, no info word).
+pub(crate) fn math_blocks(content: &str) -> Vec<(Range<usize>, String)> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "$$" {
+            let start = i;
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim() != "$$" {
+                j += 1;
+            }
+            let source = lines[start + 1..j].join("\n");
+            let end = (j + 1).min(lines.len()); // include the closing fence
+            out.push((start..end, source));
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Per-column text alignment of a GFM table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Align {
