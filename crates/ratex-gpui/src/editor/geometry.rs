@@ -141,6 +141,7 @@ fn slot_model_row(atom: &Atom, slot: Slot) -> Option<&Row> {
         (Atom::Delim { body, .. }, Slot::Body) => Some(body),
         (Atom::SupSub { sub: Some(r), .. }, Slot::Sub) => Some(r),
         (Atom::SupSub { sup: Some(r), .. }, Slot::Sup) => Some(r),
+        (Atom::Matrix { rows }, Slot::Cell(r, c)) => rows.get(r).and_then(|row| row.get(c)),
         _ => None,
     }
 }
@@ -166,6 +167,53 @@ fn unwrap_box(boxx: &LayoutBox, x: f64, scale: f64) -> (&LayoutBox, f64) {
         }
     }
     (boxx, x)
+}
+
+/// Position cell `(tr, tc)` within a RaTeX `Array` box whose origin is `(ax, ay)` (baseline).
+/// Mirrors `to_display_list`'s array layout: column widths set x, row heights/depths set y,
+/// cells centered in their column.
+fn array_cell(
+    array: &LayoutBox,
+    ax: f64,
+    ay: f64,
+    scale: f64,
+    tr: usize,
+    tc: usize,
+) -> Option<(&LayoutBox, f64, f64, f64)> {
+    let BoxContent::Array {
+        cells,
+        col_widths,
+        col_aligns,
+        row_heights,
+        row_depths,
+        col_gap,
+        offset,
+        content_x_offset,
+        ..
+    } = &array.content
+    else {
+        return None;
+    };
+    let cell = cells.get(tr)?.get(tc)?;
+    let mut cy = ay - *offset * scale;
+    for r in 0..tr {
+        cy += (row_heights[r] + row_depths[r]) * scale;
+    }
+    cy += row_heights[tr] * scale;
+    let cx = ax
+        + *content_x_offset * scale
+        + col_widths
+            .iter()
+            .take(tc)
+            .map(|w| (*w + *col_gap) * scale)
+            .sum::<f64>();
+    let cw = col_widths[tc];
+    let cell_x = match col_aligns.get(tc).copied().unwrap_or(b'c') {
+        b'l' => cx,
+        b'r' => cx + (cw - cell.width) * scale,
+        _ => cx + (cw - cell.width) * scale / 2.0,
+    };
+    Some((cell, cell_x, cy, scale))
 }
 
 /// Position a structural box's slot: `(sub_box, x, baseline_y, scale)`. Mirrors RaTeX's
@@ -289,6 +337,12 @@ fn descend(
             let sy = y + (base.depth + *base_shift) * scale + *sub_kern * scale + sub.height * cs;
             Some((&**sub, sx, sy, cs))
         }
+        // Matrix cell — pmatrix wraps the grid in delimiters, so dig to the inner Array.
+        (BoxContent::LeftRight { left, inner, .. }, Slot::Cell(r, c)) => {
+            let (array, ax) = unwrap_box(inner, x + left.width * scale, scale);
+            array_cell(array, ax, y, scale, r, c)
+        }
+        (BoxContent::Array { .. }, Slot::Cell(r, c)) => array_cell(boxx, x, y, scale, r, c),
         _ => None,
     }
 }
@@ -478,5 +532,34 @@ mod tests {
             r.y >= -1e-9 && r.h > 0.0,
             "sup caret within bounds, got {r:?}"
         );
+    }
+
+    #[test]
+    fn matrix_cell_carets_are_distinct() {
+        let top = Row {
+            atoms: vec![Atom::Matrix {
+                rows: vec![
+                    vec![Row::syms("a"), Row::syms("b")],
+                    vec![Row::syms("c"), Row::syms("d")],
+                ],
+            }],
+        };
+        let at = |r, c| Cursor {
+            path: vec![Step {
+                atom: 0,
+                slot: Slot::Cell(r, c),
+            }],
+            index: 0,
+        };
+        let r00 = caret_rect(&top, &at(0, 0)).expect("cell (0,0)");
+        let r11 = caret_rect(&top, &at(1, 1)).expect("cell (1,1)");
+        // Bottom-right cell is right of and below the top-left one (not the matrix fallback).
+        assert!(
+            r11.x > r00.x,
+            "(1,1) right of (0,0): {} vs {}",
+            r11.x,
+            r00.x
+        );
+        assert!(r11.y > r00.y, "(1,1) below (0,0): {} vs {}", r11.y, r00.y);
     }
 }
