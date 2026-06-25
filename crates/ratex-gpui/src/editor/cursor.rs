@@ -2,12 +2,13 @@
 //!
 //! The cursor is a path of [`Step`]s descending from the top row into nested slots,
 //! plus an `index` between atoms in the target row. Editing inserts/removes atoms and
-//! navigates left/right — descending into structures (fraction / root / delimiter
-//! slots), walking a structure's slots in order, and ascending out at boundaries,
-//! MathQuill-style.
+//! navigates left/right — descending into structures (fraction / root / delimiter /
+//! script slots), walking a structure's slots in order, and ascending out at
+//! boundaries, MathQuill-style.
 //!
-//! Script (sup/sub) navigation is deferred to the next increment — it wants a
-//! preceding-atom base model — so scripts are treated as opaque leaves here.
+//! A super/subscript ([`Atom::SupSub`]) attaches to the preceding row atom — its base —
+//! so the base stays an editable symbol; navigating a script visits its present
+//! sub/sup slots.
 
 use crate::editor::model::{Atom, Row};
 
@@ -19,6 +20,8 @@ pub enum Slot {
     Radicand,
     Index,
     Body,
+    Sup,
+    Sub,
 }
 
 /// One descent: into `slot` of the structural atom at `atom` in the parent row.
@@ -35,8 +38,7 @@ pub struct Cursor {
     pub index: usize,
 }
 
-/// A structural atom's child rows, in left-to-right navigation order. Leaves — and,
-/// for now, scripts — have none.
+/// A structural atom's child rows, in left-to-right navigation order. Leaves have none.
 fn nav_slots(atom: &Atom) -> Vec<Slot> {
     match atom {
         Atom::Frac { .. } => vec![Slot::Num, Slot::Den],
@@ -48,7 +50,18 @@ fn nav_slots(atom: &Atom) -> Vec<Slot> {
             }
         }
         Atom::Delim { .. } => vec![Slot::Body],
-        Atom::Sym(_) | Atom::Script { .. } => vec![],
+        Atom::SupSub { sup, sub } => {
+            // Present scripts only; subscript first (matching the serialized order).
+            let mut s = Vec::new();
+            if sub.is_some() {
+                s.push(Slot::Sub);
+            }
+            if sup.is_some() {
+                s.push(Slot::Sup);
+            }
+            s
+        }
+        Atom::Sym(_) => vec![],
     }
 }
 
@@ -59,6 +72,8 @@ fn slot_row(atom: &Atom, slot: Slot) -> &Row {
         (Atom::Sqrt { radicand, .. }, Slot::Radicand) => radicand,
         (Atom::Sqrt { index: Some(i), .. }, Slot::Index) => i,
         (Atom::Delim { body, .. }, Slot::Body) => body,
+        (Atom::SupSub { sub: Some(r), .. }, Slot::Sub) => r,
+        (Atom::SupSub { sup: Some(r), .. }, Slot::Sup) => r,
         _ => unreachable!("cursor invariant: slot {slot:?} does not exist on this atom"),
     }
 }
@@ -70,6 +85,8 @@ fn slot_row_mut(atom: &mut Atom, slot: Slot) -> &mut Row {
         (Atom::Sqrt { radicand, .. }, Slot::Radicand) => radicand,
         (Atom::Sqrt { index: Some(i), .. }, Slot::Index) => i,
         (Atom::Delim { body, .. }, Slot::Body) => body,
+        (Atom::SupSub { sub: Some(r), .. }, Slot::Sub) => r,
+        (Atom::SupSub { sup: Some(r), .. }, Slot::Sup) => r,
         _ => unreachable!("cursor invariant: slot {slot:?} does not exist on this atom"),
     }
 }
@@ -300,5 +317,41 @@ mod tests {
             }]
         );
         assert_eq!(cur.index, 0);
+    }
+
+    #[test]
+    fn script_descend_and_traverse() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        cur.insert(&mut top, sym("x")); // the base
+        cur.insert(
+            &mut top,
+            Atom::SupSub {
+                sup: Some(Row::new()),
+                sub: Some(Row::new()),
+            },
+        );
+        // insert descends into the first nav slot — the subscript
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 1,
+                slot: Slot::Sub
+            }]
+        );
+        cur.insert(&mut top, sym("0")); // sub = 0
+        cur.move_right(&top); // sub end -> superscript
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 1,
+                slot: Slot::Sup
+            }]
+        );
+        cur.insert(&mut top, sym("2")); // sup = 2
+        assert_eq!(top.to_latex(), "x _{0}^{2}");
+        cur.move_right(&top); // sup end -> out after the script
+        assert_eq!(cur.path, vec![]);
+        assert_eq!(cur.index, 2);
     }
 }

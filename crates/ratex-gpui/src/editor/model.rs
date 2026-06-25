@@ -19,12 +19,10 @@ pub enum Atom {
     Sym(String),
     /// `\frac{num}{den}` — a bar with a box above and below.
     Frac { num: Row, den: Row },
-    /// A base carrying an optional superscript and/or subscript (`x^2`, `\int_0^1`).
-    Script {
-        base: Box<Atom>,
-        sup: Option<Row>,
-        sub: Option<Row>,
-    },
+    /// A super/subscript attached to the **preceding** atom in the row, which is its
+    /// base (`x^2`, `\int_0^1`). MathQuill-style: the base stays an editable row atom,
+    /// so it never owns a sub-atom and the serializer never has to brace it.
+    SupSub { sup: Option<Row>, sub: Option<Row> },
     /// `\sqrt{radicand}` or `\sqrt[index]{radicand}`.
     Sqrt { radicand: Row, index: Option<Row> },
     /// Auto-growing delimiters: `\left<open> body \right<close>`.
@@ -73,15 +71,10 @@ impl Atom {
             Atom::Frac { num, den } => {
                 format!(r"\frac{{{}}}{{{}}}", num.to_latex(), den.to_latex())
             }
-            Atom::Script { base, sup, sub } => {
-                // Brace a *structural* base so the script attaches to the whole thing;
-                // leave a bare symbol unbraced so operators (\int, \sum) keep their
-                // limit placement (`{\int}_0^1` would demote \int to an ordinary atom).
-                let mut out = if matches!(base.as_ref(), Atom::Sym(_)) {
-                    base.to_latex()
-                } else {
-                    format!("{{{}}}", base.to_latex())
-                };
+            Atom::SupSub { sup, sub } => {
+                // No base here — the preceding row atom is the base (the row serializer
+                // joins them). Sub before sup is KaTeX's canonical order.
+                let mut out = String::new();
                 if let Some(sub) = sub {
                     out.push_str(&format!("_{{{}}}", sub.to_latex()));
                 }
@@ -134,38 +127,47 @@ mod tests {
     }
 
     #[test]
-    fn script_sub_then_sup() {
-        let s = Atom::Script {
-            base: Box::new(Atom::Sym("x".into())),
+    fn supsub_sub_then_sup() {
+        // A SupSub serializes alone — no base; sub is emitted before sup.
+        let s = Atom::SupSub {
             sup: Some(Row::syms("2")),
             sub: Some(Row::syms("i")),
         };
-        assert_eq!(s.to_latex(), r"x_{i}^{2}");
+        assert_eq!(s.to_latex(), r"_{i}^{2}");
     }
 
     #[test]
-    fn operator_base_unbraced_keeps_limits() {
-        // ∫ with limits — base stays bare so RaTeX treats \int as an operator.
-        let s = Atom::Script {
-            base: Box::new(Atom::Sym(r"\int".into())),
-            sup: Some(Row::syms("1")),
-            sub: Some(Row::syms("0")),
+    fn supsub_attaches_to_preceding_operator() {
+        // ∫ with limits: the operator is a plain preceding atom, so RaTeX keeps it an
+        // operator and the script binds its limits — no bracing needed.
+        let row = Row {
+            atoms: vec![
+                Atom::Sym(r"\int".into()),
+                Atom::SupSub {
+                    sup: Some(Row::syms("1")),
+                    sub: Some(Row::syms("0")),
+                },
+            ],
         };
-        assert_eq!(s.to_latex(), r"\int_{0}^{1}");
+        assert_eq!(row.to_latex(), r"\int _{0}^{1}");
     }
 
     #[test]
-    fn structural_base_is_braced() {
-        // (a/b)^2 — the fraction base must be braced so ^2 binds to the whole fraction.
-        let s = Atom::Script {
-            base: Box::new(Atom::Frac {
-                num: Row::syms("a"),
-                den: Row::syms("b"),
-            }),
-            sup: Some(Row::syms("2")),
-            sub: None,
+    fn supsub_after_fraction() {
+        // (a/b)^2 — the script attaches to the fraction (the preceding atom).
+        let row = Row {
+            atoms: vec![
+                Atom::Frac {
+                    num: Row::syms("a"),
+                    den: Row::syms("b"),
+                },
+                Atom::SupSub {
+                    sup: Some(Row::syms("2")),
+                    sub: None,
+                },
+            ],
         };
-        assert_eq!(s.to_latex(), r"{\frac{a}{b}}^{2}");
+        assert_eq!(row.to_latex(), r"\frac{a}{b} ^{2}");
     }
 
     #[test]
@@ -191,18 +193,19 @@ mod tests {
     /// that keeps `model → LaTeX → RaTeX` honest).
     #[test]
     fn serialized_latex_parses_and_lays_out() {
-        // ∫_0^1 \frac{a}{b} — operator limits + a fraction.
-        let integral = Atom::Script {
-            base: Box::new(Atom::Sym(r"\int".into())),
-            sup: Some(Row::syms("1")),
-            sub: Some(Row::syms("0")),
-        };
-        let integrand = Atom::Frac {
-            num: Row::syms("a"),
-            den: Row::syms("b"),
-        };
+        // ∫_0^1 \frac{a}{b} — operator limits (postfix script) + a fraction.
         let row = Row {
-            atoms: vec![integral, integrand],
+            atoms: vec![
+                Atom::Sym(r"\int".into()),
+                Atom::SupSub {
+                    sup: Some(Row::syms("1")),
+                    sub: Some(Row::syms("0")),
+                },
+                Atom::Frac {
+                    num: Row::syms("a"),
+                    den: Row::syms("b"),
+                },
+            ],
         };
         let latex = row.to_latex();
         let nodes = ratex_parser::parse(&latex).expect("RaTeX should parse our LaTeX");
