@@ -91,6 +91,10 @@ enum Command {
     Frac,
     /// A square root (caret into the radicand).
     Sqrt,
+    /// A big operator with empty lower + upper limit boxes (∫, ∑, ∏); caret into the lower.
+    OpLimits(&'static str),
+    /// A big operator with only a lower limit box (lim); caret into it.
+    OpSub(&'static str),
 }
 
 /// The known `\commands`. Table order is the autocomplete order.
@@ -99,9 +103,9 @@ const COMMANDS: &[(&str, Command)] = &[
     // structures
     ("frac", Command::Frac), ("sqrt", Command::Sqrt),
     // operators / functions
-    ("int", Command::Sym(r"\int")), ("iint", Command::Sym(r"\iint")),
-    ("oint", Command::Sym(r"\oint")), ("sum", Command::Sym(r"\sum")),
-    ("prod", Command::Sym(r"\prod")), ("lim", Command::Sym(r"\lim")),
+    ("int", Command::OpLimits(r"\int")), ("iint", Command::OpLimits(r"\iint")),
+    ("oint", Command::OpLimits(r"\oint")), ("sum", Command::OpLimits(r"\sum")),
+    ("prod", Command::OpLimits(r"\prod")), ("lim", Command::OpSub(r"\lim")),
     ("log", Command::Sym(r"\log")), ("ln", Command::Sym(r"\ln")),
     ("sin", Command::Sym(r"\sin")), ("cos", Command::Sym(r"\cos")),
     ("tan", Command::Sym(r"\tan")),
@@ -175,6 +179,26 @@ pub fn commit_command(top: &mut Row, cursor: &mut Cursor, name: &str) -> bool {
                 index: None,
             },
         ),
+        Some(Command::OpLimits(op)) => {
+            cursor.insert(top, Atom::Sym(op.to_string()));
+            cursor.insert(
+                top,
+                Atom::SupSub {
+                    sub: Some(Row::new()),
+                    sup: Some(Row::new()),
+                },
+            );
+        }
+        Some(Command::OpSub(op)) => {
+            cursor.insert(top, Atom::Sym(op.to_string()));
+            cursor.insert(
+                top,
+                Atom::SupSub {
+                    sub: Some(Row::new()),
+                    sup: None,
+                },
+            );
+        }
         None => return false,
     }
     true
@@ -245,6 +269,21 @@ mod tests {
         let m = command_matches("al");
         assert!(m.contains(&"alpha"));
         assert!(!m.contains(&"beta"));
+    }
+
+    #[test]
+    fn op_with_limits_inserts_boxes() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        assert!(commit_command(&mut top, &mut cur, "int"));
+        assert_eq!(top.to_latex(), r"\int _{\square}^{\square}");
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 1,
+                slot: Slot::Sub
+            }]
+        );
     }
 
     #[test]
