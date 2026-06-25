@@ -78,6 +78,117 @@ fn exit_structure(cursor: &mut Cursor) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// `\command` entry — the keyboard path to the TeX symbol/structure long tail.
+// ---------------------------------------------------------------------------
+
+/// What a `\command` expands to.
+#[derive(Clone, Copy)]
+enum Command {
+    /// A symbol, inserted as a leaf with this LaTeX.
+    Sym(&'static str),
+    /// A fraction (caret into the numerator).
+    Frac,
+    /// A square root (caret into the radicand).
+    Sqrt,
+}
+
+/// The known `\commands`. Table order is the autocomplete order.
+#[rustfmt::skip]
+const COMMANDS: &[(&str, Command)] = &[
+    // structures
+    ("frac", Command::Frac), ("sqrt", Command::Sqrt),
+    // operators / functions
+    ("int", Command::Sym(r"\int")), ("iint", Command::Sym(r"\iint")),
+    ("oint", Command::Sym(r"\oint")), ("sum", Command::Sym(r"\sum")),
+    ("prod", Command::Sym(r"\prod")), ("lim", Command::Sym(r"\lim")),
+    ("log", Command::Sym(r"\log")), ("ln", Command::Sym(r"\ln")),
+    ("sin", Command::Sym(r"\sin")), ("cos", Command::Sym(r"\cos")),
+    ("tan", Command::Sym(r"\tan")),
+    // relations
+    ("le", Command::Sym(r"\le")), ("leq", Command::Sym(r"\leq")),
+    ("ge", Command::Sym(r"\ge")), ("geq", Command::Sym(r"\geq")),
+    ("ne", Command::Sym(r"\ne")), ("approx", Command::Sym(r"\approx")),
+    ("equiv", Command::Sym(r"\equiv")), ("sim", Command::Sym(r"\sim")),
+    ("propto", Command::Sym(r"\propto")),
+    // binary operators
+    ("times", Command::Sym(r"\times")), ("div", Command::Sym(r"\div")),
+    ("cdot", Command::Sym(r"\cdot")), ("pm", Command::Sym(r"\pm")),
+    ("mp", Command::Sym(r"\mp")), ("ast", Command::Sym(r"\ast")),
+    ("circ", Command::Sym(r"\circ")),
+    // arrows
+    ("to", Command::Sym(r"\to")), ("rightarrow", Command::Sym(r"\rightarrow")),
+    ("leftarrow", Command::Sym(r"\leftarrow")), ("Rightarrow", Command::Sym(r"\Rightarrow")),
+    ("leftrightarrow", Command::Sym(r"\leftrightarrow")), ("mapsto", Command::Sym(r"\mapsto")),
+    // sets / logic
+    ("in", Command::Sym(r"\in")), ("notin", Command::Sym(r"\notin")),
+    ("subset", Command::Sym(r"\subset")), ("subseteq", Command::Sym(r"\subseteq")),
+    ("supset", Command::Sym(r"\supset")), ("cup", Command::Sym(r"\cup")),
+    ("cap", Command::Sym(r"\cap")), ("emptyset", Command::Sym(r"\emptyset")),
+    ("forall", Command::Sym(r"\forall")), ("exists", Command::Sym(r"\exists")),
+    ("neg", Command::Sym(r"\neg")),
+    // misc
+    ("infty", Command::Sym(r"\infty")), ("partial", Command::Sym(r"\partial")),
+    ("nabla", Command::Sym(r"\nabla")), ("angle", Command::Sym(r"\angle")),
+    ("cdots", Command::Sym(r"\cdots")), ("ldots", Command::Sym(r"\ldots")),
+    // greek lowercase
+    ("alpha", Command::Sym(r"\alpha")), ("beta", Command::Sym(r"\beta")),
+    ("gamma", Command::Sym(r"\gamma")), ("delta", Command::Sym(r"\delta")),
+    ("epsilon", Command::Sym(r"\epsilon")), ("varepsilon", Command::Sym(r"\varepsilon")),
+    ("zeta", Command::Sym(r"\zeta")), ("eta", Command::Sym(r"\eta")),
+    ("theta", Command::Sym(r"\theta")), ("iota", Command::Sym(r"\iota")),
+    ("kappa", Command::Sym(r"\kappa")), ("lambda", Command::Sym(r"\lambda")),
+    ("mu", Command::Sym(r"\mu")), ("nu", Command::Sym(r"\nu")),
+    ("xi", Command::Sym(r"\xi")), ("pi", Command::Sym(r"\pi")),
+    ("rho", Command::Sym(r"\rho")), ("sigma", Command::Sym(r"\sigma")),
+    ("tau", Command::Sym(r"\tau")), ("phi", Command::Sym(r"\phi")),
+    ("varphi", Command::Sym(r"\varphi")), ("chi", Command::Sym(r"\chi")),
+    ("psi", Command::Sym(r"\psi")), ("omega", Command::Sym(r"\omega")),
+    // greek uppercase
+    ("Gamma", Command::Sym(r"\Gamma")), ("Delta", Command::Sym(r"\Delta")),
+    ("Theta", Command::Sym(r"\Theta")), ("Lambda", Command::Sym(r"\Lambda")),
+    ("Xi", Command::Sym(r"\Xi")), ("Pi", Command::Sym(r"\Pi")),
+    ("Sigma", Command::Sym(r"\Sigma")), ("Phi", Command::Sym(r"\Phi")),
+    ("Psi", Command::Sym(r"\Psi")), ("Omega", Command::Sym(r"\Omega")),
+];
+
+fn lookup_command(name: &str) -> Option<Command> {
+    COMMANDS.iter().find(|(n, _)| *n == name).map(|(_, c)| *c)
+}
+
+/// Commit a typed `\name` at the cursor. Returns `false` if it isn't a known command
+/// (the caller decides the fallback — e.g. drop it or insert the literal letters).
+pub fn commit_command(top: &mut Row, cursor: &mut Cursor, name: &str) -> bool {
+    match lookup_command(name) {
+        Some(Command::Sym(latex)) => cursor.insert(top, Atom::Sym(latex.to_string())),
+        Some(Command::Frac) => cursor.insert(
+            top,
+            Atom::Frac {
+                num: Row::new(),
+                den: Row::new(),
+            },
+        ),
+        Some(Command::Sqrt) => cursor.insert(
+            top,
+            Atom::Sqrt {
+                radicand: Row::new(),
+                index: None,
+            },
+        ),
+        None => return false,
+    }
+    true
+}
+
+/// The known command names that start with `prefix`, in table order (for autocomplete).
+pub fn command_matches(prefix: &str) -> Vec<&'static str> {
+    COMMANDS
+        .iter()
+        .filter(|(n, _)| n.starts_with(prefix))
+        .map(|(n, _)| *n)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +200,37 @@ mod tests {
             type_char(&mut top, &mut cur, ch);
         }
         top
+    }
+
+    #[test]
+    fn command_inserts_symbol() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        assert!(commit_command(&mut top, &mut cur, "alpha"));
+        assert_eq!(top.to_latex(), r"\alpha");
+    }
+
+    #[test]
+    fn command_inserts_structure_and_descends() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        assert!(commit_command(&mut top, &mut cur, "sqrt"));
+        assert_eq!(top.to_latex(), r"\sqrt{\square}"); // caret descended into the radicand
+    }
+
+    #[test]
+    fn unknown_command_is_rejected() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        assert!(!commit_command(&mut top, &mut cur, "definitelynotacommand"));
+        assert!(top.is_empty());
+    }
+
+    #[test]
+    fn command_matches_by_prefix() {
+        let m = command_matches("al");
+        assert!(m.contains(&"alpha"));
+        assert!(!m.contains(&"beta"));
     }
 
     #[test]
