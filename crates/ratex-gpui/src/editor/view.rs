@@ -13,8 +13,8 @@ use gpui::*;
 /// How many autocomplete matches the dropdown shows / lets you select among.
 const MAX_MATCHES: usize = 8;
 
-/// A structural math editor view: the model, the caret, the cached raster, and an
-/// in-progress `\command` buffer with autocomplete.
+/// A structural math editor view: the model, the caret, the cached raster, an in-progress
+/// `\command` buffer with autocomplete, and the draggable palette's position.
 pub struct MathEditor {
     root: Row,
     cursor: Cursor,
@@ -27,6 +27,11 @@ pub struct MathEditor {
     pending: Option<String>,
     /// Highlighted autocomplete match (index into the visible matches).
     selected: usize,
+    /// The palette panel's top-left, in window px (draggable by its grip).
+    palette_pos: (f32, f32),
+    /// While dragging the palette: the (cursor − panel-origin) offset, kept for 1:1
+    /// tracking with no jump on grab.
+    palette_drag: Option<(f32, f32)>,
 }
 
 impl MathEditor {
@@ -40,6 +45,8 @@ impl MathEditor {
             rendered: None,
             pending: None,
             selected: 0,
+            palette_pos: (16.0, 16.0),
+            palette_drag: None,
         };
         this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
         this
@@ -151,22 +158,38 @@ impl MathEditor {
         Some((PAD + r.x as f32 * fs, PAD + r.y as f32 * fs, h))
     }
 
-    /// The click-to-insert symbol palette (a floating panel). Shares the command table
-    /// with `\command` typing, so a click is just a keyboard-free `commit_command`.
+    /// The click-to-insert symbol palette (a floating, draggable panel). Shares the command
+    /// table with `\command` typing, so a click is just a keyboard-free `commit_command`.
     fn palette(&self, cx: &mut Context<Self>) -> Div {
-        div()
-            .absolute()
-            .top_4()
-            .left_4()
+        // The grip "ear": press and hold here to move the panel.
+        let handle = div()
+            .id("palette-handle")
+            .flex()
+            .items_center()
+            .justify_center()
+            .w_full()
+            .h(px(16.0))
+            .bg(rgb(0xe2e8f0))
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .text_color(rgb(0x64748b))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                    this.palette_drag = Some((
+                        f32::from(ev.position.x) - this.palette_pos.0,
+                        f32::from(ev.position.y) - this.palette_pos.1,
+                    ));
+                    cx.notify();
+                }),
+            )
+            .child("⠿ ⠿ ⠿");
+
+        let buttons = div()
             .flex()
             .flex_wrap()
-            .w(px(200.0))
             .gap_1()
             .p_2()
-            .bg(rgb(0xf8fafc))
-            .border_1()
-            .border_color(rgb(0xcbd5e1))
-            .rounded_md()
             .children(input::PALETTE.iter().map(|(label, cmd)| {
                 let cmd = *cmd;
                 div()
@@ -193,7 +216,21 @@ impl MathEditor {
                         cx.notify();
                     }))
                     .child(*label)
-            }))
+            }));
+
+        div()
+            .absolute()
+            .left(px(self.palette_pos.0))
+            .top(px(self.palette_pos.1))
+            .flex()
+            .flex_col()
+            .w(px(200.0))
+            .bg(rgb(0xf8fafc))
+            .border_1()
+            .border_color(rgb(0xcbd5e1))
+            .rounded_md()
+            .child(handle)
+            .child(buttons)
     }
 }
 
@@ -275,6 +312,21 @@ impl Render for MathEditor {
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                if let Some((ox, oy)) = this.palette_drag {
+                    this.palette_pos =
+                        (f32::from(ev.position.x) - ox, f32::from(ev.position.y) - oy);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _window, cx| {
+                    if this.palette_drag.take().is_some() {
+                        cx.notify();
+                    }
+                }),
+            )
             .relative()
             .size_full()
             .flex()
