@@ -259,6 +259,87 @@ impl Cursor {
         let len = self.row(top).atoms.len();
         self.index = self.index.min(len);
     }
+
+    /// Add an empty row below the cursor's matrix row (no-op outside a matrix); the caret
+    /// moves to the new row's first cell.
+    pub fn matrix_add_row(&mut self, top: &mut Row) {
+        let Some(&Step {
+            atom,
+            slot: Slot::Cell(r, _),
+        }) = self.path.last()
+        else {
+            return;
+        };
+        let parent = resolve_mut(top, &self.path[..self.path.len() - 1]);
+        if let Atom::Matrix { rows } = &mut parent.atoms[atom] {
+            let ncols = rows.first().map_or(0, |row| row.len());
+            rows.insert(r + 1, vec![Row::new(); ncols]);
+            self.path.last_mut().unwrap().slot = Slot::Cell(r + 1, 0);
+            self.index = 0;
+        }
+    }
+
+    /// Add an empty column after the cursor's matrix column; the caret moves into it.
+    pub fn matrix_add_col(&mut self, top: &mut Row) {
+        let Some(&Step {
+            atom,
+            slot: Slot::Cell(r, c),
+        }) = self.path.last()
+        else {
+            return;
+        };
+        let parent = resolve_mut(top, &self.path[..self.path.len() - 1]);
+        if let Atom::Matrix { rows } = &mut parent.atoms[atom] {
+            for row in rows.iter_mut() {
+                row.insert(c + 1, Row::new());
+            }
+            self.path.last_mut().unwrap().slot = Slot::Cell(r, c + 1);
+            self.index = 0;
+        }
+    }
+
+    /// Remove the cursor's matrix row (kept if it's the only one); the caret clamps to a
+    /// surviving row.
+    pub fn matrix_remove_row(&mut self, top: &mut Row) {
+        let Some(&Step {
+            atom,
+            slot: Slot::Cell(r, c),
+        }) = self.path.last()
+        else {
+            return;
+        };
+        let parent = resolve_mut(top, &self.path[..self.path.len() - 1]);
+        if let Atom::Matrix { rows } = &mut parent.atoms[atom]
+            && rows.len() > 1
+        {
+            rows.remove(r);
+            self.path.last_mut().unwrap().slot = Slot::Cell(r.min(rows.len() - 1), c);
+            self.index = 0;
+        }
+    }
+
+    /// Remove the cursor's matrix column (kept if it's the only one); the caret clamps to a
+    /// surviving column.
+    pub fn matrix_remove_col(&mut self, top: &mut Row) {
+        let Some(&Step {
+            atom,
+            slot: Slot::Cell(r, c),
+        }) = self.path.last()
+        else {
+            return;
+        };
+        let parent = resolve_mut(top, &self.path[..self.path.len() - 1]);
+        if let Atom::Matrix { rows } = &mut parent.atoms[atom]
+            && rows.first().is_some_and(|row| row.len() > 1)
+        {
+            for row in rows.iter_mut() {
+                row.remove(c);
+            }
+            let ncols = rows.first().map_or(1, |row| row.len());
+            self.path.last_mut().unwrap().slot = Slot::Cell(r, c.min(ncols - 1));
+            self.index = 0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +355,41 @@ mod tests {
             num: Row::new(),
             den: Row::new(),
         }
+    }
+
+    fn empty_matrix(rows: usize, cols: usize) -> Atom {
+        Atom::Matrix {
+            rows: vec![vec![Row::new(); cols]; rows],
+        }
+    }
+
+    fn matrix_dims(top: &Row) -> (usize, usize) {
+        match &top.atoms[0] {
+            Atom::Matrix { rows } => (rows.len(), rows.first().map_or(0, |r| r.len())),
+            _ => (0, 0),
+        }
+    }
+
+    #[test]
+    fn matrix_grows_and_shrinks() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        cur.insert(&mut top, empty_matrix(2, 2)); // 2x2, caret in (0,0)
+        cur.matrix_add_row(&mut top);
+        assert_eq!(matrix_dims(&top), (3, 2));
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Cell(1, 0)
+            }]
+        );
+        cur.matrix_add_col(&mut top);
+        assert_eq!(matrix_dims(&top), (3, 3));
+        cur.matrix_remove_row(&mut top);
+        assert_eq!(matrix_dims(&top), (2, 3));
+        cur.matrix_remove_col(&mut top);
+        assert_eq!(matrix_dims(&top), (2, 2));
     }
 
     #[test]
