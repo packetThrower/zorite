@@ -207,6 +207,11 @@ pub type ImageRenderer = Rc<dyn Fn(ImageInfo) -> AnyElement>;
 /// [`MarkdownView::on_mermaid`].
 pub type MermaidRenderer = Rc<dyn Fn(SharedString) -> AnyElement>;
 
+/// Renders a `$$…$$` math block as a typeset image, given the block's LaTeX. Like
+/// [`MermaidRenderer`], the host owns the (cached, off-thread) render — this crate just
+/// detects the block and hands over the source. Set via [`MarkdownView::on_math`].
+pub type MathRenderer = Rc<dyn Fn(SharedString) -> AnyElement>;
+
 /// Called when the rendered text is clicked (outside a link), with the **source**
 /// byte offset nearest the click and the click's window **y** — so the host can
 /// place its editor caret there and keep it under the cursor when switching into
@@ -227,6 +232,7 @@ pub struct MarkdownView {
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
     on_mermaid: Option<MermaidRenderer>,
+    on_math: Option<MathRenderer>,
     /// In-page search query (non-empty when `Some`) + the active match index.
     query: Option<SharedString>,
     current_match: usize,
@@ -250,6 +256,7 @@ impl MarkdownView {
             on_wiki_link: None,
             on_image: None,
             on_mermaid: None,
+            on_math: None,
             query: None,
             current_match: 0,
             block_scroll: None,
@@ -279,6 +286,13 @@ impl MarkdownView {
     /// block renders as a plain code block.
     pub fn on_mermaid(mut self, handler: MermaidRenderer) -> Self {
         self.on_mermaid = Some(handler);
+        self
+    }
+
+    /// Supply a renderer for `$$…$$` math blocks. Without one, a math block renders as
+    /// its raw LaTeX in a code block.
+    pub fn on_math(mut self, handler: MathRenderer) -> Self {
+        self.on_math = Some(handler);
         self
     }
 
@@ -331,6 +345,7 @@ impl RenderOnce for MarkdownView {
             on_wiki_link: self.on_wiki_link,
             on_image: self.on_image,
             on_mermaid: self.on_mermaid,
+            on_math: self.on_math,
             id_base: self.id_base,
             counter: 0,
             definitions: HashMap::new(),
@@ -350,7 +365,11 @@ impl RenderOnce for MarkdownView {
             .text_color(ctx.style.text_color)
             .text_size(ctx.style.text_size);
 
-        match markdown::to_mdast(&source, &markdown::ParseOptions::gfm()) {
+        // Enable block math (`$$…$$` -> a Math node); inline `$…$` (`math_text`) stays
+        // off, so a lone `$` in prose is still literal.
+        let mut parse_opts = markdown::ParseOptions::gfm();
+        parse_opts.constructs.math_flow = true;
+        match markdown::to_mdast(&source, &parse_opts) {
             Ok(mdast::Node::Root(root)) => {
                 for node in &root.children {
                     collect_definitions(node, &mut ctx.definitions);
@@ -394,6 +413,7 @@ struct Ctx {
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
     on_mermaid: Option<MermaidRenderer>,
+    on_math: Option<MathRenderer>,
     id_base: SharedString,
     counter: usize,
     /// `[id] -> url` from reference definitions (`[id]: url`), collected up
@@ -500,6 +520,27 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                     .font_family(ctx.style.mono_font.clone())
                     .text_color(color)
                     .child(StyledText::new(c.value.clone()))
+                    .into_any_element(),
+            )
+        }
+        mdast::Node::Math(m) => {
+            // A `$$…$$` block renders as a typeset image when the host supplies a
+            // renderer; otherwise it falls back to its raw LaTeX in a code block.
+            if let Some(renderer) = ctx.on_math.clone() {
+                return Some(renderer(m.value.clone().into()));
+            }
+            let bg = ctx.style.code_bg;
+            let color = ctx.style.code_color;
+            Some(
+                div()
+                    .w_full()
+                    .rounded(px(6.0))
+                    .bg(bg)
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .font_family(ctx.style.mono_font.clone())
+                    .text_color(color)
+                    .child(StyledText::new(m.value.clone()))
                     .into_any_element(),
             )
         }
