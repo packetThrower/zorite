@@ -10,8 +10,11 @@ use crate::editor::model::Row;
 use crate::render::{self, PAD, Rendered};
 use gpui::*;
 
+/// How many autocomplete matches the dropdown shows / lets you select among.
+const MAX_MATCHES: usize = 8;
+
 /// A structural math editor view: the model, the caret, the cached raster, and an
-/// in-progress `\command` buffer.
+/// in-progress `\command` buffer with autocomplete.
 pub struct MathEditor {
     root: Row,
     cursor: Cursor,
@@ -22,6 +25,8 @@ pub struct MathEditor {
     /// The letters of a `\command` being typed (without the leading backslash), or `None`
     /// in normal mode.
     pending: Option<String>,
+    /// Highlighted autocomplete match (index into the visible matches).
+    selected: usize,
 }
 
 impl MathEditor {
@@ -34,6 +39,7 @@ impl MathEditor {
             dpr: 2.0,
             rendered: None,
             pending: None,
+            selected: 0,
         };
         this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
         this
@@ -75,7 +81,10 @@ impl MathEditor {
             "down" => self.cursor.move_down(&self.root),
             "backspace" => self.cursor.backspace(&mut self.root),
             _ => match ks.key_char.as_ref().and_then(|s| s.chars().next()) {
-                Some('\\') => self.pending = Some(String::new()),
+                Some('\\') => {
+                    self.pending = Some(String::new());
+                    self.selected = 0;
+                }
                 Some(c) => input::type_char(&mut self.root, &mut self.cursor, c),
                 None => return false,
             },
@@ -83,38 +92,52 @@ impl MathEditor {
         true
     }
 
-    /// `\command`-mode keys: build the buffer, commit, or cancel.
+    /// `\command`-mode keys: build the buffer, move the highlight, commit, or cancel.
     fn handle_pending(&mut self, ks: &Keystroke) -> bool {
         match ks.key.as_str() {
             "escape" => self.pending = None,
             "enter" | "tab" | "space" => self.commit_pending(),
+            "up" => self.selected = self.selected.saturating_sub(1),
+            "down" => {
+                let n = self
+                    .pending
+                    .as_deref()
+                    .map_or(0, |p| input::command_matches(p).len());
+                self.selected = (self.selected + 1)
+                    .min(n.saturating_sub(1))
+                    .min(MAX_MATCHES - 1);
+            }
             "backspace" => {
                 if self.pending.as_deref().is_some_and(|b| !b.is_empty()) {
                     self.pending.as_mut().unwrap().pop();
                 } else {
                     self.pending = None; // backspaced past the '\'
                 }
+                self.selected = 0;
             }
             _ => match ks.key_char.as_ref().and_then(|s| s.chars().next()) {
-                Some(c) if c.is_ascii_alphabetic() => self.pending.as_mut().unwrap().push(c),
+                Some(c) if c.is_ascii_alphabetic() => {
+                    self.pending.as_mut().unwrap().push(c);
+                    self.selected = 0;
+                }
                 _ => return false,
             },
         }
         true
     }
 
-    /// Resolve the pending `\name`: exact command, else the top autocomplete match, else
-    /// fall back to inserting the literal letters as symbols.
+    /// Resolve the pending `\name`: the highlighted match, else the literal letters.
     fn commit_pending(&mut self) {
         let name = self.pending.take().unwrap_or_default();
-        if input::commit_command(&mut self.root, &mut self.cursor, &name) {
-            return;
-        }
-        if let Some(best) = input::command_matches(&name).first() {
-            input::commit_command(&mut self.root, &mut self.cursor, best);
-        } else {
-            for c in name.chars() {
-                input::type_char(&mut self.root, &mut self.cursor, c);
+        let matches = input::command_matches(&name);
+        match matches.get(self.selected).or_else(|| matches.first()) {
+            Some(&chosen) => {
+                input::commit_command(&mut self.root, &mut self.cursor, chosen);
+            }
+            None => {
+                for c in name.chars() {
+                    input::type_char(&mut self.root, &mut self.cursor, c);
+                }
             }
         }
     }
@@ -141,7 +164,7 @@ impl Render for MathEditor {
             .map(|r| img(r.image.clone()).w(px(w)).h(px(h)));
 
         // In normal mode show the caret bar; while typing a \command show the pending text
-        // at the caret instead.
+        // (and an autocomplete dropdown) at the caret instead.
         let caret = self
             .pending
             .is_none()
@@ -168,6 +191,41 @@ impl Render for MathEditor {
                 .bg(rgb(0xeff6ff))
                 .child(format!("\\{p}"))
         });
+        let dropdown = self.pending.as_ref().and_then(|p| {
+            let matches = input::command_matches(p);
+            if matches.is_empty() {
+                return None;
+            }
+            let (x, top, ch) = self.caret_px().unwrap_or((PAD, PAD, self.font_size));
+            let selected = self.selected;
+            Some(
+                div()
+                    .absolute()
+                    .left(px(x))
+                    .top(px(top + ch + 4.0))
+                    .flex()
+                    .flex_col()
+                    .bg(rgb(0xffffff))
+                    .border_1()
+                    .border_color(rgb(0xcbd5e1))
+                    .rounded_md()
+                    .text_size(px(14.0))
+                    .children(
+                        matches
+                            .iter()
+                            .take(MAX_MATCHES)
+                            .enumerate()
+                            .map(|(i, name)| {
+                                let row = div().px_2().py_1().child(format!("\\{name}"));
+                                if i == selected {
+                                    row.bg(rgb(0xdbeafe)).text_color(rgb(0x1d4ed8))
+                                } else {
+                                    row.text_color(rgb(0x334155))
+                                }
+                            }),
+                    ),
+            )
+        });
 
         div()
             .track_focus(&self.focus)
@@ -184,7 +242,8 @@ impl Render for MathEditor {
                     .h(px(h))
                     .children(image)
                     .children(caret)
-                    .children(pending),
+                    .children(pending)
+                    .children(dropdown),
             )
     }
 }
