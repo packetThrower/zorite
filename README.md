@@ -79,6 +79,11 @@ Developed in close collaboration with Claude (Anthropic).
 - **As-you-type completion** — `[[` suggests pages (and offers to create one),
   `#` suggests tags, `{{` suggests template placeholders; brackets and quotes
   auto-pair (prose-aware, so `don't` is left alone).
+- **Edit in place** — tables behave like a small spreadsheet (arrow keys move
+  cell-to-cell keeping your column, Enter drops to the next row; hover or
+  right-click for row/column handles, alignment, and delete); lists and to-dos
+  continue on Enter and exit on an empty item; `⌘B` / `⌘I` / `⌘E` toggle bold,
+  italic, and inline code; and to-do checkboxes toggle with a click.
 - **Full-text search**, **type-aware** — a trigram FTS5 index over titles and
   content, with results that also include the PDF and image *files* and the
   whiteboards referenced in your notes. Filter by a `pdf:` / `img:` / `wb:` /
@@ -88,9 +93,10 @@ Developed in close collaboration with Claude (Anthropic).
   window to move it there, or release it on empty space to **tear it off into a
   new window**. Every window is independent and edits **sync live** across all of
   them.
-- **Inline images** — `![](path-or-url)` images render for real; **paste** or
-  **drag-and-drop** a file to add one (copied into the data dir's `images/`),
-  and drag the corner handle to resize (saved as `{width=N}`).
+- **Inline images** — `![](path-or-url)` images render for real (now including
+  **HEIC/HEIF and AVIF** — iPhone photos); **paste** or **drag-and-drop** a file
+  to add one (copied into the data dir's `images/`), and drag the corner handle to
+  resize (saved as `{width=N}`).
 - **PDF viewer** — link a PDF with `[[file.pdf]]` / `![](file.pdf)` or drop one
   onto a note to open it in a dedicated **page-virtualized** viewer tab (only
   pages near the viewport are rasterized; scrolled-away pages free their memory
