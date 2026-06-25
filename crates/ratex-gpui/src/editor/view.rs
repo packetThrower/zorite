@@ -47,6 +47,8 @@ impl MathEditor {
         match ks.key.as_str() {
             "left" => self.cursor.move_left(&self.root),
             "right" => self.cursor.move_right(&self.root),
+            "up" => self.cursor.move_up(&self.root),
+            "down" => self.cursor.move_down(&self.root),
             "backspace" => self.cursor.backspace(&mut self.root),
             _ => match ks.key_char.as_ref().and_then(|s| s.chars().next()) {
                 Some(c) => input::type_char(&mut self.root, &mut self.cursor, c),

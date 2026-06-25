@@ -204,6 +204,38 @@ impl Cursor {
             }
         }
     }
+
+    /// Move up to the vertically-stacked sibling slot (denominator → numerator,
+    /// subscript → superscript). No-op outside such a slot.
+    pub fn move_up(&mut self, top: &Row) {
+        self.move_vert(top, true);
+    }
+
+    /// Move down to the vertically-stacked sibling slot (numerator → denominator,
+    /// superscript → subscript). No-op outside such a slot.
+    pub fn move_down(&mut self, top: &Row) {
+        self.move_vert(top, false);
+    }
+
+    fn move_vert(&mut self, top: &Row, up: bool) {
+        let Some(step) = self.path.last().copied() else {
+            return;
+        };
+        let target = match (step.slot, up) {
+            (Slot::Den, true) => Slot::Num,
+            (Slot::Num, false) => Slot::Den,
+            (Slot::Sub, true) => Slot::Sup,
+            (Slot::Sup, false) => Slot::Sub,
+            _ => return,
+        };
+        let parent = resolve(top, &self.path[..self.path.len() - 1]);
+        if !nav_slots(&parent.atoms[step.atom]).contains(&target) {
+            return; // the sibling slot isn't present (e.g. a sup-only script)
+        }
+        self.path.last_mut().unwrap().slot = target;
+        let len = self.row(top).atoms.len();
+        self.index = self.index.min(len);
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +264,32 @@ mod tests {
         cur.backspace(&mut top);
         assert_eq!(top.to_latex(), "a");
         assert_eq!(cur.index, 1);
+    }
+
+    #[test]
+    fn vertical_nav_between_fraction_slots() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        cur.insert(&mut top, empty_frac()); // into the numerator
+        cur.insert(&mut top, sym("a"));
+        cur.move_down(&top); // -> denominator
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Den
+            }]
+        );
+        cur.insert(&mut top, sym("b"));
+        assert_eq!(top.to_latex(), r"\frac{a}{b}");
+        cur.move_up(&top); // -> numerator
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Num
+            }]
+        );
     }
 
     #[test]
