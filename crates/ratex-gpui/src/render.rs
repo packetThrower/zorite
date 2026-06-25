@@ -83,4 +83,12 @@ mod tests {
         let (_, w2, _) = rasterize(&Row::syms("x"), 40.0, 2.0).unwrap();
         assert!(w2 > w1, "2x DPR yields more pixels ({w2} vs {w1})");
     }
+
+    #[test]
+    fn empty_row_rasterizes() {
+        // The editor starts empty -> "\square"; if RaTeX can't render that, it's blank.
+        let (_, w, h) =
+            rasterize(&Row::new(), 48.0, 2.0).expect("empty row (\\square) must rasterize");
+        assert!(w > 0 && h > 0, "non-empty dims, got {w}x{h}");
+    }
 }
