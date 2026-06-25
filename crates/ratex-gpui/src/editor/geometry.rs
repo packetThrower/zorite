@@ -400,6 +400,56 @@ pub fn caret_rect(top: &Row, cursor: &Cursor) -> Option<Rect> {
     locate(top, &root, &cursor.path, cursor.index, 0.0, baseline, 1.0)
 }
 
+/// The screen rect (em, top-left origin) of the matrix box the cursor is inside — the
+/// structure box its final path step descends into, when that step is a matrix cell.
+/// `None` if the cursor isn't in a matrix. Used to dock the matrix toolbar beside the grid.
+pub fn matrix_rect(top: &Row, cursor: &Cursor) -> Option<Rect> {
+    if !matches!(
+        cursor.path.last(),
+        Some(Step {
+            slot: Slot::Cell(..),
+            ..
+        })
+    ) {
+        return None;
+    }
+    let root = layout_row(top);
+    let baseline = to_display_list(&root).height;
+    box_at_last_step(top, &root, &cursor.path, 0.0, baseline, 1.0)
+}
+
+/// Walk `path`, returning the rect of the structural box the FINAL step descends into
+/// (rather than the caret inside its slot). Mirrors `locate`'s descent.
+fn box_at_last_step(
+    row: &Row,
+    row_box: &LayoutBox,
+    path: &[Step],
+    x: f64,
+    y: f64,
+    scale: f64,
+) -> Option<Rect> {
+    let children: &[LayoutBox] = match &row_box.content {
+        BoxContent::HBox(c) => c,
+        _ => std::slice::from_ref(row_box),
+    };
+    let (step, rest) = path.split_first()?;
+    let cell = cells(&row.atoms, children, x, scale)
+        .into_iter()
+        .find(|c| step.atom >= c.lo && step.atom < c.hi)?;
+    let (sbox, sx0) = unwrap_box(cell.boxx, cell.x, scale);
+    if rest.is_empty() {
+        return Some(Rect {
+            x: sx0,
+            y: y - sbox.height * scale,
+            w: sbox.width * scale,
+            h: (sbox.height + sbox.depth) * scale,
+        });
+    }
+    let (sub_box, sx, sy, ss) = descend(sbox, sx0, step.slot, y, scale)?;
+    let sub_row = slot_model_row(&row.atoms[step.atom], step.slot)?;
+    box_at_last_step(sub_row, sub_box, rest, sx, sy, ss)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +611,41 @@ mod tests {
             r00.x
         );
         assert!(r11.y > r00.y, "(1,1) below (0,0): {} vs {}", r11.y, r00.y);
+    }
+
+    #[test]
+    fn matrix_rect_encloses_the_caret() {
+        let top = Row {
+            atoms: vec![Atom::Matrix {
+                rows: vec![
+                    vec![Row::syms("a"), Row::syms("b")],
+                    vec![Row::syms("c"), Row::syms("d")],
+                ],
+            }],
+        };
+        let cur = Cursor {
+            path: vec![Step {
+                atom: 0,
+                slot: Slot::Cell(0, 0),
+            }],
+            index: 0,
+        };
+        let m = matrix_rect(&top, &cur).expect("in a matrix");
+        let c = caret_rect(&top, &cur).expect("cell caret");
+        assert!(m.w > 0.0 && m.h > 0.0, "matrix has area: {m:?}");
+        assert!(
+            m.x <= c.x + 1e-6 && c.x <= m.x + m.w + 1e-6,
+            "caret x within matrix: caret {c:?} matrix {m:?}"
+        );
+        assert!(
+            m.y <= c.y + 1e-6 && c.y <= m.y + m.h + 1e-6,
+            "caret y within matrix: caret {c:?} matrix {m:?}"
+        );
+        // Outside a matrix there's no toolbar anchor.
+        let flat = Cursor {
+            path: vec![],
+            index: 0,
+        };
+        assert!(matrix_rect(&Row::syms("x"), &flat).is_none());
     }
 }

@@ -3,7 +3,7 @@
 //! input, while all editing logic stays in the gpui-free `editor::{model, cursor, input,
 //! geometry}`.
 
-use crate::editor::cursor::{Cursor, Slot, Step};
+use crate::editor::cursor::Cursor;
 use crate::editor::geometry;
 use crate::editor::input;
 use crate::editor::model::Row;
@@ -32,6 +32,11 @@ pub struct MathEditor {
     /// While dragging the palette: the (cursor − panel-origin) offset, kept for 1:1
     /// tracking with no jump on grab.
     palette_drag: Option<(f32, f32)>,
+    /// The matrix toolbar's offset from the matrix's bottom-left, so it tracks the grid as
+    /// the formula reflows; adjustable by dragging the toolbar's grip.
+    toolbar_off: (f32, f32),
+    /// During a toolbar drag: the previous cursor position, for delta-based movement.
+    toolbar_drag: Option<(f32, f32)>,
 }
 
 impl MathEditor {
@@ -47,6 +52,8 @@ impl MathEditor {
             selected: 0,
             palette_pos: (16.0, 16.0),
             palette_drag: None,
+            toolbar_off: (0.0, 8.0),
+            toolbar_drag: None,
         };
         this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
         this
@@ -233,19 +240,38 @@ impl MathEditor {
             .child(buttons)
     }
 
-    /// A small contextual toolbar — shown only when the caret is in a matrix — for growing
-    /// or shrinking the grid. Columns have no natural keyboard gesture, so a visible control
-    /// is the most discoverable; it doubles as the way to remove a row/column.
+    /// A small contextual toolbar — shown only when the caret is in a matrix — docked just
+    /// below the grid so it stays near the matrix (vital once a formula is embedded in a
+    /// doc). Draggable by its grip; columns have no natural keyboard gesture, so it's also
+    /// the discoverable way to grow/shrink width, and it doubles as row/column removal.
     fn matrix_toolbar(&self, cx: &mut Context<Self>) -> Option<Div> {
-        if !matches!(
-            self.cursor.path.last(),
-            Some(Step {
-                slot: Slot::Cell(..),
-                ..
-            })
-        ) {
-            return None;
-        }
+        let m = geometry::matrix_rect(&self.root, &self.cursor)?;
+        let fs = self.font_size;
+        // Dock at the matrix's bottom-left (image-container px) plus the draggable offset.
+        let left = PAD + m.x as f32 * fs + self.toolbar_off.0;
+        let top = PAD + (m.y + m.h) as f32 * fs + self.toolbar_off.1;
+
+        // The grip "ear": press and hold to move the toolbar.
+        let grip = div()
+            .id("matrix-toolbar-handle")
+            .flex()
+            .items_center()
+            .justify_center()
+            .px_1()
+            .h(px(24.0))
+            .bg(rgb(0xe2e8f0))
+            .cursor_pointer()
+            .text_size(px(11.0))
+            .text_color(rgb(0x64748b))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                    this.toolbar_drag = Some((f32::from(ev.position.x), f32::from(ev.position.y)));
+                    cx.notify();
+                }),
+            )
+            .child("⠿");
+
         let btn = |label: &'static str, op: fn(&mut Cursor, &mut Row)| {
             div()
                 .id(label)
@@ -277,15 +303,16 @@ impl MathEditor {
         Some(
             div()
                 .absolute()
-                .top(px(16.0))
-                .right(px(16.0))
+                .left(px(left))
+                .top(px(top))
                 .flex()
                 .gap_1()
-                .p_2()
+                .p_1()
                 .bg(rgb(0xf8fafc))
                 .border_1()
                 .border_color(rgb(0xcbd5e1))
                 .rounded_md()
+                .child(grip)
                 .child(btn("+ row", Cursor::matrix_add_row))
                 .child(btn("− row", Cursor::matrix_remove_row))
                 .child(btn("+ col", Cursor::matrix_add_col))
@@ -373,16 +400,23 @@ impl Render for MathEditor {
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
+                let (mx, my) = (f32::from(ev.position.x), f32::from(ev.position.y));
                 if let Some((ox, oy)) = this.palette_drag {
-                    this.palette_pos =
-                        (f32::from(ev.position.x) - ox, f32::from(ev.position.y) - oy);
+                    this.palette_pos = (mx - ox, my - oy);
+                    cx.notify();
+                } else if let Some((lx, ly)) = this.toolbar_drag {
+                    this.toolbar_off.0 += mx - lx;
+                    this.toolbar_off.1 += my - ly;
+                    this.toolbar_drag = Some((mx, my));
                     cx.notify();
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _window, cx| {
-                    if this.palette_drag.take().is_some() {
+                    let dragged = this.palette_drag.take().is_some();
+                    let dragged = this.toolbar_drag.take().is_some() || dragged;
+                    if dragged {
                         cx.notify();
                     }
                 }),
@@ -394,7 +428,6 @@ impl Render for MathEditor {
             .justify_center()
             .bg(rgb(0xffffff))
             .child(self.palette(cx))
-            .children(self.matrix_toolbar(cx))
             .child(
                 div()
                     .relative()
@@ -403,7 +436,8 @@ impl Render for MathEditor {
                     .children(image)
                     .children(caret)
                     .children(pending)
-                    .children(dropdown),
+                    .children(dropdown)
+                    .children(self.matrix_toolbar(cx)),
             )
     }
 }
