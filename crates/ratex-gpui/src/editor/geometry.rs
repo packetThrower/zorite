@@ -245,6 +245,50 @@ fn descend(
             };
             Some((&**sub, sx, y + *sub_shift * scale, cs))
         }
+        // Delimiter body: between the open and close delimiters.
+        (BoxContent::LeftRight { left, inner, .. }, Slot::Body) => {
+            Some((&**inner, x + left.width * scale, y, scale))
+        }
+        // Square-root radicand: right of the surd glyph.
+        (BoxContent::Radical { body, .. }, Slot::Radicand) => {
+            Some((&**body, x + (boxx.width - body.width) * scale, y, scale))
+        }
+        // Big-operator upper limit (∑, display ∫): centered above the operator.
+        (
+            BoxContent::OpLimits {
+                base,
+                sup: Some(sup),
+                sup_kern,
+                sup_scale,
+                slant,
+                base_shift,
+                ..
+            },
+            Slot::Sup,
+        ) => {
+            let cs = scale * *sup_scale;
+            let sx = x + (boxx.width * scale - sup.width * cs) / 2.0 + *slant * scale / 2.0;
+            let sy = y - (base.height - *base_shift) * scale - *sup_kern * scale - sup.depth * cs;
+            Some((&**sup, sx, sy, cs))
+        }
+        // Big-operator lower limit: centered below the operator.
+        (
+            BoxContent::OpLimits {
+                base,
+                sub: Some(sub),
+                sub_kern,
+                sub_scale,
+                slant,
+                base_shift,
+                ..
+            },
+            Slot::Sub,
+        ) => {
+            let cs = scale * *sub_scale;
+            let sx = x + (boxx.width * scale - sub.width * cs) / 2.0 - *slant * scale / 2.0;
+            let sy = y + (base.depth + *base_shift) * scale + *sub_kern * scale + sub.height * cs;
+            Some((&**sub, sx, sy, cs))
+        }
         _ => None,
     }
 }
@@ -275,9 +319,22 @@ fn locate(
         .into_iter()
         .find(|c| step.atom >= c.lo && step.atom < c.hi)?;
     let (sbox, sx0) = unwrap_box(cell.boxx, cell.x, scale);
-    let (sub_box, sx, sy, ss) = descend(sbox, sx0, step.slot, y, scale)?;
-    let sub_row = slot_model_row(&row.atoms[step.atom], step.slot)?;
-    locate(sub_row, sub_box, rest, index, sx, sy, ss)
+    match (
+        descend(sbox, sx0, step.slot, y, scale),
+        slot_model_row(&row.atoms[step.atom], step.slot),
+    ) {
+        (Some((sub_box, sx, sy, ss)), Some(sub_row)) => {
+            locate(sub_row, sub_box, rest, index, sx, sy, ss)
+        }
+        // Fallback for a slot we can't descend into yet: a caret on the structure itself,
+        // so the bar never fully vanishes.
+        _ => Some(Rect {
+            x: sx0,
+            y: y - sbox.height * scale,
+            w: 0.0,
+            h: (sbox.height + sbox.depth) * scale,
+        }),
+    }
 }
 
 /// The absolute caret rect (em, top-left origin) for `cursor`, or `None` if it lands in a
