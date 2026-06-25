@@ -745,11 +745,13 @@ impl AppView {
             self.list_indent,
             self.image_store(),
             self.mermaid_store(),
+            self.math_store(),
             window,
             cx,
         );
         self.ensure_content_images(&content, cx);
         self.ensure_content_mermaid(&content, cx);
+        self.ensure_content_math(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -1508,11 +1510,13 @@ impl AppView {
             self.list_indent,
             self.image_store(),
             self.mermaid_store(),
+            self.math_store(),
             window,
             cx,
         );
         self.ensure_content_images(&page.content, cx);
         self.ensure_content_mermaid(&page.content, cx);
+        self.ensure_content_math(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -2256,6 +2260,15 @@ impl AppView {
     fn ensure_content_mermaid(&mut self, content: &str, cx: &mut Context<Self>) {
         for source in gpui_editor::mermaid_sources(content) {
             self.ensure_mermaid_loaded(source, cx);
+        }
+    }
+
+    /// Kick off the off-thread typeset of every `$$…$$` block in `content`, so an editor
+    /// in WYSIWYG mode can render them as equations. Idempotent; a finished render
+    /// notifies → repaint → the editor's math provider finds the bitmap.
+    fn ensure_content_math(&mut self, content: &str, cx: &mut Context<Self>) {
+        for source in gpui_editor::math_sources(content) {
+            self.ensure_math_loaded(source, cx);
         }
     }
 
@@ -5724,12 +5737,14 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 /// editor is one line when empty and grows line-by-line with content —
 /// the outer feed scrolls, never the individual day. The high `max_rows`
 /// effectively means "never scroll internally".
+#[allow(clippy::too_many_arguments)]
 fn make_editor(
     content: &str,
     wysiwyg: bool,
     list_indent: usize,
     image_store: Rc<RefCell<crate::images::ImageStore>>,
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
+    math_store: Rc<RefCell<crate::math::MathStore>>,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -5759,6 +5774,16 @@ fn make_editor(
             mermaid_store
                 .borrow()
                 .get(&gpui::SharedString::from(source))
+        });
+        // A $$…$$ block renders as its typeset equation from the shared store (None
+        // until the off-thread render finishes — the block shows raw source then). The
+        // store keeps a logical size for the reading view; the editor sizes the bitmap
+        // itself, so hand it just the image.
+        editor.set_block_math_provider(move |source| {
+            math_store
+                .borrow()
+                .get(&gpui::SharedString::from(source))
+                .map(|(img, _, _)| img)
         });
         // Tab / Shift+Tab indent by the configured number of spaces per level.
         editor.set_tab_indent(list_indent);
