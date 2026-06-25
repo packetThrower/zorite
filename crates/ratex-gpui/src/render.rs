@@ -28,7 +28,13 @@ pub struct Rendered {
 /// Render a row to a gpui image at `font_size` px/em and `dpr` device-pixel-ratio.
 /// `None` if the row's LaTeX fails to parse / lay out / rasterize.
 pub fn render_row(row: &Row, font_size: f32, dpr: f32) -> Option<Rendered> {
-    let (bgra, w, h) = rasterize(row, font_size, dpr)?;
+    render_latex(&row.to_latex(), font_size, dpr)
+}
+
+/// Render raw LaTeX to a gpui image — the display path for a `$$…$$` block, which has no
+/// edit model. `None` if the LaTeX fails to parse / lay out / rasterize.
+pub fn render_latex(latex: &str, font_size: f32, dpr: f32) -> Option<Rendered> {
+    let (bgra, w, h) = rasterize(latex, font_size, dpr)?;
     let buf = RgbaImage::from_raw(w, h, bgra)?;
     Some(Rendered {
         image: Arc::new(RenderImage::new(vec![Frame::new(buf)])),
@@ -37,10 +43,10 @@ pub fn render_row(row: &Row, font_size: f32, dpr: f32) -> Option<Rendered> {
     })
 }
 
-/// The gpui-free half: model → BGRA pixels + pixel dimensions. Separated so it can be
+/// The gpui-free half: LaTeX → BGRA pixels + pixel dimensions. Separated so it can be
 /// unit-tested without a gpui context.
-fn rasterize(row: &Row, font_size: f32, dpr: f32) -> Option<(Vec<u8>, u32, u32)> {
-    let nodes = parse(&row.to_latex()).ok()?;
+fn rasterize(latex: &str, font_size: f32, dpr: f32) -> Option<(Vec<u8>, u32, u32)> {
+    let nodes = parse(latex).ok()?;
     let lbox = layout(&nodes, &LayoutOptions::default());
     let dl = to_display_list(&lbox);
     let opts = RenderOptions {
@@ -68,7 +74,7 @@ mod tests {
 
     #[test]
     fn rasterizes_to_nonempty_bgra() {
-        let (bytes, w, h) = rasterize(&Row::syms("abc"), 40.0, 2.0).expect("renders");
+        let (bytes, w, h) = rasterize(&Row::syms("abc").to_latex(), 40.0, 2.0).expect("renders");
         assert!(w > 0 && h > 0, "non-empty dims");
         assert_eq!(
             bytes.len(),
@@ -79,16 +85,28 @@ mod tests {
 
     #[test]
     fn dpr_scales_pixels() {
-        let (_, w1, _) = rasterize(&Row::syms("x"), 40.0, 1.0).unwrap();
-        let (_, w2, _) = rasterize(&Row::syms("x"), 40.0, 2.0).unwrap();
+        let (_, w1, _) = rasterize(&Row::syms("x").to_latex(), 40.0, 1.0).unwrap();
+        let (_, w2, _) = rasterize(&Row::syms("x").to_latex(), 40.0, 2.0).unwrap();
         assert!(w2 > w1, "2x DPR yields more pixels ({w2} vs {w1})");
     }
 
     #[test]
     fn empty_row_rasterizes() {
         // The editor starts empty -> "\square"; if RaTeX can't render that, it's blank.
-        let (_, w, h) =
-            rasterize(&Row::new(), 48.0, 2.0).expect("empty row (\\square) must rasterize");
+        let (_, w, h) = rasterize(&Row::new().to_latex(), 48.0, 2.0)
+            .expect("empty row (\\square) must rasterize");
         assert!(w > 0 && h > 0, "non-empty dims, got {w}x{h}");
+    }
+
+    #[test]
+    fn render_latex_renders_raw_latex() {
+        // The display path: a $$…$$ block's raw LaTeX, no edit model in the loop.
+        let r = render_latex(r"\frac{1}{2} + \sqrt{x}", 18.0, 2.0).expect("renders");
+        assert!(
+            r.width > 0.0 && r.height > 0.0,
+            "non-empty: {}x{}",
+            r.width,
+            r.height
+        );
     }
 }
