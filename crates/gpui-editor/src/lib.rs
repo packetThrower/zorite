@@ -458,7 +458,20 @@ pub struct EditorState {
     /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
     /// that image paints at the live width and other mouse handling is suppressed.
     image_resize: Option<ImageResize>,
+    /// A `$$…$$` block being edited in-line: its byte range + the host-supplied view (the
+    /// structural editor) painted in a reserved gap at the block's spot. `None` = none.
+    editing_block: Option<EditingBlock>,
 }
+
+/// A math block under in-line structural edit: the byte range to overwrite on commit, and
+/// the host's editor view to render in the reserved gap.
+struct EditingBlock {
+    range: Range<usize>,
+    view: gpui::AnyView,
+}
+
+/// Height (px) of the reserved gap a math block leaves while it's edited in-line.
+const MATH_EDIT_HEIGHT: f32 = 140.0;
 
 impl EditorState {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -506,6 +519,7 @@ impl EditorState {
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
             image_resize: None,
+            editing_block: None,
         }
     }
 
@@ -615,6 +629,45 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
     ) {
         self.block_math = Some(Box::new(provider));
+    }
+
+    /// Begin an in-line structural edit of the `$$…$$` block at `range`: reserve a gap at
+    /// its spot and paint `view` (the host's editor) there. The host focuses `view`.
+    pub fn set_editing_block(
+        &mut self,
+        range: Range<usize>,
+        view: gpui::AnyView,
+        cx: &mut Context<Self>,
+    ) {
+        self.editing_block = Some(EditingBlock { range, view });
+        cx.notify();
+    }
+
+    /// End an in-line math edit (the host has committed / cancelled). Returns the block's
+    /// byte range, so the host can overwrite it.
+    pub fn end_editing_block(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>> {
+        let range = self.editing_block.take().map(|eb| eb.range);
+        cx.notify();
+        range
+    }
+
+    /// The host-supplied editor view for an in-line math edit, positioned in the gap its
+    /// block reserves (from the last paint's line tops/heights). An absolute child of the
+    /// editor's `relative` root, so it scrolls with the content.
+    fn editing_block_overlay(&self) -> Option<gpui::Div> {
+        let eb = self.editing_block.as_ref()?;
+        let row = self.row_col(eb.range.start).0;
+        let top = *self.line_tops.get(row)?;
+        let height = *self.line_heights.get(row)?;
+        Some(
+            div()
+                .absolute()
+                .top(top)
+                .left(px(0.))
+                .w_full()
+                .h(height)
+                .child(eb.view.clone()),
+        )
     }
 
     /// Spaces inserted per Tab / list-nesting level (`Indent`/`Outdent`). The host
@@ -2650,6 +2703,7 @@ impl Render for EditorState {
             .child(EditorElement {
                 editor: cx.entity(),
             })
+            .children(self.editing_block_overlay())
             // Right-click suggestions menu, absolutely positioned over the
             // editor (anchored at the click). `Option`'s `IntoIterator` renders
             // zero or one popup; clicking a row replaces the misspelled span.
@@ -3207,6 +3261,7 @@ fn shape_document(
     block_chip: Option<&BlockChipFn>,
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
+    editing_math: Option<&Range<usize>>,
     scale_factor: f32,
     // The selected byte range; a line it touches keeps full source (markers
     // shown), the rest hide their markers (W6, reveal-on-caret).
@@ -3318,6 +3373,37 @@ fn shape_document(
             wrapped.push(wl);
             heights.push(h);
             widgets.push(widget);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            line_start = line_end + 1;
+            continue;
+        }
+
+        // An in-line-edited $$ block reserves a fixed gap; the host paints the live editor
+        // there (positioned from this line's top/height). Takes precedence over the image.
+        if let Some(er) = editing_math
+            && er.contains(&idx)
+        {
+            let h = if idx == er.start {
+                px(MATH_EDIT_HEIGHT)
+            } else {
+                px(0.)
+            };
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(None);
             backgrounds.push(None);
             tables.push(None);
             maps.push(None);
@@ -4280,6 +4366,7 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
+                    editor.editing_block.as_ref().map(|eb| &eb.range),
                     sf,
                     selection,
                     editor.image_resize,
@@ -4370,6 +4457,7 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
+                    editor.editing_block.as_ref().map(|eb| &eb.range),
                     sf,
                     selection,
                     editor.image_resize,
