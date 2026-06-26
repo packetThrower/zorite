@@ -2334,6 +2334,9 @@ impl AppView {
             let mut new = current;
             new.replace_range(range, &block);
             edit.source.update(cx, |e, cx| e.set_text(&new, cx));
+            // Rasterize the edited formula into the shared store, or the block-math
+            // provider can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
+            self.ensure_content_math(&new, cx);
             match &edit.target {
                 SlashTarget::Day(key) => self.save_journal(key, &new, cx),
                 SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
