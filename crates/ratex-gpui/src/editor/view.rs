@@ -500,6 +500,16 @@ impl Render for MathEditor {
                     .relative()
                     .w(px(w))
                     .h(px(h))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                            // Capture clicks on the formula so they don't fall through to the
+                            // host text editor — which would blur + close this in-line editor
+                            // and drop the caret to the next line. Keep focus on the formula.
+                            this.focus.focus(window, cx);
+                            cx.stop_propagation();
+                        }),
+                    )
                     .children(image)
                     .children(caret)
                     .children(pending)
