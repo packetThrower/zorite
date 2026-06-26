@@ -240,6 +240,16 @@ impl MathEditor {
         }
     }
 
+    /// The in-line palette's left, in image-container px: aligned with the matrix toolbar
+    /// (which docks at the matrix's left) when the caret is in a matrix, else flush left.
+    fn inline_palette_left(&self) -> f32 {
+        if let Some(m) = geometry::matrix_rect(&self.root, &self.cursor) {
+            PAD + m.x as f32 * self.font_size + self.toolbar_off.0
+        } else {
+            0.0
+        }
+    }
+
     fn palette(&self, cx: &mut Context<Self>) -> Div {
         // The grip "ear": press and hold here to move the panel.
         let handle = div()
@@ -300,7 +310,11 @@ impl MathEditor {
 
         div()
             .absolute()
-            .left(px(if self.inline { 0.0 } else { self.palette_pos.0 }))
+            .left(px(if self.inline {
+                self.inline_palette_left()
+            } else {
+                self.palette_pos.0
+            }))
             .top(px(if self.inline {
                 self.inline_palette_top()
             } else {
