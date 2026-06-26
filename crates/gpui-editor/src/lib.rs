@@ -468,10 +468,10 @@ pub struct EditorState {
 struct EditingBlock {
     range: Range<usize>,
     view: gpui::AnyView,
+    /// The block's displayed height — the gap reserved while editing, so the formula stays
+    /// put instead of jumping to a fixed size.
+    height: Pixels,
 }
-
-/// Height (px) of the reserved gap a math block leaves while it's edited in-line.
-const MATH_EDIT_HEIGHT: f32 = 140.0;
 
 impl EditorState {
     pub fn new(_window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -637,9 +637,14 @@ impl EditorState {
         &mut self,
         range: Range<usize>,
         view: gpui::AnyView,
+        height: Pixels,
         cx: &mut Context<Self>,
     ) {
-        self.editing_block = Some(EditingBlock { range, view });
+        self.editing_block = Some(EditingBlock {
+            range,
+            view,
+            height,
+        });
         cx.notify();
     }
 
@@ -3261,7 +3266,7 @@ fn shape_document(
     block_chip: Option<&BlockChipFn>,
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
-    editing_math: Option<&Range<usize>>,
+    editing_math: Option<(&Range<usize>, Pixels)>,
     scale_factor: f32,
     // The selected byte range; a line it touches keeps full source (markers
     // shown), the rest hide their markers (W6, reveal-on-caret).
@@ -3383,14 +3388,10 @@ fn shape_document(
 
         // An in-line-edited $$ block reserves a fixed gap; the host paints the live editor
         // there (positioned from this line's top/height). Takes precedence over the image.
-        if let Some(er) = editing_math
+        if let Some((er, gap_h)) = editing_math
             && er.contains(&idx)
         {
-            let h = if idx == er.start {
-                px(MATH_EDIT_HEIGHT)
-            } else {
-                px(0.)
-            };
+            let h = if idx == er.start { gap_h } else { px(0.) };
             let wl = shape_runs(
                 window,
                 &SharedString::default(),
@@ -4366,7 +4367,10 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
-                    editor.editing_block.as_ref().map(|eb| &eb.range),
+                    editor
+                        .editing_block
+                        .as_ref()
+                        .map(|eb| (&eb.range, eb.height)),
                     sf,
                     selection,
                     editor.image_resize,
@@ -4457,7 +4461,10 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
-                    editor.editing_block.as_ref().map(|eb| &eb.range),
+                    editor
+                        .editing_block
+                        .as_ref()
+                        .map(|eb| (&eb.range, eb.height)),
                     sf,
                     selection,
                     editor.image_resize,

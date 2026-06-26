@@ -2286,11 +2286,19 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let editor = cx.new(|cx| ratex_gpui::MathEditor::from_latex(&latex, cx));
+        // Render the editor at the formula's displayed font + reserve only its height, so the
+        // formula stays put (no jump); the height comes from the cached static render.
+        let height = self
+            .math_store
+            .borrow()
+            .get(&latex)
+            .map_or(px(56.0), |(_, _, h)| px(h + 16.0));
+        let editor =
+            cx.new(|cx| ratex_gpui::MathEditor::from_latex(&latex, crate::math::FONT_SIZE, cx));
         let focus = editor.read(cx).focus_handle();
-        // Reserve a gap at the block + host the structural editor there, in the text flow.
+        // Reserve the gap at the block + host the structural editor there, in the text flow.
         source.update(cx, |e, cx| {
-            e.set_editing_block(range, editor.clone().into(), cx)
+            e.set_editing_block(range, editor.clone().into(), height, cx)
         });
         // Commit when the math editor loses focus (the user clicks away).
         let weak = cx.entity().downgrade();

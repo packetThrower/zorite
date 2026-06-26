@@ -41,13 +41,14 @@ pub struct MathEditor {
 
 impl MathEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self::with_root(Row::new(), cx)
+        Self::with_root(Row::new(), 48.0, cx)
     }
 
-    /// Build an editor seeded with the formula parsed from `latex` — for editing an existing
-    /// `$$…$$` block. The caret lands at the end of the top row.
-    pub fn from_latex(latex: &str, cx: &mut Context<Self>) -> Self {
-        Self::with_root(crate::editor::latex::parse_latex(latex), cx)
+    /// Build an editor seeded with the formula parsed from `latex`, rendered at `font_size`
+    /// px/em — for editing an existing `$$…$$` block in-line at its displayed size. The
+    /// caret lands at the end of the top row.
+    pub fn from_latex(latex: &str, font_size: f32, cx: &mut Context<Self>) -> Self {
+        Self::with_root(crate::editor::latex::parse_latex(latex), font_size, cx)
     }
 
     /// The current formula as LaTeX, to write back into the `$$…$$` block.
@@ -55,7 +56,7 @@ impl MathEditor {
         self.root.to_latex()
     }
 
-    fn with_root(root: Row, cx: &mut Context<Self>) -> Self {
+    fn with_root(root: Row, font_size: f32, cx: &mut Context<Self>) -> Self {
         let index = root.atoms.len();
         let mut this = Self {
             root,
@@ -64,7 +65,7 @@ impl MathEditor {
                 index,
             },
             focus: cx.focus_handle(),
-            font_size: 48.0,
+            font_size,
             dpr: 2.0,
             rendered: None,
             pending: None,
