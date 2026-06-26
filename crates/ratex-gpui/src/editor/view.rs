@@ -302,6 +302,10 @@ impl MathEditor {
             .border_1()
             .border_color(rgb(0xcbd5e1))
             .rounded_md()
+            // Occlude: in-line the palette floats below the formula, outside the host's
+            // reserved gap — without this, glyph clicks fall through to the text editor,
+            // which seats the caret on the next line and closes this editor (insert lost).
+            .occlude()
             .child(handle)
             .child(buttons)
     }
@@ -378,6 +382,8 @@ impl MathEditor {
                 .border_1()
                 .border_color(rgb(0xcbd5e1))
                 .rounded_md()
+                // Occlude — same overflow as the palette: it floats below the matrix.
+                .occlude()
                 .child(grip)
                 .child(btn("+ row", Cursor::matrix_add_row))
                 .child(btn("− row", Cursor::matrix_remove_row))
