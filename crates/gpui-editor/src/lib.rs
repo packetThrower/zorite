@@ -674,6 +674,10 @@ impl EditorState {
                 .left(px(0.))
                 .w_full()
                 .h(height)
+                // Occlude so clicks inside the hosted math editor don't fall through to the
+                // text layer below — which would seat the caret on the next line and steal
+                // focus, blurring (committing + closing) the structural editor.
+                .occlude()
                 .child(eb.view.clone()),
         )
     }
