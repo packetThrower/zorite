@@ -1247,6 +1247,20 @@ impl EditorState {
             .map(|(r, source)| (starts[r.start]..self.line_end(r.end - 1), source.into()))
     }
 
+    /// If the caret sits inside a `$$…$$` block, ask the host to open the structural editor
+    /// for it (caret at the formula's start). Lets the host turn a freshly-inserted, empty
+    /// math block (the `/math` snippet) straight into a live editor instead of raw source.
+    pub fn edit_math_at_caret(&mut self, cx: &mut Context<Self>) {
+        let (row, _) = self.row_col(self.cursor_offset());
+        if let Some((range, source)) = self.math_block_at(row) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+            });
+        }
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,

@@ -2036,6 +2036,10 @@ impl AppView {
         editor.update(cx, |st, cx| {
             st.set_text(new.clone(), cx);
             st.set_cursor(caret_off, cx);
+            // If the snippet dropped the caret into a $$…$$ block (i.e. `/math`), open the
+            // structural editor on it rather than leaving the user in raw source. A no-op for
+            // every other snippet.
+            st.edit_math_at_caret(cx);
         });
         match &s.target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
