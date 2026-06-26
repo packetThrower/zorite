@@ -282,6 +282,13 @@ pub enum EditorEvent {
     /// The caret / selection moved without a text change — so a host can update a
     /// caret-anchored affordance (e.g. the table-alignment toolbar).
     SelectionChanged,
+    /// A `$$…$$` math block was double-clicked: its byte `range` in the document (covering
+    /// both fences) and the LaTeX `source` between them, so the host can open a structural
+    /// editor and replace the block's text on commit.
+    EditMath {
+        range: Range<usize>,
+        source: SharedString,
+    },
 }
 
 /// A table column's text alignment, for the host-driven alignment toolbar
@@ -1134,6 +1141,17 @@ impl EditorState {
 
     // --- Mouse ---------------------------------------------------------------
 
+    /// If logical `row` is inside a `$$…$$` block, the block's byte range in the document
+    /// (both fences) and the LaTeX between them — so a double-click can hand it to the host's
+    /// structural editor.
+    fn math_block_at(&self, row: usize) -> Option<(Range<usize>, SharedString)> {
+        let starts = self.line_starts();
+        markdown_syntax::math_blocks(&self.content)
+            .into_iter()
+            .find(|(r, _)| r.contains(&row))
+            .map(|(r, source)| (starts[r.start]..self.line_end(r.end - 1), source.into()))
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -1240,8 +1258,14 @@ impl EditorState {
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
-            // Double-click: select the word under the cursor.
+            // Double-click a $$…$$ block → ask the host to open the structural editor;
+            // otherwise select the word under the cursor.
             2 => {
+                let (row, _) = self.row_col(offset);
+                if let Some((range, source)) = self.math_block_at(row) {
+                    cx.emit(EditorEvent::EditMath { range, source });
+                    return;
+                }
                 self.is_selecting = false;
                 self.selected_range = self.word_range_at(offset).unwrap_or(offset..offset);
                 self.selection_reversed = false;
