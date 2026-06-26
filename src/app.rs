@@ -292,7 +292,8 @@ struct MathEdit {
     editor: Entity<ratex_gpui::MathEditor>,
     source: Entity<EditorState>,
     target: SlashTarget,
-    range: std::ops::Range<usize>,
+    /// Commits the edit when the math editor loses focus (click-away). Kept alive here.
+    _blur_sub: gpui::Subscription,
 }
 
 pub struct AppView {
@@ -2287,11 +2288,21 @@ impl AppView {
     ) {
         let editor = cx.new(|cx| ratex_gpui::MathEditor::from_latex(&latex, cx));
         let focus = editor.read(cx).focus_handle();
+        // Reserve a gap at the block + host the structural editor there, in the text flow.
+        source.update(cx, |e, cx| {
+            e.set_editing_block(range, editor.clone().into(), cx)
+        });
+        // Commit when the math editor loses focus (the user clicks away).
+        let weak = cx.entity().downgrade();
+        let blur_sub = window.on_focus_out(&focus, cx, move |_ev, _window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| this.commit_math_edit(cx))
+                .ok();
+        });
         self.math_edit = Some(MathEdit {
             editor,
             source,
             target,
-            range,
+            _blur_sub: blur_sub,
         });
         window.focus(&focus, cx);
         cx.notify();
@@ -2299,107 +2310,28 @@ impl AppView {
 
     /// Commit the structural edit: serialize the formula to LaTeX, splice it back into the
     /// `$$…$$` block, and persist. No-op if the source range has since shifted out of bounds.
-    fn commit_math_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn commit_math_edit(&mut self, cx: &mut Context<Self>) {
         let Some(edit) = self.math_edit.take() else {
             return;
         };
         let latex = edit.editor.read(cx).to_latex();
         let block = format!("$$\n{latex}\n$$");
+        // End the in-line edit (closes the gap, re-renders the formula) + get the range.
+        let Some(range) = edit.source.update(cx, |e, cx| e.end_editing_block(cx)) else {
+            cx.notify();
+            return;
+        };
         let current = edit.source.read(cx).text().to_string();
-        if edit.range.end <= current.len() {
+        if range.end <= current.len() {
             let mut new = current;
-            new.replace_range(edit.range, &block);
+            new.replace_range(range, &block);
             edit.source.update(cx, |e, cx| e.set_text(&new, cx));
             match &edit.target {
                 SlashTarget::Day(key) => self.save_journal(key, &new, cx),
                 SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
             }
         }
-        window.focus(&self.focus_handle, cx);
         cx.notify();
-    }
-
-    /// Close the structural editor without writing anything back.
-    fn cancel_math_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.math_edit = None;
-        window.focus(&self.focus_handle, cx);
-        cx.notify();
-    }
-
-    /// The full-window overlay hosting the structural math editor (when one is open): a
-    /// dimmed backdrop (Esc / click-out cancels) over a centered panel with OK / Cancel.
-    fn math_edit_overlay(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let editor = self.math_edit.as_ref()?.editor.clone();
-        let panel =
-            div()
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .flex()
-                .flex_col()
-                .w(px(760.0))
-                .h(px(520.0))
-                .bg(theme::bg_content())
-                .border_1()
-                .border_color(theme::border_subtle())
-                .rounded(px(10.0))
-                .child(div().flex_1().child(editor))
-                .child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .justify_end()
-                        .p_3()
-                        .child(
-                            div()
-                                .id("math-edit-cancel")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .bg(theme::elevated())
-                                .text_color(theme::text_primary())
-                                .hover(|s| s.bg(theme::hover()))
-                                .child("Cancel")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.cancel_math_edit(window, cx)
-                                })),
-                        )
-                        .child(
-                            div()
-                                .id("math-edit-ok")
-                                .px_3()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .bg(theme::accent())
-                                .text_color(gpui::white())
-                                .child("OK")
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.commit_math_edit(window, cx)
-                                })),
-                        ),
-                );
-        Some(
-            gpui::deferred(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::hsla(0., 0., 0., 0.72))
-                    .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                        if ev.keystroke.key == "escape" {
-                            this.cancel_math_edit(window, cx);
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _, window, cx| this.cancel_math_edit(window, cx)),
-                    )
-                    .child(panel),
-            )
-            .into_any_element(),
-        )
     }
 
     /// Kick off decoding for every standalone image in `content`, so an editor in
@@ -5673,7 +5605,6 @@ impl Render for AppView {
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)
-            .children(self.math_edit_overlay(cx))
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.
