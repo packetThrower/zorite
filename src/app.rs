@@ -294,6 +294,8 @@ struct MathEdit {
     target: SlashTarget,
     /// Commits the edit when the math editor loses focus (click-away). Kept alive here.
     _blur_sub: gpui::Subscription,
+    /// Flows the caret back to the text when an arrow hits a formula boundary. Kept alive.
+    _nav_sub: gpui::Subscription,
 }
 
 pub struct AppView {
@@ -788,12 +790,17 @@ impl AppView {
                 EditorEvent::SelectionChanged => {
                     this.scroll_caret_into_view(st, &this.feed_scroll, cx)
                 }
-                EditorEvent::EditMath { range, source } => {
+                EditorEvent::EditMath {
+                    range,
+                    source,
+                    at_end,
+                } => {
                     this.open_math_edit(
                         st.clone(),
                         SlashTarget::Day(key.clone()),
                         range.clone(),
                         source.clone(),
+                        *at_end,
                         window,
                         cx,
                     );
@@ -1562,12 +1569,17 @@ impl AppView {
                 EditorEvent::SelectionChanged => {
                     this.scroll_caret_into_view(st, &this.page_scroll, cx)
                 }
-                EditorEvent::EditMath { range, source } => {
+                EditorEvent::EditMath {
+                    range,
+                    source,
+                    at_end,
+                } => {
                     this.open_math_edit(
                         st.clone(),
                         SlashTarget::Page(pid),
                         range.clone(),
                         source.clone(),
+                        *at_end,
                         window,
                         cx,
                     );
@@ -2275,14 +2287,17 @@ impl AppView {
         cx.notify();
     }
 
-    /// Open the structural editor for a double-clicked `$$` block: seed it from `latex`,
-    /// remember the note editor + document + byte range to write back to, and focus it.
+    /// Open the structural editor for a `$$` block (clicked or arrowed into): seed it from
+    /// `latex`, remember the note editor + document + byte range to write back to, and focus
+    /// it with the caret at the formula's end (`at_end`) or its start.
+    #[allow(clippy::too_many_arguments)]
     fn open_math_edit(
         &mut self,
         source: Entity<EditorState>,
         target: SlashTarget,
         range: std::ops::Range<usize>,
         latex: SharedString,
+        at_end: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2293,8 +2308,9 @@ impl AppView {
             .borrow()
             .get(&latex)
             .map_or(px(56.0), |(_, _, h)| px(h + 16.0));
-        let editor =
-            cx.new(|cx| ratex_gpui::MathEditor::from_latex(&latex, crate::math::FONT_SIZE, cx));
+        let editor = cx.new(|cx| {
+            ratex_gpui::MathEditor::from_latex(&latex, crate::math::FONT_SIZE, at_end, cx)
+        });
         let focus = editor.read(cx).focus_handle();
         // Reserve the gap at the block + host the structural editor there, in the text flow.
         source.update(cx, |e, cx| {
@@ -2306,43 +2322,65 @@ impl AppView {
             weak.update(cx, |this: &mut AppView, cx| this.commit_math_edit(cx))
                 .ok();
         });
+        // Arrowing past a formula boundary flows the caret back into the surrounding text.
+        let nav_sub = cx.subscribe_in(
+            &editor,
+            window,
+            |this, _editor, ev: &ratex_gpui::MathNav, window, cx| {
+                let ratex_gpui::MathNav::Exit { after } = ev;
+                this.exit_math_edit(*after, window, cx);
+            },
+        );
         self.math_edit = Some(MathEdit {
             editor,
             source,
             target,
             _blur_sub: blur_sub,
+            _nav_sub: nav_sub,
         });
         window.focus(&focus, cx);
         cx.notify();
     }
 
     /// Commit the structural edit: serialize the formula to LaTeX, splice it back into the
-    /// `$$…$$` block, and persist. No-op if the source range has since shifted out of bounds.
-    fn commit_math_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(edit) = self.math_edit.take() else {
-            return;
-        };
+    /// `$$…$$` block, persist, and return the note editor + the block's new byte range (so the
+    /// caret can flow out to it). No-op (→ `None`) if the source range shifted out of bounds.
+    fn commit_math_edit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<EditorState>, std::ops::Range<usize>)> {
+        let edit = self.math_edit.take()?;
         let latex = edit.editor.read(cx).to_latex();
         let block = format!("$$\n{latex}\n$$");
         // End the in-line edit (closes the gap, re-renders the formula) + get the range.
-        let Some(range) = edit.source.update(cx, |e, cx| e.end_editing_block(cx)) else {
-            cx.notify();
-            return;
-        };
+        let range = edit.source.update(cx, |e, cx| e.end_editing_block(cx))?;
         let current = edit.source.read(cx).text().to_string();
-        if range.end <= current.len() {
-            let mut new = current;
-            new.replace_range(range, &block);
-            edit.source.update(cx, |e, cx| e.set_text(&new, cx));
-            // Rasterize the edited formula into the shared store, or the block-math
-            // provider can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
-            self.ensure_content_math(&new, cx);
-            match &edit.target {
-                SlashTarget::Day(key) => self.save_journal(key, &new, cx),
-                SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
-            }
+        if range.end > current.len() {
+            cx.notify();
+            return None;
+        }
+        let new_range = range.start..range.start + block.len();
+        let mut new = current;
+        new.replace_range(range, &block);
+        edit.source.update(cx, |e, cx| e.set_text(&new, cx));
+        // Rasterize the edited formula into the shared store, or the block-math provider
+        // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
+        self.ensure_content_math(&new, cx);
+        match &edit.target {
+            SlashTarget::Day(key) => self.save_journal(key, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
         cx.notify();
+        Some((edit.source, new_range))
+    }
+
+    /// The caret arrowed past a formula's edge: commit the edit, then seat the text caret on
+    /// the line just before/after the block (and re-focus the note editor) — the keyboard path
+    /// out of the structural editor, as opposed to clicking away.
+    fn exit_math_edit(&mut self, after: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((source, block)) = self.commit_math_edit(cx) {
+            source.update(cx, |e, cx| e.exit_math(block, after, window, cx));
+        }
     }
 
     /// Kick off decoding for every standalone image in `content`, so an editor in

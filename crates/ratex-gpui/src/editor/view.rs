@@ -43,21 +43,36 @@ pub struct MathEditor {
     inline: bool,
 }
 
+/// A navigation signal the host listens for: the caret tried to move past a boundary of the
+/// formula (`after` = past the end → seat the text caret after the block; else before it), so
+/// focus should flow back out to the surrounding text editor — the way arrowing past a table
+/// cell's edge exits the table.
+pub enum MathNav {
+    Exit { after: bool },
+}
+
+impl EventEmitter<MathNav> for MathEditor {}
+
 impl MathEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
         Self::with_root(Row::new(), 48.0, false, cx)
     }
 
     /// Build an editor seeded with the formula parsed from `latex`, rendered at `font_size`
-    /// px/em — for editing an existing `$$…$$` block in-line at its displayed size. The
-    /// caret lands at the end of the top row.
-    pub fn from_latex(latex: &str, font_size: f32, cx: &mut Context<Self>) -> Self {
-        Self::with_root(
+    /// px/em — for editing an existing `$$…$$` block in-line at its displayed size. The caret
+    /// lands at the end of the top row when `at_end`, else at the start — so arrowing *into*
+    /// the block from below/right enters at the end, and from above/left enters at the start.
+    pub fn from_latex(latex: &str, font_size: f32, at_end: bool, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::with_root(
             crate::editor::latex::parse_latex(latex),
             font_size,
             true,
             cx,
-        )
+        );
+        if !at_end {
+            this.cursor = Cursor::start();
+        }
+        this
     }
 
     /// The current formula as LaTeX, to write back into the `$$…$$` block.
@@ -99,11 +114,27 @@ impl MathEditor {
         if ks.modifiers.platform || ks.modifiers.control {
             return;
         }
+        let was_normal = self.pending.is_none();
+        let cursor_before = self.cursor.clone();
         let consumed = if self.pending.is_some() {
             self.handle_pending(ks)
         } else {
             self.handle_normal(ks)
         };
+        // An arrow that left the caret unmoved in normal mode is a boundary: hand focus back
+        // to the host so the text caret flows out of the formula (left/up → before the block,
+        // right/down → after it), the way arrowing past a table cell's edge exits the table.
+        if was_normal
+            && self.cursor == cursor_before
+            && let Some(after) = match ks.key.as_str() {
+                "left" | "up" => Some(false),
+                "right" | "down" => Some(true),
+                _ => None,
+            }
+        {
+            cx.emit(MathNav::Exit { after });
+            return;
+        }
         if !consumed {
             return;
         }

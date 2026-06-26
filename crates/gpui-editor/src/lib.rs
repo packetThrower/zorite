@@ -282,12 +282,15 @@ pub enum EditorEvent {
     /// The caret / selection moved without a text change — so a host can update a
     /// caret-anchored affordance (e.g. the table-alignment toolbar).
     SelectionChanged,
-    /// A `$$…$$` math block was double-clicked: its byte `range` in the document (covering
-    /// both fences) and the LaTeX `source` between them, so the host can open a structural
-    /// editor and replace the block's text on commit.
+    /// The caret entered a `$$…$$` math block (by click, or by arrowing into it): its byte
+    /// `range` in the document (covering both fences) and the LaTeX `source` between them, so
+    /// the host can open a structural editor and replace the block's text on commit. `at_end`
+    /// seats that editor's caret at the formula's end (entered from below/right or by click)
+    /// vs its start (from above/left).
     EditMath {
         range: Range<usize>,
         source: SharedString,
+        at_end: bool,
     },
 }
 
@@ -783,7 +786,16 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        self.move_to(self.previous_boundary(self.cursor_offset()), cx);
+        let off = self.previous_boundary(self.cursor_offset());
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: true,
+            });
+            return;
+        }
+        self.move_to(off, cx);
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
@@ -797,7 +809,16 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        self.move_to(self.next_boundary(self.cursor_offset()), cx);
+        let off = self.next_boundary(self.cursor_offset());
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+            });
+            return;
+        }
+        self.move_to(off, cx);
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
@@ -810,6 +831,14 @@ impl EditorState {
             return;
         }
         let off = self.move_vertical(-1);
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: true,
+            });
+            return;
+        }
         // Set the caret directly (not via `move_to`) to keep the goal column.
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
@@ -825,6 +854,14 @@ impl EditorState {
             return;
         }
         let off = self.move_vertical(1);
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+            });
+            return;
+        }
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
         cx.emit(EditorEvent::SelectionChanged);
@@ -1340,7 +1377,11 @@ impl EditorState {
                 if !event.modifiers.shift {
                     let (row, _) = self.row_col(offset);
                     if let Some((range, source)) = self.math_block_at(row) {
-                        cx.emit(EditorEvent::EditMath { range, source });
+                        cx.emit(EditorEvent::EditMath {
+                            range,
+                            source,
+                            at_end: true,
+                        });
                         return;
                     }
                 }
@@ -1536,6 +1577,35 @@ impl EditorState {
         self.goal_x = None;
         cx.emit(EditorEvent::SelectionChanged);
         cx.notify();
+    }
+
+    /// Seat the caret on the plain-text line just before (`after = false`) or after
+    /// (`after = true`) the math `block`, and focus the editor — the keyboard counterpart to
+    /// clicking away, for when the caret flows out of a `$$…$$` formula's structural editor
+    /// (so it never lands on the hidden `$$` fence lines, which would reveal raw source).
+    pub fn exit_math(
+        &mut self,
+        block: Range<usize>,
+        after: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus(window, cx);
+        let target = if after {
+            let (end_row, _) = self.row_col(block.end.saturating_sub(1));
+            self.line_starts()
+                .get(end_row + 1)
+                .copied()
+                .unwrap_or(self.content.len())
+        } else {
+            let (start_row, _) = self.row_col(block.start);
+            if start_row > 0 {
+                self.line_end(start_row - 1)
+            } else {
+                0
+            }
+        };
+        self.move_to(target, cx);
     }
 
     /// The caret's bounds in window space (its painted Y range), or `None` before
