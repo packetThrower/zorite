@@ -41,9 +41,28 @@ pub struct MathEditor {
 
 impl MathEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
+        Self::with_root(Row::new(), cx)
+    }
+
+    /// Build an editor seeded with the formula parsed from `latex` — for editing an existing
+    /// `$$…$$` block. The caret lands at the end of the top row.
+    pub fn from_latex(latex: &str, cx: &mut Context<Self>) -> Self {
+        Self::with_root(crate::editor::latex::parse_latex(latex), cx)
+    }
+
+    /// The current formula as LaTeX, to write back into the `$$…$$` block.
+    pub fn to_latex(&self) -> String {
+        self.root.to_latex()
+    }
+
+    fn with_root(root: Row, cx: &mut Context<Self>) -> Self {
+        let index = root.atoms.len();
         let mut this = Self {
-            root: Row::new(),
-            cursor: Cursor::start(),
+            root,
+            cursor: Cursor {
+                path: vec![],
+                index,
+            },
             focus: cx.focus_handle(),
             font_size: 48.0,
             dpr: 2.0,
