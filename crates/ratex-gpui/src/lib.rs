@@ -14,4 +14,5 @@
 pub mod editor;
 pub mod render;
 
+pub use editor::latex::parse_latex;
 pub use editor::view::MathEditor;

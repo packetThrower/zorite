@@ -11,5 +11,6 @@
 pub mod cursor;
 pub mod geometry;
 pub mod input;
+pub mod latex;
 pub mod model;
 pub mod view;
