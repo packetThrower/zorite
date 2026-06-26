@@ -257,8 +257,13 @@ impl MathEditor {
 
         div()
             .absolute()
-            .left(px(self.palette_pos.0))
-            .top(px(self.palette_pos.1))
+            .left(px(if self.inline { 0.0 } else { self.palette_pos.0 }))
+            .top(px(if self.inline {
+                // In-line: float just below the formula, overlaying the text behind it.
+                self.rendered.as_ref().map_or(0.0, |r| r.height) + 4.0
+            } else {
+                self.palette_pos.1
+            }))
             .flex()
             .flex_col()
             .w(px(200.0))
@@ -458,7 +463,7 @@ impl Render for MathEditor {
             .when(!self.inline, |el| {
                 el.items_center().justify_center().bg(rgb(0xffffff))
             })
-            .children((!self.inline).then(|| self.palette(cx)))
+            .child(self.palette(cx))
             .child(
                 div()
                     .relative()
