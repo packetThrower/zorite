@@ -2936,6 +2936,9 @@ struct BlockImg {
     img: Arc<RenderImage>,
     width: Pixels,
     height: Pixels,
+    /// Whether to show a corner resize grip. `false` for math (nothing to persist a
+    /// `{width=N}` to, and it renders at its natural typeset size); `true` for images.
+    resizable: bool,
 }
 
 /// A line rendered as a block widget instead of its source text: a standalone
@@ -3082,6 +3085,7 @@ fn block_img(
         img,
         width: px(target_w),
         height: px(target_w * dh / dw),
+        resizable: true,
     })
 }
 
@@ -3225,7 +3229,15 @@ fn shape_document(
             .filter_map(|(range, source)| {
                 let img = f(&source)?;
                 let bi = block_img(img, None, wrap_width, scale_factor)?;
-                Some((range, bi))
+                // Math renders at its natural typeset size — no resize grip (nothing to
+                // persist a width to, and it goes inline eventually).
+                Some((
+                    range,
+                    BlockImg {
+                        resizable: false,
+                        ..bi
+                    },
+                ))
             })
             .collect(),
         None => Vec::new(),
@@ -4377,7 +4389,9 @@ impl Element for EditorElement {
         // past their bullet).
         let mut image_grips = Vec::new();
         for (i, w) in widgets.iter().enumerate() {
-            if let Some(Block::Image(img)) = w {
+            if let Some(Block::Image(img)) = w
+                && img.resizable
+            {
                 let inset = row_inset(
                     backgrounds.get(i).copied().flatten(),
                     marks.get(i).copied().flatten(),
@@ -4972,15 +4986,18 @@ impl Element for EditorElement {
                     size(img_w, img_h),
                 );
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
-                // A draggable corner grip (accent square) + the resize cursor over
-                // it, via the hitbox inserted in prepaint. Recorded in `image_rects`
-                // for the next frame's grip hit-testing.
-                let grip = EditorState::image_grip(img_bounds);
-                window.paint_quad(fill(grip, grip_color).corner_radii(Corners::all(px(3.))));
-                if let Some(hitbox) = prepaint.image_grips.get(image_rects.len()) {
-                    window.set_cursor_style(CursorStyle::ResizeLeftRight, hitbox);
+                // A draggable corner grip (accent square) + the resize cursor over it,
+                // via the hitbox inserted in prepaint. Recorded in `image_rects` for the
+                // next frame's grip hit-testing. Skipped for non-resizable blocks (math),
+                // keeping `image_grips` parallel to `image_rects`.
+                if w.resizable {
+                    let grip = EditorState::image_grip(img_bounds);
+                    window.paint_quad(fill(grip, grip_color).corner_radii(Corners::all(px(3.))));
+                    if let Some(hitbox) = prepaint.image_grips.get(image_rects.len()) {
+                        window.set_cursor_style(CursorStyle::ResizeLeftRight, hitbox);
+                    }
+                    image_rects.push((i, img_bounds));
                 }
-                image_rects.push((i, img_bounds));
             } else if let Some(Block::Chip {
                 label,
                 link,
