@@ -135,6 +135,11 @@ pub const SNIPPETS: &[Snippet] = &[
         caret: 4,
     },
     Snippet {
+        label: "Math",
+        snippet: "$$\n\n$$",
+        caret: 3,
+    },
+    Snippet {
         label: "Table",
         snippet: "|  |  |\n| --- | --- |\n|  |  |\n",
         caret: 2,
