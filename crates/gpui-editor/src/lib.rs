@@ -1316,14 +1316,9 @@ impl EditorState {
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
-            // Double-click a $$…$$ block → ask the host to open the structural editor;
-            // otherwise select the word under the cursor.
+            // Double-click selects the word under the cursor; a $$…$$ block already
+            // opened the structural editor on the first (single) click.
             2 => {
-                let (row, _) = self.row_col(offset);
-                if let Some((range, source)) = self.math_block_at(row) {
-                    cx.emit(EditorEvent::EditMath { range, source });
-                    return;
-                }
                 self.is_selecting = false;
                 self.selected_range = self.word_range_at(offset).unwrap_or(offset..offset);
                 self.selection_reversed = false;
@@ -1340,6 +1335,15 @@ impl EditorState {
             }
             // Single click: place the caret, or extend the selection with Shift.
             _ => {
+                // A single left-click on a $$…$$ block opens the structural editor in
+                // place; raw-LaTeX editing is on right-click. Shift-click still extends.
+                if !event.modifiers.shift {
+                    let (row, _) = self.row_col(offset);
+                    if let Some((range, source)) = self.math_block_at(row) {
+                        cx.emit(EditorEvent::EditMath { range, source });
+                        return;
+                    }
+                }
                 self.is_selecting = true;
                 if event.modifiers.shift {
                     self.select_to(offset, cx);
@@ -1454,6 +1458,18 @@ impl EditorState {
             let offset = self.index_for_mouse_position(event.position);
             self.move_to(offset, cx);
             return;
+        }
+        // Right-click a $$…$$ block: place the caret to edit its raw LaTeX (the block
+        // reveals `$$…$$`), instead of the structural editor (left-click) or spell menu.
+        {
+            let offset = self.index_for_mouse_position(event.position);
+            let (row, _) = self.row_col(offset);
+            if self.math_block_at(row).is_some() {
+                self.menu = None;
+                self.focus(window, cx);
+                self.move_to(offset, cx);
+                return;
+            }
         }
         // Right-click in a table cell: place the caret there + open the table menu
         // (insert/delete rows + columns), instead of the spell menu.
@@ -2667,7 +2683,15 @@ impl Render for EditorState {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .relative()
-            .key_context(CONTEXT)
+            // While a $$…$$ block is being edited in-line, the hosted math editor is
+            // focused but lives *inside* this element — so the editor's own keybindings
+            // (arrows, typing, …) would capture keys before they reach it. Drop the key
+            // context for the duration so raw keys flow to the math editor's on_key_down.
+            .key_context(if self.editing_block.is_some() {
+                ""
+            } else {
+                CONTEXT
+            })
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
