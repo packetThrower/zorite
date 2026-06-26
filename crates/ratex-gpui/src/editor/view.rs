@@ -228,6 +228,18 @@ impl MathEditor {
 
     /// The click-to-insert symbol palette (a floating, draggable panel). Shares the command
     /// table with `\command` typing, so a click is just a keyboard-free `commit_command`.
+    /// The in-line palette's top, in image-container px: just below the formula normally, but
+    /// below the matrix toolbar when the caret is in a matrix (else the two panels overlap).
+    fn inline_palette_top(&self) -> f32 {
+        if let Some(m) = geometry::matrix_rect(&self.root, &self.cursor) {
+            // Clear the toolbar, which docks at the matrix's bottom (see `matrix_toolbar`):
+            // its dock top + the toolbar's own height (24px row + padding) + a small gap.
+            PAD + (m.y + m.h) as f32 * self.font_size + self.toolbar_off.1 + 40.0
+        } else {
+            self.rendered.as_ref().map_or(0.0, |r| r.height) + 4.0
+        }
+    }
+
     fn palette(&self, cx: &mut Context<Self>) -> Div {
         // The grip "ear": press and hold here to move the panel.
         let handle = div()
@@ -290,8 +302,7 @@ impl MathEditor {
             .absolute()
             .left(px(if self.inline { 0.0 } else { self.palette_pos.0 }))
             .top(px(if self.inline {
-                // In-line: float just below the formula, overlaying the text behind it.
-                self.rendered.as_ref().map_or(0.0, |r| r.height) + 4.0
+                self.inline_palette_top()
             } else {
                 self.palette_pos.1
             }))
