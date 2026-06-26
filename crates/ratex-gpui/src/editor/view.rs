@@ -8,6 +8,7 @@ use crate::editor::geometry;
 use crate::editor::input;
 use crate::editor::model::Row;
 use crate::render::{self, PAD, Rendered};
+use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 /// How many autocomplete matches the dropdown shows / lets you select among.
@@ -37,18 +38,26 @@ pub struct MathEditor {
     toolbar_off: (f32, f32),
     /// During a toolbar drag: the previous cursor position, for delta-based movement.
     toolbar_drag: Option<(f32, f32)>,
+    /// In-line edit mode (hosted in a note's text flow): left-align the formula at its spot
+    /// and hide the floating palette + white background, vs the centered standalone editor.
+    inline: bool,
 }
 
 impl MathEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self::with_root(Row::new(), 48.0, cx)
+        Self::with_root(Row::new(), 48.0, false, cx)
     }
 
     /// Build an editor seeded with the formula parsed from `latex`, rendered at `font_size`
     /// px/em — for editing an existing `$$…$$` block in-line at its displayed size. The
     /// caret lands at the end of the top row.
     pub fn from_latex(latex: &str, font_size: f32, cx: &mut Context<Self>) -> Self {
-        Self::with_root(crate::editor::latex::parse_latex(latex), font_size, cx)
+        Self::with_root(
+            crate::editor::latex::parse_latex(latex),
+            font_size,
+            true,
+            cx,
+        )
     }
 
     /// The current formula as LaTeX, to write back into the `$$…$$` block.
@@ -56,7 +65,7 @@ impl MathEditor {
         self.root.to_latex()
     }
 
-    fn with_root(root: Row, font_size: f32, cx: &mut Context<Self>) -> Self {
+    fn with_root(root: Row, font_size: f32, inline: bool, cx: &mut Context<Self>) -> Self {
         let index = root.atoms.len();
         let mut this = Self {
             root,
@@ -74,6 +83,7 @@ impl MathEditor {
             palette_drag: None,
             toolbar_off: (0.0, 8.0),
             toolbar_drag: None,
+            inline,
         };
         this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
         this
@@ -444,10 +454,11 @@ impl Render for MathEditor {
             .relative()
             .size_full()
             .flex()
-            .items_center()
-            .justify_center()
-            .bg(rgb(0xffffff))
-            .child(self.palette(cx))
+            .when(self.inline, |el| el.items_start().justify_start())
+            .when(!self.inline, |el| {
+                el.items_center().justify_center().bg(rgb(0xffffff))
+            })
+            .children((!self.inline).then(|| self.palette(cx)))
             .child(
                 div()
                     .relative()
