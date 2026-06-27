@@ -27,9 +27,13 @@ selection.
   blockquotes, lists, clickable task checkboxes, fenced code blocks, thematic rules,
   footnotes, reference links, `<mark>` — with the raw Markdown markers hidden and
   revealed only around the caret.
-- **Block widgets:** standalone images, file chips (e.g. PDF embeds), and mermaid
-  diagrams render in place via host-supplied providers (raw source under the
-  caret).
+- **Block widgets:** standalone images, file chips (e.g. PDF embeds), mermaid
+  diagrams, and `$$…$$` math blocks render in place via host-supplied providers
+  (raw source under the caret).
+- **Math:** display `$$…$$` blocks **and** inline `$…$` formulas typeset via the
+  math provider; clicking or arrowing into one emits `EditMath` so the host can
+  seat its own 2-D structural editor in the spot the editor reserves
+  (`set_editing_block` for a block, `set_editing_inline` in-line).
 - **Tables:** rendered as a grid and edited *in the cells* — arrow keys move
   cell-to-cell keeping the column and Enter drops to the row below; host-driven
   column alignment, row/column insert/delete, and whole-table delete.
@@ -125,6 +129,8 @@ Subscribe with `cx.subscribe(&editor, …)`. [`EditorEvent`]:
 | `Changed` | The text changed via a user edit (typing, delete, paste, IME, applying a suggestion). **Not** emitted for programmatic [`set_text`]. |
 | `OpenLink(SharedString)` | A file chip was left-clicked — the host should open the `src`. The chip stays in the document. |
 | `SelectionChanged` | The caret/selection moved without a text change — for updating a caret-anchored affordance (e.g. a table-alignment toolbar). |
+| `EditMath { range, source, at_end, inline }` | The caret entered a `$$…$$` block or inline `$…$` formula (click / arrow-in). The host opens a structural editor seeded from `source`, seats it (`set_editing_block` / `set_editing_inline`), and overwrites `range` on commit. `inline` distinguishes block vs in-line; `at_end` seats the caret at the formula's end vs start. |
+| `MathMenu { source, position }` | A rendered formula was right-clicked — the host shows a context menu (copy LaTeX / export) at the window-space `position`. |
 
 ---
 
@@ -139,6 +145,12 @@ Bind the editor's editing keys. Call once at startup. Bindings are scoped to the
 
 The diagram sources of every ` ```mermaid ` block in `content`, so a host can
 pre-render them off-thread before the editor's mermaid provider is consulted.
+
+### `fn math_sources(content: &str) -> Vec<SharedString>` · `fn inline_math_sources(content: &str) -> Vec<SharedString>`
+
+The LaTeX of every `$$…$$` block / inline `$…$` formula in `content`, so a host
+can pre-render them off-thread before the math provider is consulted. (Inline
+formulas reuse the same store, keyed by LaTeX.)
 
 ### `struct EditorState`
 
@@ -209,14 +221,16 @@ squiggles only) — e.g. when the host's WYSIWYG setting is toggled off.
 
 #### Block widgets
 
-Standalone `![](src)` lines and ` ```mermaid ` blocks render as widgets when the
-caret is elsewhere (raw source under the caret). The host owns
+Standalone `![](src)` lines, ` ```mermaid ` blocks, and `$$…$$` math render as
+widgets when the caret is elsewhere (raw source under the caret). The host owns
 loading/caching/rendering and supplies a provider:
 
 ```rust
 fn set_block_image_provider(&mut self, provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)
 fn set_block_chip_provider(&mut self, provider: impl Fn(&str) -> Option<SharedString> + 'static)
 fn set_block_mermaid_provider(&mut self, provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)
+fn set_block_math_provider(&mut self, provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)
+fn set_block_math_em(&mut self, em: f32)   // em the math provider rasterizes at — enables inline `$…$`
 ```
 
 - **Image:** resolve `src` → a decoded `RenderImage` (or `None` while loading →
@@ -226,6 +240,16 @@ fn set_block_mermaid_provider(&mut self, provider: impl Fn(&str) -> Option<Arc<R
   `EditorEvent::OpenLink(src)`, a right-click places the caret to edit.
 - **Mermaid:** resolve a fenced block's source → a rendered diagram bitmap.
   Pre-render with [`mermaid_sources`].
+- **Math:** resolve a formula's LaTeX → a typeset bitmap. Pre-render with
+  [`math_sources`]. Calling `set_block_math_em` (with the em the provider
+  rasterizes at) also turns on **inline `$…$`** — the editor reuses the block
+  raster scaled to text size, painting it over a reserved gap in the line
+  (pre-render those with [`inline_math_sources`]). Editing is the host's: a
+  click/arrow into a formula emits `EditMath`, and the host seats its own 2-D
+  editor via `set_editing_block` (a full-row gap, for `$$…$$`) or
+  `set_editing_inline` (in-place, for `$…$`), then overwrites the byte range on
+  commit. `set_editing_inline` / `is_inline_math_range` / `find_inline_math` are
+  the inline counterparts of the block hooks.
 
 #### Indentation
 
@@ -283,7 +307,7 @@ A flagged span to underline. `&text[range]` is the offending word.
 
 ### `enum EditorEvent`
 
-`Changed` · `OpenLink(SharedString)` · `SelectionChanged` — see [Events](#events).
+`Changed` · `OpenLink(SharedString)` · `SelectionChanged` · `EditMath { range, source, at_end, inline }` · `MathMenu { source, position }` — see [Events](#events).
 
 ### `enum CellAlign`
 
