@@ -349,6 +349,9 @@ pub struct AppView {
     pub loaded_days: usize,
     pub day_editors: HashMap<String, DayEditor>,
     pub feed_scroll: ScrollHandle,
+    /// Scroll offset of the open completion menu — persists across the per-keystroke rebuild
+    /// of `Slash`, so the list doesn't snap back to the top as the user types or arrows.
+    pub slash_scroll: ScrollHandle,
 
     /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
     /// native menu bar instead; this gives the other OSes visual parity.
@@ -632,6 +635,7 @@ impl AppView {
             pdf_views: HashMap::new(),
             whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
+            slash_scroll: ScrollHandle::new(),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
@@ -1793,6 +1797,7 @@ impl AppView {
             Trigger::Link => slash::build_link_items(&query, &self.pages),
             Trigger::Tag => slash::build_tag_items(&query, &self.pages),
             Trigger::Placeholder => slash::build_placeholder_items(&query),
+            Trigger::Math => slash::build_math_items(&query),
         };
         let selected = self.slash.as_ref().map_or(0, |s| s.selected);
         let selected = if items.is_empty() {
@@ -1810,7 +1815,29 @@ impl AppView {
             level,
             items,
         });
+        // Keep the highlighted row visible as the list is filtered/rebuilt.
+        self.scroll_slash_into_view();
         cx.notify();
+    }
+
+    /// Scroll the open completion menu so the selected row sits inside the viewport.
+    /// Keyboard nav (and filtering) can move the selection past the height cap on long
+    /// lists — e.g. the ~75-entry `\` LaTeX menu. Geometry mirrors `ui::slash_menu`.
+    fn scroll_slash_into_view(&self) {
+        let Some(s) = self.slash.as_ref() else {
+            return;
+        };
+        let top = s.selected as f32 * ui::slash_menu::ITEM_H;
+        let bot = top + ui::slash_menu::ITEM_H;
+        let cur = -f32::from(self.slash_scroll.offset().y);
+        let new = if top < cur {
+            top
+        } else if bot > cur + ui::slash_menu::VIEW_H {
+            bot - ui::slash_menu::VIEW_H
+        } else {
+            return;
+        };
+        self.slash_scroll.set_offset(gpui::point(px(0.0), px(-new)));
     }
 
     /// Debounced spell-check for a body editor: re-run after a short idle so we
@@ -5269,12 +5296,13 @@ impl Render for AppView {
             });
         }
 
+        let slash_scroll = self.slash_scroll.clone();
         let overlay = self.slash.as_ref().map(|s| {
             gpui::deferred(
                 gpui::anchored()
                     .position(s.caret.bottom_left())
                     .snap_to_window()
-                    .child(ui::slash_menu::render(s, cx)),
+                    .child(ui::slash_menu::render(s, &slash_scroll, cx)),
             )
             .into_any_element()
         });
@@ -5469,18 +5497,30 @@ impl Render for AppView {
             // Slash-menu keys (gated: act only while the menu is open, else
             // let the editor handle the key normally).
             .on_action(cx.listener(|this: &mut AppView, _: &SlashUp, _, cx| {
-                if let Some(s) = this.slash.as_mut() {
+                let moved = if let Some(s) = this.slash.as_mut() {
                     let n = s.items.len().max(1);
                     s.selected = (s.selected + n - 1) % n;
+                    true
+                } else {
+                    false
+                };
+                if moved {
+                    this.scroll_slash_into_view();
                     cx.notify();
                 } else {
                     cx.propagate();
                 }
             }))
             .on_action(cx.listener(|this: &mut AppView, _: &SlashDown, _, cx| {
-                if let Some(s) = this.slash.as_mut() {
+                let moved = if let Some(s) = this.slash.as_mut() {
                     let n = s.items.len().max(1);
                     s.selected = (s.selected + 1) % n;
+                    true
+                } else {
+                    false
+                };
+                if moved {
+                    this.scroll_slash_into_view();
                     cx.notify();
                 } else {
                     cx.propagate();

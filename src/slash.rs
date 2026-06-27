@@ -32,6 +32,8 @@ pub enum Trigger {
     Tag,
     /// `{{` — template placeholder.
     Placeholder,
+    /// `\` inside a `$$…$$` block — a LaTeX command.
+    Math,
 }
 
 /// What a palette entry does when chosen.
@@ -85,6 +87,13 @@ pub struct Slash {
 /// over the single-char `#` / `/`.
 pub fn detect(value: &str, cursor: usize) -> Option<(Trigger, usize, String)> {
     let cursor = cursor.min(value.len());
+    // `\command` inside a $$…$$ block → LaTeX command autocomplete. Checked first, since `{`
+    // and `[` are ordinary characters inside a formula.
+    if in_math_block(value, cursor)
+        && let Some((start, q)) = detect_command(value, cursor)
+    {
+        return Some((Trigger::Math, start, q));
+    }
     if let Some((start, q)) = detect_bracket(value, cursor, "[[", "]]") {
         return Some((Trigger::Link, start, q));
     }
@@ -136,6 +145,31 @@ fn detect_token(
         return None;
     }
     Some((start, value[i..cursor].to_string()))
+}
+
+/// Whether `cursor` sits inside a `$$…$$` block (fences on their own lines): an odd number of
+/// `$$`-only lines precede it.
+fn in_math_block(value: &str, cursor: usize) -> bool {
+    value[..cursor.min(value.len())]
+        .lines()
+        .filter(|l| l.trim() == "$$")
+        .count()
+        % 2
+        == 1
+}
+
+/// A `\name` LaTeX command ending at the caret (an alphabetic run back to a `\`). Unlike
+/// `detect_token`, no leading word boundary — a `\` always starts a command.
+fn detect_command(value: &str, cursor: usize) -> Option<(usize, String)> {
+    let bytes = value.as_bytes();
+    let mut i = cursor;
+    while i > 0 && bytes[i - 1].is_ascii_alphabetic() {
+        i -= 1;
+    }
+    if i == 0 || bytes[i - 1] != b'\\' {
+        return None;
+    }
+    Some((i - 1, value[i..cursor].to_string()))
 }
 
 /// Build the palette for the current level + query:
@@ -313,6 +347,18 @@ pub fn build_placeholder_items(query: &str) -> Vec<PaletteItem> {
         }
     }
     out
+}
+
+/// LaTeX command items for `\query` inside a `$$` block: the structural editor's command table
+/// (filtered by `query`), each inserting `\name` (replacing the typed `\query`).
+pub fn build_math_items(query: &str) -> Vec<PaletteItem> {
+    ratex_gpui::editor::input::command_matches(query)
+        .into_iter()
+        .map(|name| {
+            let snippet = format!("\\{name}");
+            insert_item(snippet.clone(), snippet)
+        })
+        .collect()
 }
 
 /// An `Insert` palette item that drops the caret at the end of `snippet`.

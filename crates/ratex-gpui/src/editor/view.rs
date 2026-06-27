@@ -11,8 +11,10 @@ use crate::render::{self, PAD, Rendered};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
-/// How many autocomplete matches the dropdown shows / lets you select among.
-const MAX_MATCHES: usize = 8;
+/// Autocomplete dropdown geometry (px): row height + the scrollable height cap. Shared by
+/// the dropdown render and `scroll_match_into_view` so the thumb + scroll-into-view agree.
+const DROP_ITEM_H: f32 = 26.0;
+const DROP_MAX_H: f32 = 240.0;
 
 /// The host's theme colors for the editor chrome (palette, toolbar, caret, autocomplete) and
 /// the formula glyphs, so the editor matches the surrounding app. Filled by the host from its
@@ -62,6 +64,9 @@ pub struct MathEditor {
     pending: Option<String>,
     /// Highlighted autocomplete match (index into the visible matches).
     selected: usize,
+    /// Scroll offset of the open autocomplete dropdown, so a long match list scrolls to keep
+    /// the highlight in view (keyboard nav can run past the height cap).
+    match_scroll: ScrollHandle,
     /// The palette panel's top-left, in window px (draggable by its grip).
     palette_pos: (f32, f32),
     /// While dragging the palette: the (cursor − panel-origin) offset, kept for 1:1
@@ -142,6 +147,7 @@ impl MathEditor {
             rendered: None,
             pending: None,
             selected: 0,
+            match_scroll: ScrollHandle::new(),
             palette_pos: (16.0, 16.0),
             palette_drag: None,
             toolbar_off: (0.0, 8.0),
@@ -207,6 +213,7 @@ impl MathEditor {
                 Some('\\') => {
                     self.pending = Some(String::new());
                     self.selected = 0;
+                    self.scroll_match_into_view();
                 }
                 Some(c) => input::type_char(&mut self.root, &mut self.cursor, c),
                 None => return false,
@@ -226,9 +233,7 @@ impl MathEditor {
                     .pending
                     .as_deref()
                     .map_or(0, |p| input::command_matches(p).len());
-                self.selected = (self.selected + 1)
-                    .min(n.saturating_sub(1))
-                    .min(MAX_MATCHES - 1);
+                self.selected = (self.selected + 1).min(n.saturating_sub(1));
             }
             "backspace" => {
                 if self.pending.as_deref().is_some_and(|b| !b.is_empty()) {
@@ -246,7 +251,24 @@ impl MathEditor {
                 _ => return false,
             },
         }
+        self.scroll_match_into_view();
         true
+    }
+
+    /// Scroll the autocomplete dropdown so the highlighted match stays visible — the list can
+    /// run past the height cap (the full `\` menu is ~75 entries). Mirrors the host slash menu.
+    fn scroll_match_into_view(&self) {
+        let top = self.selected as f32 * DROP_ITEM_H;
+        let bot = top + DROP_ITEM_H;
+        let cur = -f32::from(self.match_scroll.offset().y);
+        let new = if top < cur {
+            top
+        } else if bot > cur + DROP_MAX_H {
+            bot - DROP_MAX_H
+        } else {
+            return;
+        };
+        self.match_scroll.set_offset(point(px(0.0), px(-new)));
     }
 
     /// Resolve the pending `\name`: the highlighted match, else the literal letters.
@@ -517,32 +539,58 @@ impl Render for MathEditor {
             }
             let (x, top, ch) = self.caret_px().unwrap_or((PAD, PAD, self.font_size));
             let selected = self.selected;
+
+            // Inner scroll viewport: the full match list (no cap) scrolls within DROP_MAX_H.
+            let viewport = div()
+                .id("ratex-cmd-menu")
+                .max_h(px(DROP_MAX_H))
+                .overflow_y_scroll()
+                .track_scroll(&self.match_scroll)
+                .flex()
+                .flex_col()
+                .children(matches.iter().enumerate().map(|(i, name)| {
+                    let row = div().px_2().py_1().child(format!("\\{name}"));
+                    if i == selected {
+                        row.bg(theme.accent_bg).text_color(theme.accent)
+                    } else {
+                        row.text_color(theme.fg)
+                    }
+                }));
+
+            // Scrollbar thumb, shown only when the rows overflow the cap — sized from the
+            // content height + positioned from the live offset (mirrors the host slash menu).
+            let rows_h = matches.len() as f32 * DROP_ITEM_H;
+            let thumb = (rows_h > DROP_MAX_H).then(|| {
+                let scrolled =
+                    (-f32::from(self.match_scroll.offset().y)).clamp(0.0, rows_h - DROP_MAX_H);
+                let thumb_h = (DROP_MAX_H * DROP_MAX_H / rows_h).max(24.0);
+                let thumb_top = scrolled / (rows_h - DROP_MAX_H) * (DROP_MAX_H - thumb_h);
+                let mut thumb_c = theme.muted;
+                thumb_c.a = 0.5;
+                div()
+                    .absolute()
+                    .top(px(thumb_top))
+                    .right(px(2.0))
+                    .w(px(5.0))
+                    .h(px(thumb_h))
+                    .rounded(px(3.0))
+                    .bg(thumb_c)
+            });
+
             Some(
                 div()
                     .absolute()
                     .left(px(x))
                     .top(px(top + ch + 4.0))
-                    .flex()
-                    .flex_col()
+                    .occlude()
                     .bg(theme.panel)
                     .border_1()
                     .border_color(theme.border)
                     .rounded_md()
+                    .overflow_hidden()
                     .text_size(px(14.0))
-                    .children(
-                        matches
-                            .iter()
-                            .take(MAX_MATCHES)
-                            .enumerate()
-                            .map(|(i, name)| {
-                                let row = div().px_2().py_1().child(format!("\\{name}"));
-                                if i == selected {
-                                    row.bg(theme.accent_bg).text_color(theme.accent)
-                                } else {
-                                    row.text_color(theme.fg)
-                                }
-                            }),
-                    ),
+                    .child(viewport)
+                    .children(thumb),
             )
         });
 
