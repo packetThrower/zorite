@@ -8,8 +8,6 @@
 //!   [`editor::latex`]) is always built; the interactive editor ([`MathEditor`] + the
 //!   `cursor` / `geometry` / `input` / `view` modules) is behind the **`editor`** feature
 //!   (enabled by default). For a render-only build, depend with `default-features = false`.
-//!
-//! See `spikes/ratex-probe/DESIGN.md` for the full design and milestones.
 
 pub mod editor;
 pub mod render;
