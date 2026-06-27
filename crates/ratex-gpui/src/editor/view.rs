@@ -891,7 +891,9 @@ impl Render for MathEditor {
             .relative()
             .size_full()
             .flex()
-            .when(self.inline, |el| el.items_start().justify_start())
+            // In-line: top-aligned, and centered to match the centered display formula so
+            // the formula doesn't jump when you click into it. Standalone: fully centered.
+            .when(self.inline, |el| el.items_start().justify_center())
             .when(!self.inline, |el| {
                 el.items_center().justify_center().bg(theme.panel)
             })

@@ -44,6 +44,11 @@ fn build(
             // left-click isn't handled here, so it bubbles to the markdown's click-to-edit.
             return div()
                 .py(px(6.0))
+                // Display math centers by default (LaTeX convention); the hit-box still hugs
+                // the formula (the `img` carries the handler), not the full centered row.
+                .w_full()
+                .flex()
+                .justify_center()
                 .child(
                     img(ImageSource::from(image))
                         .id(("math-formula", id))

@@ -5259,8 +5259,15 @@ impl Element for EditorElement {
                 // (aspect-preserved from the saved size) instead of the saved
                 // `{width=N}` — the source isn't rewritten until release.
                 let (img_w, img_h) = image_display_size(w, image_resize, i);
+                // Display math (non-resizable) centers within the content width, like LaTeX
+                // `$$…$$`; a real image stays at the row's left inset.
+                let img_x = if !w.resizable && bounds.size.width > img_w {
+                    origin.x + px((f32::from(bounds.size.width) - f32::from(img_w)) / 2.0)
+                } else {
+                    origin.x + inset
+                };
                 let img_bounds = Bounds::new(
-                    point(origin.x + inset, origin.y + px(IMG_ROW_PAD / 2.)),
+                    point(img_x, origin.y + px(IMG_ROW_PAD / 2.)),
                     size(img_w, img_h),
                 );
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
