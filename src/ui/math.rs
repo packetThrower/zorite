@@ -4,11 +4,13 @@
 //! off-thread render the first time it paints), or the raw LaTeX on failure.
 
 use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, Bounds, ImageSource, IntoElement, ParentElement, Pixels, SharedString, Styled,
-    WeakEntity, canvas, div, img, px,
+    AnyElement, Bounds, ImageSource, InteractiveElement, IntoElement, MouseButton, ParentElement,
+    Pixels, SharedString, Styled, WeakEntity, canvas, div, img, px,
 };
 use gpui_markdown::MathRenderer;
 
@@ -32,9 +34,30 @@ fn build(
     {
         let store = store.borrow();
         if let Some((image, width, height)) = store.get(&source) {
+            let mut hasher = DefaultHasher::new();
+            source.hash(&mut hasher);
+            let id = hasher.finish() as usize;
+            let menu_weak = weak.clone();
+            let menu_src = source.clone();
+            // Right-click → the formula context menu. `stop_propagation` suppresses the
+            // reader view's own (element-level) day/page "Edit" menu over the formula. A
+            // left-click isn't handled here, so it bubbles to the markdown's click-to-edit.
             return div()
                 .py(px(6.0))
-                .child(img(ImageSource::from(image)).w(px(width)).h(px(height)))
+                .child(
+                    img(ImageSource::from(image))
+                        .id(("math-formula", id))
+                        .w(px(width))
+                        .h(px(height))
+                        .on_mouse_down(MouseButton::Right, move |ev, _window, cx| {
+                            cx.stop_propagation();
+                            let src = menu_src.clone();
+                            let pos = ev.position;
+                            let _ = menu_weak.update(cx, |this, cx| {
+                                this.open_math_menu(src, pos, cx);
+                            });
+                        }),
+                )
                 .into_any_element();
         }
         if store.failed(&source) {

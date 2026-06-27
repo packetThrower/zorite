@@ -34,9 +34,9 @@ use gpui_component::{
 use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, DeletePage, EditNote, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab,
-    NewPage, NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent,
-    PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    CloseTab, DeletePage, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab, NewPage,
+    NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage,
+    PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -288,6 +288,23 @@ pub struct TablePicker {
 
 /// State for an open structural-math edit (double-clicking a `$$` block): the 2D editor, the
 /// note editor + document it came from, and the block's byte range to overwrite on commit.
+/// A right-click context menu in the content area, rendered as an anchored overlay. Built
+/// element-side (not gpui-component's window-level `.context_menu()`, which a child's
+/// `stop_propagation` can't suppress) so a formula's menu cleanly overrides the day/page one.
+struct CtxMenu {
+    anchor: Point<Pixels>,
+    kind: CtxKind,
+}
+
+enum CtxKind {
+    /// A rendered `$$…$$` formula was right-clicked: copy its LaTeX or export it. Holds the
+    /// LaTeX source.
+    Formula(SharedString),
+    /// A reader-view day/page was right-clicked away from a formula: a single "Edit" entry
+    /// into edit mode for that target.
+    Edit(SlashTarget),
+}
+
 struct MathEdit {
     editor: Entity<ratex_gpui::MathEditor>,
     source: Entity<EditorState>,
@@ -393,6 +410,8 @@ pub struct AppView {
     lightbox_focus: FocusHandle,
     // An open structural-math edit (a double-clicked `$$` block), or `None`.
     math_edit: Option<MathEdit>,
+    // Right-click context menu on a rendered formula (Copy LaTeX / Export SVG / Export PNG).
+    ctx_menu: Option<CtxMenu>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
     // what's in flight, capped at `MAX_IMAGE_DECODES`). The bound keeps the
     // transient full-resolution buffers in check — decoding a 12 MP photo briefly
@@ -456,9 +475,6 @@ pub struct AppView {
     /// The page (id + title) targeted by an open right-click context menu,
     /// read by the `DeletePage` / `RenamePage` actions.
     context_page: Option<(i64, SharedString)>,
-    /// The rendered page / journal day right-clicked for the "Edit" menu item,
-    /// read by the `EditNote` action.
-    context_edit: Option<SlashTarget>,
     /// The target of a right-click "Open in new window" — a page (sidebar or
     /// tab) or a PDF/journal tab. Set on right-click, taken by the handler.
     context_target: Option<TabKind>,
@@ -630,6 +646,7 @@ impl AppView {
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             math_edit: None,
+            ctx_menu: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
             pdf_views: HashMap::new(),
@@ -656,7 +673,6 @@ impl AppView {
             signal_task: None,
             templates: Vec::new(),
             context_page: None,
-            context_edit: None,
             context_target: None,
             doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
@@ -808,6 +824,9 @@ impl AppView {
                         window,
                         cx,
                     );
+                }
+                EditorEvent::MathMenu { source, position } => {
+                    this.open_math_menu(source.clone(), *position, cx);
                 }
             },
         );
@@ -1588,6 +1607,9 @@ impl AppView {
                         cx,
                     );
                 }
+                EditorEvent::MathMenu { source, position } => {
+                    this.open_math_menu(source.clone(), *position, cx);
+                }
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -2324,6 +2346,105 @@ impl AppView {
     pub fn close_mermaid_lightbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mermaid_lightbox = None;
         window.focus(&self.focus_handle, cx);
+        cx.notify();
+    }
+
+    pub fn open_math_menu(
+        &mut self,
+        source: SharedString,
+        anchor: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ctx_menu = Some(CtxMenu {
+            anchor,
+            kind: CtxKind::Formula(source),
+        });
+        cx.notify();
+    }
+
+    /// Open the reader-view right-click menu for a day/page (a single "Edit" entry). Built as
+    /// our own overlay so a formula's `stop_propagation` suppresses it over the formula.
+    pub fn open_edit_menu(
+        &mut self,
+        target: SlashTarget,
+        anchor: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ctx_menu = Some(CtxMenu {
+            anchor,
+            kind: CtxKind::Edit(target),
+        });
+        cx.notify();
+    }
+
+    /// The LaTeX source of the open formula menu, taken (closing the menu), or `None` if the
+    /// open menu isn't a formula one.
+    fn take_ctx_formula(&mut self) -> Option<String> {
+        match self.ctx_menu.take()? {
+            CtxMenu {
+                kind: CtxKind::Formula(src),
+                ..
+            } => Some(src.to_string()),
+            _ => None,
+        }
+    }
+
+    fn math_menu_copy_latex(&mut self, cx: &mut Context<Self>) {
+        if let Some(source) = self.take_ctx_formula() {
+            cx.write_to_clipboard(ClipboardItem::new_string(source));
+        }
+        cx.notify();
+    }
+
+    fn math_menu_export_png(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.take_ctx_formula() else {
+            return;
+        };
+        cx.notify();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let rx = cx.prompt_for_new_path(
+            Path::new(&home).join("Desktop").as_path(),
+            Some("formula.png"),
+        );
+        cx.spawn_in(window, async move |_this, _cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            let Some(png) = ratex_gpui::render::render_latex_to_png(&source, 48.0, 4.0) else {
+                return;
+            };
+            let _ = std::fs::write(path, png);
+        })
+        .detach();
+    }
+
+    fn math_menu_export_svg(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.take_ctx_formula() else {
+            return;
+        };
+        cx.notify();
+        let home = std::env::var("HOME").unwrap_or_default();
+        let rx = cx.prompt_for_new_path(
+            Path::new(&home).join("Desktop").as_path(),
+            Some("formula.svg"),
+        );
+        cx.spawn_in(window, async move |_this, _cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            let Some(svg) = ratex_gpui::render::render_latex_to_svg(&source, 48.0) else {
+                return;
+            };
+            let _ = std::fs::write(path, svg);
+        })
+        .detach();
+    }
+
+    /// Run the "Edit" entry of the reader-view menu: enter edit mode for its day/page.
+    fn ctx_menu_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(CtxMenu {
+            kind: CtxKind::Edit(target),
+            ..
+        }) = self.ctx_menu.take()
+        {
+            self.edit_from_reader(&target, window, cx);
+        }
         cx.notify();
     }
 
@@ -3768,6 +3889,21 @@ impl AppView {
         cx.notify();
     }
 
+    /// Enter edit mode for a reader-view `target` (a day or a page). Used when a rendered
+    /// formula is clicked: the formula `occlude`s the reader view's own click-to-edit, so it
+    /// re-dispatches here.
+    pub fn edit_from_reader(
+        &mut self,
+        target: &SlashTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            SlashTarget::Day(date) => self.edit_day(date, window, cx),
+            SlashTarget::Page(_) => self.edit_page(window, cx),
+        }
+    }
+
     /// [`Self::edit_day`] variant for clicking a day's rendered text: enter edit mode
     /// with the caret at source byte `offset` and keep the clicked line under the cursor
     /// (gpui-markdown maps the click to a source offset and reports the click's `click_y`).
@@ -4708,22 +4844,6 @@ impl AppView {
         self.context_target = Some(target);
     }
 
-    /// Remember which rendered page / journal day a right-click targets, so the
-    /// `EditNote` menu item knows what to put into edit mode.
-    pub fn set_context_edit(&mut self, target: SlashTarget) {
-        self.context_edit = Some(target);
-    }
-
-    /// `EditNote` handler (right-click → Edit): enter edit mode on the targeted
-    /// rendered page or journal day.
-    fn on_edit_note(&mut self, _: &EditNote, window: &mut Window, cx: &mut Context<Self>) {
-        match self.context_edit.take() {
-            Some(SlashTarget::Day(date)) => self.edit_day(&date, window, cx),
-            Some(SlashTarget::Page(_)) => self.edit_page(window, cx),
-            None => {}
-        }
-    }
-
     /// `DeletePage` handler: confirm, then delete the remembered page.
     fn on_delete_page(&mut self, _: &DeletePage, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, title)) = self.context_page.take() else {
@@ -5458,6 +5578,61 @@ impl Render for AppView {
                 .into_any_element()
             });
 
+        let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
+            // Each row's action id: formula menus expose 0..=2, the day/page menu just 3 (Edit).
+            let items: &[(&str, usize)] = match menu.kind {
+                CtxKind::Formula(_) => &[("Copy LaTeX", 0), ("Export PNG…", 1), ("Export SVG…", 2)],
+                CtxKind::Edit(_) => &[("Edit", 3)],
+            };
+            let mut rows = div().flex().flex_col().py(px(4.0));
+            for &(label, action_id) in items {
+                rows = rows.child(
+                    div()
+                        .id(("ctx-menu-row", action_id))
+                        .px(px(12.0))
+                        .py(px(5.0))
+                        .text_size(px(14.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::accent_tint()))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                match action_id {
+                                    0 => this.math_menu_copy_latex(cx),
+                                    1 => this.math_menu_export_png(window, cx),
+                                    2 => this.math_menu_export_svg(window, cx),
+                                    _ => this.ctx_menu_edit(window, cx),
+                                }
+                            }),
+                        )
+                        .child(label),
+                );
+            }
+            gpui::deferred(
+                gpui::anchored()
+                    .position(menu.anchor)
+                    .snap_to_window()
+                    .child(
+                        div()
+                            .occlude()
+                            .min_w(px(140.0))
+                            .bg(theme::bg_sidebar())
+                            .border_1()
+                            .border_color(theme::border_subtle())
+                            .rounded(px(8.0))
+                            .overflow_hidden()
+                            .text_color(theme::text_primary())
+                            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                this.ctx_menu = None;
+                                cx.notify();
+                            }))
+                            .child(rows),
+                    ),
+            )
+            .into_any_element()
+        });
+
         // Each journal day fills most of the window height so days read as
         // distinct "pages" instead of a continuous wall of text.
         let day_min = px(f32::from(window.viewport_size().height) * 0.75);
@@ -5561,7 +5736,6 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_toggle_favorite))
-            .on_action(cx.listener(Self::on_edit_note))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_new_whiteboard))
             .on_action(cx.listener(Self::on_import_logseq))
@@ -5720,6 +5894,7 @@ impl Render for AppView {
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)
+            .children(ctx_menu_overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.

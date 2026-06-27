@@ -292,6 +292,12 @@ pub enum EditorEvent {
         source: SharedString,
         at_end: bool,
     },
+    /// A `$$…$$` math block was right-clicked: the LaTeX source and the window-space click
+    /// position, so the host can show a context menu (Copy LaTeX / Export).
+    MathMenu {
+        source: SharedString,
+        position: Point<Pixels>,
+    },
 }
 
 /// A table column's text alignment, for the host-driven alignment toolbar
@@ -1395,15 +1401,25 @@ impl EditorState {
             // Single click: place the caret, or extend the selection with Shift.
             _ => {
                 // A single left-click on a $$…$$ block opens the structural editor in
-                // place; raw-LaTeX editing is on right-click. Shift-click still extends.
+                // place; a Control-click (macOS secondary click, which AppKit delivers as
+                // a left button + control modifier, NOT a right button) shows the formula
+                // context menu instead. Shift-click still extends the selection.
                 if !event.modifiers.shift {
                     let (row, _) = self.row_col(offset);
                     if let Some((range, source)) = self.math_block_at(row) {
-                        cx.emit(EditorEvent::EditMath {
-                            range,
-                            source,
-                            at_end: true,
-                        });
+                        if event.modifiers.control {
+                            self.focus(window, cx);
+                            cx.emit(EditorEvent::MathMenu {
+                                source,
+                                position: event.position,
+                            });
+                        } else {
+                            cx.emit(EditorEvent::EditMath {
+                                range,
+                                source,
+                                at_end: true,
+                            });
+                        }
                         return;
                     }
                 }
@@ -1522,15 +1538,18 @@ impl EditorState {
             self.move_to(offset, cx);
             return;
         }
-        // Right-click a $$…$$ block: place the caret to edit its raw LaTeX (the block
-        // reveals `$$…$$`), instead of the structural editor (left-click) or spell menu.
+        // Right-click a $$…$$ block: emit a MathMenu event so the host can show a
+        // context menu (Copy LaTeX / Export SVG / PNG). Focus the editor (not the caret
+        // move of old) so it stays live after the menu closes.
         {
             let offset = self.index_for_mouse_position(event.position);
             let (row, _) = self.row_col(offset);
-            if self.math_block_at(row).is_some() {
-                self.menu = None;
+            if let Some((_range, source)) = self.math_block_at(row) {
                 self.focus(window, cx);
-                self.move_to(offset, cx);
+                cx.emit(EditorEvent::MathMenu {
+                    source,
+                    position: event.position,
+                });
                 return;
             }
         }

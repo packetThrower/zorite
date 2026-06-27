@@ -5732,6 +5732,7 @@ dependencies = [
  "ratex-layout",
  "ratex-parser",
  "ratex-render",
+ "ratex-svg",
 ]
 
 [[package]]
@@ -5802,6 +5803,21 @@ dependencies = [
  "serde_json",
  "tiny-skia",
  "ttf-parser",
+]
+
+[[package]]
+name = "ratex-svg"
+version = "0.1.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "940dc91507873b5f9dc18224df2552ccb1eef3f5047b454710e517da026360f1"
+dependencies = [
+ "ab_glyph",
+ "base64",
+ "ratex-font",
+ "ratex-font-loader",
+ "ratex-katex-fonts",
+ "ratex-types",
+ "ratex-unicode-font",
 ]
 
 [[package]]

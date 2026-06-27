@@ -82,6 +82,37 @@ fn rasterize(latex: &str, font_size: f32, dpr: f32, rgb: [u8; 3]) -> Option<(Vec
     Some((bytes, w, h))
 }
 
+/// Render raw LaTeX to PNG file bytes (black on white) at the given font size and DPR.
+/// Suitable for writing directly to a `.png` file.
+pub fn render_latex_to_png(latex: &str, font_size: f32, dpr: f32) -> Option<Vec<u8>> {
+    let nodes = parse(latex).ok()?;
+    let lbox = layout(&nodes, &LayoutOptions::default());
+    let dl = to_display_list(&lbox);
+    let opts = RenderOptions {
+        font_size,
+        padding: PAD,
+        device_pixel_ratio: dpr,
+        ..Default::default()
+    };
+    render_to_png(&dl, &opts).ok()
+}
+
+/// Render raw LaTeX to an SVG string at the given font size.
+pub fn render_latex_to_svg(latex: &str, font_size: f32) -> Option<String> {
+    let nodes = parse(latex).ok()?;
+    let lbox = layout(&nodes, &LayoutOptions::default());
+    let dl = to_display_list(&lbox);
+    let opts = ratex_svg::SvgOptions {
+        font_size: font_size as f64,
+        padding: PAD as f64,
+        // Embed glyph outlines so the file is self-contained — otherwise it references KaTeX
+        // font-families the viewer lacks and renders with fallback shapes.
+        embed_glyphs: true,
+        ..Default::default()
+    };
+    Some(ratex_svg::render_to_svg(&dl, &opts))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +155,24 @@ mod tests {
             r.width,
             r.height
         );
+    }
+
+    #[test]
+    fn svg_export_is_self_contained() {
+        // The exported SVG must embed glyph outlines (`<path>`), not `<text>` that references
+        // KaTeX font-families a standalone viewer won't have (which renders the wrong shapes).
+        let svg = render_latex_to_svg(r"\sqrt{7x \cdot 3}", 48.0).expect("renders");
+        assert!(svg.contains("<svg"), "is an SVG document");
+        assert!(svg.contains("<path"), "embeds glyph outlines");
+        assert!(
+            !svg.contains("<text"),
+            "no <text> elements that depend on the viewer's fonts"
+        );
+    }
+
+    #[test]
+    fn png_export_is_png() {
+        let png = render_latex_to_png(r"\sqrt{x}", 48.0, 4.0).expect("renders");
+        assert_eq!(&png[1..4], b"PNG", "PNG magic header");
     }
 }

@@ -13,6 +13,10 @@ ratex-layout = "0.1"
 # Raster backend with KaTeX fonts embedded — `render` rasterizes a formula to a PNG that
 # becomes a `gpui::RenderImage`. `embed-fonts` so no external font directory is needed.
 ratex-render = { version = "0.1", features = ["embed-fonts"] }
+# Vector SVG backend — used by the "Export SVG" context menu action. `embed-fonts` so the
+# exported SVG carries its own glyph paths (KaTeX fonts), instead of `<text>` that references
+# KaTeX font-families the viewer won't have — which renders with the wrong shapes.
+ratex-svg = { version = "0.1", features = ["embed-fonts"] }
 
 # Same git spec (no rev) as the workspace root + gpui-editor, so Cargo unifies to one
 # gpui; the lockfile pins the actual revision. NOT crates.io 0.2 — Zed doesn't keep that

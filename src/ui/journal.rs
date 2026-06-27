@@ -4,13 +4,11 @@
 
 use gpui::{
     ClickEvent, Context, Entity, ExternalPaths, FontWeight, InteractiveElement, IntoElement,
-    MouseButton, ParentElement, Pixels, SharedString, StatefulInteractiveElement, Styled, div,
-    prelude::FluentBuilder as _, px,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString, StatefulInteractiveElement,
+    Styled, div, prelude::FluentBuilder as _, px,
 };
-use gpui_component::menu::ContextMenuExt;
 use gpui_editor::EditorState;
 
-use crate::actions::EditNote;
 use crate::app::{self, AppView};
 use crate::slash::SlashTarget;
 use crate::theme;
@@ -197,20 +195,22 @@ fn rendered_day(
         .min_h(px(24.0))
         .cursor_text()
         .child(inner)
-        // Right-click → Edit: remember this day, then `EditNote` puts it in edit mode.
+        // Right-click → an "Edit" menu (our own anchored overlay, not gpui-component's
+        // window-level `context_menu`, so a formula's right-click can suppress it via
+        // `stop_propagation` and show its own menu instead).
         .on_mouse_down(
             MouseButton::Right,
-            cx.listener(move |this: &mut AppView, _, _window, _cx| {
-                this.set_context_edit(SlashTarget::Day(d_ctx.clone()));
-            }),
+            cx.listener(
+                move |this: &mut AppView, ev: &MouseDownEvent, _window, cx| {
+                    this.open_edit_menu(SlashTarget::Day(d_ctx.clone()), ev.position, cx);
+                },
+            ),
         )
         .on_click(
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.edit_day(&d, window, cx);
             }),
         )
-        // `context_menu` returns a non-interactive wrapper, so it must come last.
-        .context_menu(|menu, _window, _cx| menu.menu("Edit", Box::new(EditNote)))
 }
 
 fn load_older(cx: &mut Context<AppView>) -> impl IntoElement {
