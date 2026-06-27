@@ -83,7 +83,16 @@ pub struct MathEditor {
     /// In-line edit mode (hosted in a note's text flow): left-align the formula at its spot
     /// and hide the floating palette + white background, vs the centered standalone editor.
     inline: bool,
+    /// Undo / redo history: `(model, caret)` snapshots taken before each edit. The host
+    /// editor's Cmd+Z is inert while we're hosted (its key context is dropped), so the
+    /// formula owns its own in-place undo. A committed formula is one step in the document's
+    /// history (the host records it), so the two levels compose.
+    undo_stack: Vec<(Row, Cursor)>,
+    redo_stack: Vec<(Row, Cursor)>,
 }
+
+/// Cap on the formula's in-place undo history, to bound memory.
+const UNDO_CAP: usize = 200;
 
 /// A navigation signal the host listens for: the caret tried to move past a boundary of the
 /// formula (`after` = past the end → seat the text caret after the block; else before it), so
@@ -157,6 +166,8 @@ impl MathEditor {
             toolbar_off: (0.0, 8.0),
             toolbar_drag: None,
             inline,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
         };
         this.rendered = render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
         this
@@ -167,12 +178,81 @@ impl MathEditor {
         self.focus.clone()
     }
 
+    /// Re-rasterize the formula, freeing the previous image's GPU texture, and notify.
+    fn rerender(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let old = self.rendered.take();
+        self.rendered = render::render_row(&self.root, self.font_size, self.dpr, self.theme.fg);
+        if let Some(old) = old {
+            cx.drop_image(old.image, Some(window));
+        }
+        cx.notify();
+    }
+
+    /// Finish a possibly-mutating action: if it changed the model, record `before` for undo
+    /// (clearing the redo branch), then re-rasterize. Caret-only moves don't record a step.
+    fn commit_edit(&mut self, before: (Row, Cursor), window: &mut Window, cx: &mut Context<Self>) {
+        if self.root != before.0 {
+            self.undo_stack.push(before);
+            self.redo_stack.clear();
+            if self.undo_stack.len() > UNDO_CAP {
+                self.undo_stack.remove(0);
+            }
+        }
+        self.rerender(window, cx);
+    }
+
+    /// Restore the previous snapshot (pushing the current one onto the redo branch). `false`
+    /// if there's nothing to undo.
+    fn undo(&mut self) -> bool {
+        let Some((root, cursor)) = self.undo_stack.pop() else {
+            return false;
+        };
+        let prev = (
+            std::mem::replace(&mut self.root, root),
+            std::mem::replace(&mut self.cursor, cursor),
+        );
+        self.redo_stack.push(prev);
+        self.anchor = None;
+        self.pending = None;
+        true
+    }
+
+    /// Re-apply the last undone snapshot. `false` if there's nothing to redo.
+    fn redo(&mut self) -> bool {
+        let Some((root, cursor)) = self.redo_stack.pop() else {
+            return false;
+        };
+        let prev = (
+            std::mem::replace(&mut self.root, root),
+            std::mem::replace(&mut self.cursor, cursor),
+        );
+        self.undo_stack.push(prev);
+        self.anchor = None;
+        self.pending = None;
+        true
+    }
+
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let ks = &ev.keystroke;
         if ks.modifiers.platform || ks.modifiers.control {
+            // Undo / redo within the formula (Cmd/Ctrl+Z, Cmd+Shift+Z, Cmd/Ctrl+Y). The host
+            // editor's binding is inert while we're hosted (its key context is dropped), so
+            // the formula handles it. Other modified keys are left for the host.
+            if !ks.modifiers.alt && !ks.modifiers.function {
+                let did = match ks.key.as_str() {
+                    "z" if ks.modifiers.shift => self.redo(),
+                    "z" => self.undo(),
+                    "y" => self.redo(),
+                    _ => false,
+                };
+                if did {
+                    self.rerender(window, cx);
+                }
+            }
             return;
         }
         let was_normal = self.pending.is_none();
+        let root_before = self.root.clone();
         let cursor_before = self.cursor.clone();
         let consumed = if self.pending.is_some() {
             self.handle_pending(ks)
@@ -197,13 +277,9 @@ impl MathEditor {
         if !consumed {
             return;
         }
-        // Re-rasterize, freeing the previous image's GPU texture.
-        let old = self.rendered.take();
-        self.rendered = render::render_row(&self.root, self.font_size, self.dpr, self.theme.fg);
-        if let Some(old) = old {
-            cx.drop_image(old.image, Some(window));
-        }
-        cx.notify();
+        // Record an undo step iff the model actually changed (so navigation / selection
+        // don't), then re-rasterize.
+        self.commit_edit((root_before, cursor_before), window, cx);
     }
 
     /// Normal-mode keys: navigation, selection (Shift+←/→), editing, typing, `\` to start a
@@ -451,17 +527,12 @@ impl MathEditor {
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         // With a selection active, the fraction / root buttons WRAP it (it
                         // becomes the numerator / radicand); other buttons just insert.
+                        let before = (this.root.clone(), this.cursor.clone());
                         let sel = this.selection_range();
                         input::commit_command_selecting(&mut this.root, &mut this.cursor, cmd, sel);
                         this.anchor = None;
-                        let old = this.rendered.take();
-                        this.rendered =
-                            render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
-                        if let Some(old) = old {
-                            cx.drop_image(old.image, Some(window));
-                        }
                         this.focus.focus(window, cx);
-                        cx.notify();
+                        this.commit_edit(before, window, cx);
                     }))
                     .child(*label)
             }));
@@ -543,15 +614,10 @@ impl MathEditor {
                 .cursor_pointer()
                 .hover(|s| s.bg(theme.accent_bg))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    let before = (this.root.clone(), this.cursor.clone());
                     op(&mut this.cursor, &mut this.root);
-                    let old = this.rendered.take();
-                    this.rendered =
-                        render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
-                    if let Some(old) = old {
-                        cx.drop_image(old.image, Some(window));
-                    }
                     this.focus.focus(window, cx);
-                    cx.notify();
+                    this.commit_edit(before, window, cx);
                 }))
                 .child(label)
         };

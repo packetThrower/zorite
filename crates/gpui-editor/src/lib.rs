@@ -550,6 +550,24 @@ impl EditorState {
         &self.content
     }
 
+    /// Replace byte `range` with `text` as ONE recorded (undoable) edit, leaving the caret
+    /// after the inserted text. Unlike [`Self::set_text`] this preserves — and extends — the
+    /// undo history, so a host writing back a structural edit (e.g. a committed `$$…$$`
+    /// formula) lands as a normal undo step rather than clobbering the history.
+    pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        let range = range.start.min(self.content.len())..range.end.min(self.content.len());
+        self.record_edit(&range, text);
+        self.content.replace_range(range.clone(), text);
+        self.remap_diagnostics(&range, text.len());
+        let caret = range.start + text.len();
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        // Don't coalesce a following keystroke into this structural replacement.
+        self.last_edit = EditKind::Other;
+        cx.notify();
+    }
+
     /// Replace the whole document; resets the caret to the start.
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.content = text.into();

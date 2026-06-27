@@ -2535,8 +2535,11 @@ impl AppView {
         }
         let new_range = range.start..range.start + block.len();
         let mut new = current;
-        new.replace_range(range, &block);
-        edit.source.update(cx, |e, cx| e.set_text(&new, cx));
+        new.replace_range(range.clone(), &block);
+        // Recorded (undoable) splice — NOT `set_text`, which would wipe the document's undo
+        // history. So a committed formula is one Cmd+Z step, with prior history intact.
+        edit.source
+            .update(cx, |e, cx| e.replace_range(range, &block, cx));
         // Rasterize the edited formula into the shared store, or the block-math provider
         // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
         self.ensure_content_math(&new, cx);
