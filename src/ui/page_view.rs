@@ -183,6 +183,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             ))
             .on_mermaid(crate::ui::mermaid::renderer(app, cx))
             .on_math(crate::ui::math::renderer(app, cx))
+            .on_inline_math(crate::ui::math::inline_renderer(app))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))

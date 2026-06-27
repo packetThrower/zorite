@@ -26,6 +26,22 @@ pub fn renderer(app: &AppView, cx: &mut gpui::Context<AppView>) -> MathRenderer 
     Rc::new(move |source: SharedString| build(source, store.clone(), weak.clone()))
 }
 
+/// Build the renderer handed to `MarkdownView::on_inline_math`. Returns a ready inline formula's
+/// raster and its logical size scaled to the reading view's text size (the store typesets at the
+/// larger display em), or `None` while it's still rasterizing — the raw `$…$` shows until then.
+/// The day's editor state pre-renders every formula on creation (`ensure_content_math`), so no
+/// off-thread kick-off is needed here.
+pub fn inline_renderer(app: &AppView) -> gpui_markdown::InlineMathRenderer {
+    let store = app.math_store();
+    Rc::new(move |source: SharedString| {
+        let (img, w, h) = store.borrow().get(&source)?;
+        // The reading view renders body text at 16px (see `theme::markdown_style`); the store
+        // typesets at `math::FONT_SIZE`, so scale the raster down to text size.
+        let scale = 16.0 / crate::math::FONT_SIZE;
+        Some((img, w * scale, h * scale))
+    })
+}
+
 fn build(
     source: SharedString,
     store: Rc<RefCell<MathStore>>,
