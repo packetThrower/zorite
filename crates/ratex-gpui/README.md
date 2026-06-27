@@ -24,7 +24,7 @@ editor could move to another GUI toolkit with a thin adapter swap.
   rows + columns)
 - **Delimiters** that wrap a selection or insert an empty pair: `()` `[]` `{}` `||` `‖‖` `⟨⟩`
   `⌊⌋` `⌈⌉`
-- **`\command` autocomplete** — type `\` and a prefix for a scrollable menu of ~90 commands
+- **`\command` autocomplete** — type `\` and a prefix for a scrollable menu of ~100 commands
   (Greek, relations, operators, arrows, set/logic symbols), plus a **symbol/structure palette**
 - **Mouse + keyboard** — click to place the caret anywhere inside the formula, double/triple-click
   to select, drag-select, arrow-key navigation that flows *out* of the formula at its edges
@@ -190,7 +190,7 @@ Once focused, the editor handles:
 - **Typing** — letters, digits, and operators insert as symbols; `^` starts a superscript and
   `_` a subscript (the caret descends into the new box).
 - **`\command`** — type `\` then a name (e.g. `\alpha`, `\sqrt`, `\frac`) for a scrollable
-  autocomplete; Enter/Tab commits the highlighted command. ~90 commands (see below).
+  autocomplete; Enter/Tab commits the highlighted command. ~100 commands (see [Coverage](#coverage)).
 - **Palette** — a floating panel of one-click structures and symbols (`x/y`, `√`, `ⁿ√`, `▦`, the
   delimiters, big operators, Greek, relations, …).
 - **Navigation** — arrow keys move the caret through the 2-D structure; arrowing past the
@@ -203,21 +203,45 @@ Once focused, the editor handles:
 - **Mouse** — click to place the caret precisely; right-click emits [`MathNav::ContextMenu`](#mathnav).
 - **Esc** — leave the editor (emits [`MathNav::Exit`](#mathnav)).
 
-### Supported LaTeX
+## Coverage
 
-**Structures:** `\frac{}{}`, `\sqrt{}`, `\sqrt[n]{}`, super/subscripts (`^`, `_`),
-`\begin{matrix}…\end{matrix}` (and the delimited `pmatrix` / `bmatrix` / … forms it parses), and
-the delimiter pairs `()` `[]` `\{\}` `||` `\|\|` `\langle\rangle` `\lfloor\rfloor`
-`\lceil\rceil`.
+Rendering and structural editing cover **different amounts**: display is near-complete (a
+KaTeX-grade engine), while the 2-D editor models a practical core. A construct outside the
+editor's model still **renders** — it just can't be *structurally* edited.
 
-**Operators with limits:** `\int \iint \oint \sum \prod` (lower + upper), `\lim` (lower);
-function names `\log \ln \sin \cos \tan`.
+| Construct | Render | 2-D edit |
+| --- | :---: | :---: |
+| Fractions, roots (incl. **nth-root**), super/subscripts, matrices, delimiters `()` `[]` `{}` `\|\|` `‖‖` `⟨⟩` `⌊⌋` `⌈⌉` | ✅ | ✅ |
+| Big operators with limits (`\int \iint \oint \sum \prod \lim`) + functions (`\log \ln \sin \cos \tan`) | ✅ | ✅ |
+| Symbols — Greek, relations, binary ops, arrows, set/logic (`\in \subset \cup \forall …`) | ✅ | ✅ |
+| Accents (`\hat \bar \vec \tilde \widehat`), `\overline` / `\underline`, `\overbrace` / `\underbrace` | ✅ | ⚠️ degrades |
+| Math fonts — `\mathbb` `\mathcal` `\mathfrak` `\mathbf`, `\text` | ✅ | ⚠️ degrades |
+| Multi-line environments (`align`, `cases`, …), `\binom`, `\color`, manual spacing | ✅ | ⚠️ degrades |
 
-**Symbols (≈90 `\commands`):** relations (`\le \ge \ne \approx \equiv \sim \propto`), binary ops
-(`\times \div \cdot \pm \mp \ast \circ`), arrows (`\to \rightarrow \leftarrow \Rightarrow
-\leftrightarrow \mapsto`), sets/logic (`\in \notin \subset \subseteq \supset \cup \cap
-\emptyset \forall \exists \neg`), misc (`\infty \partial \nabla \angle \cdots \ldots`), and the
-full lower- and upper-case **Greek** alphabet.
+**Rendering ≈ KaTeX.** `render_latex` parses with **RaTeX's parser — a KaTeX port** (~660
+commands), so if [KaTeX](https://katex.org/docs/support_table) renders a formula, so does this
+crate: in the reading view, and whenever a formula isn't being structurally edited.
+
+**2-D editing models a subset** — six structure kinds (fraction, root, super/subscript, matrix,
+delimiter) plus ~100 named commands (≈80 symbols + the structures) via the 40-button palette and
+`\`-autocomplete. A formula using a ⚠️ construct **renders perfectly**, but opening it in the
+structural editor drops that wrapper: `parse_latex` keeps the inner content and `to_latex()`
+re-emits without it, so a commit would lose it. Edit those as raw `$…$` LaTeX instead (the
+`\`-menu still helps) — everything simple-to-moderate edits fully two-dimensionally.
+
+### What the 2-D editor builds
+
+- **Structures** — `\frac{}{}`, `\sqrt{}`, `\sqrt[n]{}`, super/subscripts (`^`, `_`),
+  `\begin{matrix}…\end{matrix}`, and the delimiter pairs `()` `[]` `\{\}` `||` `\|\|`
+  `\langle\rangle` `\lfloor\rfloor` `\lceil\rceil` (each wraps a selection or inserts an empty
+  pair).
+- **Operators** — `\int \iint \oint \sum \prod` (lower + upper limits), `\lim` (lower); function
+  names `\log \ln \sin \cos \tan`.
+- **Symbols (~80)** — relations (`\le \ge \ne \approx \equiv \sim \propto`), binary ops
+  (`\times \div \cdot \pm \mp \ast \circ`), arrows (`\to \rightarrow \Rightarrow \leftrightarrow
+  \mapsto`), set/logic (`\in \notin \subset \subseteq \cup \cap \emptyset \forall \exists
+  \neg`), misc (`\infty \partial \nabla \angle \cdots \ldots`), and the full lower- and
+  upper-case **Greek** alphabet.
 
 ## Hosting the editor
 
