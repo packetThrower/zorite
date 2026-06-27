@@ -41,7 +41,7 @@ pub struct Cursor {
 }
 
 /// A structural atom's child rows, in left-to-right navigation order. Leaves have none.
-fn nav_slots(atom: &Atom) -> Vec<Slot> {
+pub(crate) fn nav_slots(atom: &Atom) -> Vec<Slot> {
     match atom {
         Atom::Frac { .. } => vec![Slot::Num, Slot::Den],
         Atom::Sqrt { index, .. } => {

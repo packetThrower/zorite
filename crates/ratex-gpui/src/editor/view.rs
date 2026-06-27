@@ -3,6 +3,9 @@
 //! input, while all editing logic stays in the gpui-free `editor::{model, cursor, input,
 //! geometry}`.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use crate::editor::cursor::Cursor;
 use crate::editor::geometry;
 use crate::editor::input;
@@ -89,6 +92,10 @@ pub struct MathEditor {
     /// history (the host records it), so the two levels compose.
     undo_stack: Vec<(Row, Cursor)>,
     redo_stack: Vec<(Row, Cursor)>,
+    /// The formula image's window-space bounds, captured each paint by a `canvas` overlay so a
+    /// click can be mapped to a position in the formula. `Cell` since the capture closure has
+    /// no `&mut self`.
+    img_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
 /// Cap on the formula's in-place undo history, to bound memory.
@@ -168,6 +175,7 @@ impl MathEditor {
             inline,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            img_bounds: Rc::new(Cell::new(None)),
         };
         this.rendered = render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
         this
@@ -452,6 +460,23 @@ impl MathEditor {
     /// Caret rect for the live cursor.
     fn caret_px(&self) -> Option<(f32, f32, f32)> {
         self.caret_px_of(&self.cursor)
+    }
+
+    /// Map a window-space click to a caret position in the formula (hit-testing into whatever
+    /// slot was clicked), collapsing any selection / pending command. No-op until the first
+    /// paint has captured the formula's bounds.
+    fn click_to_caret(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some(b) = self.img_bounds.get() else {
+            return;
+        };
+        // Window px → formula-local px → em (the geometry walk's units): undo the render
+        // padding and the layout font size, mirroring `caret_px_of`.
+        let ex = ((f32::from(pos.x - b.origin.x) - PAD) / self.font_size) as f64;
+        let ey = ((f32::from(pos.y - b.origin.y) - PAD) / self.font_size) as f64;
+        self.anchor = None;
+        self.pending = None;
+        self.cursor = geometry::cursor_at(&self.root, ex, ey);
+        cx.notify();
     }
 
     /// The click-to-insert symbol palette (a floating, draggable panel). Shares the command
@@ -770,6 +795,16 @@ impl Render for MathEditor {
             )
         });
 
+        // Records the formula's window-space bounds each paint, so a click can be mapped to a
+        // caret position (the closure has no `&mut self`, hence the shared `Cell`).
+        let bounds_cell = self.img_bounds.clone();
+        let bounds_probe = canvas(
+            move |bounds: Bounds<Pixels>, _window, _cx| bounds_cell.set(Some(bounds)),
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
@@ -810,14 +845,17 @@ impl Render for MathEditor {
                     .h(px(h))
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _: &MouseDownEvent, window, cx| {
+                        cx.listener(|this, ev: &MouseDownEvent, window, cx| {
                             // Capture clicks on the formula so they don't fall through to the
                             // host text editor — which would blur + close this in-line editor
                             // and drop the caret to the next line. Keep focus on the formula.
                             this.focus.focus(window, cx);
                             cx.stop_propagation();
+                            this.click_to_caret(ev.position, cx);
                         }),
                     )
+                    // Capture the formula's window-space bounds for click-to-caret mapping.
+                    .child(bounds_probe)
                     // Selection band first, so it paints behind the formula glyphs.
                     .children(selection)
                     .children(image)
