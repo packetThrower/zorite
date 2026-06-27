@@ -1,13 +1,13 @@
 //! `ratex-gpui` — a structural, MathQuill-style math editor for GPUI, built on the
 //! [RaTeX](https://github.com/erweixin/RaTeX) typesetting engine.
 //!
-//! RaTeX is the engine (parse → layout → render); this crate is the **editor**.
+//! RaTeX is the engine (parse → layout → render); this crate is the **editor + display layer**.
 //!
-//! - [`editor`] — the structural editor. Its logic is GUI-free ([`editor::model`],
-//!   later `editor::geometry`); the gpui glue (`editor::view` + palette) is layered on
-//!   top so the editor could move to another GUI with a thin adapter swap.
-//! - [`render`] — display a formula as a gpui image (the `ratex-gtk4` analog): RaTeX
-//!   raster → `gpui::RenderImage`.
+//! - [`render`] — display a formula as a `gpui::RenderImage` (or PNG / SVG). Always available.
+//! - [`editor`] — the structural editor. The parse/serialize core ([`editor::model`],
+//!   [`editor::latex`]) is always built; the interactive editor ([`MathEditor`] + the
+//!   `cursor` / `geometry` / `input` / `view` modules) is behind the **`editor`** feature
+//!   (enabled by default). For a render-only build, depend with `default-features = false`.
 //!
 //! See `spikes/ratex-probe/DESIGN.md` for the full design and milestones.
 
@@ -15,4 +15,6 @@ pub mod editor;
 pub mod render;
 
 pub use editor::latex::parse_latex;
+
+#[cfg(feature = "editor")]
 pub use editor::view::{MathAlign, MathEditor, MathNav, MathTheme};

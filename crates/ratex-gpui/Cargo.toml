@@ -5,6 +5,14 @@ edition = "2024"
 description = "A structural (MathQuill-style) math editor for GPUI, built on the RaTeX typesetting engine."
 license = "GPL-3.0-or-later"
 
+[features]
+default = ["editor"]
+# The interactive structural editor — `MathEditor` plus the `cursor` / `geometry` / `input` /
+# `view` modules. Disable (`default-features = false`) for a render-only build: LaTeX →
+# image / PNG / SVG (`render`) and the parse/serialize core (`parse_latex`, `editor::model`),
+# without the gpui view + editing machinery.
+editor = []
+
 [dependencies]
 # RaTeX typesetting engine — crates.io, GUI-agnostic (parse → layout → render).
 # `editor::model` serializes to LaTeX; `editor::geometry` lays it out and reads box rects.
@@ -35,3 +43,8 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
     "wayland",
     "x11",
 ] }
+
+# The interactive example needs the editor feature (a render-only build skips it).
+[[example]]
+name = "editor"
+required-features = ["editor"]

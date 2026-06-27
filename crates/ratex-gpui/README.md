@@ -11,7 +11,8 @@ It gives you two things, usable independently:
 2. **An interactive structural editor** — [`MathEditor`](#matheditor), a gpui view that edits a
    formula **two-dimensionally** (a fraction is a real stacked box, a caret moves *into* a
    numerator), Casio-Natural-Display / MathQuill style — not by editing raw LaTeX text. It
-   serializes back to LaTeX on demand.
+   serializes back to LaTeX on demand. Behind the default **`editor`** feature, so a
+   render-only dependency can drop it (see [Cargo features](#cargo-features)).
 
 The editing **core is GUI-free** (`editor::model`, `editor::cursor`, `editor::geometry`,
 `editor::input`, `editor::latex`) — the gpui glue (`editor::view`) is layered on top, so the
@@ -273,6 +274,23 @@ inline `$…$` formulas.
 | `editor::latex` | `parse_latex` — LaTeX → `Row`. GUI-free. |
 | `editor::view` | The gpui glue: `MathEditor` view, key/mouse handling, the floating palette + dropdowns, and theming via `MathTheme`. |
 | `render` | Display: RaTeX raster → `gpui::RenderImage` / PNG / SVG. |
+
+## Cargo features
+
+| Feature | Default | Enables |
+| --- | :---: | --- |
+| `editor` | ✅ | The interactive structural editor — [`MathEditor`](#matheditor) and the `cursor` / `geometry` / `input` / `view` modules. |
+
+For a **render-only** build — LaTeX → image / PNG / SVG (the
+[`render`](#rendering-the-render-module) module) plus the parse/serialize core (`parse_latex`,
+`editor::model`), without the gpui view + editing machinery — turn the default feature off:
+
+```toml
+ratex-gpui = { version = "0.1", default-features = false }
+```
+
+Everything under [Rendering](#rendering-the-render-module) (and `parse_latex`) stays; everything
+under [`MathEditor`](#matheditor) / [Interacting](#interacting-with-the-editor) requires `editor`.
 
 ## Built on RaTeX
 
