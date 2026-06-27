@@ -263,6 +263,21 @@ impl MathEditor {
             }
             return;
         }
+        // Escape backs out one layer at a time: cancel a pending `\command`, else clear a
+        // selection, else exit the formula entirely (commit + flow the caret out, like
+        // arrowing past the end).
+        if ks.key == "escape" {
+            if self.pending.is_some() {
+                self.pending = None;
+                cx.notify();
+            } else if self.anchor.is_some() {
+                self.anchor = None;
+                cx.notify();
+            } else {
+                cx.emit(MathNav::Exit { after: true });
+            }
+            return;
+        }
         let was_normal = self.pending.is_none();
         let root_before = self.root.clone();
         let cursor_before = self.cursor.clone();
@@ -318,9 +333,6 @@ impl MathEditor {
                 self.anchor = None;
                 self.cursor.move_down(&self.root);
             }
-            // First Escape clears a selection; with none it's unconsumed so the host can
-            // act on it (e.g. close the editor).
-            "escape" if self.anchor.is_some() => self.anchor = None,
             "backspace" => match sel {
                 Some((lo, hi)) => {
                     self.cursor.delete_range(&mut self.root, lo, hi);
@@ -387,10 +399,10 @@ impl MathEditor {
         (lo < hi).then_some((lo, hi))
     }
 
-    /// `\command`-mode keys: build the buffer, move the highlight, commit, or cancel.
+    /// `\command`-mode keys: build the buffer, move the highlight, commit, or cancel. (Escape
+    /// cancels, but `on_key` intercepts it before this is reached.)
     fn handle_pending(&mut self, ks: &Keystroke) -> bool {
         match ks.key.as_str() {
-            "escape" => self.pending = None,
             "enter" | "tab" | "space" => self.commit_pending(),
             "up" => self.selected = self.selected.saturating_sub(1),
             "down" => {
