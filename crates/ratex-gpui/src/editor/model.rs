@@ -244,4 +244,32 @@ mod tests {
         let lbox = ratex_layout::layout(&nodes, &ratex_layout::LayoutOptions::default());
         assert!(lbox.width > 0.0);
     }
+
+    /// Every delimiter the editor can wrap a selection in must round-trip through RaTeX —
+    /// guards against shipping an `open`/`close` (e.g. a norm or angle bracket) the engine
+    /// can't parse or lay out.
+    #[test]
+    fn delimiter_variants_parse_and_lay_out() {
+        for (open, close) in [
+            ("(", ")"),
+            ("[", "]"),
+            (r"\{", r"\}"),
+            ("|", "|"),
+            (r"\|", r"\|"),
+            (r"\langle", r"\rangle"),
+            (r"\lfloor", r"\rfloor"),
+            (r"\lceil", r"\rceil"),
+        ] {
+            let d = Atom::Delim {
+                open: open.into(),
+                body: Row::syms("x"),
+                close: close.into(),
+            };
+            let latex = d.to_latex();
+            let nodes =
+                ratex_parser::parse(&latex).unwrap_or_else(|_| panic!("RaTeX parses {latex}"));
+            let lbox = ratex_layout::layout(&nodes, &ratex_layout::LayoutOptions::default());
+            assert!(lbox.width > 0.0, "{latex} lays out to a non-empty box");
+        }
+    }
 }

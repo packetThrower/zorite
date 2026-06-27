@@ -371,13 +371,14 @@ impl Cursor {
         Some(lo)
     }
 
-    /// Wrap a selection (`lo..hi`) in parentheses — an auto-growing `\left(…\right)`. Caret
-    /// lands just after the new delimiter.
-    pub fn wrap_parens(&mut self, top: &mut Row, lo: usize, hi: usize) {
+    /// Wrap a selection (`lo..hi`) in auto-growing delimiters `\left<open> … \right<close>` —
+    /// e.g. `(`/`)`, `[`/`]`, `\{`/`\}`, `|`/`|`, `\langle`/`\rangle`. Caret lands just after
+    /// the new delimiter.
+    pub fn wrap_delim(&mut self, top: &mut Row, lo: usize, hi: usize, open: &str, close: &str) {
         if let Some(at) = self.wrap_range(top, lo, hi, |body| Atom::Delim {
-            open: "(".into(),
+            open: open.to_string(),
             body,
-            close: ")".into(),
+            close: close.to_string(),
         }) {
             self.index = at + 1;
         }
@@ -636,16 +637,31 @@ mod tests {
     }
 
     #[test]
-    fn wrap_parens_wraps_a_range_caret_after() {
+    fn wrap_delim_wraps_a_range_caret_after() {
         let mut top = Row::new();
         let mut cur = Cursor::start();
         for c in ["a", "b", "c"] {
             cur.insert(&mut top, sym(c));
         }
-        cur.wrap_parens(&mut top, 0, 2); // wrap a,b
+        cur.wrap_delim(&mut top, 0, 2, "(", ")"); // wrap a,b in parens
         assert_eq!(top.to_latex(), r"\left( a b \right) c");
         assert_eq!(cur.path, vec![]);
         assert_eq!(cur.index, 1); // after the delimiter, before c
+    }
+
+    #[test]
+    fn wrap_delim_supports_brackets_and_braces() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        cur.insert(&mut top, sym("x"));
+        cur.wrap_delim(&mut top, 0, 1, "[", "]");
+        assert_eq!(top.to_latex(), r"\left[ x \right]");
+
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        cur.insert(&mut top, sym("x"));
+        cur.wrap_delim(&mut top, 0, 1, r"\{", r"\}");
+        assert_eq!(top.to_latex(), r"\left\{ x \right\}");
     }
 
     #[test]
@@ -703,7 +719,7 @@ mod tests {
         let mut top = Row::new();
         let mut cur = Cursor::start();
         cur.insert(&mut top, sym("a"));
-        cur.wrap_parens(&mut top, 1, 1);
+        cur.wrap_delim(&mut top, 1, 1, "(", ")");
         assert_eq!(top.to_latex(), "a");
     }
 

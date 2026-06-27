@@ -247,14 +247,16 @@ impl MathEditor {
                     self.selected = 0;
                     self.scroll_match_into_view();
                 }
-                Some('(') if sel.is_some() => {
-                    let (lo, hi) = sel.unwrap();
-                    self.cursor.wrap_parens(&mut self.root, lo, hi);
-                    self.anchor = None;
-                }
                 Some('/') if sel.is_some() => {
                     let (lo, hi) = sel.unwrap();
                     self.cursor.wrap_fraction(&mut self.root, lo, hi);
+                    self.anchor = None;
+                }
+                // A bracket / brace / bar typed over a selection wraps it in that delimiter.
+                Some(c) if sel.is_some() && input::delim_pair(c).is_some() => {
+                    let (open, close) = input::delim_pair(c).unwrap();
+                    let (lo, hi) = sel.unwrap();
+                    self.cursor.wrap_delim(&mut self.root, lo, hi, open, close);
                     self.anchor = None;
                 }
                 // Any other character collapses the selection (non-destructively — there's

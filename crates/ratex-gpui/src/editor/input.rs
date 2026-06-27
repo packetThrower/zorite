@@ -94,6 +94,10 @@ enum Command {
     /// An nth-root — a root with an editable degree box (caret into the degree, e.g. `3`
     /// for a cube root).
     NthRoot,
+    /// A matched delimiter pair given as `(open, close)` LaTeX — parentheses, brackets,
+    /// braces, bars, etc. With a selection it wraps it; otherwise an empty pair (caret
+    /// inside the body).
+    Delim(&'static str, &'static str),
     /// A big operator with empty lower + upper limit boxes (∫, ∑, ∏); caret into the lower.
     OpLimits(&'static str),
     /// A big operator with only a lower limit box (lim); caret into it.
@@ -108,6 +112,11 @@ const COMMANDS: &[(&str, Command)] = &[
     // structures
     ("frac", Command::Frac), ("sqrt", Command::Sqrt), ("nthroot", Command::NthRoot),
     ("matrix", Command::Matrix),
+    // delimiters (wrap a selection, or insert an empty pair)
+    ("paren", Command::Delim("(", ")")), ("bracket", Command::Delim("[", "]")),
+    ("brace", Command::Delim(r"\{", r"\}")), ("abs", Command::Delim("|", "|")),
+    ("norm", Command::Delim(r"\|", r"\|")), ("angle", Command::Delim(r"\langle", r"\rangle")),
+    ("floor", Command::Delim(r"\lfloor", r"\rfloor")), ("ceil", Command::Delim(r"\lceil", r"\rceil")),
     // operators / functions
     ("int", Command::OpLimits(r"\int")), ("iint", Command::OpLimits(r"\iint")),
     ("oint", Command::OpLimits(r"\oint")), ("sum", Command::OpLimits(r"\sum")),
@@ -220,6 +229,14 @@ pub fn commit_command(top: &mut Row, cursor: &mut Cursor, name: &str) -> bool {
                 rows: vec![vec![Row::new(), Row::new()], vec![Row::new(), Row::new()]],
             },
         ),
+        Some(Command::Delim(open, close)) => cursor.insert(
+            top,
+            Atom::Delim {
+                open: open.to_string(),
+                body: Row::new(),
+                close: close.to_string(),
+            },
+        ),
         None => return false,
     }
     true
@@ -249,7 +266,24 @@ pub fn commit_command_selecting(
             cursor.wrap_nth_root(top, lo, hi);
             true
         }
+        (Some(Command::Delim(open, close)), Some((lo, hi))) => {
+            cursor.wrap_delim(top, lo, hi, open, close);
+            true
+        }
         _ => commit_command(top, cursor, name),
+    }
+}
+
+/// The delimiter pair a typed bracket/brace/bar wraps a selection in — `(open, close)`
+/// LaTeX — or `None` if `c` isn't a wrapping delimiter. The keyboard wrap path uses this so
+/// `[`, `{`, `|` over a selection behave like `(`.
+pub fn delim_pair(c: char) -> Option<(&'static str, &'static str)> {
+    match c {
+        '(' => Some(("(", ")")),
+        '[' => Some(("[", "]")),
+        '{' => Some((r"\{", r"\}")),
+        '|' => Some(("|", "|")),
+        _ => None,
     }
 }
 
@@ -267,6 +301,9 @@ pub fn command_matches(prefix: &str) -> Vec<&'static str> {
 #[rustfmt::skip]
 pub const PALETTE: &[(&str, &str)] = &[
     ("x/y", "frac"), ("√", "sqrt"), ("ⁿ√", "nthroot"), ("▦", "matrix"),
+    // delimiters — wrap the selection, or insert an empty pair
+    ("()", "paren"), ("[]", "bracket"), ("{}", "brace"),    ("||", "abs"),
+    ("‖‖", "norm"),  ("⟨⟩", "angle"),   ("⌊⌋", "floor"),    ("⌈⌉", "ceil"),
     ("∫", "int"),    ("∑", "sum"),     ("∏", "prod"),   ("∞", "infty"),
     ("π", "pi"),     ("θ", "theta"),   ("α", "alpha"),  ("β", "beta"),
     ("γ", "gamma"),  ("δ", "delta"),   ("λ", "lambda"), ("μ", "mu"),
@@ -373,6 +410,38 @@ mod tests {
                 slot: Slot::Index
             }]
         );
+    }
+
+    #[test]
+    fn delim_command_inserts_empty_pair_and_wraps_selection() {
+        // No selection → an empty bracket pair (caret descends into the body).
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        assert!(commit_command(&mut top, &mut cur, "bracket"));
+        assert_eq!(top.to_latex(), r"\left[ \square \right]");
+
+        // With a selection → wrap it (here, in bars).
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        for c in ["a", "b"] {
+            cur.insert(&mut top, Atom::Sym(c.into()));
+        }
+        assert!(commit_command_selecting(
+            &mut top,
+            &mut cur,
+            "abs",
+            Some((0, 2))
+        ));
+        assert_eq!(top.to_latex(), r"\left| a b \right|");
+    }
+
+    #[test]
+    fn delim_pair_maps_typed_brackets() {
+        assert_eq!(delim_pair('('), Some(("(", ")")));
+        assert_eq!(delim_pair('['), Some(("[", "]")));
+        assert_eq!(delim_pair('{'), Some((r"\{", r"\}")));
+        assert_eq!(delim_pair('|'), Some(("|", "|")));
+        assert_eq!(delim_pair('x'), None);
     }
 
     #[test]
