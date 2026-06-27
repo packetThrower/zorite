@@ -101,12 +101,16 @@ pub struct MathEditor {
 /// Cap on the formula's in-place undo history, to bound memory.
 const UNDO_CAP: usize = 200;
 
-/// A navigation signal the host listens for: the caret tried to move past a boundary of the
-/// formula (`after` = past the end → seat the text caret after the block; else before it), so
-/// focus should flow back out to the surrounding text editor — the way arrowing past a table
-/// cell's edge exits the table.
+/// A signal the host listens for from the hosted editor.
 pub enum MathNav {
+    /// The caret tried to move past a boundary of the formula (`after` = past the end → seat
+    /// the text caret after the block; else before it), so focus should flow back out to the
+    /// surrounding text editor — the way arrowing past a table cell's edge exits the table.
     Exit { after: bool },
+    /// The formula was right-clicked while being edited — the host shows its formula context
+    /// menu (copy LaTeX / export) at `position` (window-space). The hosted editor occludes the
+    /// formula, so the host's own right-click handler can't fire; this routes it back out.
+    ContextMenu { position: Point<Pixels> },
 }
 
 impl EventEmitter<MathNav> for MathEditor {}
@@ -893,12 +897,33 @@ impl Render for MathEditor {
                             // and drop the caret to the next line. Keep focus on the formula.
                             this.focus.focus(window, cx);
                             cx.stop_propagation();
+                            // macOS Control-click is a secondary click (delivered as left +
+                            // control, not a right button) → the formula menu, like right-click.
+                            if ev.modifiers.control {
+                                cx.emit(MathNav::ContextMenu {
+                                    position: ev.position,
+                                });
+                                return;
+                            }
                             // 1 click → caret, 2 → select the atom, 3+ → select the row/slot.
                             match ev.click_count {
                                 1 => this.click_to_caret(ev.position, cx),
                                 2 => this.select_cell_at(ev.position, cx),
                                 _ => this.select_row_at(ev.position, cx),
                             }
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                            // Right-click while editing → ask the host for the formula menu
+                            // (copy LaTeX / export). Keep focus + swallow the press so it
+                            // doesn't blur the editor.
+                            this.focus.focus(window, cx);
+                            cx.stop_propagation();
+                            cx.emit(MathNav::ContextMenu {
+                                position: ev.position,
+                            });
                         }),
                     )
                     // Capture the formula's window-space bounds for click-to-caret mapping.

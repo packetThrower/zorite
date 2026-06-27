@@ -2496,13 +2496,17 @@ impl AppView {
             weak.update(cx, |this: &mut AppView, cx| this.commit_math_edit(cx))
                 .ok();
         });
-        // Arrowing past a formula boundary flows the caret back into the surrounding text.
+        // Arrowing past a formula boundary flows the caret back into the surrounding text;
+        // a right-click while editing opens the formula menu (copy LaTeX / export).
         let nav_sub = cx.subscribe_in(
             &editor,
             window,
-            |this, _editor, ev: &ratex_gpui::MathNav, window, cx| {
-                let ratex_gpui::MathNav::Exit { after } = ev;
-                this.exit_math_edit(*after, window, cx);
+            |this, editor, ev: &ratex_gpui::MathNav, window, cx| match ev {
+                ratex_gpui::MathNav::Exit { after } => this.exit_math_edit(*after, window, cx),
+                ratex_gpui::MathNav::ContextMenu { position } => {
+                    let latex = editor.read(cx).to_latex();
+                    this.open_math_menu(latex.into(), *position, cx);
+                }
             },
         );
         self.math_edit = Some(MathEdit {
