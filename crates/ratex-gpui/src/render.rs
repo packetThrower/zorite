@@ -67,15 +67,16 @@ fn rasterize(latex: &str, font_size: f32, dpr: f32, rgb: [u8; 3]) -> Option<(Vec
     let rgba = image::load_from_memory(&png).ok()?.into_rgba8();
     let (w, h) = rgba.dimensions();
     let mut bytes = rgba.into_raw();
-    // RaTeX rasters black glyphs on opaque white. Recolor to `rgb` on a TRANSPARENT
-    // background so the formula blends into any theme: a pixel's darkness becomes the glyph
-    // alpha (white bg → 0, black glyph → 255), then paint `rgb` premultiplied, as BGRA.
+    // RaTeX rasters black glyphs on opaque white. Recolor to `rgb` on a TRANSPARENT background
+    // so the formula blends into any theme: a pixel's darkness becomes the glyph alpha (white
+    // bg → 0, black glyph → 255), painting `rgb` flat. gpui's RenderImage holds STRAIGHT
+    // (non-premultiplied) BGRA, so the color must NOT be premultiplied — that double-darkens it.
     let [r, g, b] = rgb;
     for px in bytes.chunks_exact_mut(4) {
         let a = 255 - px[0]; // grayscale raster: the red channel is the luminance
-        px[0] = (b as u16 * a as u16 / 255) as u8;
-        px[1] = (g as u16 * a as u16 / 255) as u8;
-        px[2] = (r as u16 * a as u16 / 255) as u8;
+        px[0] = b;
+        px[1] = g;
+        px[2] = r;
         px[3] = a;
     }
     Some((bytes, w, h))
