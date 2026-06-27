@@ -1244,6 +1244,10 @@ impl EditorState {
     /// (both fences) and the LaTeX between them — so a double-click can hand it to the host's
     /// structural editor.
     fn math_block_at(&self, row: usize) -> Option<(Range<usize>, SharedString)> {
+        // The structural LaTeX editor is a WYSIWYG affordance (markdown_style is set only in
+        // live-preview mode). In raw-markdown mode the user edits `$$…$$` as plain text, so
+        // report no math block here — clicks / arrows / `/math` stay in the text editor.
+        self.markdown_style.as_ref()?;
         let starts = self.line_starts();
         markdown_syntax::math_blocks(&self.content)
             .into_iter()
