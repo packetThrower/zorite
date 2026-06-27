@@ -73,8 +73,8 @@ Developed in close collaboration with Claude (Anthropic).
   snap-to-grid; copy/paste across boards; and **reusable templates**. Boards are
   first-class pages with their own sidebar section, searchable by title.
 - **`/` command palette** — a compact menu: pick **Markdown** (headings, lists,
-  to-dos, quotes, code blocks, **tables**, dividers, inline formatting) or a
-  **Template**, or insert the current date/time with `/date` / `/time`. Typing
+  to-dos, quotes, code blocks, **tables**, **math**, dividers, inline formatting) or
+  a **Template**, or insert the current date/time with `/date` / `/time`. Typing
   filters across everything; click an item or press Enter to insert it.
 - **As-you-type completion** — `[[` suggests pages (and offers to create one),
   `#` suggests tags, `{{` suggests template placeholders; brackets and quotes
@@ -110,6 +110,13 @@ Developed in close collaboration with Claude (Anthropic).
   (flowchart / sequence / class, rendered pure-Rust and themed to your skin;
   click one to expand it) — via the [`gpui-markdown`](crates/gpui-markdown/README.md)
   crate. **Find in page** searches the rendered text with highlight and count.
+- **Math** — write LaTeX inline (`$…$`) or as display blocks (`$$…$$`); both
+  typeset to crisp formulas (KaTeX-grade coverage). Click or arrow into one for a
+  **2-D structural editor** — edit fractions, roots, matrices, and ~100 symbols
+  *visually* via a palette + `\command` autocomplete (MathQuill / Casio-Natural-Display
+  style, not by hand-editing LaTeX). Per-formula left/center/right alignment, plus a
+  right-click menu to **copy LaTeX** or **export PNG / SVG** — via the reusable
+  [`ratex-gpui`](crates/ratex-gpui/README.md) crate.
 - **Import from Logseq** — `File → Import from Logseq…` brings in a graph's
   pages, journals, and assets (namespaces, tasks, properties, aliases, embeds,
   block-refs, and `hls__*` PDF-highlight pages all handled), plus its
@@ -252,9 +259,12 @@ real notes.
 zorite/
 ├── src/                       the app — journal feed, pages, search, slash menu, import, SQLite
 └── crates/
-    ├── gpui-markdown/         a reusable Markdown renderer for gpui (clickable links, Mermaid)
+    ├── gpui-editor/           a from-scratch WYSIWYG Markdown editor (live preview, tables, math hosting)
+    ├── gpui-markdown/         a reusable Markdown renderer for gpui (clickable links, Mermaid, math)
     ├── gpui-pdf/              a page-virtualized PDF viewer (pure-Rust hayro) with highlight markup
-    └── gpui-whiteboard/       a host-agnostic infinite-canvas whiteboard
+    ├── gpui-whiteboard/       a host-agnostic infinite-canvas whiteboard
+    ├── os-spellcheck/         native OS spell-checking (NSSpellChecker / ISpellChecker)
+    └── ratex-gpui/            a structural (MathQuill-style) math editor + LaTeX renderer (RaTeX)
 ```
 
 Each crate is host-agnostic and carries its own README.
