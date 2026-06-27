@@ -14,6 +14,38 @@ use gpui::*;
 /// How many autocomplete matches the dropdown shows / lets you select among.
 const MAX_MATCHES: usize = 8;
 
+/// The host's theme colors for the editor chrome (palette, toolbar, caret, autocomplete) and
+/// the formula glyphs, so the editor matches the surrounding app. Filled by the host from its
+/// palette; `Default` is a light scheme for the standalone example.
+#[derive(Clone, Copy)]
+pub struct MathTheme {
+    /// Formula glyphs + primary text (button labels).
+    pub fg: Hsla,
+    /// Secondary text — grips, dropdown rows.
+    pub muted: Hsla,
+    /// Panel + button surfaces (palette, toolbar, dropdown).
+    pub panel: Hsla,
+    /// Panel + button borders.
+    pub border: Hsla,
+    /// The caret and active/selected highlights.
+    pub accent: Hsla,
+    /// A subtle accent fill — hover, selected row, command preview.
+    pub accent_bg: Hsla,
+}
+
+impl Default for MathTheme {
+    fn default() -> Self {
+        Self {
+            fg: rgb(0x334155).into(),
+            muted: rgb(0x64748b).into(),
+            panel: rgb(0xf8fafc).into(),
+            border: rgb(0xcbd5e1).into(),
+            accent: rgb(0x2563eb).into(),
+            accent_bg: rgb(0xeff6ff).into(),
+        }
+    }
+}
+
 /// A structural math editor view: the model, the caret, the cached raster, an in-progress
 /// `\command` buffer with autocomplete, and the draggable palette's position.
 pub struct MathEditor {
@@ -22,8 +54,8 @@ pub struct MathEditor {
     focus: FocusHandle,
     font_size: f32,
     dpr: f32,
-    /// The host's text color, baked into the formula raster so it matches the theme.
-    color: Hsla,
+    /// The host's theme colors for the chrome + formula glyphs.
+    theme: MathTheme,
     rendered: Option<Rendered>,
     /// The letters of a `\command` being typed (without the leading backslash), or `None`
     /// in normal mode.
@@ -57,7 +89,7 @@ impl EventEmitter<MathNav> for MathEditor {}
 
 impl MathEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self::with_root(Row::new(), 48.0, false, gpui::black(), cx)
+        Self::with_root(Row::new(), 48.0, false, MathTheme::default(), cx)
     }
 
     /// Build an editor seeded with the formula parsed from `latex`, rendered at `font_size`
@@ -68,14 +100,14 @@ impl MathEditor {
         latex: &str,
         font_size: f32,
         at_end: bool,
-        color: Hsla,
+        theme: MathTheme,
         cx: &mut Context<Self>,
     ) -> Self {
         let mut this = Self::with_root(
             crate::editor::latex::parse_latex(latex),
             font_size,
             true,
-            color,
+            theme,
             cx,
         );
         if !at_end {
@@ -93,7 +125,7 @@ impl MathEditor {
         root: Row,
         font_size: f32,
         inline: bool,
-        color: Hsla,
+        theme: MathTheme,
         cx: &mut Context<Self>,
     ) -> Self {
         let index = root.atoms.len();
@@ -106,7 +138,7 @@ impl MathEditor {
             focus: cx.focus_handle(),
             font_size,
             dpr: 2.0,
-            color,
+            theme,
             rendered: None,
             pending: None,
             selected: 0,
@@ -116,7 +148,7 @@ impl MathEditor {
             toolbar_drag: None,
             inline,
         };
-        this.rendered = render::render_row(&this.root, this.font_size, this.dpr, this.color);
+        this.rendered = render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
         this
     }
 
@@ -156,7 +188,7 @@ impl MathEditor {
         }
         // Re-rasterize, freeing the previous image's GPU texture.
         let old = self.rendered.take();
-        self.rendered = render::render_row(&self.root, self.font_size, self.dpr, self.color);
+        self.rendered = render::render_row(&self.root, self.font_size, self.dpr, self.theme.fg);
         if let Some(old) = old {
             cx.drop_image(old.image, Some(window));
         }
@@ -267,6 +299,7 @@ impl MathEditor {
     }
 
     fn palette(&self, cx: &mut Context<Self>) -> Div {
+        let theme = self.theme;
         // The grip "ear": press and hold here to move the panel.
         let handle = div()
             .id("palette-handle")
@@ -275,10 +308,10 @@ impl MathEditor {
             .justify_center()
             .w_full()
             .h(px(16.0))
-            .bg(rgb(0xe2e8f0))
+            .bg(theme.border)
             .cursor_pointer()
             .text_size(px(11.0))
-            .text_color(rgb(0x64748b))
+            .text_color(theme.muted)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
@@ -304,18 +337,18 @@ impl MathEditor {
                     .items_center()
                     .justify_center()
                     .size(px(32.0))
-                    .bg(rgb(0xffffff))
+                    .bg(theme.panel)
                     .border_1()
-                    .border_color(rgb(0xe2e8f0))
+                    .border_color(theme.border)
                     .rounded_md()
                     .text_size(px(17.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(0xeff6ff)))
+                    .hover(|s| s.bg(theme.accent_bg))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         input::commit_command(&mut this.root, &mut this.cursor, cmd);
                         let old = this.rendered.take();
                         this.rendered =
-                            render::render_row(&this.root, this.font_size, this.dpr, this.color);
+                            render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
                         if let Some(old) = old {
                             cx.drop_image(old.image, Some(window));
                         }
@@ -340,9 +373,9 @@ impl MathEditor {
             .flex()
             .flex_col()
             .w(px(200.0))
-            .bg(rgb(0xf8fafc))
+            .bg(theme.panel)
             .border_1()
-            .border_color(rgb(0xcbd5e1))
+            .border_color(theme.border)
             .rounded_md()
             // Occlude: in-line the palette floats below the formula, outside the host's
             // reserved gap — without this, glyph clicks fall through to the text editor,
@@ -357,6 +390,7 @@ impl MathEditor {
     /// doc). Draggable by its grip; columns have no natural keyboard gesture, so it's also
     /// the discoverable way to grow/shrink width, and it doubles as row/column removal.
     fn matrix_toolbar(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let theme = self.theme;
         let m = geometry::matrix_rect(&self.root, &self.cursor)?;
         let fs = self.font_size;
         // Dock at the matrix's bottom-left (image-container px) plus the draggable offset.
@@ -371,10 +405,10 @@ impl MathEditor {
             .justify_center()
             .px_1()
             .h(px(24.0))
-            .bg(rgb(0xe2e8f0))
+            .bg(theme.border)
             .cursor_pointer()
             .text_size(px(11.0))
-            .text_color(rgb(0x64748b))
+            .text_color(theme.muted)
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
@@ -392,19 +426,19 @@ impl MathEditor {
                 .justify_center()
                 .px_2()
                 .h(px(24.0))
-                .bg(rgb(0xffffff))
+                .bg(theme.panel)
                 .border_1()
-                .border_color(rgb(0xe2e8f0))
+                .border_color(theme.border)
                 .rounded_md()
                 .text_size(px(13.0))
-                .text_color(rgb(0x334155))
+                .text_color(theme.fg)
                 .cursor_pointer()
-                .hover(|s| s.bg(rgb(0xeff6ff)))
+                .hover(|s| s.bg(theme.accent_bg))
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     op(&mut this.cursor, &mut this.root);
                     let old = this.rendered.take();
                     this.rendered =
-                        render::render_row(&this.root, this.font_size, this.dpr, this.color);
+                        render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
                     if let Some(old) = old {
                         cx.drop_image(old.image, Some(window));
                     }
@@ -421,9 +455,9 @@ impl MathEditor {
                 .flex()
                 .gap_1()
                 .p_1()
-                .bg(rgb(0xf8fafc))
+                .bg(theme.panel)
                 .border_1()
-                .border_color(rgb(0xcbd5e1))
+                .border_color(theme.border)
                 .rounded_md()
                 // Occlude — same overflow as the palette: it floats below the matrix.
                 .occlude()
@@ -438,6 +472,7 @@ impl MathEditor {
 
 impl Render for MathEditor {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = self.theme;
         let (w, h) = self
             .rendered
             .as_ref()
@@ -461,7 +496,7 @@ impl Render for MathEditor {
                     .top(px(top))
                     .w(px(2.0))
                     .h(px(ch))
-                    .bg(rgb(0x2563eb))
+                    .bg(theme.accent)
             });
         let pending = self.pending.as_ref().map(|p| {
             let (x, top, _) = self.caret_px().unwrap_or((PAD, PAD, 0.0));
@@ -471,8 +506,8 @@ impl Render for MathEditor {
                 .top(px(top))
                 .px_1()
                 .text_size(px(self.font_size * 0.42))
-                .text_color(rgb(0x2563eb))
-                .bg(rgb(0xeff6ff))
+                .text_color(theme.accent)
+                .bg(theme.accent_bg)
                 .child(format!("\\{p}"))
         });
         let dropdown = self.pending.as_ref().and_then(|p| {
@@ -489,9 +524,9 @@ impl Render for MathEditor {
                     .top(px(top + ch + 4.0))
                     .flex()
                     .flex_col()
-                    .bg(rgb(0xffffff))
+                    .bg(theme.panel)
                     .border_1()
-                    .border_color(rgb(0xcbd5e1))
+                    .border_color(theme.border)
                     .rounded_md()
                     .text_size(px(14.0))
                     .children(
@@ -502,9 +537,9 @@ impl Render for MathEditor {
                             .map(|(i, name)| {
                                 let row = div().px_2().py_1().child(format!("\\{name}"));
                                 if i == selected {
-                                    row.bg(rgb(0xdbeafe)).text_color(rgb(0x1d4ed8))
+                                    row.bg(theme.accent_bg).text_color(theme.accent)
                                 } else {
-                                    row.text_color(rgb(0x334155))
+                                    row.text_color(theme.fg)
                                 }
                             }),
                     ),
@@ -541,7 +576,7 @@ impl Render for MathEditor {
             .flex()
             .when(self.inline, |el| el.items_start().justify_start())
             .when(!self.inline, |el| {
-                el.items_center().justify_center().bg(rgb(0xffffff))
+                el.items_center().justify_center().bg(theme.panel)
             })
             .child(self.palette(cx))
             .child(

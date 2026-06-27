@@ -2326,7 +2326,14 @@ impl AppView {
                 &latex,
                 crate::math::FONT_SIZE,
                 at_end,
-                theme::text_primary(),
+                ratex_gpui::MathTheme {
+                    fg: theme::text_primary(),
+                    muted: theme::text_secondary(),
+                    panel: theme::elevated(),
+                    border: theme::divider(),
+                    accent: theme::accent(),
+                    accent_bg: theme::accent_tint(),
+                },
                 cx,
             )
         });
