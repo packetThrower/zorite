@@ -22,6 +22,8 @@ pub struct MathEditor {
     focus: FocusHandle,
     font_size: f32,
     dpr: f32,
+    /// The host's text color, baked into the formula raster so it matches the theme.
+    color: Hsla,
     rendered: Option<Rendered>,
     /// The letters of a `\command` being typed (without the leading backslash), or `None`
     /// in normal mode.
@@ -55,18 +57,25 @@ impl EventEmitter<MathNav> for MathEditor {}
 
 impl MathEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self::with_root(Row::new(), 48.0, false, cx)
+        Self::with_root(Row::new(), 48.0, false, gpui::black(), cx)
     }
 
     /// Build an editor seeded with the formula parsed from `latex`, rendered at `font_size`
     /// px/em — for editing an existing `$$…$$` block in-line at its displayed size. The caret
     /// lands at the end of the top row when `at_end`, else at the start — so arrowing *into*
     /// the block from below/right enters at the end, and from above/left enters at the start.
-    pub fn from_latex(latex: &str, font_size: f32, at_end: bool, cx: &mut Context<Self>) -> Self {
+    pub fn from_latex(
+        latex: &str,
+        font_size: f32,
+        at_end: bool,
+        color: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self::with_root(
             crate::editor::latex::parse_latex(latex),
             font_size,
             true,
+            color,
             cx,
         );
         if !at_end {
@@ -80,7 +89,13 @@ impl MathEditor {
         self.root.to_latex()
     }
 
-    fn with_root(root: Row, font_size: f32, inline: bool, cx: &mut Context<Self>) -> Self {
+    fn with_root(
+        root: Row,
+        font_size: f32,
+        inline: bool,
+        color: Hsla,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let index = root.atoms.len();
         let mut this = Self {
             root,
@@ -91,6 +106,7 @@ impl MathEditor {
             focus: cx.focus_handle(),
             font_size,
             dpr: 2.0,
+            color,
             rendered: None,
             pending: None,
             selected: 0,
@@ -100,7 +116,7 @@ impl MathEditor {
             toolbar_drag: None,
             inline,
         };
-        this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
+        this.rendered = render::render_row(&this.root, this.font_size, this.dpr, this.color);
         this
     }
 
@@ -140,7 +156,7 @@ impl MathEditor {
         }
         // Re-rasterize, freeing the previous image's GPU texture.
         let old = self.rendered.take();
-        self.rendered = render::render_row(&self.root, self.font_size, self.dpr);
+        self.rendered = render::render_row(&self.root, self.font_size, self.dpr, self.color);
         if let Some(old) = old {
             cx.drop_image(old.image, Some(window));
         }
@@ -298,7 +314,8 @@ impl MathEditor {
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                         input::commit_command(&mut this.root, &mut this.cursor, cmd);
                         let old = this.rendered.take();
-                        this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
+                        this.rendered =
+                            render::render_row(&this.root, this.font_size, this.dpr, this.color);
                         if let Some(old) = old {
                             cx.drop_image(old.image, Some(window));
                         }
@@ -386,7 +403,8 @@ impl MathEditor {
                 .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
                     op(&mut this.cursor, &mut this.root);
                     let old = this.rendered.take();
-                    this.rendered = render::render_row(&this.root, this.font_size, this.dpr);
+                    this.rendered =
+                        render::render_row(&this.root, this.font_size, this.dpr, this.color);
                     if let Some(old) = old {
                         cx.drop_image(old.image, Some(window));
                     }

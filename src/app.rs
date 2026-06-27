@@ -2247,8 +2247,12 @@ impl AppView {
     /// a not-yet-rendered formula's placeholder the first time it paints: claims the slot,
     /// then typesets the LaTeX via RaTeX off-thread and repaints when it lands.
     pub fn ensure_math_loaded(&mut self, source: SharedString, cx: &mut Context<Self>) {
+        // Tint formulas in the current theme's text color; set_color drops the cached rasters
+        // if the theme changed, so a light/dark switch re-renders them.
+        let color = theme::text_primary();
         {
             let mut store = self.math_store.borrow_mut();
+            store.set_color(color);
             if store.started(&source) {
                 return; // already rendering / ready / failed
             }
@@ -2260,7 +2264,12 @@ impl AppView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::math::render_to_image(&src, crate::math::FONT_SIZE, crate::math::DPR)
+                    crate::math::render_to_image(
+                        &src,
+                        crate::math::FONT_SIZE,
+                        crate::math::DPR,
+                        color,
+                    )
                 })
                 .await;
             store.borrow_mut().finish(source, result);
@@ -2313,7 +2322,13 @@ impl AppView {
             .get(&latex)
             .map_or(px(56.0), |(_, _, h)| px(h + 16.0));
         let editor = cx.new(|cx| {
-            ratex_gpui::MathEditor::from_latex(&latex, crate::math::FONT_SIZE, at_end, cx)
+            ratex_gpui::MathEditor::from_latex(
+                &latex,
+                crate::math::FONT_SIZE,
+                at_end,
+                theme::text_primary(),
+                cx,
+            )
         });
         let focus = editor.read(cx).focus_handle();
         // Reserve the gap at the block + host the structural editor there, in the text flow.
