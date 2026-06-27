@@ -91,6 +91,9 @@ enum Command {
     Frac,
     /// A square root (caret into the radicand).
     Sqrt,
+    /// An nth-root — a root with an editable degree box (caret into the degree, e.g. `3`
+    /// for a cube root).
+    NthRoot,
     /// A big operator with empty lower + upper limit boxes (∫, ∑, ∏); caret into the lower.
     OpLimits(&'static str),
     /// A big operator with only a lower limit box (lim); caret into it.
@@ -103,7 +106,8 @@ enum Command {
 #[rustfmt::skip]
 const COMMANDS: &[(&str, Command)] = &[
     // structures
-    ("frac", Command::Frac), ("sqrt", Command::Sqrt), ("matrix", Command::Matrix),
+    ("frac", Command::Frac), ("sqrt", Command::Sqrt), ("nthroot", Command::NthRoot),
+    ("matrix", Command::Matrix),
     // operators / functions
     ("int", Command::OpLimits(r"\int")), ("iint", Command::OpLimits(r"\iint")),
     ("oint", Command::OpLimits(r"\oint")), ("sum", Command::OpLimits(r"\sum")),
@@ -181,6 +185,15 @@ pub fn commit_command(top: &mut Row, cursor: &mut Cursor, name: &str) -> bool {
                 index: None,
             },
         ),
+        // An empty degree box first (caret lands there), then the radicand — `nav_slots`
+        // orders `[Index, Radicand]`, so `insert` descends into the degree.
+        Some(Command::NthRoot) => cursor.insert(
+            top,
+            Atom::Sqrt {
+                radicand: Row::new(),
+                index: Some(Row::new()),
+            },
+        ),
         Some(Command::OpLimits(op)) => {
             cursor.insert(top, Atom::Sym(op.to_string()));
             cursor.insert(
@@ -232,6 +245,10 @@ pub fn commit_command_selecting(
             cursor.wrap_sqrt(top, lo, hi);
             true
         }
+        (Some(Command::NthRoot), Some((lo, hi))) => {
+            cursor.wrap_nth_root(top, lo, hi);
+            true
+        }
         _ => commit_command(top, cursor, name),
     }
 }
@@ -249,7 +266,7 @@ pub fn command_matches(prefix: &str) -> Vec<&'static str> {
 /// feeds [`commit_command`], so the palette and `\command` typing share one source.
 #[rustfmt::skip]
 pub const PALETTE: &[(&str, &str)] = &[
-    ("x/y", "frac"), ("√", "sqrt"), ("▦", "matrix"),
+    ("x/y", "frac"), ("√", "sqrt"), ("ⁿ√", "nthroot"), ("▦", "matrix"),
     ("∫", "int"),    ("∑", "sum"),     ("∏", "prod"),   ("∞", "infty"),
     ("π", "pi"),     ("θ", "theta"),   ("α", "alpha"),  ("β", "beta"),
     ("γ", "gamma"),  ("δ", "delta"),   ("λ", "lambda"), ("μ", "mu"),
@@ -314,6 +331,46 @@ mod tests {
             vec![Step {
                 atom: 1,
                 slot: Slot::Sub
+            }]
+        );
+    }
+
+    #[test]
+    fn nth_root_inserts_a_degree_box_caret_in_it() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        assert!(commit_command(&mut top, &mut cur, "nthroot"));
+        assert_eq!(top.to_latex(), r"\sqrt[\square]{\square}");
+        // The caret descends into the degree (index) slot, ready for e.g. `3`.
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Index
+            }]
+        );
+    }
+
+    #[test]
+    fn nth_root_wraps_a_selection_as_the_radicand() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        for c in ["x", "y"] {
+            cur.insert(&mut top, Atom::Sym(c.into()));
+        }
+        // Select both atoms (0..2) and pick the nth-root command.
+        assert!(commit_command_selecting(
+            &mut top,
+            &mut cur,
+            "nthroot",
+            Some((0, 2))
+        ));
+        assert_eq!(top.to_latex(), r"\sqrt[\square]{x y}");
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Index
             }]
         );
     }

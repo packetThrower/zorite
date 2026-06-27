@@ -393,6 +393,22 @@ impl Cursor {
         }
     }
 
+    /// Wrap a selection (`lo..hi`) under an nth-root — the selection becomes the radicand and
+    /// an empty degree (index) box is added. Caret descends into the index, ready to type the
+    /// degree (e.g. `3` for a cube root).
+    pub fn wrap_nth_root(&mut self, top: &mut Row, lo: usize, hi: usize) {
+        if let Some(at) = self.wrap_range(top, lo, hi, |radicand| Atom::Sqrt {
+            radicand,
+            index: Some(Row::new()),
+        }) {
+            self.path.push(Step {
+                atom: at,
+                slot: Slot::Index,
+            });
+            self.index = 0;
+        }
+    }
+
     /// Make a selection (`lo..hi`) the numerator of a new fraction. Caret descends into the
     /// (empty) denominator, ready to type it.
     pub fn wrap_fraction(&mut self, top: &mut Row, lo: usize, hi: usize) {
@@ -642,6 +658,25 @@ mod tests {
         cur.wrap_sqrt(&mut top, 0, 2);
         assert_eq!(top.to_latex(), r"\sqrt{x y}");
         assert_eq!(cur.index, 1);
+    }
+
+    #[test]
+    fn wrap_nth_root_wraps_radicand_caret_in_degree() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        for c in ["x", "y"] {
+            cur.insert(&mut top, sym(c));
+        }
+        cur.wrap_nth_root(&mut top, 0, 2);
+        assert_eq!(top.to_latex(), r"\sqrt[\square]{x y}");
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Index
+            }]
+        );
+        assert_eq!(cur.index, 0);
     }
 
     #[test]

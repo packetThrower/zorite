@@ -301,6 +301,27 @@ fn descend(
         (BoxContent::Radical { body, .. }, Slot::Radicand) => {
             Some((&**body, x + (boxx.width - body.width) * scale, y, scale))
         }
+        // Nth-root index (the small degree at the surd's upper-left). Mirrors `to_display`'s
+        // scriptscript placement: `5/18 em` right of the surd, baseline raised by
+        // `0.6·(height − depth)`, at the index's own (scriptscript) scale.
+        (
+            BoxContent::Radical {
+                index: Some(index),
+                index_offset,
+                index_scale,
+                ..
+            },
+            Slot::Index,
+        ) => {
+            let surd_x = x + *index_offset * scale;
+            let to_shift = 0.6 * (boxx.height - boxx.depth);
+            Some((
+                &**index,
+                surd_x + (5.0 / 18.0) * scale,
+                y - to_shift * scale,
+                scale * *index_scale,
+            ))
+        }
         // Big-operator upper limit (∑, display ∫): centered above the operator.
         (
             BoxContent::OpLimits {
@@ -582,6 +603,45 @@ mod tests {
             r.y >= -1e-9 && r.h > 0.0,
             "sup caret within bounds, got {r:?}"
         );
+    }
+
+    #[test]
+    fn nth_root_index_caret_is_located_above_left_of_the_radicand() {
+        // \sqrt[3]{x}: the degree caret should resolve to the small upper-left index box
+        // (the precise descend arm), not the full-height fallback on the radical.
+        let top = Row {
+            atoms: vec![Atom::Sqrt {
+                radicand: Row::syms("x"),
+                index: Some(Row::syms("3")),
+            }],
+        };
+        let idx = Cursor {
+            path: vec![Step {
+                atom: 0,
+                slot: Slot::Index,
+            }],
+            index: 1,
+        };
+        let rad = Cursor {
+            path: vec![Step {
+                atom: 0,
+                slot: Slot::Radicand,
+            }],
+            index: 0,
+        };
+        let ir = caret_rect(&top, &idx).expect("index caret");
+        let rr = caret_rect(&top, &rad).expect("radicand caret");
+        assert!(ir.h > 0.0, "index caret has height: {ir:?}");
+        // Scriptscript degree → shorter than the full-size radicand caret (rules out the
+        // fallback, which would be the radical's full height).
+        assert!(
+            ir.h < rr.h,
+            "index caret {} shorter than radicand {}",
+            ir.h,
+            rr.h
+        );
+        assert!(ir.x < rr.x, "index left of radicand: {} vs {}", ir.x, rr.x);
+        assert!(ir.y < rr.y, "index above radicand: {} vs {}", ir.y, rr.y);
     }
 
     #[test]
