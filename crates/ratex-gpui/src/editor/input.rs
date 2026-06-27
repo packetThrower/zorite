@@ -212,6 +212,30 @@ pub fn commit_command(top: &mut Row, cursor: &mut Cursor, name: &str) -> bool {
     true
 }
 
+/// Commit a palette/`\command` `name` with a possible selection `sel` (an atom range in the
+/// cursor's row). A wrap-capable structure — a fraction or a root — wraps the selection
+/// (it becomes the numerator / radicand); every other command just inserts at the caret,
+/// leaving the selection's atoms in place (the caller clears the selection highlight). With
+/// no selection this is plain [`commit_command`].
+pub fn commit_command_selecting(
+    top: &mut Row,
+    cursor: &mut Cursor,
+    name: &str,
+    sel: Option<(usize, usize)>,
+) -> bool {
+    match (lookup_command(name), sel) {
+        (Some(Command::Frac), Some((lo, hi))) => {
+            cursor.wrap_fraction(top, lo, hi);
+            true
+        }
+        (Some(Command::Sqrt), Some((lo, hi))) => {
+            cursor.wrap_sqrt(top, lo, hi);
+            true
+        }
+        _ => commit_command(top, cursor, name),
+    }
+}
+
 /// The known command names that start with `prefix`, in table order (for autocomplete).
 pub fn command_matches(prefix: &str) -> Vec<&'static str> {
     COMMANDS

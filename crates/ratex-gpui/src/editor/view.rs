@@ -53,6 +53,9 @@ impl Default for MathTheme {
 pub struct MathEditor {
     root: Row,
     cursor: Cursor,
+    /// The fixed end of a selection (the moving end is `cursor`); `None` = no selection.
+    /// Always shares `cursor`'s row — selection is single-row for now.
+    anchor: Option<Cursor>,
     focus: FocusHandle,
     font_size: f32,
     dpr: f32,
@@ -140,6 +143,7 @@ impl MathEditor {
                 path: vec![],
                 index,
             },
+            anchor: None,
             focus: cx.focus_handle(),
             font_size,
             dpr: 2.0,
@@ -179,6 +183,7 @@ impl MathEditor {
         // to the host so the text caret flows out of the formula (left/up → before the block,
         // right/down → after it), the way arrowing past a table cell's edge exits the table.
         if was_normal
+            && !ks.modifiers.shift
             && self.cursor == cursor_before
             && let Some(after) = match ks.key.as_str() {
                 "left" | "up" => Some(false),
@@ -201,25 +206,95 @@ impl MathEditor {
         cx.notify();
     }
 
-    /// Normal-mode keys: navigation, editing, typing, and `\` to start a command.
+    /// Normal-mode keys: navigation, selection (Shift+←/→), editing, typing, `\` to start a
+    /// command, and wrapping a selection — `(` → parens, `/` → fraction.
     fn handle_normal(&mut self, ks: &Keystroke) -> bool {
+        let shift = ks.modifiers.shift;
+        let sel = self.selection_range();
         match ks.key.as_str() {
-            "left" => self.cursor.move_left(&self.root),
-            "right" => self.cursor.move_right(&self.root),
-            "up" => self.cursor.move_up(&self.root),
-            "down" => self.cursor.move_down(&self.root),
-            "backspace" => self.cursor.backspace(&mut self.root),
+            "left" if shift => self.select_step(false),
+            "right" if shift => self.select_step(true),
+            "left" => {
+                self.anchor = None;
+                self.cursor.move_left(&self.root);
+            }
+            "right" => {
+                self.anchor = None;
+                self.cursor.move_right(&self.root);
+            }
+            "up" => {
+                self.anchor = None;
+                self.cursor.move_up(&self.root);
+            }
+            "down" => {
+                self.anchor = None;
+                self.cursor.move_down(&self.root);
+            }
+            // First Escape clears a selection; with none it's unconsumed so the host can
+            // act on it (e.g. close the editor).
+            "escape" if self.anchor.is_some() => self.anchor = None,
+            "backspace" => match sel {
+                Some((lo, hi)) => {
+                    self.cursor.delete_range(&mut self.root, lo, hi);
+                    self.anchor = None;
+                }
+                None => self.cursor.backspace(&mut self.root),
+            },
             _ => match ks.key_char.as_ref().and_then(|s| s.chars().next()) {
                 Some('\\') => {
+                    self.anchor = None;
                     self.pending = Some(String::new());
                     self.selected = 0;
                     self.scroll_match_into_view();
                 }
-                Some(c) => input::type_char(&mut self.root, &mut self.cursor, c),
+                Some('(') if sel.is_some() => {
+                    let (lo, hi) = sel.unwrap();
+                    self.cursor.wrap_parens(&mut self.root, lo, hi);
+                    self.anchor = None;
+                }
+                Some('/') if sel.is_some() => {
+                    let (lo, hi) = sel.unwrap();
+                    self.cursor.wrap_fraction(&mut self.root, lo, hi);
+                    self.anchor = None;
+                }
+                // Any other character collapses the selection (non-destructively — there's
+                // no undo) and inserts at the caret.
+                Some(c) => {
+                    self.anchor = None;
+                    input::type_char(&mut self.root, &mut self.cursor, c);
+                }
                 None => return false,
             },
         }
         true
+    }
+
+    /// Extend (or begin) the selection by one atom within the current row, in `right` /
+    /// left direction. Single-row: the moving end stays in `cursor`'s row, never descending.
+    fn select_step(&mut self, right: bool) {
+        if self.anchor.is_none() {
+            self.anchor = Some(self.cursor.clone());
+        }
+        let len = self.cursor.row(&self.root).atoms.len();
+        if right {
+            if self.cursor.index < len {
+                self.cursor.index += 1;
+            }
+        } else if self.cursor.index > 0 {
+            self.cursor.index -= 1;
+        }
+    }
+
+    /// The selected atom range `lo..hi` in the current row, or `None` when there's no
+    /// (non-empty) selection. Guards that the anchor shares the cursor's row.
+    fn selection_range(&self) -> Option<(usize, usize)> {
+        let a = self.anchor.as_ref()?;
+        if a.path != self.cursor.path {
+            return None;
+        }
+        let lo = a.index.min(self.cursor.index);
+        let hi = a.index.max(self.cursor.index);
+        (lo < hi).then_some((lo, hi))
     }
 
     /// `\command`-mode keys: build the buffer, move the highlight, commit, or cancel.
@@ -287,13 +362,18 @@ impl MathEditor {
         }
     }
 
-    /// Caret rect in logical px from the geometry walk (top row + fraction/script slots).
-    /// `None` — hidden — for slots the walk doesn't handle yet (roots, delimiters, limits).
-    fn caret_px(&self) -> Option<(f32, f32, f32)> {
-        let r = geometry::caret_rect(&self.root, &self.cursor)?;
+    /// Caret rect (left x, top y, height) in logical px for `cursor`, from the geometry walk
+    /// (top row + fraction/script slots). `None` for slots the walk doesn't handle yet.
+    fn caret_px_of(&self, cursor: &Cursor) -> Option<(f32, f32, f32)> {
+        let r = geometry::caret_rect(&self.root, cursor)?;
         let fs = self.font_size;
         let h = (r.h as f32 * fs).max(fs * 0.3);
         Some((PAD + r.x as f32 * fs, PAD + r.y as f32 * fs, h))
+    }
+
+    /// Caret rect for the live cursor.
+    fn caret_px(&self) -> Option<(f32, f32, f32)> {
+        self.caret_px_of(&self.cursor)
     }
 
     /// The click-to-insert symbol palette (a floating, draggable panel). Shares the command
@@ -367,7 +447,11 @@ impl MathEditor {
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.accent_bg))
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                        input::commit_command(&mut this.root, &mut this.cursor, cmd);
+                        // With a selection active, the fraction / root buttons WRAP it (it
+                        // becomes the numerator / radicand); other buttons just insert.
+                        let sel = this.selection_range();
+                        input::commit_command_selecting(&mut this.root, &mut this.cursor, cmd, sel);
+                        this.anchor = None;
                         let old = this.rendered.take();
                         this.rendered =
                             render::render_row(&this.root, this.font_size, this.dpr, this.theme.fg);
@@ -520,6 +604,30 @@ impl Render for MathEditor {
                     .h(px(ch))
                     .bg(theme.accent)
             });
+
+        // Selection highlight: a translucent band from the anchor caret to the live caret
+        // (same row), painted behind the formula glyphs.
+        let selection = self.selection_range().is_some().then(|| {
+            let a = self.anchor.as_ref()?;
+            let (ax, _, _) = self.caret_px_of(a)?;
+            let (fx, top, ch) = self.caret_px()?;
+            let left = ax.min(fx);
+            let w = (ax - fx).abs();
+            let mut fill = theme.accent;
+            fill.a = 0.22;
+            (w > 0.5).then(|| {
+                div()
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
+                    .w(px(w))
+                    .h(px(ch))
+                    .rounded(px(2.0))
+                    .bg(fill)
+            })
+        });
+        let selection = selection.flatten();
+
         let pending = self.pending.as_ref().map(|p| {
             let (x, top, _) = self.caret_px().unwrap_or((PAD, PAD, 0.0));
             div()
@@ -642,6 +750,8 @@ impl Render for MathEditor {
                             cx.stop_propagation();
                         }),
                     )
+                    // Selection band first, so it paints behind the formula glyphs.
+                    .children(selection)
                     .children(image)
                     .children(caret)
                     .children(pending)

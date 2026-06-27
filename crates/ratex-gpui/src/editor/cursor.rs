@@ -340,6 +340,73 @@ impl Cursor {
             self.index = 0;
         }
     }
+
+    /// Delete atoms `lo..hi` of the cursor's current row (a selection), leaving the caret at
+    /// `lo`. `hi` is clamped to the row length; an empty range is a no-op.
+    pub fn delete_range(&mut self, top: &mut Row, lo: usize, hi: usize) {
+        let row = resolve_mut(top, &self.path);
+        let hi = hi.min(row.atoms.len());
+        if lo < hi {
+            row.atoms.drain(lo..hi);
+            self.index = lo;
+        }
+    }
+
+    /// Replace atoms `lo..hi` of the cursor's row with one atom that `make` builds from the
+    /// drained atoms (as a `Row`). Returns the new atom's index, or `None` (model untouched)
+    /// when the range is empty or out of bounds. The caller positions the caret.
+    fn wrap_range(
+        &mut self,
+        top: &mut Row,
+        lo: usize,
+        hi: usize,
+        make: impl FnOnce(Row) -> Atom,
+    ) -> Option<usize> {
+        let row = resolve_mut(top, &self.path);
+        if lo >= hi || hi > row.atoms.len() {
+            return None;
+        }
+        let body: Vec<Atom> = row.atoms.drain(lo..hi).collect();
+        row.atoms.insert(lo, make(Row { atoms: body }));
+        Some(lo)
+    }
+
+    /// Wrap a selection (`lo..hi`) in parentheses — an auto-growing `\left(…\right)`. Caret
+    /// lands just after the new delimiter.
+    pub fn wrap_parens(&mut self, top: &mut Row, lo: usize, hi: usize) {
+        if let Some(at) = self.wrap_range(top, lo, hi, |body| Atom::Delim {
+            open: "(".into(),
+            body,
+            close: ")".into(),
+        }) {
+            self.index = at + 1;
+        }
+    }
+
+    /// Wrap a selection (`lo..hi`) under a square root. Caret lands just after the root.
+    pub fn wrap_sqrt(&mut self, top: &mut Row, lo: usize, hi: usize) {
+        if let Some(at) = self.wrap_range(top, lo, hi, |radicand| Atom::Sqrt {
+            radicand,
+            index: None,
+        }) {
+            self.index = at + 1;
+        }
+    }
+
+    /// Make a selection (`lo..hi`) the numerator of a new fraction. Caret descends into the
+    /// (empty) denominator, ready to type it.
+    pub fn wrap_fraction(&mut self, top: &mut Row, lo: usize, hi: usize) {
+        if let Some(at) = self.wrap_range(top, lo, hi, |num| Atom::Frac {
+            num,
+            den: Row::new(),
+        }) {
+            self.path.push(Step {
+                atom: at,
+                slot: Slot::Den,
+            });
+            self.index = 0;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -550,6 +617,71 @@ mod tests {
         cur.move_right(&top); // sup end -> out after the script
         assert_eq!(cur.path, vec![]);
         assert_eq!(cur.index, 2);
+    }
+
+    #[test]
+    fn wrap_parens_wraps_a_range_caret_after() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        for c in ["a", "b", "c"] {
+            cur.insert(&mut top, sym(c));
+        }
+        cur.wrap_parens(&mut top, 0, 2); // wrap a,b
+        assert_eq!(top.to_latex(), r"\left( a b \right) c");
+        assert_eq!(cur.path, vec![]);
+        assert_eq!(cur.index, 1); // after the delimiter, before c
+    }
+
+    #[test]
+    fn wrap_sqrt_wraps_a_range() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        for c in ["x", "y"] {
+            cur.insert(&mut top, sym(c));
+        }
+        cur.wrap_sqrt(&mut top, 0, 2);
+        assert_eq!(top.to_latex(), r"\sqrt{x y}");
+        assert_eq!(cur.index, 1);
+    }
+
+    #[test]
+    fn wrap_fraction_makes_selection_the_numerator_caret_in_denominator() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        for c in ["x", "+", "1"] {
+            cur.insert(&mut top, sym(c));
+        }
+        cur.wrap_fraction(&mut top, 0, 3); // whole row -> numerator
+        assert_eq!(top.to_latex(), r"\frac{x + 1}{\square}");
+        assert_eq!(
+            cur.path,
+            vec![Step {
+                atom: 0,
+                slot: Slot::Den
+            }]
+        );
+        assert_eq!(cur.index, 0);
+    }
+
+    #[test]
+    fn wrap_empty_range_is_a_noop() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        cur.insert(&mut top, sym("a"));
+        cur.wrap_parens(&mut top, 1, 1);
+        assert_eq!(top.to_latex(), "a");
+    }
+
+    #[test]
+    fn delete_range_removes_selected_atoms() {
+        let mut top = Row::new();
+        let mut cur = Cursor::start();
+        for c in ["a", "b", "c", "d"] {
+            cur.insert(&mut top, sym(c));
+        }
+        cur.delete_range(&mut top, 1, 3); // remove b,c
+        assert_eq!(top.to_latex(), "a d");
+        assert_eq!(cur.index, 1);
     }
 
     #[test]
