@@ -2495,6 +2495,22 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Clicking another formula opens its editor; commit the one we were editing first, so
+        // its edits (incl. justification) persist instead of being dropped when math_edit is
+        // replaced. Always re-find this block's range against the current content afterward: a
+        // just-committed formula (here, or via its deferred blur) may have shifted byte offsets
+        // by adding/removing an alignment marker.
+        let mut range = range;
+        if self.math_edit.is_some() {
+            self.commit_math_edit(cx);
+        }
+        // Re-find THIS block by its exact LaTeX against the current content (the commit above,
+        // or this block's own deferred blur, may have shifted offsets). Matching the source —
+        // not a guessed-nearest range — keeps us on the right block; bail if it's gone.
+        match source.read(cx).find_math_block(&latex, range.start) {
+            Some(r) => range = r,
+            None => return,
+        }
         // Render the editor at the formula's displayed font + reserve only its height, so the
         // formula stays put (no jump); the height comes from the cached static render.
         let height = self
@@ -2526,11 +2542,22 @@ impl AppView {
         source.update(cx, |e, cx| {
             e.set_editing_block(range, editor.clone().into(), height, cx)
         });
-        // Commit when the math editor loses focus (the user clicks away).
+        // Commit when the math editor loses focus (the user clicks away). Guard on identity:
+        // if a click on another formula already committed + replaced us, this stale blur must
+        // not commit the NEW edit. (Compare the active edit's editor to ours.)
         let weak = cx.entity().downgrade();
+        let editor_id = editor.entity_id();
         let blur_sub = window.on_focus_out(&focus, cx, move |_ev, _window, cx| {
-            weak.update(cx, |this: &mut AppView, cx| this.commit_math_edit(cx))
-                .ok();
+            weak.update(cx, |this: &mut AppView, cx| {
+                if this
+                    .math_edit
+                    .as_ref()
+                    .is_some_and(|m| m.editor.entity_id() == editor_id)
+                {
+                    this.commit_math_edit(cx);
+                }
+            })
+            .ok();
         });
         // Arrowing past a formula boundary flows the caret back into the surrounding text;
         // a right-click while editing opens the formula menu (copy LaTeX / export).
@@ -2570,8 +2597,10 @@ impl AppView {
         let block = format!("$$\n{latex}\n$$");
         // End the in-line edit (closes the gap, re-renders the formula) + get the range.
         let range = edit.source.update(cx, |e, cx| e.end_editing_block(cx))?;
-        let current = edit.source.read(cx).text().to_string();
-        if range.end > current.len() {
+        // Safety: only splice if the range still starts a `$$` block. A stale/shifted range
+        // would otherwise insert the block at the wrong offset and corrupt the document — drop
+        // the (rare) edit instead.
+        if !edit.source.read(cx).is_math_block_range(&range) {
             cx.notify();
             return None;
         }
@@ -2582,12 +2611,12 @@ impl AppView {
         // The new block sits after the (possibly empty) marker prefix.
         let block_start = full_range.start + prefix.len();
         let new_range = block_start..block_start + block.len();
-        let mut new = current;
-        new.replace_range(full_range.clone(), &replacement);
         // Recorded (undoable) splice — NOT `set_text`, which would wipe the document's undo
-        // history. So a committed formula is one Cmd+Z step, with prior history intact.
+        // history. `replace_range` snaps to char boundaries, so a shifted/stale range can't
+        // panic; read the result back rather than splicing the string ourselves.
         edit.source
             .update(cx, |e, cx| e.replace_range(full_range, &replacement, cx));
+        let new = edit.source.read(cx).text().to_string();
         // Rasterize the edited formula into the shared store, or the block-math provider
         // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
         self.ensure_content_math(&new, cx);

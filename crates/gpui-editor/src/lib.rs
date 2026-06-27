@@ -555,7 +555,18 @@ impl EditorState {
     /// undo history, so a host writing back a structural edit (e.g. a committed `$$…$$`
     /// formula) lands as a normal undo step rather than clobbering the history.
     pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
-        let range = range.start.min(self.content.len())..range.end.min(self.content.len());
+        // Snap to char boundaries (start down, end up) so a stale/shifted range — e.g. one
+        // captured before a prior formula commit moved the bytes — can't panic mid-UTF-8.
+        let len = self.content.len();
+        let mut start = range.start.min(len);
+        while start > 0 && !self.content.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = range.end.clamp(start, len);
+        while end < len && !self.content.is_char_boundary(end) {
+            end += 1;
+        }
+        let range = start..end;
         self.record_edit(&range, text);
         self.content.replace_range(range.clone(), text);
         self.remap_diagnostics(&range, text.len());
@@ -714,6 +725,30 @@ impl EditorState {
             block.start
         };
         (start..block.end, prefix)
+    }
+
+    /// Re-find a `$$…$$` block by its exact LaTeX `source`, returned as a BYTE range (nearest
+    /// to the now-stale byte `approx` if several match) — so opening/committing one after a
+    /// prior formula's commit shifted offsets targets the right block. `math_blocks` yields
+    /// LINE ranges, so convert like `math_block_at` does (else the caret jumps to the top).
+    pub fn find_math_block(&self, source: &str, approx: usize) -> Option<Range<usize>> {
+        let starts = self.line_starts();
+        markdown_syntax::math_blocks(&self.content)
+            .into_iter()
+            .filter(|(_, s)| s == source)
+            .map(|(r, _)| starts[r.start]..self.line_end(r.end - 1))
+            .min_by_key(|r| r.start.abs_diff(approx))
+    }
+
+    /// Whether byte `range` (half-open) still starts a `$$…$$` block — a commit guard so a
+    /// stale/shifted range can't splice the block into the wrong place and corrupt the doc.
+    pub fn is_math_block_range(&self, range: &Range<usize>) -> bool {
+        range.end <= self.content.len()
+            && range.start <= range.end
+            && self.content.is_char_boundary(range.start)
+            && self.content[range.start..range.end]
+                .trim_start()
+                .starts_with("$$")
     }
 
     /// The text of logical line `row` (without its trailing newline).

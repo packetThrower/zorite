@@ -101,6 +101,9 @@ pub struct MathEditor {
     img_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
 }
 
+/// Palette panel width (px) — used to dock a right-aligned formula's palette to its right edge.
+const PALETTE_W: f32 = 200.0;
+
 /// Cap on the formula's in-place undo history, to bound memory.
 const UNDO_CAP: usize = 200;
 
@@ -588,13 +591,20 @@ impl MathEditor {
         }
     }
 
-    /// The in-line palette's left, in image-container px: aligned with the matrix toolbar
-    /// (which docks at the matrix's left) when the caret is in a matrix, else flush left.
+    /// The in-line palette's left, in formula-container px. The palette is a child of the
+    /// (flex-justified) formula container, so this is formula-relative and the panel tracks the
+    /// formula automatically. For a RIGHT-aligned formula it docks at the formula's RIGHT edge
+    /// (extends left), so its right edge sits at the formula's right (≈ the editor's right) and
+    /// can't run off-screen — computed from the formula width, no painted-position measurement
+    /// (which would lag a frame). Left/center dock at the formula's left; a matrix docks beside
+    /// the grid.
     fn inline_palette_left(&self) -> f32 {
         if let Some(m) = geometry::matrix_rect(&self.root, &self.cursor) {
-            PAD + m.x as f32 * self.font_size + self.toolbar_off.0
-        } else {
-            0.0
+            return PAD + m.x as f32 * self.font_size + self.toolbar_off.0;
+        }
+        match self.align {
+            MathAlign::Right => self.rendered.as_ref().map_or(0.0, |r| r.width) - PALETTE_W,
+            _ => 0.0,
         }
     }
 
@@ -671,7 +681,7 @@ impl MathEditor {
             }))
             .flex()
             .flex_col()
-            .w(px(200.0))
+            .w(px(PALETTE_W))
             .bg(theme.panel)
             .border_1()
             .border_color(theme.border)
@@ -692,7 +702,7 @@ impl MathEditor {
         let theme = self.theme;
         let m = geometry::matrix_rect(&self.root, &self.cursor)?;
         let fs = self.font_size;
-        // Dock at the matrix's bottom-left (image-container px) plus the draggable offset.
+        // Dock at the matrix's bottom-left (formula-container px) plus the draggable offset.
         let left = PAD + m.x as f32 * fs + self.toolbar_off.0;
         let top = PAD + (m.y + m.h) as f32 * fs + self.toolbar_off.1;
 
@@ -899,6 +909,14 @@ impl Render for MathEditor {
         )
         .absolute()
         .inset_0();
+        // In-line: the palette lives inside the (flex-justified) formula container so it tracks
+        // a centered / right-aligned formula. Standalone: it's a draggable root child.
+        let palette = self.palette(cx);
+        let (root_palette, inner_palette) = if self.inline {
+            (None, Some(palette))
+        } else {
+            (Some(palette), None)
+        };
 
         div()
             .track_focus(&self.focus)
@@ -941,7 +959,7 @@ impl Render for MathEditor {
             .when(!self.inline, |el| {
                 el.items_center().justify_center().bg(theme.panel)
             })
-            .child(self.palette(cx))
+            .children(root_palette)
             .child(
                 div()
                     .relative()
@@ -992,6 +1010,9 @@ impl Render for MathEditor {
                     .children(caret)
                     .children(pending)
                     .children(dropdown)
+                    // In-line palette + matrix toolbar live in the container, so they track the
+                    // formula's centered / right-aligned position automatically.
+                    .children(inner_palette)
                     .children(self.matrix_toolbar(cx)),
             )
     }
