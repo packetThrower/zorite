@@ -462,20 +462,62 @@ impl MathEditor {
         self.caret_px_of(&self.cursor)
     }
 
-    /// Map a window-space click to a caret position in the formula (hit-testing into whatever
-    /// slot was clicked), collapsing any selection / pending command. No-op until the first
-    /// paint has captured the formula's bounds.
-    fn click_to_caret(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(b) = self.img_bounds.get() else {
-            return;
-        };
-        // Window px → formula-local px → em (the geometry walk's units): undo the render
-        // padding and the layout font size, mirroring `caret_px_of`.
+    /// A window-space click in formula em-coords (the geometry walk's units): undo the render
+    /// padding + layout font size, mirroring `caret_px_of`. `None` until the first paint has
+    /// captured the formula's bounds.
+    fn em_at(&self, pos: Point<Pixels>) -> Option<(f64, f64)> {
+        let b = self.img_bounds.get()?;
         let ex = ((f32::from(pos.x - b.origin.x) - PAD) / self.font_size) as f64;
         let ey = ((f32::from(pos.y - b.origin.y) - PAD) / self.font_size) as f64;
+        Some((ex, ey))
+    }
+
+    /// Single click: place the caret at the click, collapsing any selection / pending command.
+    fn click_to_caret(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((ex, ey)) = self.em_at(pos) else {
+            return;
+        };
         self.anchor = None;
         self.pending = None;
         self.cursor = geometry::cursor_at(&self.root, ex, ey);
+        cx.notify();
+    }
+
+    /// Double click: select the atom (or structure) under the click.
+    fn select_cell_at(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((ex, ey)) = self.em_at(pos) else {
+            return;
+        };
+        let (path, lo, hi) = geometry::span_at(&self.root, ex, ey);
+        if lo == hi {
+            self.click_to_caret(pos, cx); // empty row → just place the caret
+            return;
+        }
+        self.pending = None;
+        self.anchor = Some(Cursor {
+            path: path.clone(),
+            index: lo,
+        });
+        self.cursor = Cursor { path, index: hi };
+        cx.notify();
+    }
+
+    /// Triple click: select the whole row / slot under the click.
+    fn select_row_at(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        let Some((ex, ey)) = self.em_at(pos) else {
+            return;
+        };
+        let (path, len) = geometry::row_len_at(&self.root, ex, ey);
+        if len == 0 {
+            self.click_to_caret(pos, cx);
+            return;
+        }
+        self.pending = None;
+        self.anchor = Some(Cursor {
+            path: path.clone(),
+            index: 0,
+        });
+        self.cursor = Cursor { path, index: len };
         cx.notify();
     }
 
@@ -851,7 +893,12 @@ impl Render for MathEditor {
                             // and drop the caret to the next line. Keep focus on the formula.
                             this.focus.focus(window, cx);
                             cx.stop_propagation();
-                            this.click_to_caret(ev.position, cx);
+                            // 1 click → caret, 2 → select the atom, 3+ → select the row/slot.
+                            match ev.click_count {
+                                1 => this.click_to_caret(ev.position, cx),
+                                2 => this.select_cell_at(ev.position, cx),
+                                _ => this.select_row_at(ev.position, cx),
+                            }
                         }),
                     )
                     // Capture the formula's window-space bounds for click-to-caret mapping.

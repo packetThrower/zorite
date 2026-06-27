@@ -420,29 +420,70 @@ pub fn cursor_at(top: &Row, x: f64, y: f64) -> Cursor {
     let root = layout_row(top);
     let baseline = to_display_list(&root).height;
     let mut path = Vec::new();
-    let index = hit(top, &root, x, y, 0.0, baseline, 1.0, &mut path);
+    let (row, row_box, x0, scale) = descend_to_row(top, &root, x, y, 0.0, baseline, 1.0, &mut path);
+    let cells = row_cells(row, row_box, x0, scale);
+    // Nearest gap: before the first cell whose horizontal midpoint is right of the click.
+    let index = cells
+        .iter()
+        .find(|c| x < c.x + c.boxx.width * scale / 2.0)
+        .map(|c| c.lo)
+        .unwrap_or_else(|| cells.last().map_or(0, |c| c.hi));
     Cursor { path, index }
 }
 
+/// Hit-test a click to the atom span `(path, lo, hi)` of the cell under it — the unit a
+/// double-click selects (a glyph, or a whole structure clicked on its non-slot chrome).
+/// `lo == hi` (empty) when the reached row has no atoms.
+pub fn span_at(top: &Row, x: f64, y: f64) -> (Vec<Step>, usize, usize) {
+    let root = layout_row(top);
+    let baseline = to_display_list(&root).height;
+    let mut path = Vec::new();
+    let (row, row_box, x0, scale) = descend_to_row(top, &root, x, y, 0.0, baseline, 1.0, &mut path);
+    let cells = row_cells(row, row_box, x0, scale);
+    // The first cell whose right edge is past the click; else the last cell (click past the end).
+    let (lo, hi) = cells
+        .iter()
+        .find(|c| x < c.x + c.boxx.width * scale)
+        .map(|c| (c.lo, c.hi))
+        .unwrap_or_else(|| cells.last().map_or((0, 0), |c| (c.lo, c.hi)));
+    (path, lo, hi)
+}
+
+/// The number of atoms in the row the click lands in — the unit a triple-click selects.
+pub fn row_len_at(top: &Row, x: f64, y: f64) -> (Vec<Step>, usize) {
+    let root = layout_row(top);
+    let baseline = to_display_list(&root).height;
+    let mut path = Vec::new();
+    let (row, _box, _x0, _scale) = descend_to_row(top, &root, x, y, 0.0, baseline, 1.0, &mut path);
+    (path, row.atoms.len())
+}
+
+/// The non-kern cells of a (possibly single-box) row.
+fn row_cells<'a>(row: &'a Row, row_box: &'a LayoutBox, x0: f64, scale: f64) -> Vec<Cell<'a>> {
+    let children: &[LayoutBox] = match &row_box.content {
+        BoxContent::HBox(c) => c,
+        _ => std::slice::from_ref(row_box),
+    };
+    cells(&row.atoms, children, x0, scale)
+}
+
+/// Descend the layout tree to the deepest row whose slot box contains `(x, y)`, recording the
+/// path; returns that row, its box, and its absolute origin. Shared by the caret / span / row
+/// hit-tests, mirroring `locate`'s descent.
 #[allow(clippy::too_many_arguments)]
-fn hit(
-    row: &Row,
-    row_box: &LayoutBox,
+fn descend_to_row<'a>(
+    row: &'a Row,
+    row_box: &'a LayoutBox,
     x: f64,
     y: f64,
     x0: f64,
     ybase: f64,
     scale: f64,
     path: &mut Vec<Step>,
-) -> usize {
-    let children: &[LayoutBox] = match &row_box.content {
-        BoxContent::HBox(c) => c,
-        _ => std::slice::from_ref(row_box),
-    };
-    let cells = cells(&row.atoms, children, x0, scale);
-    // Descend into a structural slot whose laid-out box contains the point. A cell that folds
-    // a base + trailing SupSub is two atoms, so test both (the script's slots live on the 2nd).
-    for c in &cells {
+) -> (&'a Row, &'a LayoutBox, f64, f64) {
+    // A cell that folds a base + trailing SupSub is two atoms, so test both (the script's
+    // slots live on the 2nd).
+    for c in row_cells(row, row_box, x0, scale) {
         let (sbox, sx0) = unwrap_box(c.boxx, c.x, scale);
         for atom_i in c.lo..c.hi {
             for slot in crate::editor::cursor::nav_slots(&row.atoms[atom_i]) {
@@ -455,19 +496,12 @@ fn hit(
                     && y <= sy + sub_box.depth * ss;
                 if inside && let Some(sub_row) = slot_model_row(&row.atoms[atom_i], slot) {
                     path.push(Step { atom: atom_i, slot });
-                    return hit(sub_row, sub_box, x, y, sx, sy, ss, path);
+                    return descend_to_row(sub_row, sub_box, x, y, sx, sy, ss, path);
                 }
             }
         }
     }
-    // Not in a slot → the nearest gap in this row: before the first cell whose horizontal
-    // midpoint is right of the click, else after the last.
-    for c in &cells {
-        if x < c.x + c.boxx.width * scale / 2.0 {
-            return c.lo;
-        }
-    }
-    cells.last().map_or(0, |c| c.hi)
+    (row, row_box, x0, scale)
 }
 
 /// The absolute caret rect (em, top-left origin) for `cursor`, or `None` if it lands in a
@@ -664,6 +698,58 @@ mod tests {
         }];
         let (x, y) = click_pt(&top, &cur(sup.clone(), 1));
         assert_eq!(cursor_at(&top, x, y).path, sup);
+    }
+
+    /// The em center of model atom `index` (between its two caret gaps), guaranteed inside it.
+    fn atom_pt(top: &Row, path: &[Step], index: usize) -> (f64, f64) {
+        let a = caret_rect(top, &cur(path.to_vec(), index)).expect("left caret");
+        let b = caret_rect(top, &cur(path.to_vec(), index + 1)).expect("right caret");
+        ((a.x + b.x) / 2.0, a.y + a.h / 2.0)
+    }
+
+    #[test]
+    fn double_click_span_selects_the_clicked_atom() {
+        let top = Row::syms("abc");
+        let (x, y) = atom_pt(&top, &[], 1); // over 'b'
+        let (path, lo, hi) = span_at(&top, x, y);
+        assert_eq!(path, vec![]);
+        assert_eq!((lo, hi), (1, 2));
+    }
+
+    #[test]
+    fn double_click_span_descends_into_a_fraction_slot() {
+        let top = Row {
+            atoms: vec![Atom::Frac {
+                num: Row::syms("ab"),
+                den: Row::syms("cd"),
+            }],
+        };
+        let num = vec![Step {
+            atom: 0,
+            slot: Slot::Num,
+        }];
+        let (x, y) = atom_pt(&top, &num, 0); // over 'a' in the numerator
+        let (path, lo, hi) = span_at(&top, x, y);
+        assert_eq!(path, num);
+        assert_eq!((lo, hi), (0, 1));
+    }
+
+    #[test]
+    fn triple_click_row_len_is_the_clicked_slots_atom_count() {
+        let top = Row {
+            atoms: vec![Atom::Frac {
+                num: Row::syms("abc"),
+                den: Row::syms("d"),
+            }],
+        };
+        let num = vec![Step {
+            atom: 0,
+            slot: Slot::Num,
+        }];
+        let r = caret_rect(&top, &cur(num.clone(), 1)).unwrap();
+        let (path, len) = row_len_at(&top, r.x, r.y + r.h / 2.0);
+        assert_eq!(path, num);
+        assert_eq!(len, 3);
     }
 
     #[test]
