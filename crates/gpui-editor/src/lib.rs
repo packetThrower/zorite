@@ -3378,7 +3378,7 @@ fn shape_document(
     block_chip: Option<&BlockChipFn>,
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
-    editing_math: Option<(&Range<usize>, Pixels)>,
+    editing_math: Option<(usize, usize, Pixels)>,
     scale_factor: f32,
     // The selected byte range; a line it touches keeps full source (markers
     // shown), the rest hide their markers (W6, reveal-on-caret).
@@ -3500,10 +3500,10 @@ fn shape_document(
 
         // An in-line-edited $$ block reserves a fixed gap; the host paints the live editor
         // there (positioned from this line's top/height). Takes precedence over the image.
-        if let Some((er, gap_h)) = editing_math
-            && er.contains(&idx)
+        if let Some((start_row, end_row, gap_h)) = editing_math
+            && (start_row..=end_row).contains(&idx)
         {
-            let h = if idx == er.start { gap_h } else { px(0.) };
+            let h = if idx == start_row { gap_h } else { px(0.) };
             let wl = shape_runs(
                 window,
                 &SharedString::default(),
@@ -4479,10 +4479,13 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
-                    editor
-                        .editing_block
-                        .as_ref()
-                        .map(|eb| (&eb.range, eb.height)),
+                    editor.editing_block.as_ref().map(|eb| {
+                        let sr = editor.row_col(eb.range.start).0;
+                        let er = editor
+                            .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
+                            .0;
+                        (sr, er, eb.height)
+                    }),
                     sf,
                     selection,
                     editor.image_resize,
@@ -4573,10 +4576,13 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
-                    editor
-                        .editing_block
-                        .as_ref()
-                        .map(|eb| (&eb.range, eb.height)),
+                    editor.editing_block.as_ref().map(|eb| {
+                        let sr = editor.row_col(eb.range.start).0;
+                        let er = editor
+                            .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
+                            .0;
+                        (sr, er, eb.height)
+                    }),
                     sf,
                     selection,
                     editor.image_resize,
