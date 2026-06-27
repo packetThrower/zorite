@@ -33,7 +33,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 mod markdown_syntax;
-pub use markdown_syntax::SyntaxStyle;
+pub use markdown_syntax::{MathAlign, SyntaxStyle};
 
 /// Key context the editing actions are scoped to (so they only fire while an
 /// editor is focused).
@@ -681,6 +681,48 @@ impl EditorState {
         let range = self.editing_block.take().map(|eb| eb.range);
         cx.notify();
         range
+    }
+
+    /// The horizontal alignment of the `$$…$$` block whose byte range starts at `block_start`
+    /// (its `<!-- math:ALIGN -->` marker, or `Center` by default) — so the host can seed the
+    /// in-line editor at the right justification when opening it.
+    pub fn math_align(&self, block_start: usize) -> MathAlign {
+        let row = self.row_col(block_start).0;
+        markdown_syntax::math_regions(&self.content)
+            .into_iter()
+            .find(|r| r.range.start == row)
+            .map_or(MathAlign::default(), |r| r.align)
+    }
+
+    /// Compute the recorded edit that writes `align`'s marker for the `$$` block at byte
+    /// `block`: the (possibly marker-extended) range to replace, and the marker prefix to
+    /// prepend to the rewritten block. Center (default) → no marker (drops any existing one);
+    /// left/right → add or replace it. The host appends the block text to the prefix. Folding
+    /// the marker into the block's commit edit avoids a separate, range-shifting edit.
+    pub fn math_marker_edit(
+        &self,
+        block: Range<usize>,
+        align: MathAlign,
+    ) -> (Range<usize>, String) {
+        let row = self.row_col(block.start).0;
+        let prefix = align.marker().map_or(String::new(), |m| format!("{m}\n"));
+        let has_marker =
+            row > 0 && markdown_syntax::math_align_marker(self.line_str(row - 1)).is_some();
+        let start = if has_marker {
+            self.line_starts()[row - 1]
+        } else {
+            block.start
+        };
+        (start..block.end, prefix)
+    }
+
+    /// The text of logical line `row` (without its trailing newline).
+    fn line_str(&self, row: usize) -> &str {
+        let starts = self.line_starts();
+        match starts.get(row) {
+            Some(&s) => &self.content[s..self.line_end(row)],
+            None => "",
+        }
     }
 
     /// The host-supplied editor view for an in-line math edit, positioned in the gap its
@@ -3175,6 +3217,9 @@ struct BlockImg {
     /// Whether to show a corner resize grip. `false` for math (nothing to persist a
     /// `{width=N}` to, and it renders at its natural typeset size); `true` for images.
     resizable: bool,
+    /// Horizontal alignment in the content width. `Left` for images; display math sets its
+    /// own (centered by default).
+    align: MathAlign,
 }
 
 /// A line rendered as a block widget instead of its source text: a standalone
@@ -3322,6 +3367,7 @@ fn block_img(
         width: px(target_w),
         height: px(target_w * dh / dw),
         resizable: true,
+        align: MathAlign::Left, // images stay left; math overrides with its marker
     })
 }
 
@@ -3460,24 +3506,36 @@ fn shape_document(
     // $$…$$ math blocks ready to render: caret outside + a typeset bitmap ready. Like
     // mermaid, the equation paints on the block's first line, the rest collapse.
     let math: Vec<(Range<usize>, BlockImg)> = match block_math.filter(|_| md.is_some()) {
-        Some(f) => markdown_syntax::math_blocks(content)
+        Some(f) => markdown_syntax::math_regions(content)
             .into_iter()
-            .filter(|(range, _)| caret_row.is_none_or(|cr| !range.contains(&cr)))
-            .filter_map(|(range, source)| {
-                let img = f(&source)?;
+            .filter(|r| caret_row.is_none_or(|cr| !r.range.contains(&cr)))
+            .filter_map(|r| {
+                let img = f(&r.source)?;
                 let bi = block_img(img, None, wrap_width, scale_factor)?;
                 // Math renders at its natural typeset size — no resize grip (nothing to
-                // persist a width to, and it goes inline eventually).
+                // persist a width to, and it goes inline eventually). It carries its
+                // horizontal alignment (centered by default) for the paint to honor.
                 Some((
-                    range,
+                    r.range,
                     BlockImg {
                         resizable: false,
+                        align: r.align,
                         ..bi
                     },
                 ))
             })
             .collect(),
         None => Vec::new(),
+    };
+    // `<!-- math:ALIGN -->` marker lines to hide (revealed only when the caret lands on them),
+    // like table style markers.
+    let math_marker_lines: Vec<usize> = if md.is_some() {
+        markdown_syntax::math_regions(content)
+            .iter()
+            .filter_map(|r| r.marker_line)
+            .collect()
+    } else {
+        Vec::new()
     };
     // Table regions (W4c); content-fit column widths shared by each region's rows.
     let regions = md
@@ -3611,10 +3669,11 @@ fn shape_document(
             && !code_regions
                 .iter()
                 .any(|r| r.contains(&idx) && caret_row.is_some_and(|cr| r.contains(&cr)));
-        // A `<!-- table:STYLE -->` marker line collapses (hidden) too, unless the
-        // caret lands on it — so the style stays out of the way but is editable.
-        let collapse_marker =
-            caret_row != Some(idx) && regions.iter().any(|r| r.marker_line == Some(idx));
+        // A `<!-- table:STYLE -->` or `<!-- math:ALIGN -->` marker line collapses (hidden)
+        // too, unless the caret lands on it — so the marker stays out of the way but editable.
+        let collapse_marker = caret_row != Some(idx)
+            && (regions.iter().any(|r| r.marker_line == Some(idx))
+                || math_marker_lines.contains(&idx));
 
         // Leaving a code block: size the box to its widest line (+ the inset on
         // each side, like a table) and mark its last line so the box rounds + pads
@@ -5259,12 +5318,15 @@ impl Element for EditorElement {
                 // (aspect-preserved from the saved size) instead of the saved
                 // `{width=N}` — the source isn't rewritten until release.
                 let (img_w, img_h) = image_display_size(w, image_resize, i);
-                // Display math (non-resizable) centers within the content width, like LaTeX
-                // `$$…$$`; a real image stays at the row's left inset.
-                let img_x = if !w.resizable && bounds.size.width > img_w {
-                    origin.x + px((f32::from(bounds.size.width) - f32::from(img_w)) / 2.0)
-                } else {
-                    origin.x + inset
+                // Honor the block's horizontal alignment within the content width. Display math
+                // centers by default; left/right come from its `<!-- math:ALIGN -->` marker. A
+                // real image is always `Left` (it sits at the row's inset).
+                let slack = bounds.size.width - img_w;
+                let img_x = match w.align {
+                    _ if slack <= px(0.) => origin.x + inset,
+                    MathAlign::Left => origin.x + inset,
+                    MathAlign::Center => origin.x + px(f32::from(slack) / 2.0),
+                    MathAlign::Right => origin.x + slack,
                 };
                 let img_bounds = Bounds::new(
                     point(img_x, origin.y + px(IMG_ROW_PAD / 2.)),

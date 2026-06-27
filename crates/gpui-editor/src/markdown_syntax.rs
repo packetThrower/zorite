@@ -832,6 +832,65 @@ pub(crate) fn mermaid_blocks(content: &str) -> Vec<(Range<usize>, String)> {
 /// `$$` fence lines (so it collapses) and the LaTeX between them. The fences are bare
 /// `$$` lines (markdown's `math_flow` form, no info word).
 pub(crate) fn math_blocks(content: &str) -> Vec<(Range<usize>, String)> {
+    math_regions(content)
+        .into_iter()
+        .map(|r| (r.range, r.source))
+        .collect()
+}
+
+/// Horizontal alignment of a display `$$…$$` block, chosen per-block via a
+/// `<!-- math:left -->` / `<!-- math:right -->` marker comment on the line directly above it.
+/// `Center` is the default (no marker), matching LaTeX display math; standard Markdown viewers
+/// ignore the comment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MathAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+impl MathAlign {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "left" => Some(Self::Left),
+            "center" => Some(Self::Center),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+
+    /// The marker line for this alignment, or `None` for the default (`Center`) — which is
+    /// stored as no marker, keeping centered math (the common case) clean.
+    pub(crate) fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::Center => None,
+            Self::Left => Some("<!-- math:left -->"),
+            Self::Right => Some("<!-- math:right -->"),
+        }
+    }
+}
+
+/// Parse a `<!-- math:ALIGN -->` marker line. `None` if it isn't one.
+pub(crate) fn math_align_marker(line: &str) -> Option<MathAlign> {
+    let inner = line
+        .trim()
+        .strip_prefix("<!--")?
+        .strip_suffix("-->")?
+        .trim();
+    MathAlign::from_name(inner.strip_prefix("math:")?.trim())
+}
+
+/// A detected `$$…$$` block: its line range (both fences), the LaTeX between them, its
+/// alignment, and the optional `<!-- math:ALIGN -->` marker line directly above it.
+pub(crate) struct MathRegion {
+    pub range: Range<usize>,
+    pub source: String,
+    pub align: MathAlign,
+    pub marker_line: Option<usize>,
+}
+
+pub(crate) fn math_regions(content: &str) -> Vec<MathRegion> {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut out = Vec::new();
     let mut i = 0;
@@ -844,7 +903,20 @@ pub(crate) fn math_blocks(content: &str) -> Vec<(Range<usize>, String)> {
             }
             let source = lines[start + 1..j].join("\n");
             let end = (j + 1).min(lines.len()); // include the closing fence
-            out.push((start..end, source));
+            // An alignment marker on the line directly above the opening fence.
+            let (align, marker_line) = match start
+                .checked_sub(1)
+                .map(|m| (m, math_align_marker(lines[m])))
+            {
+                Some((m, Some(a))) => (a, Some(m)),
+                _ => (MathAlign::default(), None),
+            };
+            out.push(MathRegion {
+                range: start..end,
+                source,
+                align,
+                marker_line,
+            });
             i = end;
         } else {
             i += 1;

@@ -86,6 +86,9 @@ pub struct MathEditor {
     /// In-line edit mode (hosted in a note's text flow): left-align the formula at its spot
     /// and hide the floating palette + white background, vs the centered standalone editor.
     inline: bool,
+    /// Horizontal justification of the formula in in-line mode — matches the display block's
+    /// alignment so entering edit doesn't shift it.
+    align: MathAlign,
     /// Undo / redo history: `(model, caret)` snapshots taken before each edit. The host
     /// editor's Cmd+Z is inert while we're hosted (its key context is dropped), so the
     /// formula owns its own in-place undo. A committed formula is one step in the document's
@@ -100,6 +103,16 @@ pub struct MathEditor {
 
 /// Cap on the formula's in-place undo history, to bound memory.
 const UNDO_CAP: usize = 200;
+
+/// Horizontal alignment of the in-line formula, so it matches the centered (or left/right)
+/// display block and doesn't jump when entered. The host maps its own marker to this.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum MathAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
 
 /// A signal the host listens for from the hosted editor.
 pub enum MathNav {
@@ -117,17 +130,26 @@ impl EventEmitter<MathNav> for MathEditor {}
 
 impl MathEditor {
     pub fn new(cx: &mut Context<Self>) -> Self {
-        Self::with_root(Row::new(), 48.0, false, MathTheme::default(), cx)
+        Self::with_root(
+            Row::new(),
+            48.0,
+            false,
+            MathAlign::Center,
+            MathTheme::default(),
+            cx,
+        )
     }
 
     /// Build an editor seeded with the formula parsed from `latex`, rendered at `font_size`
     /// px/em — for editing an existing `$$…$$` block in-line at its displayed size. The caret
     /// lands at the end of the top row when `at_end`, else at the start — so arrowing *into*
     /// the block from below/right enters at the end, and from above/left enters at the start.
+    /// `align` matches the display block's justification so entering edit doesn't shift it.
     pub fn from_latex(
         latex: &str,
         font_size: f32,
         at_end: bool,
+        align: MathAlign,
         theme: MathTheme,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -135,6 +157,7 @@ impl MathEditor {
             crate::editor::latex::parse_latex(latex),
             font_size,
             true,
+            align,
             theme,
             cx,
         );
@@ -149,10 +172,23 @@ impl MathEditor {
         self.root.to_latex()
     }
 
+    /// The current horizontal alignment, so the host writes the matching marker on commit.
+    pub fn align(&self) -> MathAlign {
+        self.align
+    }
+
+    /// Re-justify the in-line formula (from the right-click "Align" menu) — immediate visual
+    /// feedback; the host persists the marker on commit.
+    pub fn set_align(&mut self, align: MathAlign, cx: &mut Context<Self>) {
+        self.align = align;
+        cx.notify();
+    }
+
     fn with_root(
         root: Row,
         font_size: f32,
         inline: bool,
+        align: MathAlign,
         theme: MathTheme,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -167,6 +203,7 @@ impl MathEditor {
             focus: cx.focus_handle(),
             font_size,
             dpr: 2.0,
+            align,
             theme,
             rendered: None,
             pending: None,
@@ -891,9 +928,16 @@ impl Render for MathEditor {
             .relative()
             .size_full()
             .flex()
-            // In-line: top-aligned, and centered to match the centered display formula so
-            // the formula doesn't jump when you click into it. Standalone: fully centered.
-            .when(self.inline, |el| el.items_start().justify_center())
+            // In-line: top-aligned, justified to match the display block so entering edit
+            // doesn't shift the formula. Standalone: fully centered.
+            .when(self.inline, |el| {
+                let el = el.items_start();
+                match self.align {
+                    MathAlign::Left => el.justify_start(),
+                    MathAlign::Center => el.justify_center(),
+                    MathAlign::Right => el.justify_end(),
+                }
+            })
             .when(!self.inline, |el| {
                 el.items_center().justify_center().bg(theme.panel)
             })

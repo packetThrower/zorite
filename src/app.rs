@@ -297,12 +297,32 @@ struct CtxMenu {
 }
 
 enum CtxKind {
-    /// A rendered `$$…$$` formula was right-clicked: copy its LaTeX or export it. Holds the
-    /// LaTeX source.
-    Formula(SharedString),
+    /// A rendered `$$…$$` formula was right-clicked: copy its LaTeX or export it (the LaTeX
+    /// source). `alignable` adds the Align items — only while editing the formula in-line,
+    /// where the host can re-justify it and persist the marker on commit.
+    Formula {
+        source: SharedString,
+        alignable: bool,
+    },
     /// A reader-view day/page was right-clicked away from a formula: a single "Edit" entry
     /// into edit mode for that target.
     Edit(SlashTarget),
+}
+
+/// Map the editor's `<!-- math:ALIGN -->` marker alignment to the in-line editor's, and back.
+fn to_ratex_align(a: gpui_editor::MathAlign) -> ratex_gpui::MathAlign {
+    match a {
+        gpui_editor::MathAlign::Left => ratex_gpui::MathAlign::Left,
+        gpui_editor::MathAlign::Center => ratex_gpui::MathAlign::Center,
+        gpui_editor::MathAlign::Right => ratex_gpui::MathAlign::Right,
+    }
+}
+fn to_editor_align(a: ratex_gpui::MathAlign) -> gpui_editor::MathAlign {
+    match a {
+        ratex_gpui::MathAlign::Left => gpui_editor::MathAlign::Left,
+        ratex_gpui::MathAlign::Center => gpui_editor::MathAlign::Center,
+        ratex_gpui::MathAlign::Right => gpui_editor::MathAlign::Right,
+    }
 }
 
 struct MathEdit {
@@ -826,7 +846,8 @@ impl AppView {
                     );
                 }
                 EditorEvent::MathMenu { source, position } => {
-                    this.open_math_menu(source.clone(), *position, cx);
+                    // Not editing → no Align items (nothing to re-justify live + persist).
+                    this.open_math_menu(source.clone(), *position, false, cx);
                 }
             },
         );
@@ -1608,7 +1629,8 @@ impl AppView {
                     );
                 }
                 EditorEvent::MathMenu { source, position } => {
-                    this.open_math_menu(source.clone(), *position, cx);
+                    // Not editing → no Align items (nothing to re-justify live + persist).
+                    this.open_math_menu(source.clone(), *position, false, cx);
                 }
             },
         );
@@ -2353,12 +2375,23 @@ impl AppView {
         &mut self,
         source: SharedString,
         anchor: Point<Pixels>,
+        alignable: bool,
         cx: &mut Context<Self>,
     ) {
         self.ctx_menu = Some(CtxMenu {
             anchor,
-            kind: CtxKind::Formula(source),
+            kind: CtxKind::Formula { source, alignable },
         });
+        cx.notify();
+    }
+
+    /// Re-justify the formula being edited (the right-click "Align" items). Live feedback;
+    /// the marker persists on commit.
+    fn ctx_menu_align(&mut self, align: ratex_gpui::MathAlign, cx: &mut Context<Self>) {
+        self.ctx_menu = None;
+        if let Some(me) = &self.math_edit {
+            me.editor.update(cx, |ed, cx| ed.set_align(align, cx));
+        }
         cx.notify();
     }
 
@@ -2382,9 +2415,9 @@ impl AppView {
     fn take_ctx_formula(&mut self) -> Option<String> {
         match self.ctx_menu.take()? {
             CtxMenu {
-                kind: CtxKind::Formula(src),
+                kind: CtxKind::Formula { source, .. },
                 ..
-            } => Some(src.to_string()),
+            } => Some(source.to_string()),
             _ => None,
         }
     }
@@ -2469,11 +2502,14 @@ impl AppView {
             .borrow()
             .get(&latex)
             .map_or(px(56.0), |(_, _, h)| px(h + 16.0));
+        // Open at the block's saved alignment so the in-line editor matches the display block.
+        let align = to_ratex_align(source.read(cx).math_align(range.start));
         let editor = cx.new(|cx| {
             ratex_gpui::MathEditor::from_latex(
                 &latex,
                 crate::math::FONT_SIZE,
                 at_end,
+                align,
                 ratex_gpui::MathTheme {
                     fg: theme::text_primary(),
                     muted: theme::text_secondary(),
@@ -2505,7 +2541,8 @@ impl AppView {
                 ratex_gpui::MathNav::Exit { after } => this.exit_math_edit(*after, window, cx),
                 ratex_gpui::MathNav::ContextMenu { position } => {
                     let latex = editor.read(cx).to_latex();
-                    this.open_math_menu(latex.into(), *position, cx);
+                    // Editing → offer Align (the in-line editor can re-justify live).
+                    this.open_math_menu(latex.into(), *position, true, cx);
                 }
             },
         );
@@ -2529,6 +2566,7 @@ impl AppView {
     ) -> Option<(Entity<EditorState>, std::ops::Range<usize>)> {
         let edit = self.math_edit.take()?;
         let latex = edit.editor.read(cx).to_latex();
+        let align = to_editor_align(edit.editor.read(cx).align());
         let block = format!("$$\n{latex}\n$$");
         // End the in-line edit (closes the gap, re-renders the formula) + get the range.
         let range = edit.source.update(cx, |e, cx| e.end_editing_block(cx))?;
@@ -2537,13 +2575,19 @@ impl AppView {
             cx.notify();
             return None;
         }
-        let new_range = range.start..range.start + block.len();
+        // Fold the alignment marker into the same recorded edit: replace the block (and any
+        // existing `<!-- math:ALIGN -->` line above it) with `<marker?>` + the new block.
+        let (full_range, prefix) = edit.source.read(cx).math_marker_edit(range, align);
+        let replacement = format!("{prefix}{block}");
+        // The new block sits after the (possibly empty) marker prefix.
+        let block_start = full_range.start + prefix.len();
+        let new_range = block_start..block_start + block.len();
         let mut new = current;
-        new.replace_range(range.clone(), &block);
+        new.replace_range(full_range.clone(), &replacement);
         // Recorded (undoable) splice — NOT `set_text`, which would wipe the document's undo
         // history. So a committed formula is one Cmd+Z step, with prior history intact.
         edit.source
-            .update(cx, |e, cx| e.replace_range(range, &block, cx));
+            .update(cx, |e, cx| e.replace_range(full_range, &replacement, cx));
         // Rasterize the edited formula into the shared store, or the block-math provider
         // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
         self.ensure_content_math(&new, cx);
@@ -5586,13 +5630,20 @@ impl Render for AppView {
             });
 
         let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
-            // Each row's action id: formula menus expose 0..=2, the day/page menu just 3 (Edit).
-            let items: &[(&str, usize)] = match menu.kind {
-                CtxKind::Formula(_) => &[("Copy LaTeX", 0), ("Export PNG…", 1), ("Export SVG…", 2)],
-                CtxKind::Edit(_) => &[("Edit", 3)],
+            // Action ids: 0..=2 formula copy/export, 3 day/page Edit, 4..=6 align L/C/R (only
+            // while editing the formula, where the in-line editor can re-justify it live).
+            let items: Vec<(&str, usize)> = match &menu.kind {
+                CtxKind::Formula { alignable, .. } => {
+                    let mut v = vec![("Copy LaTeX", 0), ("Export PNG…", 1), ("Export SVG…", 2)];
+                    if *alignable {
+                        v.extend([("Align left", 4), ("Align center", 5), ("Align right", 6)]);
+                    }
+                    v
+                }
+                CtxKind::Edit(_) => vec![("Edit", 3)],
             };
             let mut rows = div().flex().flex_col().py(px(4.0));
-            for &(label, action_id) in items {
+            for (label, action_id) in items {
                 rows = rows.child(
                     div()
                         .id(("ctx-menu-row", action_id))
@@ -5609,7 +5660,10 @@ impl Render for AppView {
                                     0 => this.math_menu_copy_latex(cx),
                                     1 => this.math_menu_export_png(window, cx),
                                     2 => this.math_menu_export_svg(window, cx),
-                                    _ => this.ctx_menu_edit(window, cx),
+                                    3 => this.ctx_menu_edit(window, cx),
+                                    4 => this.ctx_menu_align(ratex_gpui::MathAlign::Left, cx),
+                                    5 => this.ctx_menu_align(ratex_gpui::MathAlign::Center, cx),
+                                    _ => this.ctx_menu_align(ratex_gpui::MathAlign::Right, cx),
                                 }
                             }),
                         )

@@ -59,7 +59,7 @@ fn build(
                             let src = menu_src.clone();
                             let pos = ev.position;
                             let _ = menu_weak.update(cx, |this, cx| {
-                                this.open_math_menu(src, pos, cx);
+                                this.open_math_menu(src, pos, false, cx);
                             });
                         }),
                 )
