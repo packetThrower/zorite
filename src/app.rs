@@ -329,6 +329,9 @@ struct MathEdit {
     editor: Entity<ratex_gpui::MathEditor>,
     source: Entity<EditorState>,
     target: SlashTarget,
+    /// `true` when editing an inline `$…$` span (commit splices `$…$`), `false` for a `$$`
+    /// block (splices `$$\n…\n$$` + alignment marker).
+    inline: bool,
     /// Commits the edit when the math editor loses focus (click-away). Kept alive here.
     _blur_sub: gpui::Subscription,
     /// Flows the caret back to the text when an arrow hits a formula boundary. Kept alive.
@@ -834,6 +837,7 @@ impl AppView {
                     range,
                     source,
                     at_end,
+                    inline,
                 } => {
                     this.open_math_edit(
                         st.clone(),
@@ -841,6 +845,7 @@ impl AppView {
                         range.clone(),
                         source.clone(),
                         *at_end,
+                        *inline,
                         window,
                         cx,
                     );
@@ -1617,6 +1622,7 @@ impl AppView {
                     range,
                     source,
                     at_end,
+                    inline,
                 } => {
                     this.open_math_edit(
                         st.clone(),
@@ -1624,6 +1630,7 @@ impl AppView {
                         range.clone(),
                         source.clone(),
                         *at_end,
+                        *inline,
                         window,
                         cx,
                     );
@@ -2492,6 +2499,7 @@ impl AppView {
         range: std::ops::Range<usize>,
         latex: SharedString,
         at_end: bool,
+        inline: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2507,23 +2515,32 @@ impl AppView {
         // Re-find THIS block by its exact LaTeX against the current content (the commit above,
         // or this block's own deferred blur, may have shifted offsets). Matching the source —
         // not a guessed-nearest range — keeps us on the right block; bail if it's gone.
-        match source.read(cx).find_math_block(&latex, range.start) {
+        let found = if inline {
+            source.read(cx).find_inline_math(&latex, range.start)
+        } else {
+            source.read(cx).find_math_block(&latex, range.start)
+        };
+        match found {
             Some(r) => range = r,
             None => return,
         }
-        // Render the editor at the formula's displayed font + reserve only its height, so the
-        // formula stays put (no jump); the height comes from the cached static render.
-        let height = self
-            .math_store
-            .borrow()
-            .get(&latex)
-            .map_or(px(56.0), |(_, _, h)| px(h + 16.0));
-        // Open at the block's saved alignment so the in-line editor matches the display block.
-        let align = to_ratex_align(source.read(cx).math_align(range.start));
+        // Inline `$…$` renders at text size with no alignment; a `$$` block at its larger
+        // display font and its saved justification.
+        let (font_size, align) = if inline {
+            (
+                f32::from(EDITOR_TEXT_SIZE),
+                ratex_gpui::MathAlign::default(),
+            )
+        } else {
+            (
+                crate::math::FONT_SIZE,
+                to_ratex_align(source.read(cx).math_align(range.start)),
+            )
+        };
         let editor = cx.new(|cx| {
             ratex_gpui::MathEditor::from_latex(
                 &latex,
-                crate::math::FONT_SIZE,
+                font_size,
                 at_end,
                 align,
                 ratex_gpui::MathTheme {
@@ -2538,10 +2555,22 @@ impl AppView {
             )
         });
         let focus = editor.read(cx).focus_handle();
-        // Reserve the gap at the block + host the structural editor there, in the text flow.
-        source.update(cx, |e, cx| {
-            e.set_editing_block(range, editor.clone().into(), height, cx)
-        });
+        // Seat the editor: an inline `$…$` overlays the formula's spot (surrounding text stays
+        // put); a `$$` block reserves a full-width gap at its row, sized to the cached render.
+        if inline {
+            source.update(cx, |e, cx| {
+                e.set_editing_inline(range, editor.clone().into(), cx)
+            });
+        } else {
+            let height = self
+                .math_store
+                .borrow()
+                .get(&latex)
+                .map_or(px(56.0), |(_, _, h)| px(h + 16.0));
+            source.update(cx, |e, cx| {
+                e.set_editing_block(range, editor.clone().into(), height, cx)
+            });
+        }
         // Commit when the math editor loses focus (the user clicks away). Guard on identity:
         // if a click on another formula already committed + replaced us, this stale blur must
         // not commit the NEW edit. (Compare the active edit's editor to ours.)
@@ -2577,6 +2606,7 @@ impl AppView {
             editor,
             source,
             target,
+            inline,
             _blur_sub: blur_sub,
             _nav_sub: nav_sub,
         });
@@ -2593,6 +2623,27 @@ impl AppView {
     ) -> Option<(Entity<EditorState>, std::ops::Range<usize>)> {
         let edit = self.math_edit.take()?;
         let latex = edit.editor.read(cx).to_latex();
+        // Inline `$…$`: end the overlay, splice `$latex$` back at the span (guarded against a
+        // stale range), persist. No `$$` fences, no alignment marker.
+        if edit.inline {
+            let range = edit.source.update(cx, |e, cx| e.end_editing_inline(cx))?;
+            if !edit.source.read(cx).is_inline_math_range(&range) {
+                cx.notify();
+                return None;
+            }
+            let replacement = format!("${latex}$");
+            let new_range = range.start..range.start + replacement.len();
+            edit.source
+                .update(cx, |e, cx| e.replace_range(range, &replacement, cx));
+            let new = edit.source.read(cx).text().to_string();
+            self.ensure_content_math(&new, cx);
+            match &edit.target {
+                SlashTarget::Day(key) => self.save_journal(key, &new, cx),
+                SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+            }
+            cx.notify();
+            return Some((edit.source, new_range));
+        }
         let align = to_editor_align(edit.editor.read(cx).align());
         let block = format!("$$\n{latex}\n$$");
         // End the in-line edit (closes the gap, re-renders the formula) + get the range.
@@ -2628,12 +2679,21 @@ impl AppView {
         Some((edit.source, new_range))
     }
 
-    /// The caret arrowed past a formula's edge: commit the edit, then seat the text caret on
-    /// the line just before/after the block (and re-focus the note editor) — the keyboard path
-    /// out of the structural editor, as opposed to clicking away.
+    /// The caret arrowed past a formula's edge: commit the edit, then seat the text caret beside
+    /// it (and re-focus the note editor) — the keyboard path out of the structural editor, as
+    /// opposed to clicking away. An inline `$…$` seats the caret right beside the span on the
+    /// same line; a `$$` block seats it on the adjacent line.
     fn exit_math_edit(&mut self, after: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let inline = self.math_edit.as_ref().is_some_and(|m| m.inline);
         if let Some((source, block)) = self.commit_math_edit(cx) {
-            source.update(cx, |e, cx| e.exit_math(block, after, window, cx));
+            source.update(cx, |e, cx| {
+                if inline {
+                    e.focus(window, cx);
+                    e.set_cursor(if after { block.end } else { block.start }, cx);
+                } else {
+                    e.exit_math(block, after, window, cx);
+                }
+            });
         }
     }
 
