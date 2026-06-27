@@ -50,6 +50,11 @@ const crates = [
 		description:
 			'Native OS spell-checking (NSSpellChecker / ISpellChecker) with a tiny, host-agnostic API.',
 	},
+	{
+		name: 'ratex-gpui',
+		description:
+			'A structural (MathQuill-style) math editor for GPUI, plus a LaTeX → image / PNG / SVG renderer, built on the RaTeX engine.',
+	},
 ];
 
 mkdirSync(outDir, { recursive: true });
