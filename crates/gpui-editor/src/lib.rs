@@ -158,6 +158,10 @@ const CHIP_PAD: f32 = 5.;
 /// above + below — so consecutive images (a bulleted photo list) don't touch.
 const IMG_ROW_PAD: f32 = 12.;
 
+/// Extra height (px) a text row gets beyond its tallest inline `$…$` formula, so a fraction
+/// has a little breathing room above + below instead of touching the neighbouring rows.
+const INLINE_MATH_ROW_PAD: f32 = 6.;
+
 /// Side length (px) of the square drag-to-resize grip painted at an inline
 /// image's bottom-right corner (matching the reading view's 14px handle).
 const IMG_GRIP: f32 = 14.;
@@ -354,6 +358,27 @@ pub fn math_sources(content: &str) -> Vec<SharedString> {
         .collect()
 }
 
+/// The LaTeX sources of every inline `$…$` formula in `content` (the inner LaTeX, no `$`
+/// delimiters), so a host can pre-render them into the same math store the block provider
+/// reads. Skips lines inside fenced code blocks, where `$…$` is literal.
+pub fn inline_math_sources(content: &str) -> Vec<SharedString> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for line in content.split('\n') {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for span in markdown_syntax::inline_math_spans(line) {
+            out.push(line[span.start + 1..span.end - 1].into());
+        }
+    }
+    out
+}
+
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
 pub struct EditorState {
@@ -454,6 +479,10 @@ pub struct EditorState {
     /// Resolves a `$$…$$` block's LaTeX to a typeset equation; set by the host via
     /// [`Self::set_block_math_provider`].
     block_math: Option<BlockMathFn>,
+    /// The em (px/font-size) the `block_math` provider rasterizes at — set via
+    /// [`Self::set_block_math_em`]. Inline `$…$` formulas reuse those rasters scaled by
+    /// `text_em / this`, so they sit at text size. `None` disables inline math rendering.
+    block_math_em: Option<f32>,
     /// Per-logical-line `src` for rows painted as a file chip (from the last
     /// paint), so a left-click can open it and a right-click can edit it.
     chip_rows: Vec<Option<SharedString>>,
@@ -524,6 +553,7 @@ impl EditorState {
             block_chip: None,
             block_mermaid: None,
             block_math: None,
+            block_math_em: None,
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
@@ -667,6 +697,14 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
     ) {
         self.block_math = Some(Box::new(provider));
+    }
+
+    /// Declare the em the `block_math` provider rasterizes at (e.g. the host's display-math
+    /// font size). Turns on inline `$…$` rendering: each inline formula reuses the block
+    /// raster for the same LaTeX, scaled by `text_em / em` so it sits at text size. Pre-render
+    /// inline sources too (see [`inline_math_sources`]).
+    pub fn set_block_math_em(&mut self, em: f32) {
+        self.block_math_em = (em > 0.).then_some(em);
     }
 
     /// Begin an in-line structural edit of the `$$…$$` block at `range`: reserve a gap at
@@ -3257,6 +3295,22 @@ struct BlockImg {
     align: MathAlign,
 }
 
+/// One inline `$…$` formula painted within a text line. `display_off` is the byte offset of its
+/// invisible spacer in the shaped DISPLAY string (resolved to an x via the wrapped line at
+/// paint); `source` is the formula's byte range within the *source line* (to hit-test a click
+/// back to its edit range); `img`/`width`/`height` are the typeset raster scaled to text size.
+#[derive(Clone)]
+struct InlineMath {
+    display_off: usize,
+    /// Source byte range of the `$…$` span within its line — read in Phase ② to hit-test a
+    /// click on the formula back to its edit range.
+    #[allow(dead_code)]
+    source: Range<usize>,
+    img: Arc<RenderImage>,
+    width: Pixels,
+    height: Pixels,
+}
+
 /// A line rendered as a block widget instead of its source text: a standalone
 /// image, or a clickable file chip (e.g. a PDF — left-click opens it, right-click
 /// edits). Shown only while the caret is off the line ("raw on caret").
@@ -3379,6 +3433,9 @@ type ShapedLines = (
     // when the displayed text equals the source (revealed / code / widget lines).
     Vec<Option<Vec<usize>>>,
     Vec<Option<LineMark>>,
+    // Per-line inline `$…$` formulas painted over spacers in the shaped text (empty for
+    // lines without any).
+    Vec<Vec<InlineMath>>,
 );
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
@@ -3476,6 +3533,79 @@ fn code_pads(bg: Option<CodeBg>) -> (Pixels, Pixels) {
     }
 }
 
+/// Splice inline `$…$` spacers into one line's shaped output. For each formula whose raster is
+/// ready (`block_math`) and that the caret isn't inside (left raw for editing), reserve a spacer
+/// of whole spaces ≥ the raster's text-em width and record where to paint it. The raster is
+/// rasterized at `em`; scaling by `fs/em` puts it at this line's text size. Returns the
+/// (possibly unchanged) display/runs/map plus the line's formula placements.
+#[allow(clippy::too_many_arguments)]
+fn shape_inline_math(
+    window: &mut Window,
+    line: &str,
+    disp: String,
+    runs: Vec<TextRun>,
+    map: Vec<usize>,
+    caret_col: Option<usize>,
+    base_font: &Font,
+    fs: Pixels,
+    sf: f32,
+    block_math: &BlockMathFn,
+    em: f32,
+) -> (String, Vec<TextRun>, Vec<usize>, Vec<InlineMath>) {
+    let spans = markdown_syntax::inline_math_spans(line);
+    if spans.is_empty() || sf <= 0. || em <= 0. {
+        return (disp, runs, map, Vec::new());
+    }
+    let space_w = f32::from(measure_width(window, " ", base_font, fs)).max(1.);
+    let scale = f32::from(fs) / em;
+    let mut formulas: Vec<(Range<usize>, usize)> = Vec::new();
+    let mut imgs: Vec<(Arc<RenderImage>, Pixels, Pixels)> = Vec::new();
+    for span in spans {
+        // The formula the caret sits in stays raw `$…$` (reveal-on-caret), like a hidden marker.
+        if caret_col.is_some_and(|c| span.start <= c && c <= span.end) {
+            continue;
+        }
+        let Some(img) = block_math(&line[span.start + 1..span.end - 1]) else {
+            continue; // not yet rasterized — leave the raw source until it lands
+        };
+        let dev = img.size(0);
+        let (dw, dh) = (dev.width.0 as f32, dev.height.0 as f32);
+        if dw <= 0. || dh <= 0. {
+            continue;
+        }
+        let (w, h) = (dw / sf * scale, dh / sf * scale);
+        let n = ((w / space_w).ceil() as usize).max(1);
+        formulas.push((span, n));
+        imgs.push((img, px(w), px(h)));
+    }
+    if formulas.is_empty() {
+        return (disp, runs, map, Vec::new());
+    }
+    let gap = TextRun {
+        len: 0,
+        font: base_font.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let (nd, nr, nm, places) =
+        markdown_syntax::splice_inline_math(&disp, &runs, &map, &formulas, &gap);
+    debug_assert_eq!(places.len(), imgs.len());
+    let inline = places
+        .into_iter()
+        .zip(imgs)
+        .map(|(p, (img, width, height))| InlineMath {
+            display_off: p.display_off,
+            source: p.source,
+            img,
+            width,
+            height,
+        })
+        .collect();
+    (nd, nr, nm, inline)
+}
+
 /// Shape `content` line-by-line so each logical line can use its own font size
 /// (headings are larger — W2) and a standalone image line can render as the image
 /// (W4). Returns, per logical line: the shaped source [`WrappedLine`], its row
@@ -3500,6 +3630,9 @@ fn shape_document(
     block_chip: Option<&BlockChipFn>,
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
+    // The em the `block_math` provider rasterizes at, so inline `$…$` formulas can reuse those
+    // rasters scaled to text size. `None` disables inline math.
+    block_math_em: Option<f32>,
     editing_math: Option<(usize, usize, Pixels)>,
     scale_factor: f32,
     // The selected byte range; a line it touches keeps full source (markers
@@ -3517,6 +3650,7 @@ fn shape_document(
     let mut tables = Vec::new();
     let mut maps = Vec::new();
     let mut marks: Vec<Option<LineMark>> = Vec::new();
+    let mut inline_maths: Vec<Vec<InlineMath>> = Vec::new();
     let lines: Vec<&str> = content.split('\n').collect();
     // Fenced-code-block regions; a block's ``` fence lines collapse (W6) unless
     // the caret is inside that block (then they show, so they stay editable).
@@ -3628,6 +3762,7 @@ fn shape_document(
             tables.push(None);
             maps.push(None);
             marks.push(None);
+            inline_maths.push(Vec::new());
             line_start = line_end + 1;
             continue;
         }
@@ -3655,6 +3790,7 @@ fn shape_document(
             tables.push(None);
             maps.push(None);
             marks.push(None);
+            inline_maths.push(Vec::new());
             line_start = line_end + 1;
             continue;
         }
@@ -3684,6 +3820,7 @@ fn shape_document(
             tables.push(None);
             maps.push(None);
             marks.push(None);
+            inline_maths.push(Vec::new());
             line_start = line_end + 1;
             continue;
         }
@@ -3920,6 +4057,8 @@ fn shape_document(
             Some(LineMark::Quote(c)) => c,
             _ => muted_line.unwrap_or(base_color),
         };
+        // Inline `$…$` formulas spliced into this line (populated by the hidden-markers branch).
+        let mut line_inline_math: Vec<InlineMath> = Vec::new();
         let (shaped_text, runs, bg, map) = if collapse_fence || collapse_marker {
             // Hidden ``` fence line or table-style marker: nothing, zero height.
             (String::new(), Vec::new(), None, None)
@@ -3967,7 +4106,27 @@ fn shape_document(
                 reveal_prefix,
                 st,
             );
-            (disp, runs, None, Some(m))
+            // Inline `$…$` math: swap each ready formula's glyphs for a spacer to paint over.
+            match (block_math, block_math_em) {
+                (Some(mathf), Some(em)) => {
+                    let (disp, runs, m, im) = shape_inline_math(
+                        window,
+                        line,
+                        disp,
+                        runs,
+                        m,
+                        caret_col,
+                        base_font,
+                        fs,
+                        scale_factor,
+                        mathf,
+                        em,
+                    );
+                    line_inline_math = im;
+                    (disp, runs, None, Some(m))
+                }
+                _ => (disp, runs, None, Some(m)),
+            }
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).
             (
@@ -4009,7 +4168,15 @@ fn shape_document(
                         // of photos doesn't stack edge-to-edge.
                         Some(Block::Image(i)) => i.height + px(IMG_ROW_PAD),
                         Some(b) => b.height(),
-                        None => fs * LINE_HEIGHT_RATIO,
+                        // A text row grows to fit its tallest inline `$…$` formula (a fraction
+                        // is taller than the text), so the formula doesn't overlap neighbours.
+                        None => {
+                            let math_h = line_inline_math
+                                .iter()
+                                .map(|im| im.height)
+                                .fold(px(0.), |a, b| if b > a { b } else { a });
+                            (fs * LINE_HEIGHT_RATIO).max(math_h + px(INLINE_MATH_ROW_PAD))
+                        }
                     },
                 }
             };
@@ -4021,6 +4188,7 @@ fn shape_document(
             tables.push(table);
             maps.push(map);
             marks.push(mark);
+            inline_maths.push(line_inline_math);
             // Track a (visible) code line + its width so the block's box can be
             // sized to its widest line and its last line marked.
             if is_code && !collapse_fence {
@@ -4042,7 +4210,16 @@ fn shape_document(
             }
         }
     }
-    (wrapped, heights, widgets, backgrounds, tables, maps, marks)
+    (
+        wrapped,
+        heights,
+        widgets,
+        backgrounds,
+        tables,
+        maps,
+        marks,
+        inline_maths,
+    )
 }
 
 /// Paint a file chip — a rounded, bordered button with a flat document icon +
@@ -4516,6 +4693,9 @@ struct PrepaintState {
     maps: Vec<Option<Vec<usize>>>,
     /// Per-line gutter decoration (blockquote / list / checkbox).
     marks: Vec<Option<LineMark>>,
+    /// Per-line inline `$…$` formulas (image + display offset + source range), painted over
+    /// their spacers in the shaped text.
+    inline_maths: Vec<Vec<InlineMath>>,
     /// Corner-grip hitbox for each painted inline image, in `widgets` order — so
     /// paint can set the resize cursor over each (hitboxes must be inserted in
     /// prepaint). Parallels the images paint walks, indexed by image count.
@@ -4600,7 +4780,7 @@ impl Element for EditorElement {
                     (usize::MAX, usize::MAX)
                 };
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, backgrounds, _, _, _) = shape_document(
+                let (wrapped, heights, _, backgrounds, _, _, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -4614,6 +4794,7 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
+                    editor.block_math_em,
                     editor.editing_block.as_ref().map(|eb| {
                         let sr = editor.row_col(eb.range.start).0;
                         let er = editor
@@ -4676,7 +4857,7 @@ impl Element for EditorElement {
             (usize::MAX, usize::MAX)
         };
         let sf = window.scale_factor();
-        let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks) =
+        let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks, inline_maths) =
             if editor.content.is_empty() {
                 let w = shape_all(
                     window,
@@ -4695,6 +4876,7 @@ impl Element for EditorElement {
                     vec![None; n],
                     vec![None; n],
                     vec![None; n],
+                    vec![Vec::new(); n],
                 )
             } else {
                 shape_document(
@@ -4711,6 +4893,7 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
+                    editor.block_math_em,
                     editor.editing_block.as_ref().map(|eb| {
                         let sr = editor.row_col(eb.range.start).0;
                         let er = editor
@@ -5100,6 +5283,7 @@ impl Element for EditorElement {
             tables,
             maps,
             marks,
+            inline_maths,
             image_grips,
             checkbox_grips,
             chip_grips,
@@ -5418,6 +5602,17 @@ impl Element for EditorElement {
                     cx,
                 );
                 let _ = line.paint(text_origin, *lh, gpui::TextAlign::Left, None, window, cx);
+                // Inline `$…$` formulas: paint each typeset raster over its spacer, centered on
+                // the text row. `position_for_index` gives the spacer's x + wrap-row offset.
+                for im in prepaint.inline_maths.get(i).into_iter().flatten() {
+                    if let Some(p) = line.position_for_index(im.display_off, *lh) {
+                        let x = text_origin.x + p.x;
+                        // Center the formula in the (grown-to-fit) wrap row at p.y.
+                        let y = origin.y + p.y + (*lh - im.height) / 2.0;
+                        let b = Bounds::new(point(x, y), size(im.width, im.height));
+                        let _ = window.paint_image(b, Corners::default(), im.img.clone(), 0, false);
+                    }
+                }
             }
         }
 

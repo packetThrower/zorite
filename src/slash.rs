@@ -87,9 +87,9 @@ pub struct Slash {
 /// over the single-char `#` / `/`.
 pub fn detect(value: &str, cursor: usize) -> Option<(Trigger, usize, String)> {
     let cursor = cursor.min(value.len());
-    // `\command` inside a $$…$$ block → LaTeX command autocomplete. Checked first, since `{`
-    // and `[` are ordinary characters inside a formula.
-    if in_math_block(value, cursor)
+    // `\command` inside a $$…$$ block OR an inline `$…$` span → LaTeX command autocomplete.
+    // Checked first, since `{` and `[` are ordinary characters inside a formula.
+    if (in_math_block(value, cursor) || in_inline_math(value, cursor))
         && let Some((start, q)) = detect_command(value, cursor)
     {
         return Some((Trigger::Math, start, q));
@@ -156,6 +156,30 @@ fn in_math_block(value: &str, cursor: usize) -> bool {
         .count()
         % 2
         == 1
+}
+
+/// Whether `cursor` sits inside an inline `$…$` span: an odd number of unescaped `$` precede it
+/// on its line (an opening `$` not yet closed). Lets `\command` autocomplete fire while typing
+/// inline math, the way [`in_math_block`] does for `$$` blocks. A text line carrying inline math
+/// has single `$`; `\$` (escaped) doesn't count.
+fn in_inline_math(value: &str, cursor: usize) -> bool {
+    let cursor = cursor.min(value.len());
+    let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
+    let bytes = value.as_bytes();
+    let mut count = 0usize;
+    for i in line_start..cursor {
+        if bytes[i] != b'$' {
+            continue;
+        }
+        let mut bs = 0;
+        while i > line_start + bs && bytes[i - 1 - bs] == b'\\' {
+            bs += 1;
+        }
+        if bs % 2 == 0 {
+            count += 1;
+        }
+    }
+    count % 2 == 1
 }
 
 /// A `\name` LaTeX command ending at the caret (an alphabetic run back to a `\`). Unlike
@@ -623,6 +647,32 @@ mod tests {
             detect("x {{da", 6),
             Some((Trigger::Placeholder, 2, "da".to_string()))
         );
+    }
+
+    #[test]
+    fn math_command_triggers_in_block_and_inline() {
+        // Inside a `$$` block (fences on their own lines).
+        let block = "$$\n\\alp";
+        assert_eq!(
+            detect(block, block.len()),
+            Some((Trigger::Math, 3, "alp".to_string()))
+        );
+        // Inside an inline `$…$` being typed (one open `$` before the `\command`).
+        let inline = "area is $\\alpha";
+        assert_eq!(
+            detect(inline, inline.len()),
+            Some((Trigger::Math, 9, "alpha".to_string()))
+        );
+    }
+
+    #[test]
+    fn math_command_not_after_closed_inline() {
+        // After the inline span closes (even `$` count), `\command` isn't math.
+        let v = "done $x$ and \\alpha";
+        assert_ne!(detect(v, v.len()).map(|t| t.0), Some(Trigger::Math));
+        // `\$` is escaped, so this lone-looking `$` doesn't open a span.
+        let esc = "cost 5\\$ then \\beta";
+        assert_ne!(detect(esc, esc.len()).map(|t| t.0), Some(Trigger::Math));
     }
 
     #[test]

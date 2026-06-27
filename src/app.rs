@@ -2665,6 +2665,11 @@ impl AppView {
         for source in gpui_editor::math_sources(content) {
             self.ensure_math_loaded(source, cx);
         }
+        // Inline `$…$` formulas typeset into the same store (keyed by LaTeX); the editor reuses
+        // the raster scaled to text size.
+        for source in gpui_editor::inline_math_sources(content) {
+            self.ensure_math_loaded(source, cx);
+        }
     }
 
     /// Ensure the image at `src` is decoding/decoded (idempotent). Called from a
@@ -6257,6 +6262,8 @@ fn make_editor(
                 .get(&gpui::SharedString::from(source))
                 .map(|(img, _, _)| img)
         });
+        // Inline `$…$` formulas reuse those rasters (typeset at this em) scaled to text size.
+        editor.set_block_math_em(crate::math::FONT_SIZE);
         // Tab / Shift+Tab indent by the configured number of spaces per level.
         editor.set_tab_indent(list_indent);
         editor
