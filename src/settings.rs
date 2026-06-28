@@ -376,12 +376,6 @@ impl SettingsView {
         )
     }
 
-    fn reveal_themes_folder(&self, cx: &Context<Self>) {
-        if let Some(app) = self.app.upgrade() {
-            app.read(cx).reveal_themes_folder();
-        }
-    }
-
     /// Re-scan themes on disk and rebuild the theme dropdown to include them.
     fn reload_skins(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(app) = self.app.upgrade() else {
@@ -781,7 +775,11 @@ impl Render for SettingsView {
                 "reveal-themes",
                 "Reveal themes folder",
                 cx,
-                |this, _w, cx| this.reveal_themes_folder(cx),
+                |this, _w, cx| {
+                    if let Some(app) = this.app.upgrade() {
+                        app.read(cx).reveal_themes_folder();
+                    }
+                },
             ))
             .child(text_button("reload-themes", "Reload", cx, |this, w, cx| {
                 this.reload_skins(w, cx)

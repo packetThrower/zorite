@@ -4375,7 +4375,8 @@ fn shape_document(
                             let math_h = line_inline_math
                                 .iter()
                                 .map(|im| im.height)
-                                .fold(px(0.), |a, b| if b > a { b } else { a });
+                                .max()
+                                .unwrap_or(px(0.));
                             (fs * LINE_HEIGHT_RATIO).max(math_h + px(INLINE_MATH_ROW_PAD))
                         }
                     },
@@ -4577,7 +4578,7 @@ fn table_column_widths(
         *w = (*w).max(px(48.));
     }
     if let Some(avail) = wrap_width {
-        let total = widths.iter().fold(px(0.), |a, &w| a + w);
+        let total = widths.iter().sum::<Pixels>();
         if total > avail && total > px(0.) {
             let scale = f32::from(avail) / f32::from(total);
             for w in &mut widths {
@@ -4667,7 +4668,7 @@ fn table_caret_pos(
     let range = t.cell_ranges.get(cell)?;
     let content = t.cells.get(cell)?;
     let in_cell = col.saturating_sub(range.start).min(content.len());
-    let cell_x = left + t.col_widths[..cell].iter().fold(px(0.), |a, &w| a + w);
+    let cell_x = left + t.col_widths[..cell].iter().sum::<Pixels>();
     let cw = t.col_widths.get(cell).copied().unwrap_or(px(0.));
     // The header is bold, so shape with the bold font or the caret lands left of
     // the (wider) bold glyphs; position_for_index gives the exact kerned x.
@@ -4733,7 +4734,7 @@ fn paint_table_row(
     // A single rule under the header (Striped/Minimal) vs a divider under every
     // row (Grid) vs none (Header).
     let header_rule = matches!(style, TableStyle::Striped | TableStyle::Minimal);
-    let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
+    let table_w = t.col_widths.iter().sum();
     // Row shading (painted first, behind everything): the header for the Header
     // style; alternate body rows for Striped.
     let shaded = match style {
@@ -5015,7 +5016,7 @@ impl Element for EditorElement {
                         let (top, bot) = code_pads(*bg);
                         *h * (line.wrap_boundaries().len() + 1) as f32 + top + bot
                     })
-                    .fold(px(0.), |a, b| a + b)
+                    .sum::<Pixels>()
                     .max(base_lh)
             };
             let width = wrap_width.or(known.width).unwrap_or(px(0.));
@@ -5713,7 +5714,7 @@ impl Element for EditorElement {
                             None => break,
                         }
                     }
-                    let table_w = t.col_widths.iter().fold(px(0.), |a, &w| a + w);
+                    let table_w = t.col_widths.iter().sum();
                     window.paint_quad(PaintQuad {
                         bounds: Bounds::new(
                             point(origin.x + px(TABLE_GUTTER), origin.y),

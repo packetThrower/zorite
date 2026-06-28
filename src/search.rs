@@ -188,7 +188,7 @@ fn collect(db: &Db, term: &str) -> Vec<Hit> {
         hits.push(Hit {
             kind: Kind::Page,
             title: title.clone(),
-            subtitle: crate::db::snippet_for_query(content, term),
+            subtitle: crate::db::snippet(content, term),
             target: Target::Page(*id),
         });
         // PDFs referenced here whose filename matches the term.

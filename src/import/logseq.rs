@@ -186,33 +186,18 @@ fn read_favorites(root: &Path) -> Vec<String> {
 /// Parse the `:favorites ["A" "B/C" …]` vector out of a `config.edn` string,
 /// returning the names as Zorite titles. Empty if the key is absent.
 fn parse_favorites(edn: &str) -> Vec<String> {
-    // Drop `;`-to-end-of-line EDN comments so a commented-out example isn't read
-    // instead of the live key.
-    let src: String = edn
-        .lines()
-        .map(|l| l.split(';').next().unwrap_or(""))
-        .collect::<Vec<_>>()
-        .join("\n");
-    let Some((_, after)) = src.split_once(":favorites") else {
-        return Vec::new();
-    };
-    let Some(open) = after.find('[') else {
-        return Vec::new();
-    };
-    let Some(end) = after[open..].find(']') else {
-        return Vec::new();
-    };
-    // Pull the quoted names out of the vector and convert each to a Zorite title.
-    let mut out = Vec::new();
-    let mut rest = &after[open + 1..open + end];
-    while let Some(s) = rest.find('"') {
-        let Some(e) = rest[s + 1..].find('"') else {
-            break;
-        };
-        out.push(name_to_title(&rest[s + 1..s + 1 + e]));
-        rest = &rest[s + 1 + e + 1..];
-    }
-    out
+    edn::parse(edn)
+        .as_ref()
+        .and_then(|e| e.get("favorites"))
+        .and_then(Edn::as_seq)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Edn::as_str)
+                .map(name_to_title)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 // --- Whiteboards (best-effort tldraw-EDN → Zorite scene) ---
@@ -826,13 +811,7 @@ impl Converter {
                     if let Some(props) = page_props.as_deref_mut() {
                         match key {
                             "title" => {
-                                props.title = Some(
-                                    value
-                                        .split('/')
-                                        .map(str::trim)
-                                        .collect::<Vec<_>>()
-                                        .join("::"),
-                                );
+                                props.title = Some(name_to_title(value));
                                 continue;
                             }
                             "alias" => {

@@ -2002,16 +2002,23 @@ impl WhiteboardView {
         });
     }
 
-    /// Open or close the color picker. Opening seeds the controls from the
-    /// stroke color (selection's, else active, else a default).
-    fn toggle_picker(&mut self, cx: &mut Context<Self>) {
+    /// Close every popover/flyout (only one shows at a time). Called at the top
+    /// of each `toggle_*` so each then only flips its own field.
+    fn close_popovers(&mut self) {
+        self.picker = None;
         self.open_group = None;
         self.templates_open = false;
         self.width_open = false;
         self.font_open = false;
-        if self.picker.is_some() {
-            self.picker = None;
-        } else {
+        self.context_menu = None;
+    }
+
+    /// Open or close the color picker. Opening seeds the controls from the
+    /// stroke color (selection's, else active, else a default).
+    fn toggle_picker(&mut self, cx: &mut Context<Self>) {
+        let was_open = self.picker.is_some();
+        self.close_popovers();
+        if !was_open {
             self.seed_picker(PickerTarget::Stroke);
         }
         cx.notify();
@@ -2019,12 +2026,9 @@ impl WhiteboardView {
 
     /// Open / close the thickness-preset flyout (closing the other popovers).
     fn toggle_width(&mut self, cx: &mut Context<Self>) {
-        self.picker = None;
-        self.open_group = None;
-        self.templates_open = false;
-        self.context_menu = None;
-        self.font_open = false;
-        self.width_open = !self.width_open;
+        let open = !self.width_open;
+        self.close_popovers();
+        self.width_open = open;
         cx.notify();
     }
 
@@ -2066,38 +2070,30 @@ impl WhiteboardView {
     /// Open the given tool category's flyout (or close it if already open).
     /// Closes the color picker so only one popover shows at a time.
     fn toggle_group(&mut self, group: ToolGroup, cx: &mut Context<Self>) {
-        self.picker = None;
-        self.templates_open = false;
-        self.width_open = false;
-        self.font_open = false;
-        self.open_group = if self.open_group == Some(group) {
+        let next = if self.open_group == Some(group) {
             None
         } else {
             Some(group)
         };
+        self.close_popovers();
+        self.open_group = next;
         cx.notify();
     }
 
     /// Open / close the templates gallery modal (closing the other popovers).
     fn toggle_templates(&mut self, cx: &mut Context<Self>) {
-        self.picker = None;
-        self.open_group = None;
-        self.width_open = false;
-        self.context_menu = None;
-        self.font_open = false;
-        self.templates_open = !self.templates_open;
+        let open = !self.templates_open;
+        self.close_popovers();
+        self.templates_open = open;
         cx.notify();
     }
 
     /// Open / close the font flyout (upload a face / revert to default), closing
     /// the other popovers.
     fn toggle_font(&mut self, cx: &mut Context<Self>) {
-        self.picker = None;
-        self.open_group = None;
-        self.width_open = false;
-        self.templates_open = false;
-        self.context_menu = None;
-        self.font_open = !self.font_open;
+        let open = !self.font_open;
+        self.close_popovers();
+        self.font_open = open;
         cx.notify();
     }
 
@@ -4531,6 +4527,25 @@ fn text_extent(t: &TextGeom) -> (f32, f32) {
     (cols * t.size * TEXT_CHAR_W, rows * t.size * TEXT_LINE_H)
 }
 
+/// Scale a `(x, y, w, h)` box in place by the per-axis maps `fx`/`fy`,
+/// normalizing to non-negative width/height. Shared by the box-shaped arms of
+/// [`resize_about`].
+fn resize_box(
+    x: &mut f32,
+    y: &mut f32,
+    w: &mut f32,
+    h: &mut f32,
+    fx: impl Fn(f32) -> f32,
+    fy: impl Fn(f32) -> f32,
+) {
+    let (x0, x1) = (fx(*x), fx(*x + *w));
+    let (y0, y1) = (fy(*y), fy(*y + *h));
+    *x = x0.min(x1);
+    *w = (x1 - x0).abs();
+    *y = y0.min(y1);
+    *h = (y1 - y0).abs();
+}
+
 /// Scale an element's geometry about `(ax, ay)` by `(sx, sy)` (world space).
 /// Stroke width is left unchanged.
 fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
@@ -4550,12 +4565,7 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
         | ElementKind::RoundRect(b)
         | ElementKind::Star(b)
         | ElementKind::Hexagon(b) => {
-            let (x0, x1) = (fx(b.x), fx(b.x + b.w));
-            let (y0, y1) = (fy(b.y), fy(b.y + b.h));
-            b.x = x0.min(x1);
-            b.w = (x1 - x0).abs();
-            b.y = y0.min(y1);
-            b.h = (y1 - y0).abs();
+            resize_box(&mut b.x, &mut b.y, &mut b.w, &mut b.h, fx, fy);
         }
         ElementKind::Line(s) | ElementKind::Arrow(s) => {
             s.x1 = fx(s.x1);
@@ -4573,20 +4583,10 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
             t.size = (t.size * (sx.abs() * sy.abs()).sqrt()).max(0.5);
         }
         ElementKind::Embed(em) => {
-            let (x0, x1) = (fx(em.x), fx(em.x + em.w));
-            let (y0, y1) = (fy(em.y), fy(em.y + em.h));
-            em.x = x0.min(x1);
-            em.w = (x1 - x0).abs();
-            em.y = y0.min(y1);
-            em.h = (y1 - y0).abs();
+            resize_box(&mut em.x, &mut em.y, &mut em.w, &mut em.h, fx, fy);
         }
         ElementKind::Image(im) => {
-            let (x0, x1) = (fx(im.x), fx(im.x + im.w));
-            let (y0, y1) = (fy(im.y), fy(im.y + im.h));
-            im.x = x0.min(x1);
-            im.w = (x1 - x0).abs();
-            im.y = y0.min(y1);
-            im.h = (y1 - y0).abs();
+            resize_box(&mut im.x, &mut im.y, &mut im.w, &mut im.h, fx, fy);
         }
     }
 }
@@ -4860,6 +4860,31 @@ fn paint_stroke(
     }
 }
 
+/// Fill (when `fill` is `Some`) then stroke a closed path built by `trace`.
+/// The stroke width is the world `width` scaled to screen by `z`, floored at
+/// 0.5px. Shared epilogue of the box-shape painters.
+fn fill_then_stroke(
+    trace: impl Fn(&mut PathBuilder),
+    width: f32,
+    z: f32,
+    ink: Hsla,
+    fill: Option<Hsla>,
+    window: &mut Window,
+) {
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
+    let mut pb = PathBuilder::stroke(px((width * z).max(0.5)));
+    trace(&mut pb);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+}
+
 fn paint_rect(
     b: &BoxGeom,
     cam: Camera,
@@ -4877,18 +4902,7 @@ fn paint_rect(
         pb.line_to(to_screen(c[3][0], c[3][1], cam, origin));
         pb.close();
     };
-    if let Some(fill) = fill {
-        let mut fb = PathBuilder::fill();
-        trace(&mut fb);
-        if let Ok(path) = fb.build() {
-            window.paint_path(path, fill);
-        }
-    }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
-    trace(&mut pb);
-    if let Ok(path) = pb.build() {
-        window.paint_path(path, ink);
-    }
+    fill_then_stroke(trace, b.width, z, ink, fill, window);
 }
 
 fn paint_ellipse(
@@ -4917,18 +4931,7 @@ fn paint_ellipse(
         pb.cubic_bezier_to(s(cx + rx, cy), s(cx + kx, cy - ry), s(cx + rx, cy - ky));
         pb.close();
     };
-    if let Some(fill) = fill {
-        let mut fb = PathBuilder::fill();
-        trace(&mut fb);
-        if let Ok(path) = fb.build() {
-            window.paint_path(path, fill);
-        }
-    }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
-    trace(&mut pb);
-    if let Ok(path) = pb.build() {
-        window.paint_path(path, ink);
-    }
+    fill_then_stroke(trace, b.width, z, ink, fill, window);
 }
 
 /// Vertices of box-fitting polygons in box-relative coords: `(±1, ±1)` is the
@@ -4991,18 +4994,7 @@ fn paint_box_polygon(
             pb.close();
         }
     };
-    if let Some(fill) = fill {
-        let mut fb = PathBuilder::fill();
-        trace(&mut fb);
-        if let Ok(path) = fb.build() {
-            window.paint_path(path, fill);
-        }
-    }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
-    trace(&mut pb);
-    if let Ok(path) = pb.build() {
-        window.paint_path(path, ink);
-    }
+    fill_then_stroke(trace, b.width, z, ink, fill, window);
 }
 
 /// A rounded rectangle: straight edges joined by quarter-circle corners (radius
@@ -5037,18 +5029,7 @@ fn paint_round_rect(
         pb.cubic_bezier_to(s(x0 + r, y0), s(x0, y0 + r - k), s(x0 + r - k, y0));
         pb.close();
     };
-    if let Some(fill) = fill {
-        let mut fb = PathBuilder::fill();
-        trace(&mut fb);
-        if let Ok(path) = fb.build() {
-            window.paint_path(path, fill);
-        }
-    }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
-    trace(&mut pb);
-    if let Ok(path) = pb.build() {
-        window.paint_path(path, ink);
-    }
+    fill_then_stroke(trace, b.width, z, ink, fill, window);
 }
 
 fn paint_segment(

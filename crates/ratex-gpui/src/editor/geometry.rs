@@ -32,42 +32,6 @@ pub fn layout_row(row: &Row) -> LayoutBox {
 }
 
 // ---------------------------------------------------------------------------
-// Top-row caret (kept for its unit tests; `caret_rect` supersedes it generally).
-// ---------------------------------------------------------------------------
-
-/// Caret rect for the cursor at `index` (`0..=atom_count`) in the **top-level** row.
-pub fn caret_in_top_row(row: &Row, index: usize) -> Rect {
-    let lbox = layout_row(row);
-    let x = match &lbox.content {
-        BoxContent::HBox(children) => caret_x_in_hbox(children, index),
-        _ if index == 0 => 0.0,
-        _ => lbox.width,
-    };
-    Rect {
-        x,
-        y: 0.0,
-        w: 0.0,
-        h: lbox.height + lbox.depth,
-    }
-}
-
-/// Left edge of the `index`-th non-kern child of an HBox.
-fn caret_x_in_hbox(children: &[LayoutBox], index: usize) -> f64 {
-    let mut x = 0.0;
-    let mut atoms = 0usize;
-    for c in children {
-        if !matches!(c.content, BoxContent::Kern) {
-            if atoms == index {
-                return x;
-            }
-            atoms += 1;
-        }
-        x += c.width;
-    }
-    x
-}
-
-// ---------------------------------------------------------------------------
 // General caret geometry (top row + nested slots).
 // ---------------------------------------------------------------------------
 
@@ -571,61 +535,6 @@ mod tests {
 
     fn width(row: &Row) -> f64 {
         layout_row(row).width
-    }
-
-    #[test]
-    fn caret_start_is_zero() {
-        assert!(caret_in_top_row(&Row::syms("abc"), 0).x.abs() < 1e-9);
-    }
-
-    #[test]
-    fn caret_end_is_full_width() {
-        let r = Row::syms("abc");
-        let end = caret_in_top_row(&r, 3).x;
-        assert!((end - width(&r)).abs() < 1e-6, "end caret {end} != width");
-    }
-
-    #[test]
-    fn carets_are_monotonic_across_operators() {
-        let r = Row::syms("a+b=c");
-        let xs: Vec<f64> = (0..=r.atoms.len())
-            .map(|i| caret_in_top_row(&r, i).x)
-            .collect();
-        for w in xs.windows(2) {
-            assert!(w[1] >= w[0] - 1e-9, "caret x not monotonic: {xs:?}");
-        }
-        assert!(xs[0].abs() < 1e-9);
-        assert!((xs[xs.len() - 1] - width(&r)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn caret_between_atoms_is_interior() {
-        let r = Row::syms("ab");
-        let mid = caret_in_top_row(&r, 1).x;
-        let full = width(&r);
-        assert!(mid > 0.0 && mid < full, "mid {mid} not inside (0, {full})");
-    }
-
-    #[test]
-    fn caret_has_height() {
-        assert!(caret_in_top_row(&Row::syms("x"), 0).h > 0.0);
-    }
-
-    #[test]
-    fn caret_rect_matches_top_row_when_flat() {
-        // For a script-free row, the general walk agrees with the top-row helper on x.
-        for s in ["abc", "a+b=c"] {
-            let r = Row::syms(s);
-            for i in 0..=r.atoms.len() {
-                let cur = Cursor {
-                    path: vec![],
-                    index: i,
-                };
-                let got = caret_rect(&r, &cur).expect("top caret").x;
-                let want = caret_in_top_row(&r, i).x;
-                assert!((got - want).abs() < 1e-6, "{s}@{i}: {got} != {want}");
-            }
-        }
     }
 
     fn frac(n: &str, d: &str) -> Atom {
