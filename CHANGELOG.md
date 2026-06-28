@@ -9,6 +9,26 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.4.0]
+
+LaTeX math — write and edit equations in your notes, inline and as display
+blocks, with a two-dimensional structural editor.
+
+### Added
+
+- **Math, inline and display** — write `$…$` in a line or `$$…$$` as a centered
+  block; both typeset to crisp equations, in the editor and the reading view.
+- **A 2-D structural editor** — click or arrow into a formula to edit it visually
+  (a fraction is a real stacked box you move into), not by hand-editing LaTeX:
+  fractions, roots, nth-roots, super/subscripts, and matrices.
+- **Symbol palette and `\command` autocomplete** — one-click structures and
+  symbols, plus a scrollable menu of ~100 LaTeX commands as you type `\`.
+- **Per-formula alignment** — left / center / right (centered by default), from a
+  display formula's right-click menu.
+- **Copy and export** — right-click a formula to copy its LaTeX or export it as a
+  PNG or a self-contained SVG.
+- **`/math`** inserts a math block from the command palette.
+
 ## [0.3.0] - 2026-06-24
 
 WYSIWYG table editing matures, inline-formatting shortcuts, and a Windows/Linux
