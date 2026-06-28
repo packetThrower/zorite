@@ -1,0 +1,50 @@
+[package]
+name = "ratex-gpui"
+version = "0.1.0"
+edition = "2024"
+description = "A structural (MathQuill-style) math editor for GPUI, built on the RaTeX typesetting engine."
+license = "GPL-3.0-or-later"
+
+[features]
+default = ["editor"]
+# The interactive structural editor — `MathEditor` plus the `cursor` / `geometry` / `input` /
+# `view` modules. Disable (`default-features = false`) for a render-only build: LaTeX →
+# image / PNG / SVG (`render`) and the parse/serialize core (`parse_latex`, `editor::model`),
+# without the gpui view + editing machinery.
+editor = []
+
+[dependencies]
+# RaTeX typesetting engine — crates.io, GUI-agnostic (parse → layout → render).
+# `editor::model` serializes to LaTeX; `editor::geometry` lays it out and reads box rects.
+ratex-parser = "0.1"
+ratex-layout = "0.1"
+# Raster backend with KaTeX fonts embedded — `render` rasterizes a formula to a PNG that
+# becomes a `gpui::RenderImage`. `embed-fonts` so no external font directory is needed.
+ratex-render = { version = "0.1", features = ["embed-fonts"] }
+# Vector SVG backend — used by the "Export SVG" context menu action. `embed-fonts` so the
+# exported SVG carries its own glyph paths (KaTeX fonts), instead of `<text>` that references
+# KaTeX font-families the viewer won't have — which renders with the wrong shapes.
+ratex-svg = { version = "0.1", features = ["embed-fonts"] }
+
+# Same git spec (no rev) as the workspace root + gpui-editor, so Cargo unifies to one
+# gpui; the lockfile pins the actual revision. NOT crates.io 0.2 — Zed doesn't keep that
+# current. Used by the `render` + `editor::view` modules (landing in later milestones).
+gpui = { git = "https://github.com/zed-industries/zed" }
+
+# Decode RaTeX's PNG into BGRA frames for `RenderImage`. Pin to gpui's `image` minor
+# (0.25), like `gpui-pdf`, so `Frame`/`RgbaImage` unify with what `RenderImage::new` wants.
+image = "0.25"
+
+[dev-dependencies]
+# Opens a real window for `examples/editor.rs` (same git gpui). The Linux backends are
+# harmless no-ops on macOS; mirrors gpui-editor's example setup.
+gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
+    "font-kit",
+    "wayland",
+    "x11",
+] }
+
+# The interactive example needs the editor feature (a render-only build skips it).
+[[example]]
+name = "editor"
+required-features = ["editor"]

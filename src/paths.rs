@@ -73,6 +73,36 @@ pub fn data_dir() -> PathBuf {
     DIR.get_or_init(resolve_data_dir).clone()
 }
 
+/// The user's Desktop directory — the default location a "save as" dialog opens at (e.g. for
+/// exporting a formula). Platform conventions:
+/// - macOS:   `~/Desktop`
+/// - Windows: `%USERPROFILE%\Desktop`
+/// - Linux:   `$XDG_DESKTOP_DIR`, else `~/Desktop`
+///
+/// Falls back to the current directory if the home / env var is unset (the dialog then opens at
+/// its own default rather than failing).
+pub fn desktop_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        std::env::var_os("HOME")
+            .map(|h| PathBuf::from(h).join("Desktop"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var_os("USERPROFILE")
+            .map(|h| PathBuf::from(h).join("Desktop"))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        std::env::var_os("XDG_DESKTOP_DIR")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Desktop")))
+            .unwrap_or_else(|| PathBuf::from("."))
+    }
+}
+
 /// Absolute path to the SQLite database file. `ZORITE_DB` overrides it — handy
 /// for running against a throwaway database (tests, benchmarks) without
 /// touching the real one.

@@ -21,8 +21,9 @@ externally.
   literally (never executed)
 - `[[wiki-links]]` (and `[[target|label]]` aliases) and `#tags` → clickable,
   dispatched to your callback
-- **Images** and **mermaid diagrams** rendered by host-supplied closures (the host
-  owns loading / async render / interaction); each falls back gracefully
+- **Images**, **mermaid diagrams**, and **math** — `$$…$$` blocks and inline
+  `$…$` formulas — rendered by host-supplied closures (the host owns loading /
+  async render / interaction); each falls back gracefully (math → its raw LaTeX)
 - **In-page find** — highlight matches and scroll the active one into view
   ([`search`](#in-page-find) + [`find_matches`](#in-page-find) / [`match_count`](#in-page-find))
 - **Click-to-caret** — report the source offset nearest a click, for entering an
@@ -47,6 +48,8 @@ MarkdownView::new("note-1", source_text)          // unique id + markdown source
     }))
     .on_image(Rc::new(|info| { /* render a real image */ todo!() }))
     .on_mermaid(Rc::new(|src| { /* render a diagram */ todo!() }))
+    .on_math(Rc::new(|latex| { /* typeset a `$$…$$` block → element */ todo!() }))
+    .on_inline_math(Rc::new(|latex| { /* inline `$…$` → (raster, w, h) */ None }))
 ```
 
 `MarkdownView` implements `RenderOnce` (hence `IntoElement`), so it drops into any
@@ -66,6 +69,8 @@ tree. All builder methods take and return `self`.
 | `on_wiki_link` | `fn on_wiki_link(self, handler: WikiLinkHandler) -> Self` | Handle clicks on `[[wiki-links]]` and `#tags`. Without it they render styled but inert. |
 | `on_image` | `fn on_image(self, handler: ImageRenderer) -> Self` | Render standalone images. Without it, images fall back to a clickable `🖼 alt` label. |
 | `on_mermaid` | `fn on_mermaid(self, handler: MermaidRenderer) -> Self` | Render ` ```mermaid ` blocks as diagrams. Without it, such a block renders as plain code. |
+| `on_math` | `fn on_math(self, handler: MathRenderer) -> Self` | Render `$$…$$` math blocks as typeset images. Without it, a block renders as its raw LaTeX. |
+| `on_inline_math` | `fn on_inline_math(self, handler: InlineMathRenderer) -> Self` | Render inline `$…$` formulas (raster painted over a reserved gap in the line). Without it, inline math stays literal `$…$` text. |
 | `search` | `fn search(self, query: impl Into<SharedString>, current: usize) -> Self` | Highlight matches of `query`, emphasizing the `current`-th. See [In-page find](#in-page-find). |
 | `track_blocks` | `fn track_blocks(self, handle: ScrollHandle) -> Self` | Track-scroll the block column so the host can scroll a match into view. See [In-page find](#in-page-find). |
 | `on_click_source` | `fn on_click_source(self, handler: ClickSourceHandler) -> Self` | Report the source offset nearest a click (for click-to-caret). |
@@ -167,6 +172,31 @@ Renders a ` ```mermaid ` code block as a diagram, given the block's source. This
 crate just detects the fence and hands the source over — the host owns the
 (typically expensive, async) render and any caching, staying renderer-agnostic.
 Without a handler, a mermaid block renders as an ordinary code block.
+
+### `MathRenderer` and `InlineMathRenderer`
+
+```rust
+pub type MathRenderer = Rc<dyn Fn(SharedString) -> AnyElement>;
+pub type InlineMathRenderer = Rc<dyn Fn(SharedString) -> Option<(Arc<RenderImage>, f32, f32)>>;
+```
+
+Math is parsed but **rendered by the host** (KaTeX-style typesetting is the host's
+job — e.g. via [`ratex-gpui`](../ratex-gpui)), so this crate stays engine-agnostic.
+
+- **`on_math`** (`$$…$$` blocks) — like [`MermaidRenderer`](#mermaidrenderer): given
+  the block's LaTeX, return an element. Without a handler the block renders as its
+  raw LaTeX.
+- **`on_inline_math`** (`$…$`) — given the formula's LaTeX, return its raster plus
+  its logical `(width, height)` at text size, or `None` while still rasterizing.
+  The renderer reserves a non-breaking spacer of that width in the paragraph's text
+  and paints the raster over it (via a `canvas` that reads the laid-out glyph
+  position **in the same frame**), so the surrounding `StyledText` — and thus
+  links, in-page find, and click-to-caret — is preserved and the line wraps
+  normally. The paragraph's line height grows to fit a tall formula. Without a
+  handler, inline `$…$` stays literal text.
+
+Both `$$…$$` (block, `math_flow`) and `$…$` (inline, `math_text`) are enabled in the
+parser; a lone `$` in prose (e.g. `it cost $5`) stays literal.
 
 ### `ClickSourceHandler`
 
@@ -285,11 +315,14 @@ bold/italic/strikethrough/inline-code, links (inline, autolink, reference-style)
 images, ordered/unordered/nested/task lists, blockquotes (nested), fenced code,
 thematic breaks, tables (with alignment + the per-table designs above), footnotes
 (references + definitions), and raw HTML (shown literally — except `<mark>…</mark>`,
-honored as a highlight). Plus Zorite-style `[[wiki-links]]` and `#tags`.
+honored as a highlight). Plus **math** — `$$…$$` blocks (`math_flow`) and inline
+`$…$` (`math_text`), typeset by a host renderer (see
+[`MathRenderer`](#mathrenderer-and-inlinemathrenderer)) — and Zorite-style
+`[[wiki-links]]` and `#tags`.
 
-Not handled (not enabled by `gfm()`): math (`$x$`), frontmatter (YAML/TOML), and
-MDX. Footnote references render as `[label]` markers but aren't click-to-jump (that
-would need anchors this text-based renderer doesn't have).
+Not handled (not enabled by `gfm()`): frontmatter (YAML/TOML) and MDX. Footnote
+references render as `[label]` markers but aren't click-to-jump (that would need
+anchors this text-based renderer doesn't have).
 
 ## Status
 

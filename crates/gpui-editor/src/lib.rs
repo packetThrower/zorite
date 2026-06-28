@@ -33,7 +33,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 mod markdown_syntax;
-pub use markdown_syntax::SyntaxStyle;
+pub use markdown_syntax::{MathAlign, SyntaxStyle};
 
 /// Key context the editing actions are scoped to (so they only fire while an
 /// editor is focused).
@@ -157,6 +157,10 @@ const CHIP_PAD: f32 = 5.;
 /// Total vertical breathing room (px) reserved around an inline image — split
 /// above + below — so consecutive images (a bulleted photo list) don't touch.
 const IMG_ROW_PAD: f32 = 12.;
+
+/// Extra height (px) a text row gets beyond its tallest inline `$…$` formula, so a fraction
+/// has a little breathing room above + below instead of touching the neighbouring rows.
+const INLINE_MATH_ROW_PAD: f32 = 6.;
 
 /// Side length (px) of the square drag-to-resize grip painted at an inline
 /// image's bottom-right corner (matching the reading view's 14px handle).
@@ -282,6 +286,25 @@ pub enum EditorEvent {
     /// The caret / selection moved without a text change — so a host can update a
     /// caret-anchored affordance (e.g. the table-alignment toolbar).
     SelectionChanged,
+    /// The caret entered a `$$…$$` math block (by click, or by arrowing into it): its byte
+    /// `range` in the document (covering both fences) and the LaTeX `source` between them, so
+    /// the host can open a structural editor and replace the block's text on commit. `at_end`
+    /// seats that editor's caret at the formula's end (entered from below/right or by click)
+    /// vs its start (from above/left).
+    EditMath {
+        range: Range<usize>,
+        source: SharedString,
+        at_end: bool,
+        /// `true` for an inline `$…$` span (host splices `$…$` back, seats the editor at the
+        /// formula's spot); `false` for a `$$…$$` block (full-width gap).
+        inline: bool,
+    },
+    /// A `$$…$$` math block was right-clicked: the LaTeX source and the window-space click
+    /// position, so the host can show a context menu (Copy LaTeX / Export).
+    MathMenu {
+        source: SharedString,
+        position: Point<Pixels>,
+    },
 }
 
 /// A table column's text alignment, for the host-driven alignment toolbar
@@ -315,6 +338,11 @@ type BlockChipFn = Box<dyn Fn(&str) -> Option<SharedString>>;
 /// caches off-thread (see [`EditorState::mermaid_sources`] to pre-render).
 type BlockMermaidFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
 
+/// Resolves a `$$…$$` math block's LaTeX to a typeset bitmap, so the editor can
+/// render the block as the equation (caret outside) instead of raw source. Set via
+/// [`EditorState::set_block_math_provider`]; pre-render with [`math_sources`].
+type BlockMathFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
+
 /// The diagram sources of every ` ```mermaid ` block in `content`, so a host can
 /// pre-render them (the editor's mermaid provider then finds the ready bitmap).
 pub fn mermaid_sources(content: &str) -> Vec<SharedString> {
@@ -322,6 +350,36 @@ pub fn mermaid_sources(content: &str) -> Vec<SharedString> {
         .into_iter()
         .map(|(_, source)| source.into())
         .collect()
+}
+
+/// The LaTeX sources of every `$$…$$` math block in `content`, so a host can
+/// pre-render them (the editor's math provider then finds the ready bitmap).
+pub fn math_sources(content: &str) -> Vec<SharedString> {
+    markdown_syntax::math_blocks(content)
+        .into_iter()
+        .map(|(_, source)| source.into())
+        .collect()
+}
+
+/// The LaTeX sources of every inline `$…$` formula in `content` (the inner LaTeX, no `$`
+/// delimiters), so a host can pre-render them into the same math store the block provider
+/// reads. Skips lines inside fenced code blocks, where `$…$` is literal.
+pub fn inline_math_sources(content: &str) -> Vec<SharedString> {
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    for line in content.split('\n') {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+        for span in markdown_syntax::inline_math_spans(line) {
+            out.push(line[span.start + 1..span.end - 1].into());
+        }
+    }
+    out
 }
 
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
@@ -421,6 +479,13 @@ pub struct EditorState {
     /// Resolves a ` ```mermaid ` block's source to a rendered diagram; set by the
     /// host via [`Self::set_block_mermaid_provider`].
     block_mermaid: Option<BlockMermaidFn>,
+    /// Resolves a `$$…$$` block's LaTeX to a typeset equation; set by the host via
+    /// [`Self::set_block_math_provider`].
+    block_math: Option<BlockMathFn>,
+    /// The em (px/font-size) the `block_math` provider rasterizes at — set via
+    /// [`Self::set_block_math_em`]. Inline `$…$` formulas reuse those rasters scaled by
+    /// `text_em / this`, so they sit at text size. `None` disables inline math rendering.
+    block_math_em: Option<f32>,
     /// Per-logical-line `src` for rows painted as a file chip (from the last
     /// paint), so a left-click can open it and a right-click can edit it.
     chip_rows: Vec<Option<SharedString>>,
@@ -434,6 +499,33 @@ pub struct EditorState {
     /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
     /// that image paints at the live width and other mouse handling is suppressed.
     image_resize: Option<ImageResize>,
+    /// A `$$…$$` block being edited in-line: its byte range + the host-supplied view (the
+    /// structural editor) painted in a reserved gap at the block's spot. `None` = none.
+    editing_block: Option<EditingBlock>,
+    /// Window-space painted bounds of each inline `$…$` formula + its absolute byte range and
+    /// inner LaTeX (from the last paint), so a click can open its structural editor and the
+    /// seated editor can be positioned at the formula's spot.
+    inline_math_rects: Vec<(Range<usize>, SharedString, Bounds<Pixels>)>,
+    /// An inline `$…$` formula under structural edit: its byte range + the host's editor view,
+    /// overlaid at the formula's spot. `None` = none.
+    editing_inline: Option<EditingInline>,
+}
+
+/// A math block under in-line structural edit: the byte range to overwrite on commit, and
+/// the host's editor view to render in the reserved gap.
+struct EditingBlock {
+    range: Range<usize>,
+    view: gpui::AnyView,
+    /// The block's displayed height — the gap reserved while editing, so the formula stays
+    /// put instead of jumping to a fixed size.
+    height: Pixels,
+}
+
+/// An inline `$…$` formula under structural edit: the byte range to overwrite on commit, and
+/// the host's editor view, overlaid at the formula's painted spot.
+struct EditingInline {
+    range: Range<usize>,
+    view: gpui::AnyView,
 }
 
 impl EditorState {
@@ -477,10 +569,15 @@ impl EditorState {
             block_image: None,
             block_chip: None,
             block_mermaid: None,
+            block_math: None,
+            block_math_em: None,
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
             image_resize: None,
+            editing_block: None,
+            inline_math_rects: Vec::new(),
+            editing_inline: None,
         }
     }
 
@@ -500,6 +597,35 @@ impl EditorState {
     /// The current document text.
     pub fn text(&self) -> &str {
         &self.content
+    }
+
+    /// Replace byte `range` with `text` as ONE recorded (undoable) edit, leaving the caret
+    /// after the inserted text. Unlike [`Self::set_text`] this preserves — and extends — the
+    /// undo history, so a host writing back a structural edit (e.g. a committed `$$…$$`
+    /// formula) lands as a normal undo step rather than clobbering the history.
+    pub fn replace_range(&mut self, range: Range<usize>, text: &str, cx: &mut Context<Self>) {
+        // Snap to char boundaries (start down, end up) so a stale/shifted range — e.g. one
+        // captured before a prior formula commit moved the bytes — can't panic mid-UTF-8.
+        let len = self.content.len();
+        let mut start = range.start.min(len);
+        while start > 0 && !self.content.is_char_boundary(start) {
+            start -= 1;
+        }
+        let mut end = range.end.clamp(start, len);
+        while end < len && !self.content.is_char_boundary(end) {
+            end += 1;
+        }
+        let range = start..end;
+        self.record_edit(&range, text);
+        self.content.replace_range(range.clone(), text);
+        self.remap_diagnostics(&range, text.len());
+        let caret = range.start + text.len();
+        self.selected_range = caret..caret;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        // Don't coalesce a following keystroke into this structural replacement.
+        self.last_edit = EditKind::Other;
+        cx.notify();
     }
 
     /// Replace the whole document; resets the caret to the start.
@@ -579,6 +705,221 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
     ) {
         self.block_mermaid = Some(Box::new(provider));
+    }
+
+    /// Install the provider that resolves a `$$…$$` block's LaTeX to a typeset
+    /// equation. With it, such a block renders as the equation when the caret is
+    /// elsewhere; with the caret inside (or while it renders) it shows the raw
+    /// `$$…$$` source. Pre-render with [`math_sources`].
+    pub fn set_block_math_provider(
+        &mut self,
+        provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
+    ) {
+        self.block_math = Some(Box::new(provider));
+    }
+
+    /// Declare the em the `block_math` provider rasterizes at (e.g. the host's display-math
+    /// font size). Turns on inline `$…$` rendering: each inline formula reuses the block
+    /// raster for the same LaTeX, scaled by `text_em / em` so it sits at text size. Pre-render
+    /// inline sources too (see [`inline_math_sources`]).
+    pub fn set_block_math_em(&mut self, em: f32) {
+        self.block_math_em = (em > 0.).then_some(em);
+    }
+
+    /// Begin an in-line structural edit of the `$$…$$` block at `range`: reserve a gap at
+    /// its spot and paint `view` (the host's editor) there. The host focuses `view`.
+    pub fn set_editing_block(
+        &mut self,
+        range: Range<usize>,
+        view: gpui::AnyView,
+        height: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        self.editing_block = Some(EditingBlock {
+            range,
+            view,
+            height,
+        });
+        cx.notify();
+    }
+
+    /// End an in-line math edit (the host has committed / cancelled). Returns the block's
+    /// byte range, so the host can overwrite it.
+    pub fn end_editing_block(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>> {
+        let range = self.editing_block.take().map(|eb| eb.range);
+        cx.notify();
+        range
+    }
+
+    /// Begin a structural edit of the inline `$…$` span at `range` (absolute bytes): overlay
+    /// `view` (the host's editor) at the formula's painted spot. The host focuses `view`.
+    pub fn set_editing_inline(
+        &mut self,
+        range: Range<usize>,
+        view: gpui::AnyView,
+        cx: &mut Context<Self>,
+    ) {
+        self.editing_inline = Some(EditingInline { range, view });
+        cx.notify();
+    }
+
+    /// End an inline math edit. Returns the span's byte range, so the host can overwrite it.
+    pub fn end_editing_inline(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>> {
+        let range = self.editing_inline.take().map(|e| e.range);
+        cx.notify();
+        range
+    }
+
+    /// Whether `range` still bounds an inline `$…$` span (a `$` at each end, content between, no
+    /// newline, not a `$$` fence) — guards the inline commit against a stale/shifted range that
+    /// would otherwise splice text at the wrong spot.
+    pub fn is_inline_math_range(&self, range: &Range<usize>) -> bool {
+        range.start < range.end
+            && range.end <= self.content.len()
+            && self.content.is_char_boundary(range.start)
+            && self.content.is_char_boundary(range.end)
+            && {
+                let s = &self.content[range.clone()];
+                s.len() >= 3
+                    && s.starts_with('$')
+                    && s.ends_with('$')
+                    && !s.starts_with("$$")
+                    && !s.contains('\n')
+            }
+    }
+
+    /// The horizontal alignment of the `$$…$$` block whose byte range starts at `block_start`
+    /// (its `<!-- math:ALIGN -->` marker, or `Center` by default) — so the host can seed the
+    /// in-line editor at the right justification when opening it.
+    pub fn math_align(&self, block_start: usize) -> MathAlign {
+        let row = self.row_col(block_start).0;
+        markdown_syntax::math_regions(&self.content)
+            .into_iter()
+            .find(|r| r.range.start == row)
+            .map_or(MathAlign::default(), |r| r.align)
+    }
+
+    /// Compute the recorded edit that writes `align`'s marker for the `$$` block at byte
+    /// `block`: the (possibly marker-extended) range to replace, and the marker prefix to
+    /// prepend to the rewritten block. Center (default) → no marker (drops any existing one);
+    /// left/right → add or replace it. The host appends the block text to the prefix. Folding
+    /// the marker into the block's commit edit avoids a separate, range-shifting edit.
+    pub fn math_marker_edit(
+        &self,
+        block: Range<usize>,
+        align: MathAlign,
+    ) -> (Range<usize>, String) {
+        let row = self.row_col(block.start).0;
+        let prefix = align.marker().map_or(String::new(), |m| format!("{m}\n"));
+        let has_marker =
+            row > 0 && markdown_syntax::math_align_marker(self.line_str(row - 1)).is_some();
+        let start = if has_marker {
+            self.line_starts()[row - 1]
+        } else {
+            block.start
+        };
+        (start..block.end, prefix)
+    }
+
+    /// Re-find a `$$…$$` block by its exact LaTeX `source`, returned as a BYTE range (nearest
+    /// to the now-stale byte `approx` if several match) — so opening/committing one after a
+    /// prior formula's commit shifted offsets targets the right block. `math_blocks` yields
+    /// LINE ranges, so convert like `math_block_at` does (else the caret jumps to the top).
+    pub fn find_math_block(&self, source: &str, approx: usize) -> Option<Range<usize>> {
+        let starts = self.line_starts();
+        markdown_syntax::math_blocks(&self.content)
+            .into_iter()
+            .filter(|(_, s)| s == source)
+            .map(|(r, _)| starts[r.start]..self.line_end(r.end - 1))
+            .min_by_key(|r| r.start.abs_diff(approx))
+    }
+
+    /// Re-find an inline `$…$` span by its exact inner LaTeX, as an absolute byte range (nearest
+    /// to the now-stale byte `approx` if several match) — the inline counterpart of
+    /// [`Self::find_math_block`], so opening/committing after a prior edit shifted offsets
+    /// targets the right span.
+    pub fn find_inline_math(&self, latex: &str, approx: usize) -> Option<Range<usize>> {
+        let mut line_start = 0;
+        let mut best: Option<Range<usize>> = None;
+        for line in self.content.split('\n') {
+            for span in markdown_syntax::inline_math_spans(line) {
+                if &line[span.start + 1..span.end - 1] == latex {
+                    let abs = line_start + span.start..line_start + span.end;
+                    if best
+                        .as_ref()
+                        .is_none_or(|b| abs.start.abs_diff(approx) < b.start.abs_diff(approx))
+                    {
+                        best = Some(abs);
+                    }
+                }
+            }
+            line_start += line.len() + 1;
+        }
+        best
+    }
+
+    /// Whether byte `range` (half-open) still starts a `$$…$$` block — a commit guard so a
+    /// stale/shifted range can't splice the block into the wrong place and corrupt the doc.
+    pub fn is_math_block_range(&self, range: &Range<usize>) -> bool {
+        range.end <= self.content.len()
+            && range.start <= range.end
+            && self.content.is_char_boundary(range.start)
+            && self.content[range.start..range.end]
+                .trim_start()
+                .starts_with("$$")
+    }
+
+    /// The text of logical line `row` (without its trailing newline).
+    fn line_str(&self, row: usize) -> &str {
+        let starts = self.line_starts();
+        match starts.get(row) {
+            Some(&s) => &self.content[s..self.line_end(row)],
+            None => "",
+        }
+    }
+
+    /// The host-supplied editor view for an in-line math edit, positioned in the gap its
+    /// block reserves (from the last paint's line tops/heights). An absolute child of the
+    /// editor's `relative` root, so it scrolls with the content.
+    fn editing_block_overlay(&self) -> Option<gpui::Div> {
+        let eb = self.editing_block.as_ref()?;
+        let row = self.row_col(eb.range.start).0;
+        let top = *self.line_tops.get(row)?;
+        let height = *self.line_heights.get(row)?;
+        Some(
+            div()
+                .absolute()
+                .top(top)
+                .left(px(0.))
+                .w_full()
+                .h(height)
+                // Occlude so clicks inside the hosted math editor don't fall through to the
+                // text layer below — which would seat the caret on the next line and steal
+                // focus, blurring (committing + closing) the structural editor.
+                .occlude()
+                .child(eb.view.clone()),
+        )
+    }
+
+    /// The host-supplied editor view for an inline `$…$` edit, overlaid at the formula's last-
+    /// painted spot (its window rect, made editor-relative via `content_origin`). Unlike a
+    /// `$$` block it doesn't reserve a full-width gap — it floats over the formula, leaving the
+    /// surrounding text in place.
+    fn editing_inline_overlay(&self) -> Option<gpui::Div> {
+        let ei = self.editing_inline.as_ref()?;
+        let (_, _, rect) = self
+            .inline_math_rects
+            .iter()
+            .find(|(r, _, _)| *r == ei.range)?;
+        let origin = self.last_bounds.map_or(Point::default(), |b| b.origin);
+        Some(
+            div()
+                .absolute()
+                .top(rect.origin.y - origin.y)
+                .left(rect.origin.x - origin.x)
+                .occlude()
+                .child(ei.view.clone()),
+        )
     }
 
     /// Spaces inserted per Tab / list-nesting level (`Indent`/`Outdent`). The host
@@ -689,7 +1030,26 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        self.move_to(self.previous_boundary(self.cursor_offset()), cx);
+        let off = self.previous_boundary(self.cursor_offset());
+        if let Some((range, source)) = self.inline_math_span_at(off) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: true,
+                inline: true,
+            });
+            return;
+        }
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: true,
+                inline: false,
+            });
+            return;
+        }
+        self.move_to(off, cx);
     }
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
@@ -703,7 +1063,26 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        self.move_to(self.next_boundary(self.cursor_offset()), cx);
+        let off = self.next_boundary(self.cursor_offset());
+        if let Some((range, source)) = self.inline_math_span_at(off) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+                inline: true,
+            });
+            return;
+        }
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+                inline: false,
+            });
+            return;
+        }
+        self.move_to(off, cx);
     }
 
     fn up(&mut self, _: &Up, _: &mut Window, cx: &mut Context<Self>) {
@@ -716,6 +1095,24 @@ impl EditorState {
             return;
         }
         let off = self.move_vertical(-1);
+        if let Some((range, source)) = self.inline_math_span_at(off) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: true,
+                inline: true,
+            });
+            return;
+        }
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: true,
+                inline: false,
+            });
+            return;
+        }
         // Set the caret directly (not via `move_to`) to keep the goal column.
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
@@ -731,6 +1128,24 @@ impl EditorState {
             return;
         }
         let off = self.move_vertical(1);
+        if let Some((range, source)) = self.inline_math_span_at(off) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+                inline: true,
+            });
+            return;
+        }
+        if let Some((range, source)) = self.math_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+                inline: false,
+            });
+            return;
+        }
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
         cx.emit(EditorEvent::SelectionChanged);
@@ -1105,6 +1520,56 @@ impl EditorState {
 
     // --- Mouse ---------------------------------------------------------------
 
+    /// If logical `row` is inside a `$$…$$` block, the block's byte range in the document
+    /// (both fences) and the LaTeX between them — so a double-click can hand it to the host's
+    /// structural editor.
+    fn math_block_at(&self, row: usize) -> Option<(Range<usize>, SharedString)> {
+        // The structural LaTeX editor is a WYSIWYG affordance (markdown_style is set only in
+        // live-preview mode). In raw-markdown mode the user edits `$$…$$` as plain text, so
+        // report no math block here — clicks / arrows / `/math` stay in the text editor.
+        self.markdown_style.as_ref()?;
+        let starts = self.line_starts();
+        markdown_syntax::math_blocks(&self.content)
+            .into_iter()
+            .find(|(r, _)| r.contains(&row))
+            .map(|(r, source)| (starts[r.start]..self.line_end(r.end - 1), source.into()))
+    }
+
+    /// The inline `$…$` span strictly containing source byte `off` (between the `$` delimiters),
+    /// as an absolute byte range + inner LaTeX — so arrowing the caret into a formula opens its
+    /// structural editor instead of landing in (and revealing) the raw source. WYSIWYG-only.
+    fn inline_math_span_at(&self, off: usize) -> Option<(Range<usize>, SharedString)> {
+        self.markdown_style.as_ref()?;
+        let (row, _) = self.row_col(off);
+        let line_start = *self.line_starts().get(row)?;
+        let line = self.line_str(row);
+        let col = off.saturating_sub(line_start);
+        markdown_syntax::inline_math_spans(line)
+            .into_iter()
+            .find(|s| s.start < col && col < s.end)
+            .map(|s| {
+                (
+                    line_start + s.start..line_start + s.end,
+                    SharedString::from(line[s.start + 1..s.end - 1].to_string()),
+                )
+            })
+    }
+
+    /// If the caret sits inside a `$$…$$` block, ask the host to open the structural editor
+    /// for it (caret at the formula's start). Lets the host turn a freshly-inserted, empty
+    /// math block (the `/math` snippet) straight into a live editor instead of raw source.
+    pub fn edit_math_at_caret(&mut self, cx: &mut Context<Self>) {
+        let (row, _) = self.row_col(self.cursor_offset());
+        if let Some((range, source)) = self.math_block_at(row) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: false,
+                inline: false,
+            });
+        }
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
@@ -1149,6 +1614,20 @@ impl EditorState {
         // the host handles the link. Right-click edits (see on_right_mouse_down).
         if let Some(src) = self.chip_at(event.position) {
             cx.emit(EditorEvent::OpenLink(src));
+            return;
+        }
+        // Left-click an inline `$…$` formula opens its structural editor at the formula's spot
+        // (the host seats it). Shift extends a selection; Control-click is the secondary button.
+        if !event.modifiers.shift
+            && !event.modifiers.control
+            && let Some((range, source)) = self.inline_math_at(event.position)
+        {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end: true,
+                inline: true,
+            });
             return;
         }
         // A press on a table's hover "+" strip adds a row (below) or column (right).
@@ -1211,7 +1690,8 @@ impl EditorState {
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
-            // Double-click: select the word under the cursor.
+            // Double-click selects the word under the cursor; a $$…$$ block already
+            // opened the structural editor on the first (single) click.
             2 => {
                 self.is_selecting = false;
                 self.selected_range = self.word_range_at(offset).unwrap_or(offset..offset);
@@ -1229,6 +1709,30 @@ impl EditorState {
             }
             // Single click: place the caret, or extend the selection with Shift.
             _ => {
+                // A single left-click on a $$…$$ block opens the structural editor in
+                // place; a Control-click (macOS secondary click, which AppKit delivers as
+                // a left button + control modifier, NOT a right button) shows the formula
+                // context menu instead. Shift-click still extends the selection.
+                if !event.modifiers.shift {
+                    let (row, _) = self.row_col(offset);
+                    if let Some((range, source)) = self.math_block_at(row) {
+                        if event.modifiers.control {
+                            self.focus(window, cx);
+                            cx.emit(EditorEvent::MathMenu {
+                                source,
+                                position: event.position,
+                            });
+                        } else {
+                            cx.emit(EditorEvent::EditMath {
+                                range,
+                                source,
+                                at_end: true,
+                                inline: false,
+                            });
+                        }
+                        return;
+                    }
+                }
                 self.is_selecting = true;
                 if event.modifiers.shift {
                     self.select_to(offset, cx);
@@ -1344,6 +1848,21 @@ impl EditorState {
             self.move_to(offset, cx);
             return;
         }
+        // Right-click a $$…$$ block: emit a MathMenu event so the host can show a
+        // context menu (Copy LaTeX / Export SVG / PNG). Focus the editor (not the caret
+        // move of old) so it stays live after the menu closes.
+        {
+            let offset = self.index_for_mouse_position(event.position);
+            let (row, _) = self.row_col(offset);
+            if let Some((_range, source)) = self.math_block_at(row) {
+                self.focus(window, cx);
+                cx.emit(EditorEvent::MathMenu {
+                    source,
+                    position: event.position,
+                });
+                return;
+            }
+        }
         // Right-click in a table cell: place the caret there + open the table menu
         // (insert/delete rows + columns), instead of the spell menu.
         if let Some(offset) = self.table_offset_at(event.position, window) {
@@ -1409,6 +1928,35 @@ impl EditorState {
         self.goal_x = None;
         cx.emit(EditorEvent::SelectionChanged);
         cx.notify();
+    }
+
+    /// Seat the caret on the plain-text line just before (`after = false`) or after
+    /// (`after = true`) the math `block`, and focus the editor — the keyboard counterpart to
+    /// clicking away, for when the caret flows out of a `$$…$$` formula's structural editor
+    /// (so it never lands on the hidden `$$` fence lines, which would reveal raw source).
+    pub fn exit_math(
+        &mut self,
+        block: Range<usize>,
+        after: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.focus(window, cx);
+        let target = if after {
+            let (end_row, _) = self.row_col(block.end.saturating_sub(1));
+            self.line_starts()
+                .get(end_row + 1)
+                .copied()
+                .unwrap_or(self.content.len())
+        } else {
+            let (start_row, _) = self.row_col(block.start);
+            if start_row > 0 {
+                self.line_end(start_row - 1)
+            } else {
+                0
+            }
+        };
+        self.move_to(target, cx);
     }
 
     /// The caret's bounds in window space (its painted Y range), or `None` before
@@ -1654,6 +2202,15 @@ impl EditorState {
             }
         }
         self.chip_rows.get(row).and_then(Option::clone)
+    }
+
+    /// The inline `$…$` formula under `position` (its absolute byte range + inner LaTeX), from
+    /// the last paint's window-space `inline_math_rects` — so a click opens its editor.
+    fn inline_math_at(&self, position: Point<Pixels>) -> Option<(Range<usize>, SharedString)> {
+        self.inline_math_rects
+            .iter()
+            .find(|(_, _, rect)| rect.contains(&position))
+            .map(|(range, latex, _)| (range.clone(), latex.clone()))
     }
 
     /// If `position` lands on an inline image's bottom-right resize grip, the
@@ -2556,7 +3113,17 @@ impl Render for EditorState {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .relative()
-            .key_context(CONTEXT)
+            // While a `$$` block OR an inline `$…$` formula is being edited, the hosted math
+            // editor is focused but lives *inside* this element — so the editor's own
+            // keybindings (arrows, typing, …) would capture keys before they reach it. Drop the
+            // key context for the duration so raw keys flow to the math editor's on_key_down.
+            .key_context(
+                if self.editing_block.is_some() || self.editing_inline.is_some() {
+                    ""
+                } else {
+                    CONTEXT
+                },
+            )
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
@@ -2597,6 +3164,8 @@ impl Render for EditorState {
             .child(EditorElement {
                 editor: cx.entity(),
             })
+            .children(self.editing_block_overlay())
+            .children(self.editing_inline_overlay())
             // Right-click suggestions menu, absolutely positioned over the
             // editor (anchored at the click). `Option`'s `IntoIterator` renders
             // zero or one popup; clicking a row replaces the misspelled span.
@@ -2907,6 +3476,29 @@ struct BlockImg {
     img: Arc<RenderImage>,
     width: Pixels,
     height: Pixels,
+    /// Whether to show a corner resize grip. `false` for math (nothing to persist a
+    /// `{width=N}` to, and it renders at its natural typeset size); `true` for images.
+    resizable: bool,
+    /// Horizontal alignment in the content width. `Left` for images; display math sets its
+    /// own (centered by default).
+    align: MathAlign,
+}
+
+/// One inline `$…$` formula painted within a text line. `display_off` is the byte offset of its
+/// invisible spacer in the shaped DISPLAY string (resolved to an x via the wrapped line at
+/// paint); `source` is the formula's byte range within the *source line* (to hit-test a click
+/// back to its edit range); `img`/`width`/`height` are the typeset raster scaled to text size.
+#[derive(Clone)]
+struct InlineMath {
+    display_off: usize,
+    /// ABSOLUTE byte range of the `$…$` span in the document — to hit-test a click on the
+    /// formula back to its edit range and to position the seated editor.
+    source: Range<usize>,
+    /// The inner LaTeX (no `$` delimiters), to seed the structural editor on click.
+    latex: SharedString,
+    img: Arc<RenderImage>,
+    width: Pixels,
+    height: Pixels,
 }
 
 /// A line rendered as a block widget instead of its source text: a standalone
@@ -3031,6 +3623,9 @@ type ShapedLines = (
     // when the displayed text equals the source (revealed / code / widget lines).
     Vec<Option<Vec<usize>>>,
     Vec<Option<LineMark>>,
+    // Per-line inline `$…$` formulas painted over spacers in the shaped text (empty for
+    // lines without any).
+    Vec<Vec<InlineMath>>,
 );
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
@@ -3053,6 +3648,8 @@ fn block_img(
         img,
         width: px(target_w),
         height: px(target_w * dh / dw),
+        resizable: true,
+        align: MathAlign::Left, // images stay left; math overrides with its marker
     })
 }
 
@@ -3094,9 +3691,11 @@ fn set_image_width(line: &str, width: u32) -> String {
 /// through [`EditorState::display_col`], which uses the committed map.
 fn display_col_in(map: Option<&Vec<usize>>, source_col: usize) -> usize {
     match map {
-        Some(m) => match m.binary_search(&source_col) {
-            Ok(d) | Err(d) => d,
-        },
+        // The first display byte whose source ≥ `source_col` (a leftmost lower-bound). Unlike
+        // `binary_search`, this is deterministic when several display bytes share one source
+        // offset — an inline `$…$` spacer maps its whole width to the span start, so the caret
+        // just before the formula must land at the spacer's LEFT edge, not somewhere inside it.
+        Some(m) => m.partition_point(|&s| s < source_col),
         None => source_col,
     }
 }
@@ -3126,6 +3725,87 @@ fn code_pads(bg: Option<CodeBg>) -> (Pixels, Pixels) {
     }
 }
 
+/// Splice inline `$…$` spacers into one line's shaped output. For each formula whose raster is
+/// ready (`block_math`) and that the caret isn't inside (left raw for editing), reserve a spacer
+/// of whole spaces ≥ the raster's text-em width and record where to paint it. The raster is
+/// rasterized at `em`; scaling by `fs/em` puts it at this line's text size. Returns the
+/// (possibly unchanged) display/runs/map plus the line's formula placements.
+#[allow(clippy::too_many_arguments)]
+fn shape_inline_math(
+    window: &mut Window,
+    line: &str,
+    line_start: usize,
+    disp: String,
+    runs: Vec<TextRun>,
+    map: Vec<usize>,
+    caret_col: Option<usize>,
+    base_font: &Font,
+    fs: Pixels,
+    sf: f32,
+    block_math: &BlockMathFn,
+    em: f32,
+) -> (String, Vec<TextRun>, Vec<usize>, Vec<InlineMath>) {
+    let spans = markdown_syntax::inline_math_spans(line);
+    if spans.is_empty() || sf <= 0. || em <= 0. {
+        return (disp, runs, map, Vec::new());
+    }
+    let space_w = f32::from(measure_width(window, " ", base_font, fs)).max(1.);
+    let scale = f32::from(fs) / em;
+    let mut formulas: Vec<(Range<usize>, usize)> = Vec::new();
+    let mut imgs: Vec<(Arc<RenderImage>, Pixels, Pixels, SharedString)> = Vec::new();
+    for span in spans {
+        // A caret STRICTLY inside the span keeps it raw (a fallback — normally arrowing/clicking
+        // into a formula opens its structural editor before the caret lands here). A caret AT a
+        // boundary (just before/after the `$…$`, e.g. after exiting the editor) leaves it
+        // rendered, so sitting beside a formula doesn't flip it to raw.
+        if caret_col.is_some_and(|c| span.start < c && c < span.end) {
+            continue;
+        }
+        let latex = &line[span.start + 1..span.end - 1];
+        let Some(img) = block_math(latex) else {
+            continue; // not yet rasterized — leave the raw source until it lands
+        };
+        let dev = img.size(0);
+        let (dw, dh) = (dev.width.0 as f32, dev.height.0 as f32);
+        if dw <= 0. || dh <= 0. {
+            continue;
+        }
+        let (w, h) = (dw / sf * scale, dh / sf * scale);
+        let n = ((w / space_w).ceil() as usize).max(1);
+        let latex: SharedString = latex.to_string().into();
+        formulas.push((span, n));
+        imgs.push((img, px(w), px(h), latex));
+    }
+    if formulas.is_empty() {
+        return (disp, runs, map, Vec::new());
+    }
+    let gap = TextRun {
+        len: 0,
+        font: base_font.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let (nd, nr, nm, places) =
+        markdown_syntax::splice_inline_math(&disp, &runs, &map, &formulas, &gap);
+    debug_assert_eq!(places.len(), imgs.len());
+    let inline = places
+        .into_iter()
+        .zip(imgs)
+        .map(|(p, (img, width, height, latex))| InlineMath {
+            display_off: p.display_off,
+            // Absolute byte range in the document, for hit-test / seating / commit.
+            source: line_start + p.source.start..line_start + p.source.end,
+            latex,
+            img,
+            width,
+            height,
+        })
+        .collect();
+    (nd, nr, nm, inline)
+}
+
 /// Shape `content` line-by-line so each logical line can use its own font size
 /// (headings are larger — W2) and a standalone image line can render as the image
 /// (W4). Returns, per logical line: the shaped source [`WrappedLine`], its row
@@ -3149,6 +3829,11 @@ fn shape_document(
     block_image: Option<&BlockImageFn>,
     block_chip: Option<&BlockChipFn>,
     block_mermaid: Option<&BlockMermaidFn>,
+    block_math: Option<&BlockMathFn>,
+    // The em the `block_math` provider rasterizes at, so inline `$…$` formulas can reuse those
+    // rasters scaled to text size. `None` disables inline math.
+    block_math_em: Option<f32>,
+    editing_math: Option<(usize, usize, Pixels)>,
     scale_factor: f32,
     // The selected byte range; a line it touches keeps full source (markers
     // shown), the rest hide their markers (W6, reveal-on-caret).
@@ -3165,6 +3850,7 @@ fn shape_document(
     let mut tables = Vec::new();
     let mut maps = Vec::new();
     let mut marks: Vec<Option<LineMark>> = Vec::new();
+    let mut inline_maths: Vec<Vec<InlineMath>> = Vec::new();
     let lines: Vec<&str> = content.split('\n').collect();
     // Fenced-code-block regions; a block's ``` fence lines collapse (W6) unless
     // the caret is inside that block (then they show, so they stay editable).
@@ -3185,6 +3871,40 @@ fn shape_document(
             })
             .collect(),
         None => Vec::new(),
+    };
+    // $$…$$ math blocks ready to render: caret outside + a typeset bitmap ready. Like
+    // mermaid, the equation paints on the block's first line, the rest collapse.
+    let math: Vec<(Range<usize>, BlockImg)> = match block_math.filter(|_| md.is_some()) {
+        Some(f) => markdown_syntax::math_regions(content)
+            .into_iter()
+            .filter(|r| caret_row.is_none_or(|cr| !r.range.contains(&cr)))
+            .filter_map(|r| {
+                let img = f(&r.source)?;
+                let bi = block_img(img, None, wrap_width, scale_factor)?;
+                // Math renders at its natural typeset size — no resize grip (nothing to
+                // persist a width to, and it goes inline eventually). It carries its
+                // horizontal alignment (centered by default) for the paint to honor.
+                Some((
+                    r.range,
+                    BlockImg {
+                        resizable: false,
+                        align: r.align,
+                        ..bi
+                    },
+                ))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    // `<!-- math:ALIGN -->` marker lines to hide (revealed only when the caret lands on them),
+    // like table style markers.
+    let math_marker_lines: Vec<usize> = if md.is_some() {
+        markdown_syntax::math_regions(content)
+            .iter()
+            .filter_map(|r| r.marker_line)
+            .collect()
+    } else {
+        Vec::new()
     };
     // Table regions (W4c); content-fit column widths shared by each region's rows.
     let regions = md
@@ -3242,6 +3962,65 @@ fn shape_document(
             tables.push(None);
             maps.push(None);
             marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
+            continue;
+        }
+
+        // An in-line-edited $$ block reserves a fixed gap; the host paints the live editor
+        // there (positioned from this line's top/height). Takes precedence over the image.
+        if let Some((start_row, end_row, gap_h)) = editing_math
+            && (start_row..=end_row).contains(&idx)
+        {
+            let h = if idx == start_row { gap_h } else { px(0.) };
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(None);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
+            continue;
+        }
+
+        // A ready $$…$$ math block renders as its equation on the first line, the rest
+        // collapsed. Unlike mermaid it's not a ``` fence, so it never toggles `in_fence`.
+        if let Some((range, bi)) = math.iter().find(|(r, _)| r.contains(&idx)) {
+            let (h, widget) = if idx == range.start {
+                (bi.height, Some(Block::Image(bi.clone())))
+            } else {
+                (px(0.), None)
+            };
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(widget);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
             line_start = line_end + 1;
             continue;
         }
@@ -3262,10 +4041,11 @@ fn shape_document(
             && !code_regions
                 .iter()
                 .any(|r| r.contains(&idx) && caret_row.is_some_and(|cr| r.contains(&cr)));
-        // A `<!-- table:STYLE -->` marker line collapses (hidden) too, unless the
-        // caret lands on it — so the style stays out of the way but is editable.
-        let collapse_marker =
-            caret_row != Some(idx) && regions.iter().any(|r| r.marker_line == Some(idx));
+        // A `<!-- table:STYLE -->` or `<!-- math:ALIGN -->` marker line collapses (hidden)
+        // too, unless the caret lands on it — so the marker stays out of the way but editable.
+        let collapse_marker = caret_row != Some(idx)
+            && (regions.iter().any(|r| r.marker_line == Some(idx))
+                || math_marker_lines.contains(&idx));
 
         // Leaving a code block: size the box to its widest line (+ the inset on
         // each side, like a table) and mark its last line so the box rounds + pads
@@ -3477,6 +4257,8 @@ fn shape_document(
             Some(LineMark::Quote(c)) => c,
             _ => muted_line.unwrap_or(base_color),
         };
+        // Inline `$…$` formulas spliced into this line (populated by the hidden-markers branch).
+        let mut line_inline_math: Vec<InlineMath> = Vec::new();
         let (shaped_text, runs, bg, map) = if collapse_fence || collapse_marker {
             // Hidden ``` fence line or table-style marker: nothing, zero height.
             (String::new(), Vec::new(), None, None)
@@ -3524,7 +4306,28 @@ fn shape_document(
                 reveal_prefix,
                 st,
             );
-            (disp, runs, None, Some(m))
+            // Inline `$…$` math: swap each ready formula's glyphs for a spacer to paint over.
+            match (block_math, block_math_em) {
+                (Some(mathf), Some(em)) => {
+                    let (disp, runs, m, im) = shape_inline_math(
+                        window,
+                        line,
+                        line_start,
+                        disp,
+                        runs,
+                        m,
+                        caret_col,
+                        base_font,
+                        fs,
+                        scale_factor,
+                        mathf,
+                        em,
+                    );
+                    line_inline_math = im;
+                    (disp, runs, None, Some(m))
+                }
+                _ => (disp, runs, None, Some(m)),
+            }
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).
             (
@@ -3566,7 +4369,15 @@ fn shape_document(
                         // of photos doesn't stack edge-to-edge.
                         Some(Block::Image(i)) => i.height + px(IMG_ROW_PAD),
                         Some(b) => b.height(),
-                        None => fs * LINE_HEIGHT_RATIO,
+                        // A text row grows to fit its tallest inline `$…$` formula (a fraction
+                        // is taller than the text), so the formula doesn't overlap neighbours.
+                        None => {
+                            let math_h = line_inline_math
+                                .iter()
+                                .map(|im| im.height)
+                                .fold(px(0.), |a, b| if b > a { b } else { a });
+                            (fs * LINE_HEIGHT_RATIO).max(math_h + px(INLINE_MATH_ROW_PAD))
+                        }
                     },
                 }
             };
@@ -3578,6 +4389,7 @@ fn shape_document(
             tables.push(table);
             maps.push(map);
             marks.push(mark);
+            inline_maths.push(line_inline_math);
             // Track a (visible) code line + its width so the block's box can be
             // sized to its widest line and its last line marked.
             if is_code && !collapse_fence {
@@ -3599,7 +4411,16 @@ fn shape_document(
             }
         }
     }
-    (wrapped, heights, widgets, backgrounds, tables, maps, marks)
+    (
+        wrapped,
+        heights,
+        widgets,
+        backgrounds,
+        tables,
+        maps,
+        marks,
+        inline_maths,
+    )
 }
 
 /// Paint a file chip — a rounded, bordered button with a flat document icon +
@@ -4073,6 +4894,9 @@ struct PrepaintState {
     maps: Vec<Option<Vec<usize>>>,
     /// Per-line gutter decoration (blockquote / list / checkbox).
     marks: Vec<Option<LineMark>>,
+    /// Per-line inline `$…$` formulas (image + display offset + source range), painted over
+    /// their spacers in the shaped text.
+    inline_maths: Vec<Vec<InlineMath>>,
     /// Corner-grip hitbox for each painted inline image, in `widgets` order — so
     /// paint can set the resize cursor over each (hitboxes must be inserted in
     /// prepaint). Parallels the images paint walks, indexed by image count.
@@ -4157,7 +4981,7 @@ impl Element for EditorElement {
                     (usize::MAX, usize::MAX)
                 };
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, backgrounds, _, _, _) = shape_document(
+                let (wrapped, heights, _, backgrounds, _, _, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -4170,6 +4994,15 @@ impl Element for EditorElement {
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
+                    editor.block_math.as_ref(),
+                    editor.block_math_em,
+                    editor.editing_block.as_ref().map(|eb| {
+                        let sr = editor.row_col(eb.range.start).0;
+                        let er = editor
+                            .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
+                            .0;
+                        (sr, er, eb.height)
+                    }),
                     sf,
                     selection,
                     editor.image_resize,
@@ -4225,7 +5058,7 @@ impl Element for EditorElement {
             (usize::MAX, usize::MAX)
         };
         let sf = window.scale_factor();
-        let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks) =
+        let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks, inline_maths) =
             if editor.content.is_empty() {
                 let w = shape_all(
                     window,
@@ -4244,6 +5077,7 @@ impl Element for EditorElement {
                     vec![None; n],
                     vec![None; n],
                     vec![None; n],
+                    vec![Vec::new(); n],
                 )
             } else {
                 shape_document(
@@ -4259,6 +5093,15 @@ impl Element for EditorElement {
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
+                    editor.block_math.as_ref(),
+                    editor.block_math_em,
+                    editor.editing_block.as_ref().map(|eb| {
+                        let sr = editor.row_col(eb.range.start).0;
+                        let er = editor
+                            .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
+                            .0;
+                        (sr, er, eb.height)
+                    }),
                     sf,
                     selection,
                     editor.image_resize,
@@ -4302,7 +5145,9 @@ impl Element for EditorElement {
         // past their bullet).
         let mut image_grips = Vec::new();
         for (i, w) in widgets.iter().enumerate() {
-            if let Some(Block::Image(img)) = w {
+            if let Some(Block::Image(img)) = w
+                && img.resizable
+            {
                 let inset = row_inset(
                     backgrounds.get(i).copied().flatten(),
                     marks.get(i).copied().flatten(),
@@ -4639,6 +5484,7 @@ impl Element for EditorElement {
             tables,
             maps,
             marks,
+            inline_maths,
             image_grips,
             checkbox_grips,
             chip_grips,
@@ -4688,6 +5534,17 @@ impl Element for EditorElement {
         // Window-space bounds of each painted image + its logical line, collected
         // for the next frame's grip hit-testing (committed below).
         let mut image_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
+        // Window-space bounds of each inline `$…$` formula + its absolute range and LaTeX, for
+        // the next frame's click-to-edit hit-testing + seating the structural editor.
+        let mut inline_math_rects: Vec<(Range<usize>, SharedString, Bounds<Pixels>)> = Vec::new();
+        // The span being structurally edited (if any): skip painting its raster — the seated
+        // editor overlays its spot.
+        let editing_inline = self
+            .editor
+            .read(cx)
+            .editing_inline
+            .as_ref()
+            .map(|e| e.range.clone());
         // Window-space box bounds of each painted task checkbox + its line, for the
         // next frame's click-to-toggle hit-testing (committed below).
         let mut checkbox_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
@@ -4892,20 +5749,33 @@ impl Element for EditorElement {
                 // (aspect-preserved from the saved size) instead of the saved
                 // `{width=N}` — the source isn't rewritten until release.
                 let (img_w, img_h) = image_display_size(w, image_resize, i);
+                // Honor the block's horizontal alignment within the content width. Display math
+                // centers by default; left/right come from its `<!-- math:ALIGN -->` marker. A
+                // real image is always `Left` (it sits at the row's inset).
+                let slack = bounds.size.width - img_w;
+                let img_x = match w.align {
+                    _ if slack <= px(0.) => origin.x + inset,
+                    MathAlign::Left => origin.x + inset,
+                    MathAlign::Center => origin.x + px(f32::from(slack) / 2.0),
+                    MathAlign::Right => origin.x + slack,
+                };
                 let img_bounds = Bounds::new(
-                    point(origin.x + inset, origin.y + px(IMG_ROW_PAD / 2.)),
+                    point(img_x, origin.y + px(IMG_ROW_PAD / 2.)),
                     size(img_w, img_h),
                 );
                 let _ = window.paint_image(img_bounds, Corners::default(), w.img.clone(), 0, false);
-                // A draggable corner grip (accent square) + the resize cursor over
-                // it, via the hitbox inserted in prepaint. Recorded in `image_rects`
-                // for the next frame's grip hit-testing.
-                let grip = EditorState::image_grip(img_bounds);
-                window.paint_quad(fill(grip, grip_color).corner_radii(Corners::all(px(3.))));
-                if let Some(hitbox) = prepaint.image_grips.get(image_rects.len()) {
-                    window.set_cursor_style(CursorStyle::ResizeLeftRight, hitbox);
+                // A draggable corner grip (accent square) + the resize cursor over it,
+                // via the hitbox inserted in prepaint. Recorded in `image_rects` for the
+                // next frame's grip hit-testing. Skipped for non-resizable blocks (math),
+                // keeping `image_grips` parallel to `image_rects`.
+                if w.resizable {
+                    let grip = EditorState::image_grip(img_bounds);
+                    window.paint_quad(fill(grip, grip_color).corner_radii(Corners::all(px(3.))));
+                    if let Some(hitbox) = prepaint.image_grips.get(image_rects.len()) {
+                        window.set_cursor_style(CursorStyle::ResizeLeftRight, hitbox);
+                    }
+                    image_rects.push((i, img_bounds));
                 }
-                image_rects.push((i, img_bounds));
             } else if let Some(Block::Chip {
                 label,
                 link,
@@ -4944,6 +5814,23 @@ impl Element for EditorElement {
                     cx,
                 );
                 let _ = line.paint(text_origin, *lh, gpui::TextAlign::Left, None, window, cx);
+                // Inline `$…$` formulas: paint each typeset raster over its spacer, centered on
+                // the text row. `position_for_index` gives the spacer's x + wrap-row offset.
+                // Record each formula's window bounds for click-to-edit; the one being edited
+                // shows the seated editor instead of its raster.
+                for im in prepaint.inline_maths.get(i).into_iter().flatten() {
+                    if let Some(p) = line.position_for_index(im.display_off, *lh) {
+                        let x = text_origin.x + p.x;
+                        // Center the formula in the (grown-to-fit) wrap row at p.y.
+                        let y = origin.y + p.y + (*lh - im.height) / 2.0;
+                        let b = Bounds::new(point(x, y), size(im.width, im.height));
+                        inline_math_rects.push((im.source.clone(), im.latex.clone(), b));
+                        if editing_inline.as_ref() != Some(&im.source) {
+                            let _ =
+                                window.paint_image(b, Corners::default(), im.img.clone(), 0, false);
+                        }
+                    }
+                }
             }
         }
 
@@ -5036,6 +5923,7 @@ impl Element for EditorElement {
             editor.line_insets = line_insets;
             editor.table_rows = table_rows;
             editor.image_rects = image_rects;
+            editor.inline_math_rects = inline_math_rects;
             editor.checkbox_rects = checkbox_rects;
             editor.table_row_add_rects = table_row_add_rects;
             editor.table_col_add_rects = table_col_add_rects;
@@ -5050,7 +5938,22 @@ impl Element for EditorElement {
 
 #[cfg(test)]
 mod tests {
-    use super::set_image_width;
+    use super::{display_col_in, set_image_width};
+
+    #[test]
+    fn display_col_leftmost_for_inline_math_spacer() {
+        // An inline `$…$` spacer maps its whole width to the span's start offset (here source 2,
+        // repeated across display 2..5). The caret at source 2 must land at the spacer's LEFT
+        // edge (display 2), not an arbitrary spot inside it; source 5 (just past the formula)
+        // lands at display 5.
+        let map = vec![0, 1, 2, 2, 2, 5, 6, 7];
+        assert_eq!(display_col_in(Some(&map), 2), 2);
+        assert_eq!(display_col_in(Some(&map), 5), 5);
+        // A strictly-increasing map (hidden markers) is unaffected.
+        let plain = vec![0, 1, 2, 3];
+        assert_eq!(display_col_in(Some(&plain), 2), 2);
+        assert_eq!(display_col_in(None, 4), 4);
+    }
 
     #[test]
     fn image_width_splice() {

@@ -279,7 +279,20 @@ fn decode_heif(path: &Path) -> Option<image::DynamicImage> {
         max_temp_spool_bytes: Some(256 * 1024 * 1024),
         temp_spool_directory: None,
     };
-    let decoded = heic_decoder::decode_path_to_rgba_with_guardrails(path, guardrails).ok()?;
+    // rav1d (the AVIF/AV1 decoder) builds its large frame-context state on the stack, which
+    // overflows the background-executor pool thread's modest stack — a hard SIGILL/bus-error
+    // crash on any AVIF/HEIC image. Run the decode on a dedicated thread with a generous
+    // stack; the inputs and the decoded result are both `Send`.
+    let owned_path = path.to_path_buf();
+    let decoded = std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || {
+            heic_decoder::decode_path_to_rgba_with_guardrails(&owned_path, guardrails).ok()
+        })
+        .ok()?
+        .join()
+        .ok()
+        .flatten()?;
     // The decoder leaves EXIF orientation unapplied (libheif parity); apply it so
     // portrait phone photos aren't sideways. `orientation_to_apply` returns `None`
     // when the primary item already carries the rotation, avoiding double-turns.

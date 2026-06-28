@@ -80,6 +80,7 @@ export default defineConfig({
 					label: 'Usage',
 					items: [
 						{ label: 'Journal & pages', slug: 'usage/journal' },
+						{ label: 'Math & equations', slug: 'usage/math' },
 						{ label: 'Whiteboards', slug: 'usage/whiteboards' },
 						{ label: 'PDF & images', slug: 'usage/pdf' },
 						{ label: 'Search', slug: 'usage/search' },
@@ -104,6 +105,7 @@ export default defineConfig({
 								{ label: 'gpui-pdf', slug: 'reference/crates/gpui-pdf' },
 								{ label: 'gpui-whiteboard', slug: 'reference/crates/gpui-whiteboard' },
 								{ label: 'os-spellcheck', slug: 'reference/crates/os-spellcheck' },
+								{ label: 'ratex-gpui', slug: 'reference/crates/ratex-gpui' },
 							],
 						},
 					],

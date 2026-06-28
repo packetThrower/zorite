@@ -12,12 +12,17 @@ name = "zorite"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-spellcheck"]
+members = ["crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-spellcheck", "crates/ratex-gpui"]
 resolver = "2"
 
 [dependencies]
 # Our own markdown renderer (clickable wiki-links), a workspace crate.
 gpui-markdown = { path = "crates/gpui-markdown" }
+
+# Our structural math editor + LaTeX renderer (RaTeX port), a workspace crate.
+# `editor` is on by default, but request it explicitly: zorite hosts the interactive
+# `MathEditor`, so don't silently break if that default ever changes.
+ratex-gpui = { path = "crates/ratex-gpui", features = ["editor"] }
 
 # Our own page-virtualized PDF viewer (pure-Rust hayro), a workspace crate.
 # `markup` adds the text-extraction layer + highlight rendering (Logseq-style).

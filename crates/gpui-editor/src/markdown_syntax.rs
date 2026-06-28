@@ -828,6 +828,259 @@ pub(crate) fn mermaid_blocks(content: &str) -> Vec<(Range<usize>, String)> {
     out
 }
 
+/// `$$…$$` math blocks: each entry is `(line_range, source)` — the range covering both
+/// `$$` fence lines (so it collapses) and the LaTeX between them. The fences are bare
+/// `$$` lines (markdown's `math_flow` form, no info word).
+pub(crate) fn math_blocks(content: &str) -> Vec<(Range<usize>, String)> {
+    math_regions(content)
+        .into_iter()
+        .map(|r| (r.range, r.source))
+        .collect()
+}
+
+/// Horizontal alignment of a display `$$…$$` block, chosen per-block via a
+/// `<!-- math:left -->` / `<!-- math:right -->` marker comment on the line directly above it.
+/// `Center` is the default (no marker), matching LaTeX display math; standard Markdown viewers
+/// ignore the comment.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum MathAlign {
+    Left,
+    #[default]
+    Center,
+    Right,
+}
+
+impl MathAlign {
+    fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "left" => Some(Self::Left),
+            "center" => Some(Self::Center),
+            "right" => Some(Self::Right),
+            _ => None,
+        }
+    }
+
+    /// The marker line for this alignment, or `None` for the default (`Center`) — which is
+    /// stored as no marker, keeping centered math (the common case) clean.
+    pub(crate) fn marker(self) -> Option<&'static str> {
+        match self {
+            Self::Center => None,
+            Self::Left => Some("<!-- math:left -->"),
+            Self::Right => Some("<!-- math:right -->"),
+        }
+    }
+}
+
+/// Parse a `<!-- math:ALIGN -->` marker line. `None` if it isn't one.
+pub(crate) fn math_align_marker(line: &str) -> Option<MathAlign> {
+    let inner = line
+        .trim()
+        .strip_prefix("<!--")?
+        .strip_suffix("-->")?
+        .trim();
+    MathAlign::from_name(inner.strip_prefix("math:")?.trim())
+}
+
+/// A detected `$$…$$` block: its line range (both fences), the LaTeX between them, its
+/// alignment, and the optional `<!-- math:ALIGN -->` marker line directly above it.
+pub(crate) struct MathRegion {
+    pub range: Range<usize>,
+    pub source: String,
+    pub align: MathAlign,
+    pub marker_line: Option<usize>,
+}
+
+pub(crate) fn math_regions(content: &str) -> Vec<MathRegion> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim() == "$$" {
+            let start = i;
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim() != "$$" {
+                j += 1;
+            }
+            let source = lines[start + 1..j].join("\n");
+            let end = (j + 1).min(lines.len()); // include the closing fence
+            // An alignment marker on the line directly above the opening fence.
+            let (align, marker_line) = match start
+                .checked_sub(1)
+                .map(|m| (m, math_align_marker(lines[m])))
+            {
+                Some((m, Some(a))) => (a, Some(m)),
+                _ => (MathAlign::default(), None),
+            };
+            out.push(MathRegion {
+                range: start..end,
+                source,
+                align,
+                marker_line,
+            });
+            i = end;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Whether the byte at `idx` is escaped by an odd run of immediately-preceding backslashes
+/// (`\$` is a literal dollar, `\\$` is an escaped backslash then a live `$`).
+fn is_escaped(bytes: &[u8], idx: usize) -> bool {
+    let mut n = 0;
+    while idx > n && bytes[idx - 1 - n] == b'\\' {
+        n += 1;
+    }
+    n % 2 == 1
+}
+
+/// Inline `$…$` math spans within a single text line (NOT block `$$` fences) — byte ranges
+/// covering the whole span, both `$` delimiters included. Follows the common (pandoc) rule so
+/// prose like "it cost $5 and $10" isn't mistaken for math: the opening `$` is followed by a
+/// non-space, the closing `$` is preceded by a non-space and not followed by a digit, the
+/// content is non-empty, `$$` is skipped (block-fence-ish / empty), and `\$` is a literal.
+///
+/// `$` and `\` are ASCII bytes that can't occur inside a multi-byte UTF-8 sequence, so the
+/// byte scan is char-safe and the returned ranges fall on char boundaries.
+pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
+    let bytes = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] != b'$' || is_escaped(bytes, i) {
+            i += 1;
+            continue;
+        }
+        // Opening `$`: reject `$$` (empty/block) and a space right after.
+        match bytes.get(i + 1) {
+            Some(b'$') | None => {
+                i += 1;
+                continue;
+            }
+            Some(c) if c.is_ascii_whitespace() => {
+                i += 1;
+                continue;
+            }
+            _ => {}
+        }
+        // Scan for a valid closing `$`: unescaped, non-space before, not a digit after. A `$`
+        // that can't close (space before, e.g. the second `$` in "$5 and $10") is skipped and
+        // the scan continues for a later valid one, as pandoc does.
+        let mut j = i + 1;
+        let mut close = None;
+        while j < bytes.len() {
+            if bytes[j] == b'$' && !is_escaped(bytes, j) {
+                let space_before = bytes[j - 1].is_ascii_whitespace();
+                let digit_after = bytes.get(j + 1).is_some_and(|c| c.is_ascii_digit());
+                if !space_before && !digit_after {
+                    close = Some(j);
+                    break;
+                }
+            }
+            j += 1;
+        }
+        match close {
+            Some(c) => {
+                out.push(i..c + 1);
+                i = c + 1;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+/// Where one inline formula sits in a shaped line: the byte offset of its spacer in the DISPLAY
+/// string (to position the painted image) and the SOURCE byte range of the `$…$` span (to
+/// hit-test a click back to the formula and to target its edit/commit).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InlineMathPlace {
+    pub display_off: usize,
+    pub source: Range<usize>,
+}
+
+/// The sub-slice of `runs` covering display byte range `[lo, hi)`, clipping the runs that
+/// straddle an edge. `runs` must tile the display in order (as `hidden_runs` emits them).
+fn clip_runs(runs: &[TextRun], lo: usize, hi: usize) -> Vec<TextRun> {
+    let mut out = Vec::new();
+    let mut off = 0;
+    for r in runs {
+        let (s, e) = (off, off + r.len);
+        off = e;
+        let (cs, ce) = (s.max(lo), e.min(hi));
+        if cs < ce {
+            out.push(TextRun {
+                len: ce - cs,
+                ..r.clone()
+            });
+        }
+    }
+    out
+}
+
+/// Replace each inline formula's `$…$` glyphs with an invisible spacer the caller paints the
+/// typeset image over. Takes `hidden_runs` output (`display`, `runs`, `map` — the display→source
+/// byte map of length `display.len() + 1`) and the line's `formulas` as `(source range, spacer
+/// width in spaces)`, sorted by source start and non-overlapping. Returns the rewritten
+/// `display` / `runs` / `map` plus each formula's placement. The spacer borrows `gap`'s font/
+/// color (its glyphs are spaces, so only the advance matters) and maps back to the span start,
+/// so a click on it lands the caret at the formula (which then reveals raw source / opens the
+/// editor).
+pub(crate) fn splice_inline_math(
+    display: &str,
+    runs: &[TextRun],
+    map: &[usize],
+    formulas: &[(Range<usize>, usize)],
+    gap: &TextRun,
+) -> (String, Vec<TextRun>, Vec<usize>, Vec<InlineMathPlace>) {
+    let mut nd = String::with_capacity(display.len());
+    let mut nm: Vec<usize> = Vec::with_capacity(map.len());
+    let mut nr: Vec<TextRun> = Vec::new();
+    let mut places = Vec::new();
+    let mut cursor = 0; // display byte offset consumed so far
+    for (src, n) in formulas {
+        // The display range covering this span: first display offset reaching the span's
+        // start, up to the first reaching its end (`map` is monotonic non-decreasing).
+        let d0 = map
+            .iter()
+            .position(|&s| s >= src.start)
+            .unwrap_or(display.len());
+        let d1 = map
+            .iter()
+            .position(|&s| s >= src.end)
+            .unwrap_or(display.len());
+        if d0 < cursor {
+            continue; // overlapping / out-of-order formula — skip defensively
+        }
+        // Verbatim text before the formula.
+        nd.push_str(&display[cursor..d0]);
+        nm.extend_from_slice(&map[cursor..d0]);
+        nr.extend(clip_runs(runs, cursor, d0));
+        // The spacer, mapped back to the span start.
+        places.push(InlineMathPlace {
+            display_off: nd.len(),
+            source: src.clone(),
+        });
+        let src_at = map.get(d0).copied().unwrap_or(src.start);
+        for _ in 0..*n {
+            nd.push(' ');
+        }
+        nm.extend(std::iter::repeat_n(src_at, *n));
+        nr.push(TextRun {
+            len: *n,
+            ..gap.clone()
+        });
+        cursor = d1;
+    }
+    // Tail after the last formula.
+    nd.push_str(&display[cursor..]);
+    nm.extend_from_slice(&map[cursor..display.len()]);
+    nr.extend(clip_runs(runs, cursor, display.len()));
+    nm.push(*map.last().unwrap_or(&0)); // final source-end sentinel
+    (nd, nr, nm, places)
+}
+
 /// Per-column text alignment of a GFM table.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Align {
@@ -1013,6 +1266,134 @@ fn is_tag(c: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper: the substrings the spans cover, for readable assertions.
+    fn spans(line: &str) -> Vec<&str> {
+        inline_math_spans(line)
+            .into_iter()
+            .map(|r| &line[r])
+            .collect()
+    }
+
+    #[test]
+    fn inline_math_basic() {
+        assert_eq!(spans("the area $\\pi r^2$ of a circle"), vec!["$\\pi r^2$"]);
+        assert_eq!(spans("$x$"), vec!["$x$"]);
+        assert_eq!(spans("a $x$ and $y$ b"), vec!["$x$", "$y$"]);
+        // Spaces are fine *inside* a span; only the immediate inner edges must be non-space.
+        assert_eq!(spans("$x = 5$ done"), vec!["$x = 5$"]);
+    }
+
+    #[test]
+    fn inline_math_rejects_money_and_empties() {
+        assert!(spans("it cost $5 and $10 total").is_empty());
+        assert!(spans("$ x $").is_empty()); // space right after opener / before closer
+        assert!(spans("a $$ b").is_empty()); // `$$` is not an inline span
+        assert!(spans("lone $ dollar").is_empty());
+        // Closer immediately followed by a digit isn't a closer (pandoc rule).
+        assert!(spans("$x$5").is_empty());
+    }
+
+    #[test]
+    fn inline_math_escapes_and_later_close() {
+        // `\$` is a literal dollar, not a delimiter.
+        assert!(spans("price is 5\\$ even").is_empty());
+        assert_eq!(spans("\\$ and $x$"), vec!["$x$"]);
+        // A `$` that can't close is skipped; a later valid one closes the span.
+        assert_eq!(spans("$a $5 b$ end"), vec!["$a $5 b$"]);
+    }
+
+    /// A plain text run of `len` bytes (style is irrelevant to the splice; only `len` matters).
+    fn run(len: usize) -> TextRun {
+        TextRun {
+            len,
+            font: gpui::font("Helvetica"),
+            color: Hsla::default(),
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        }
+    }
+
+    /// Total bytes the runs cover — must always equal the display length.
+    fn runs_len(runs: &[TextRun]) -> usize {
+        runs.iter().map(|r| r.len).sum()
+    }
+
+    #[test]
+    fn splice_one_formula() {
+        // "a $x$ b" with the `$x$` span (bytes 2..5) → a 3-space spacer. display == source here,
+        // so the map is the identity (length 8).
+        let display = "a $x$ b";
+        let map: Vec<usize> = (0..=display.len()).collect();
+        let (nd, nr, nm, places) =
+            splice_inline_math(display, &[run(display.len())], &map, &[(2..5, 3)], &run(0));
+        assert_eq!(nd, "a     b"); // "a " + 3 spaces + " b" = a + 5 spaces + b
+        assert_eq!(
+            places,
+            vec![InlineMathPlace {
+                display_off: 2,
+                source: 2..5
+            }]
+        );
+        assert_eq!(nm, vec![0, 1, 2, 2, 2, 5, 6, 7]); // spacer bytes map to the span start (2)
+        assert_eq!(nm.len(), nd.len() + 1);
+        assert_eq!(runs_len(&nr), nd.len()); // runs still tile the display
+    }
+
+    #[test]
+    fn splice_two_formulas_and_leading() {
+        // Two spans, the first at the very start: "$a$ and $b$".
+        let display = "$a$ and $b$";
+        let map: Vec<usize> = (0..=display.len()).collect();
+        let (nd, nr, nm, places) = splice_inline_math(
+            display,
+            &[run(display.len())],
+            &map,
+            &[(0..3, 2), (8..11, 4)],
+            &run(0),
+        );
+        assert_eq!(nd, "   and     "); // 2 spaces + " and " + 4 spaces
+        assert_eq!(
+            places,
+            vec![
+                InlineMathPlace {
+                    display_off: 0,
+                    source: 0..3
+                },
+                InlineMathPlace {
+                    display_off: 7,
+                    source: 8..11
+                },
+            ]
+        );
+        assert_eq!(nm.len(), nd.len() + 1);
+        assert_eq!(runs_len(&nr), nd.len());
+        assert_eq!(*nm.last().unwrap(), display.len()); // sentinel preserved
+    }
+
+    #[test]
+    fn splice_no_formulas_is_identity() {
+        let display = "plain text";
+        let map: Vec<usize> = (0..=display.len()).collect();
+        let (nd, nr, nm, places) =
+            splice_inline_math(display, &[run(display.len())], &map, &[], &run(0));
+        assert_eq!(nd, display);
+        assert_eq!(nm, map);
+        assert!(places.is_empty());
+        assert_eq!(runs_len(&nr), nd.len());
+    }
+
+    #[test]
+    fn inline_math_multibyte_safe() {
+        // A multi-byte char (é, —) adjacent to a delimiter counts as non-space; ranges stay
+        // on char boundaries.
+        let line = "café $x$ — π";
+        assert_eq!(spans(line), vec!["$x$"]);
+        for r in inline_math_spans(line) {
+            assert!(line.is_char_boundary(r.start) && line.is_char_boundary(r.end));
+        }
+    }
 
     #[test]
     fn detects_a_gfm_table() {

@@ -34,9 +34,9 @@ use gpui_component::{
 use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, DeletePage, EditNote, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab,
-    NewPage, NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent,
-    PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    CloseTab, DeletePage, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab, NewPage,
+    NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage,
+    PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -286,6 +286,58 @@ pub struct TablePicker {
     pub cols_input: Entity<InputState>,
 }
 
+/// State for an open structural-math edit (double-clicking a `$$` block): the 2D editor, the
+/// note editor + document it came from, and the block's byte range to overwrite on commit.
+/// A right-click context menu in the content area, rendered as an anchored overlay. Built
+/// element-side (not gpui-component's window-level `.context_menu()`, which a child's
+/// `stop_propagation` can't suppress) so a formula's menu cleanly overrides the day/page one.
+struct CtxMenu {
+    anchor: Point<Pixels>,
+    kind: CtxKind,
+}
+
+enum CtxKind {
+    /// A rendered `$$…$$` formula was right-clicked: copy its LaTeX or export it (the LaTeX
+    /// source). `alignable` adds the Align items — only while editing the formula in-line,
+    /// where the host can re-justify it and persist the marker on commit.
+    Formula {
+        source: SharedString,
+        alignable: bool,
+    },
+    /// A reader-view day/page was right-clicked away from a formula: a single "Edit" entry
+    /// into edit mode for that target.
+    Edit(SlashTarget),
+}
+
+/// Map the editor's `<!-- math:ALIGN -->` marker alignment to the in-line editor's, and back.
+fn to_ratex_align(a: gpui_editor::MathAlign) -> ratex_gpui::MathAlign {
+    match a {
+        gpui_editor::MathAlign::Left => ratex_gpui::MathAlign::Left,
+        gpui_editor::MathAlign::Center => ratex_gpui::MathAlign::Center,
+        gpui_editor::MathAlign::Right => ratex_gpui::MathAlign::Right,
+    }
+}
+fn to_editor_align(a: ratex_gpui::MathAlign) -> gpui_editor::MathAlign {
+    match a {
+        ratex_gpui::MathAlign::Left => gpui_editor::MathAlign::Left,
+        ratex_gpui::MathAlign::Center => gpui_editor::MathAlign::Center,
+        ratex_gpui::MathAlign::Right => gpui_editor::MathAlign::Right,
+    }
+}
+
+struct MathEdit {
+    editor: Entity<ratex_gpui::MathEditor>,
+    source: Entity<EditorState>,
+    target: SlashTarget,
+    /// `true` when editing an inline `$…$` span (commit splices `$…$`), `false` for a `$$`
+    /// block (splices `$$\n…\n$$` + alignment marker).
+    inline: bool,
+    /// Commits the edit when the math editor loses focus (click-away). Kept alive here.
+    _blur_sub: gpui::Subscription,
+    /// Flows the caret back to the text when an arrow hits a formula boundary. Kept alive.
+    _nav_sub: gpui::Subscription,
+}
+
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -337,6 +389,9 @@ pub struct AppView {
     pub loaded_days: usize,
     pub day_editors: HashMap<String, DayEditor>,
     pub feed_scroll: ScrollHandle,
+    /// Scroll offset of the open completion menu — persists across the per-keystroke rebuild
+    /// of `Slash`, so the list doesn't snap back to the top as the user types or arrows.
+    pub slash_scroll: ScrollHandle,
 
     /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
     /// native menu bar instead; this gives the other OSes visual parity.
@@ -366,12 +421,20 @@ pub struct AppView {
     // mermaid renderer (no `cx`) so it can read a ready diagram during paint while
     // `ensure_mermaid_loaded` drives the off-thread render. See `mermaid::MermaidStore`.
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
+    // Typeset `$$…$$` math, cached by LaTeX. Shared into the markdown math renderer (no
+    // `cx`) so it can read a ready formula during paint; `ensure_math_loaded` drives the
+    // off-thread render. See `math::MathStore`.
+    math_store: Rc<RefCell<crate::math::MathStore>>,
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
     // Focus for the open lightbox so it can capture Esc-to-close without a global
     // key binding (which would clash with the editor's Escape → slash-cancel).
     lightbox_focus: FocusHandle,
+    // An open structural-math edit (a double-clicked `$$` block), or `None`.
+    math_edit: Option<MathEdit>,
+    // Right-click context menu on a rendered formula (Copy LaTeX / Export SVG / Export PNG).
+    ctx_menu: Option<CtxMenu>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
     // what's in flight, capped at `MAX_IMAGE_DECODES`). The bound keeps the
     // transient full-resolution buffers in check — decoding a 12 MP photo briefly
@@ -435,9 +498,6 @@ pub struct AppView {
     /// The page (id + title) targeted by an open right-click context menu,
     /// read by the `DeletePage` / `RenamePage` actions.
     context_page: Option<(i64, SharedString)>,
-    /// The rendered page / journal day right-clicked for the "Edit" menu item,
-    /// read by the `EditNote` action.
-    context_edit: Option<SlashTarget>,
     /// The target of a right-click "Open in new window" — a page (sidebar or
     /// tab) or a PDF/journal tab. Set on right-click, taken by the handler.
     context_target: Option<TabKind>,
@@ -605,13 +665,17 @@ impl AppView {
             image_store: Rc::new(RefCell::new(crate::images::ImageStore::default())),
             rotated_images: std::collections::HashMap::new(),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
+            math_store: Rc::new(RefCell::new(crate::math::MathStore::default())),
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
+            math_edit: None,
+            ctx_menu: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
             pdf_views: HashMap::new(),
             whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
+            slash_scroll: ScrollHandle::new(),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
@@ -632,7 +696,6 @@ impl AppView {
             signal_task: None,
             templates: Vec::new(),
             context_page: None,
-            context_edit: None,
             context_target: None,
             doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
@@ -740,11 +803,13 @@ impl AppView {
             self.list_indent,
             self.image_store(),
             self.mermaid_store(),
+            self.math_store(),
             window,
             cx,
         );
         self.ensure_content_images(&content, cx);
         self.ensure_content_mermaid(&content, cx);
+        self.ensure_content_math(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -767,6 +832,27 @@ impl AppView {
                 }
                 EditorEvent::SelectionChanged => {
                     this.scroll_caret_into_view(st, &this.feed_scroll, cx)
+                }
+                EditorEvent::EditMath {
+                    range,
+                    source,
+                    at_end,
+                    inline,
+                } => {
+                    this.open_math_edit(
+                        st.clone(),
+                        SlashTarget::Day(key.clone()),
+                        range.clone(),
+                        source.clone(),
+                        *at_end,
+                        *inline,
+                        window,
+                        cx,
+                    );
+                }
+                EditorEvent::MathMenu { source, position } => {
+                    // Not editing → no Align items (nothing to re-justify live + persist).
+                    this.open_math_menu(source.clone(), *position, false, cx);
                 }
             },
         );
@@ -1503,11 +1589,13 @@ impl AppView {
             self.list_indent,
             self.image_store(),
             self.mermaid_store(),
+            self.math_store(),
             window,
             cx,
         );
         self.ensure_content_images(&page.content, cx);
         self.ensure_content_mermaid(&page.content, cx);
+        self.ensure_content_math(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -1529,6 +1617,27 @@ impl AppView {
                 }
                 EditorEvent::SelectionChanged => {
                     this.scroll_caret_into_view(st, &this.page_scroll, cx)
+                }
+                EditorEvent::EditMath {
+                    range,
+                    source,
+                    at_end,
+                    inline,
+                } => {
+                    this.open_math_edit(
+                        st.clone(),
+                        SlashTarget::Page(pid),
+                        range.clone(),
+                        source.clone(),
+                        *at_end,
+                        *inline,
+                        window,
+                        cx,
+                    );
+                }
+                EditorEvent::MathMenu { source, position } => {
+                    // Not editing → no Align items (nothing to re-justify live + persist).
+                    this.open_math_menu(source.clone(), *position, false, cx);
                 }
             },
         );
@@ -1739,6 +1848,7 @@ impl AppView {
             Trigger::Link => slash::build_link_items(&query, &self.pages),
             Trigger::Tag => slash::build_tag_items(&query, &self.pages),
             Trigger::Placeholder => slash::build_placeholder_items(&query),
+            Trigger::Math => slash::build_math_items(&query),
         };
         let selected = self.slash.as_ref().map_or(0, |s| s.selected);
         let selected = if items.is_empty() {
@@ -1756,7 +1866,29 @@ impl AppView {
             level,
             items,
         });
+        // Keep the highlighted row visible as the list is filtered/rebuilt.
+        self.scroll_slash_into_view();
         cx.notify();
+    }
+
+    /// Scroll the open completion menu so the selected row sits inside the viewport.
+    /// Keyboard nav (and filtering) can move the selection past the height cap on long
+    /// lists — e.g. the ~75-entry `\` LaTeX menu. Geometry mirrors `ui::slash_menu`.
+    fn scroll_slash_into_view(&self) {
+        let Some(s) = self.slash.as_ref() else {
+            return;
+        };
+        let top = s.selected as f32 * ui::slash_menu::ITEM_H;
+        let bot = top + ui::slash_menu::ITEM_H;
+        let cur = -f32::from(self.slash_scroll.offset().y);
+        let new = if top < cur {
+            top
+        } else if bot > cur + ui::slash_menu::VIEW_H {
+            bot - ui::slash_menu::VIEW_H
+        } else {
+            return;
+        };
+        self.slash_scroll.set_offset(gpui::point(px(0.0), px(-new)));
     }
 
     /// Debounced spell-check for a body editor: re-run after a short idle so we
@@ -1982,6 +2114,10 @@ impl AppView {
         editor.update(cx, |st, cx| {
             st.set_text(new.clone(), cx);
             st.set_cursor(caret_off, cx);
+            // If the snippet dropped the caret into a $$…$$ block (i.e. `/math`), open the
+            // structural editor on it rather than leaving the user in raw source. A no-op for
+            // every other snippet.
+            st.edit_math_at_caret(cx);
         });
         match &s.target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
@@ -2151,6 +2287,11 @@ impl AppView {
         self.mermaid_store.clone()
     }
 
+    /// The typeset-formula cache, shared into the markdown math renderer.
+    pub fn math_store(&self) -> Rc<RefCell<crate::math::MathStore>> {
+        self.math_store.clone()
+    }
+
     /// Ensure the ```mermaid block `source` is rendering/rendered (idempotent).
     /// Called from a not-yet-rendered diagram's placeholder the first time it
     /// paints: claims the slot, then renders mermaid → SVG → bitmap off-thread
@@ -2180,6 +2321,41 @@ impl AppView {
         .detach();
     }
 
+    /// Ensure the `$$…$$` block `source` is typesetting/typeset (idempotent). Called from
+    /// a not-yet-rendered formula's placeholder the first time it paints: claims the slot,
+    /// then typesets the LaTeX via RaTeX off-thread and repaints when it lands.
+    pub fn ensure_math_loaded(&mut self, source: SharedString, cx: &mut Context<Self>) {
+        // Tint formulas in the current theme's text color; set_color drops the cached rasters
+        // if the theme changed, so a light/dark switch re-renders them.
+        let color = theme::text_primary();
+        {
+            let mut store = self.math_store.borrow_mut();
+            store.set_color(color);
+            if store.started(&source) {
+                return; // already rendering / ready / failed
+            }
+            store.begin(source.clone());
+        }
+        let store = self.math_store.clone();
+        cx.spawn(async move |this, cx| {
+            let src = source.to_string();
+            let result = cx
+                .background_executor()
+                .spawn(async move {
+                    crate::math::render_to_image(
+                        &src,
+                        crate::math::FONT_SIZE,
+                        crate::math::DPR,
+                        color,
+                    )
+                })
+                .await;
+            store.borrow_mut().finish(source, result);
+            let _ = this.update(cx, |_, cx| cx.notify());
+        })
+        .detach();
+    }
+
     /// Open a rendered mermaid diagram in the full-window lightbox overlay (large +
     /// scrollable). Clicking the inline diagram calls this; focusing the overlay lets
     /// it capture Esc.
@@ -2202,6 +2378,317 @@ impl AppView {
         cx.notify();
     }
 
+    pub fn open_math_menu(
+        &mut self,
+        source: SharedString,
+        anchor: Point<Pixels>,
+        alignable: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.ctx_menu = Some(CtxMenu {
+            anchor,
+            kind: CtxKind::Formula { source, alignable },
+        });
+        cx.notify();
+    }
+
+    /// Re-justify the formula being edited (the right-click "Align" items). Live feedback;
+    /// the marker persists on commit.
+    fn ctx_menu_align(&mut self, align: ratex_gpui::MathAlign, cx: &mut Context<Self>) {
+        self.ctx_menu = None;
+        if let Some(me) = &self.math_edit {
+            me.editor.update(cx, |ed, cx| ed.set_align(align, cx));
+        }
+        cx.notify();
+    }
+
+    /// Open the reader-view right-click menu for a day/page (a single "Edit" entry). Built as
+    /// our own overlay so a formula's `stop_propagation` suppresses it over the formula.
+    pub fn open_edit_menu(
+        &mut self,
+        target: SlashTarget,
+        anchor: Point<Pixels>,
+        cx: &mut Context<Self>,
+    ) {
+        self.ctx_menu = Some(CtxMenu {
+            anchor,
+            kind: CtxKind::Edit(target),
+        });
+        cx.notify();
+    }
+
+    /// The LaTeX source of the open formula menu, taken (closing the menu), or `None` if the
+    /// open menu isn't a formula one.
+    fn take_ctx_formula(&mut self) -> Option<String> {
+        match self.ctx_menu.take()? {
+            CtxMenu {
+                kind: CtxKind::Formula { source, .. },
+                ..
+            } => Some(source.to_string()),
+            _ => None,
+        }
+    }
+
+    fn math_menu_copy_latex(&mut self, cx: &mut Context<Self>) {
+        if let Some(source) = self.take_ctx_formula() {
+            cx.write_to_clipboard(ClipboardItem::new_string(source));
+        }
+        cx.notify();
+    }
+
+    fn math_menu_export_png(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.take_ctx_formula() else {
+            return;
+        };
+        cx.notify();
+        let rx = cx.prompt_for_new_path(crate::paths::desktop_dir().as_path(), Some("formula.png"));
+        cx.spawn_in(window, async move |_this, _cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            let Some(png) = ratex_gpui::render::render_latex_to_png(&source, 48.0, 4.0) else {
+                return;
+            };
+            let _ = std::fs::write(path, png);
+        })
+        .detach();
+    }
+
+    fn math_menu_export_svg(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(source) = self.take_ctx_formula() else {
+            return;
+        };
+        cx.notify();
+        let rx = cx.prompt_for_new_path(crate::paths::desktop_dir().as_path(), Some("formula.svg"));
+        cx.spawn_in(window, async move |_this, _cx| {
+            let Ok(Ok(Some(path))) = rx.await else { return };
+            let Some(svg) = ratex_gpui::render::render_latex_to_svg(&source, 48.0) else {
+                return;
+            };
+            let _ = std::fs::write(path, svg);
+        })
+        .detach();
+    }
+
+    /// Run the "Edit" entry of the reader-view menu: enter edit mode for its day/page.
+    fn ctx_menu_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(CtxMenu {
+            kind: CtxKind::Edit(target),
+            ..
+        }) = self.ctx_menu.take()
+        {
+            self.edit_from_reader(&target, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Open the structural editor for a `$$` block (clicked or arrowed into): seed it from
+    /// `latex`, remember the note editor + document + byte range to write back to, and focus
+    /// it with the caret at the formula's end (`at_end`) or its start.
+    #[allow(clippy::too_many_arguments)]
+    fn open_math_edit(
+        &mut self,
+        source: Entity<EditorState>,
+        target: SlashTarget,
+        range: std::ops::Range<usize>,
+        latex: SharedString,
+        at_end: bool,
+        inline: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Clicking another formula opens its editor; commit the one we were editing first, so
+        // its edits (incl. justification) persist instead of being dropped when math_edit is
+        // replaced. Always re-find this block's range against the current content afterward: a
+        // just-committed formula (here, or via its deferred blur) may have shifted byte offsets
+        // by adding/removing an alignment marker.
+        let mut range = range;
+        if self.math_edit.is_some() {
+            self.commit_math_edit(cx);
+        }
+        // Re-find THIS block by its exact LaTeX against the current content (the commit above,
+        // or this block's own deferred blur, may have shifted offsets). Matching the source —
+        // not a guessed-nearest range — keeps us on the right block; bail if it's gone.
+        let found = if inline {
+            source.read(cx).find_inline_math(&latex, range.start)
+        } else {
+            source.read(cx).find_math_block(&latex, range.start)
+        };
+        match found {
+            Some(r) => range = r,
+            None => return,
+        }
+        // Inline `$…$` renders at text size with no alignment; a `$$` block at its larger
+        // display font and its saved justification.
+        let (font_size, align) = if inline {
+            (
+                f32::from(EDITOR_TEXT_SIZE),
+                ratex_gpui::MathAlign::default(),
+            )
+        } else {
+            (
+                crate::math::FONT_SIZE,
+                to_ratex_align(source.read(cx).math_align(range.start)),
+            )
+        };
+        let editor = cx.new(|cx| {
+            ratex_gpui::MathEditor::from_latex(
+                &latex,
+                font_size,
+                at_end,
+                align,
+                ratex_gpui::MathTheme {
+                    fg: theme::text_primary(),
+                    muted: theme::text_secondary(),
+                    panel: theme::elevated(),
+                    border: theme::divider(),
+                    accent: theme::accent(),
+                    accent_bg: theme::accent_tint(),
+                },
+                cx,
+            )
+        });
+        let focus = editor.read(cx).focus_handle();
+        // Seat the editor: an inline `$…$` overlays the formula's spot (surrounding text stays
+        // put); a `$$` block reserves a full-width gap at its row, sized to the cached render.
+        if inline {
+            source.update(cx, |e, cx| {
+                e.set_editing_inline(range, editor.clone().into(), cx)
+            });
+        } else {
+            let height = self
+                .math_store
+                .borrow()
+                .get(&latex)
+                .map_or(px(56.0), |(_, _, h)| px(h + 16.0));
+            source.update(cx, |e, cx| {
+                e.set_editing_block(range, editor.clone().into(), height, cx)
+            });
+        }
+        // Commit when the math editor loses focus (the user clicks away). Guard on identity:
+        // if a click on another formula already committed + replaced us, this stale blur must
+        // not commit the NEW edit. (Compare the active edit's editor to ours.)
+        let weak = cx.entity().downgrade();
+        let editor_id = editor.entity_id();
+        let blur_sub = window.on_focus_out(&focus, cx, move |_ev, _window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                if this
+                    .math_edit
+                    .as_ref()
+                    .is_some_and(|m| m.editor.entity_id() == editor_id)
+                {
+                    this.commit_math_edit(cx);
+                }
+            })
+            .ok();
+        });
+        // Arrowing past a formula boundary flows the caret back into the surrounding text;
+        // a right-click while editing opens the formula menu (copy LaTeX / export).
+        let nav_sub = cx.subscribe_in(
+            &editor,
+            window,
+            |this, editor, ev: &ratex_gpui::MathNav, window, cx| match ev {
+                ratex_gpui::MathNav::Exit { after } => this.exit_math_edit(*after, window, cx),
+                ratex_gpui::MathNav::ContextMenu { position } => {
+                    let latex = editor.read(cx).to_latex();
+                    // Editing → offer Align (the in-line editor can re-justify live).
+                    this.open_math_menu(latex.into(), *position, true, cx);
+                }
+            },
+        );
+        self.math_edit = Some(MathEdit {
+            editor,
+            source,
+            target,
+            inline,
+            _blur_sub: blur_sub,
+            _nav_sub: nav_sub,
+        });
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// Commit the structural edit: serialize the formula to LaTeX, splice it back into the
+    /// `$$…$$` block, persist, and return the note editor + the block's new byte range (so the
+    /// caret can flow out to it). No-op (→ `None`) if the source range shifted out of bounds.
+    fn commit_math_edit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<EditorState>, std::ops::Range<usize>)> {
+        let edit = self.math_edit.take()?;
+        let latex = edit.editor.read(cx).to_latex();
+        // Inline `$…$`: end the overlay, splice `$latex$` back at the span (guarded against a
+        // stale range), persist. No `$$` fences, no alignment marker.
+        if edit.inline {
+            let range = edit.source.update(cx, |e, cx| e.end_editing_inline(cx))?;
+            if !edit.source.read(cx).is_inline_math_range(&range) {
+                cx.notify();
+                return None;
+            }
+            let replacement = format!("${latex}$");
+            let new_range = range.start..range.start + replacement.len();
+            edit.source
+                .update(cx, |e, cx| e.replace_range(range, &replacement, cx));
+            let new = edit.source.read(cx).text().to_string();
+            self.ensure_content_math(&new, cx);
+            match &edit.target {
+                SlashTarget::Day(key) => self.save_journal(key, &new, cx),
+                SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+            }
+            cx.notify();
+            return Some((edit.source, new_range));
+        }
+        let align = to_editor_align(edit.editor.read(cx).align());
+        let block = format!("$$\n{latex}\n$$");
+        // End the in-line edit (closes the gap, re-renders the formula) + get the range.
+        let range = edit.source.update(cx, |e, cx| e.end_editing_block(cx))?;
+        // Safety: only splice if the range still starts a `$$` block. A stale/shifted range
+        // would otherwise insert the block at the wrong offset and corrupt the document — drop
+        // the (rare) edit instead.
+        if !edit.source.read(cx).is_math_block_range(&range) {
+            cx.notify();
+            return None;
+        }
+        // Fold the alignment marker into the same recorded edit: replace the block (and any
+        // existing `<!-- math:ALIGN -->` line above it) with `<marker?>` + the new block.
+        let (full_range, prefix) = edit.source.read(cx).math_marker_edit(range, align);
+        let replacement = format!("{prefix}{block}");
+        // The new block sits after the (possibly empty) marker prefix.
+        let block_start = full_range.start + prefix.len();
+        let new_range = block_start..block_start + block.len();
+        // Recorded (undoable) splice — NOT `set_text`, which would wipe the document's undo
+        // history. `replace_range` snaps to char boundaries, so a shifted/stale range can't
+        // panic; read the result back rather than splicing the string ourselves.
+        edit.source
+            .update(cx, |e, cx| e.replace_range(full_range, &replacement, cx));
+        let new = edit.source.read(cx).text().to_string();
+        // Rasterize the edited formula into the shared store, or the block-math provider
+        // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
+        self.ensure_content_math(&new, cx);
+        match &edit.target {
+            SlashTarget::Day(key) => self.save_journal(key, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        cx.notify();
+        Some((edit.source, new_range))
+    }
+
+    /// The caret arrowed past a formula's edge: commit the edit, then seat the text caret beside
+    /// it (and re-focus the note editor) — the keyboard path out of the structural editor, as
+    /// opposed to clicking away. An inline `$…$` seats the caret right beside the span on the
+    /// same line; a `$$` block seats it on the adjacent line.
+    fn exit_math_edit(&mut self, after: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let inline = self.math_edit.as_ref().is_some_and(|m| m.inline);
+        if let Some((source, block)) = self.commit_math_edit(cx) {
+            source.update(cx, |e, cx| {
+                if inline {
+                    e.focus(window, cx);
+                    e.set_cursor(if after { block.end } else { block.start }, cx);
+                } else {
+                    e.exit_math(block, after, window, cx);
+                }
+            });
+        }
+    }
+
     /// Kick off decoding for every standalone image in `content`, so an editor in
     /// WYSIWYG mode can render them inline (W4) rather than as raw `![](src)`.
     /// `ensure_image_loaded` dedupes, so re-scanning is cheap; a finished decode
@@ -2220,6 +2707,20 @@ impl AppView {
     fn ensure_content_mermaid(&mut self, content: &str, cx: &mut Context<Self>) {
         for source in gpui_editor::mermaid_sources(content) {
             self.ensure_mermaid_loaded(source, cx);
+        }
+    }
+
+    /// Kick off the off-thread typeset of every `$$…$$` block in `content`, so an editor
+    /// in WYSIWYG mode can render them as equations. Idempotent; a finished render
+    /// notifies → repaint → the editor's math provider finds the bitmap.
+    fn ensure_content_math(&mut self, content: &str, cx: &mut Context<Self>) {
+        for source in gpui_editor::math_sources(content) {
+            self.ensure_math_loaded(source, cx);
+        }
+        // Inline `$…$` formulas typeset into the same store (keyed by LaTeX); the editor reuses
+        // the raster scaled to text size.
+        for source in gpui_editor::inline_math_sources(content) {
+            self.ensure_math_loaded(source, cx);
         }
     }
 
@@ -3525,6 +4026,21 @@ impl AppView {
         cx.notify();
     }
 
+    /// Enter edit mode for a reader-view `target` (a day or a page). Used when a rendered
+    /// formula is clicked: the formula `occlude`s the reader view's own click-to-edit, so it
+    /// re-dispatches here.
+    pub fn edit_from_reader(
+        &mut self,
+        target: &SlashTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match target {
+            SlashTarget::Day(date) => self.edit_day(date, window, cx),
+            SlashTarget::Page(_) => self.edit_page(window, cx),
+        }
+    }
+
     /// [`Self::edit_day`] variant for clicking a day's rendered text: enter edit mode
     /// with the caret at source byte `offset` and keep the clicked line under the cursor
     /// (gpui-markdown maps the click to a source offset and reports the click's `click_y`).
@@ -4465,22 +4981,6 @@ impl AppView {
         self.context_target = Some(target);
     }
 
-    /// Remember which rendered page / journal day a right-click targets, so the
-    /// `EditNote` menu item knows what to put into edit mode.
-    pub fn set_context_edit(&mut self, target: SlashTarget) {
-        self.context_edit = Some(target);
-    }
-
-    /// `EditNote` handler (right-click → Edit): enter edit mode on the targeted
-    /// rendered page or journal day.
-    fn on_edit_note(&mut self, _: &EditNote, window: &mut Window, cx: &mut Context<Self>) {
-        match self.context_edit.take() {
-            Some(SlashTarget::Day(date)) => self.edit_day(&date, window, cx),
-            Some(SlashTarget::Page(_)) => self.edit_page(window, cx),
-            None => {}
-        }
-    }
-
     /// `DeletePage` handler: confirm, then delete the remembered page.
     fn on_delete_page(&mut self, _: &DeletePage, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, title)) = self.context_page.take() else {
@@ -5053,12 +5553,13 @@ impl Render for AppView {
             });
         }
 
+        let slash_scroll = self.slash_scroll.clone();
         let overlay = self.slash.as_ref().map(|s| {
             gpui::deferred(
                 gpui::anchored()
                     .position(s.caret.bottom_left())
                     .snap_to_window()
-                    .child(ui::slash_menu::render(s, cx)),
+                    .child(ui::slash_menu::render(s, &slash_scroll, cx)),
             )
             .into_any_element()
         });
@@ -5214,6 +5715,71 @@ impl Render for AppView {
                 .into_any_element()
             });
 
+        let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
+            // Action ids: 0..=2 formula copy/export, 3 day/page Edit, 4..=6 align L/C/R (only
+            // while editing the formula, where the in-line editor can re-justify it live).
+            let items: Vec<(&str, usize)> = match &menu.kind {
+                CtxKind::Formula { alignable, .. } => {
+                    let mut v = vec![("Copy LaTeX", 0), ("Export PNG…", 1), ("Export SVG…", 2)];
+                    if *alignable {
+                        v.extend([("Align left", 4), ("Align center", 5), ("Align right", 6)]);
+                    }
+                    v
+                }
+                CtxKind::Edit(_) => vec![("Edit", 3)],
+            };
+            let mut rows = div().flex().flex_col().py(px(4.0));
+            for (label, action_id) in items {
+                rows = rows.child(
+                    div()
+                        .id(("ctx-menu-row", action_id))
+                        .px(px(12.0))
+                        .py(px(5.0))
+                        .text_size(px(14.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme::accent_tint()))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                match action_id {
+                                    0 => this.math_menu_copy_latex(cx),
+                                    1 => this.math_menu_export_png(window, cx),
+                                    2 => this.math_menu_export_svg(window, cx),
+                                    3 => this.ctx_menu_edit(window, cx),
+                                    4 => this.ctx_menu_align(ratex_gpui::MathAlign::Left, cx),
+                                    5 => this.ctx_menu_align(ratex_gpui::MathAlign::Center, cx),
+                                    _ => this.ctx_menu_align(ratex_gpui::MathAlign::Right, cx),
+                                }
+                            }),
+                        )
+                        .child(label),
+                );
+            }
+            gpui::deferred(
+                gpui::anchored()
+                    .position(menu.anchor)
+                    .snap_to_window()
+                    .child(
+                        div()
+                            .occlude()
+                            .min_w(px(140.0))
+                            .bg(theme::bg_sidebar())
+                            .border_1()
+                            .border_color(theme::border_subtle())
+                            .rounded(px(8.0))
+                            .overflow_hidden()
+                            .text_color(theme::text_primary())
+                            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
+                                this.ctx_menu = None;
+                                cx.notify();
+                            }))
+                            .child(rows),
+                    ),
+            )
+            .into_any_element()
+        });
+
         // Each journal day fills most of the window height so days read as
         // distinct "pages" instead of a continuous wall of text.
         let day_min = px(f32::from(window.viewport_size().height) * 0.75);
@@ -5253,18 +5819,30 @@ impl Render for AppView {
             // Slash-menu keys (gated: act only while the menu is open, else
             // let the editor handle the key normally).
             .on_action(cx.listener(|this: &mut AppView, _: &SlashUp, _, cx| {
-                if let Some(s) = this.slash.as_mut() {
+                let moved = if let Some(s) = this.slash.as_mut() {
                     let n = s.items.len().max(1);
                     s.selected = (s.selected + n - 1) % n;
+                    true
+                } else {
+                    false
+                };
+                if moved {
+                    this.scroll_slash_into_view();
                     cx.notify();
                 } else {
                     cx.propagate();
                 }
             }))
             .on_action(cx.listener(|this: &mut AppView, _: &SlashDown, _, cx| {
-                if let Some(s) = this.slash.as_mut() {
+                let moved = if let Some(s) = this.slash.as_mut() {
                     let n = s.items.len().max(1);
                     s.selected = (s.selected + 1) % n;
+                    true
+                } else {
+                    false
+                };
+                if moved {
+                    this.scroll_slash_into_view();
                     cx.notify();
                 } else {
                     cx.propagate();
@@ -5305,7 +5883,6 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_toggle_favorite))
-            .on_action(cx.listener(Self::on_edit_note))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_new_whiteboard))
             .on_action(cx.listener(Self::on_import_logseq))
@@ -5464,6 +6041,7 @@ impl Render for AppView {
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)
+            .children(ctx_menu_overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.
@@ -5688,12 +6266,14 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 /// editor is one line when empty and grows line-by-line with content —
 /// the outer feed scrolls, never the individual day. The high `max_rows`
 /// effectively means "never scroll internally".
+#[allow(clippy::too_many_arguments)]
 fn make_editor(
     content: &str,
     wysiwyg: bool,
     list_indent: usize,
     image_store: Rc<RefCell<crate::images::ImageStore>>,
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
+    math_store: Rc<RefCell<crate::math::MathStore>>,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -5724,6 +6304,18 @@ fn make_editor(
                 .borrow()
                 .get(&gpui::SharedString::from(source))
         });
+        // A $$…$$ block renders as its typeset equation from the shared store (None
+        // until the off-thread render finishes — the block shows raw source then). The
+        // store keeps a logical size for the reading view; the editor sizes the bitmap
+        // itself, so hand it just the image.
+        editor.set_block_math_provider(move |source| {
+            math_store
+                .borrow()
+                .get(&gpui::SharedString::from(source))
+                .map(|(img, _, _)| img)
+        });
+        // Inline `$…$` formulas reuse those rasters (typeset at this em) scaled to text size.
+        editor.set_block_math_em(crate::math::FONT_SIZE);
         // Tab / Shift+Tab indent by the configured number of spaces per level.
         editor.set_tab_indent(list_indent);
         editor

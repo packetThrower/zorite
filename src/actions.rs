@@ -28,8 +28,6 @@ actions!(
         RenamePage,
         // Sidebar right-click → pin/unpin a page to the "Favorites" group.
         ToggleFavorite,
-        // Right-click → Edit on a rendered page/journal day → enter edit mode.
-        EditNote,
         NewPage,
         // File menu: create + open a new whiteboard canvas (no keybinding).
         NewWhiteboard,

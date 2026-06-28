@@ -3,13 +3,11 @@
 
 use gpui::{
     ClickEvent, Context, ExternalPaths, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px,
-    relative,
+    MouseDownEvent, ParentElement, StatefulInteractiveElement, Styled, div,
+    prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::input::Input;
-use gpui_component::menu::ContextMenuExt;
 
-use crate::actions::EditNote;
 use crate::app::{AppView, PageEditor, PageFind};
 use crate::hierarchy;
 use crate::models::{Backlink, Page};
@@ -184,6 +182,8 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
                 cx,
             ))
             .on_mermaid(crate::ui::mermaid::renderer(app, cx))
+            .on_math(crate::ui::math::renderer(app, cx))
+            .on_inline_math(crate::ui::math::inline_renderer(app))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))
@@ -219,20 +219,22 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         .min_h(px(24.0))
         .cursor_text()
         .child(inner)
-        // Right-click → Edit: remember this page, then `EditNote` puts it in edit mode.
+        // Right-click → an "Edit" menu (our own anchored overlay, not gpui-component's
+        // window-level `context_menu`, so a formula's right-click can suppress it via
+        // `stop_propagation` and show its own menu instead).
         .on_mouse_down(
             MouseButton::Right,
-            cx.listener(move |this: &mut AppView, _, _window, _cx| {
-                this.set_context_edit(SlashTarget::Page(page_id));
-            }),
+            cx.listener(
+                move |this: &mut AppView, ev: &MouseDownEvent, _window, cx| {
+                    this.open_edit_menu(SlashTarget::Page(page_id), ev.position, cx);
+                },
+            ),
         )
         .on_click(
             cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.edit_page(window, cx);
             }),
         )
-        // `context_menu` returns a non-interactive wrapper, so it must come last.
-        .context_menu(|menu, _window, _cx| menu.menu("Edit", Box::new(EditNote)))
 }
 
 /// The in-page find bar (⌘F), shown above a named page. Reads the `PageFind`
@@ -315,17 +317,17 @@ fn page_open_area(page_id: i64, cx: &mut Context<AppView>) -> impl IntoElement {
         // Right-click → Edit here too, matching the page body above.
         .on_mouse_down(
             MouseButton::Right,
-            cx.listener(move |this: &mut AppView, _, _window, _cx| {
-                this.set_context_edit(SlashTarget::Page(page_id));
-            }),
+            cx.listener(
+                move |this: &mut AppView, ev: &MouseDownEvent, _window, cx| {
+                    this.open_edit_menu(SlashTarget::Page(page_id), ev.position, cx);
+                },
+            ),
         )
         .on_click(
             cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.edit_page_at_end(window, cx);
             }),
         )
-        // `context_menu` returns a non-interactive wrapper, so it must come last.
-        .context_menu(|menu, _window, _cx| menu.menu("Edit", Box::new(EditNote)))
 }
 
 /// The "Sub-pages" index: pages nested directly under this one (`<title>::*`),
