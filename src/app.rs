@@ -2297,12 +2297,8 @@ impl AppView {
     /// paints: claims the slot, then renders mermaid → SVG → bitmap off-thread
     /// (it's a layout-heavy parse) and repaints when it lands.
     pub fn ensure_mermaid_loaded(&mut self, source: SharedString, cx: &mut Context<Self>) {
-        {
-            let mut store = self.mermaid_store.borrow_mut();
-            if store.started(&source) {
-                return; // already rendering / ready / failed
-            }
-            store.begin(source.clone());
+        if !self.mermaid_store.borrow_mut().begin(source.clone()) {
+            return; // already rendering / ready / failed
         }
         // Build the diagram theme from Zorite's current palette now (it's a
         // thread-local read on this main thread); the result is `Send`.
@@ -2331,10 +2327,9 @@ impl AppView {
         {
             let mut store = self.math_store.borrow_mut();
             store.set_color(color);
-            if store.started(&source) {
+            if !store.begin(source.clone()) {
                 return; // already rendering / ready / failed
             }
-            store.begin(source.clone());
         }
         let store = self.math_store.clone();
         cx.spawn(async move |this, cx| {
@@ -2342,12 +2337,13 @@ impl AppView {
             let result = cx
                 .background_executor()
                 .spawn(async move {
-                    crate::math::render_to_image(
+                    ratex_gpui::render::render_latex(
                         &src,
                         crate::math::FONT_SIZE,
                         crate::math::DPR,
                         color,
                     )
+                    .map(|r| (r.image, r.width, r.height))
                 })
                 .await;
             store.borrow_mut().finish(source, result);
@@ -3281,13 +3277,14 @@ impl AppView {
             log::warn!("not a usable font: {}", path.display());
             return;
         }
-        let rel = match crate::images::import_font(&path) {
-            Ok(rel) => rel,
-            Err(e) => {
-                log::error!("import font {}: {e}", path.display());
-                return;
-            }
-        };
+        let rel =
+            match crate::images::import_into(&path, &crate::paths::fonts_dir(), "fonts", "ttf") {
+                Ok(rel) => rel,
+                Err(e) => {
+                    log::error!("import font {}: {e}", path.display());
+                    return;
+                }
+            };
         let _ = self.db.set_setting(&board_font_key(board_id), &rel);
         self.apply_board_font(board_id, cx);
     }
@@ -3903,7 +3900,7 @@ impl AppView {
             let imported = if crate::images::is_supported(path) {
                 crate::images::import_file(path)
             } else if crate::pdf::is_pdf(&path.to_string_lossy()) {
-                crate::images::import_pdf(path)
+                crate::images::import_into(path, &crate::paths::pdf_dir(), "pdf", "pdf")
             } else {
                 continue;
             };

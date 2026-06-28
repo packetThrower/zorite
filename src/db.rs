@@ -16,6 +16,19 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use crate::models::{Backlink, Page};
 use crate::paths;
 
+/// Read a single `settings` value by key, best-effort (`None` if absent or the
+/// query fails). Used by the read-only boot probes below.
+fn read_setting(conn: &Connection, key: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT value FROM settings WHERE key = ?1",
+        params![key],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
 /// Read the saved `theme_skin` and `theme_mode` from a database file, read-only
 /// and without migrating or write-locking it — used to theme the data-move
 /// progress window before the database is opened normally. Best-effort:
@@ -28,17 +41,10 @@ pub fn read_theme(path: &Path) -> (Option<String>, Option<String>) {
     ) else {
         return (None, None);
     };
-    let read = |key: &str| {
-        conn.query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![key],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-    };
-    (read("theme_skin"), read("theme_mode"))
+    (
+        read_setting(&conn, "theme_skin"),
+        read_setting(&conn, "theme_mode"),
+    )
 }
 
 /// Read the update-check preferences from a database file, read-only. Used by
@@ -51,18 +57,10 @@ pub fn read_update_prefs(path: &Path) -> (bool, bool) {
     ) else {
         return (true, false);
     };
-    let read = |key: &str| {
-        conn.query_row(
-            "SELECT value FROM settings WHERE key = ?1",
-            params![key],
-            |r| r.get::<_, String>(0),
-        )
-        .optional()
-        .ok()
-        .flatten()
-    };
-    let check = read("check_updates").map(|v| v != "0").unwrap_or(true);
-    let prerelease = read("include_prerelease")
+    let check = read_setting(&conn, "check_updates")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    let prerelease = read_setting(&conn, "include_prerelease")
         .map(|v| v == "1")
         .unwrap_or(false);
     (check, prerelease)
@@ -762,7 +760,7 @@ impl Db {
             out.push(Backlink {
                 source_page_id: id,
                 source_page_title: title,
-                snippet: snippet_for(&content, &target.title),
+                snippet: snippet(&content, &format!("[[{}]]", target.title)),
             });
         }
         Ok(out)
@@ -853,10 +851,10 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
-/// The first content line containing `query` (case-insensitive), else
+/// The first content line containing `needle` (case-insensitive), else
 /// the first non-empty line, trimmed and length-capped.
-pub(crate) fn snippet_for_query(content: &str, query: &str) -> String {
-    let needle = query.to_lowercase();
+pub(crate) fn snippet(content: &str, needle: &str) -> String {
+    let needle = needle.to_lowercase();
     let line = content
         .lines()
         .find(|l| l.to_lowercase().contains(&needle))
@@ -879,24 +877,6 @@ fn row_to_page(row: &rusqlite::Row) -> rusqlite::Result<Page> {
         journal_date: row.get(3)?,
         content: row.get(4)?,
     })
-}
-
-/// The line of `content` that contains `[[target]]` (else the first
-/// non-empty line), trimmed and length-capped for the backlinks panel.
-fn snippet_for(content: &str, target_title: &str) -> String {
-    let needle = format!("[[{target_title}]]").to_lowercase();
-    let line = content
-        .lines()
-        .find(|l| l.to_lowercase().contains(&needle))
-        .or_else(|| content.lines().find(|l| !l.trim().is_empty()))
-        .unwrap_or("")
-        .trim();
-    const MAX: usize = 140;
-    if line.chars().count() > MAX {
-        line.chars().take(MAX).collect::<String>() + "…"
-    } else {
-        line.to_string()
-    }
 }
 
 // --- v1 → v2 migration -----------------------------------------------------

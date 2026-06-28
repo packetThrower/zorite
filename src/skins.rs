@@ -51,12 +51,12 @@ impl Skin {
     /// as dark so the derived overlays/borders stay correct), and the window
     /// chrome / titlebar is forced dark via `dark_only`.
     fn builtin_dark(id: &str, name: &str, dark: Base) -> Self {
-        let palette = || make_palette(dark.0, dark.1, dark.2, dark.3, dark.4, dark.5, dark.6, true);
+        let palette = make_palette(dark.0, dark.1, dark.2, dark.3, dark.4, dark.5, dark.6, true);
         Self {
             id: id.to_string(),
             name: name.to_string(),
-            dark: palette(),
-            light: palette(),
+            dark: palette,
+            light: palette,
             dark_only: true,
             is_builtin: true,
         }

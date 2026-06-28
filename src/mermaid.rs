@@ -37,15 +37,14 @@ impl MermaidStore {
         matches!(self.slots.get(source), Some(Slot::Failed))
     }
 
-    /// Whether `source` already has a slot (loading / ready / failed), so the
-    /// render is kicked off at most once.
-    pub fn started(&self, source: &SharedString) -> bool {
-        self.slots.contains_key(source)
-    }
-
-    /// Mark `source` as rendering.
-    pub fn begin(&mut self, source: SharedString) {
+    /// Claim `source` for rendering. Returns `false` if it already has a slot
+    /// (loading / ready / failed), so the render is kicked off at most once.
+    pub fn begin(&mut self, source: SharedString) -> bool {
+        if self.slots.contains_key(&source) {
+            return false;
+        }
         self.slots.insert(source, Slot::Loading);
+        true
     }
 
     /// Record a finished render (ready or failed).

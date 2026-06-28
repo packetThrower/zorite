@@ -87,13 +87,9 @@ impl Font {
     }
 
     /// Lay out `content` at `font_size` (world units) into local-space outlines.
-    /// Newlines break lines; the block's origin is its top-left corner.
-    pub fn layout(&self, content: &str, font_size: f32) -> TextLayout {
-        self.layout_wrapped(content, font_size, None)
-    }
-
-    /// Like [`layout`](Self::layout) but word-wraps to `max_width` (world units)
-    /// when `Some` — for fitting a label inside a shape. Glyph positions come
+    /// Newlines break lines; the block's origin is its top-left corner. Word-wraps
+    /// to `max_width` (world units) when `Some` — for fitting a label inside a
+    /// shape; `None` lays out unwrapped. Glyph positions come
     /// from the same [`line_stops`](Self::line_stops) the caret uses, so the
     /// caret always lands exactly between the rendered glyphs.
     pub fn layout_wrapped(
@@ -456,12 +452,8 @@ impl Font {
 
     /// The content byte offset whose caret sits nearest the local point `p`
     /// (text-local space). Picks the line by y, then the closest caret stop by x —
-    /// so a click lands the caret between letters like a real text field.
-    pub fn index_at(&self, content: &str, font_size: f32, p: [f32; 2]) -> usize {
-        self.index_at_wrapped(content, font_size, None, p)
-    }
-
-    /// [`index_at`](Self::index_at) honoring a `max_width` wrap (label editing).
+    /// so a click lands the caret between letters like a real text field. Honors a
+    /// `max_width` wrap (label editing) when `Some`.
     pub fn index_at_wrapped(
         &self,
         content: &str,
@@ -689,7 +681,7 @@ mod tests {
     #[test]
     fn default_font_parses_and_lays_out() {
         let f = Font::default();
-        let l = f.layout("A", 20.0);
+        let l = f.layout_wrapped("A", 20.0, None);
         assert!(l.width > 0.0, "width {}", l.width);
         assert!(l.line_height > 0.0);
         assert!(
@@ -709,14 +701,14 @@ mod tests {
         let two = f.measure("x\ny", 20.0).1;
         assert!((two - 2.0 * one).abs() < 0.5, "{one} {two}");
         // The caret of a two-line block sits on the lower line.
-        let l = f.layout("x\ny", 20.0);
+        let l = f.layout_wrapped("x\ny", 20.0, None);
         assert!(l.caret[1] > 0.0, "caret {:?}", l.caret);
     }
 
     #[test]
     fn empty_content_has_no_segments_but_a_caret() {
         let f = Font::default();
-        let l = f.layout("", 20.0);
+        let l = f.layout_wrapped("", 20.0, None);
         assert!(l.segs.is_empty());
         assert_eq!(l.caret, [0.0, 0.0]);
         assert!(l.height > 0.0);
@@ -731,7 +723,7 @@ mod tests {
     fn caret_pos_walks_per_char_and_across_lines() {
         let f = Font::default();
         let a = f.measure("M", 20.0).0; // monospace advance
-        let lh = f.layout("M", 20.0).line_height;
+        let lh = f.layout_wrapped("M", 20.0, None).line_height;
         // One stop per boundary on a line.
         assert_eq!(f.caret_pos("MMM", 20.0, 0), [0.0, 0.0]);
         assert!((f.caret_pos("MMM", 20.0, 1)[0] - a).abs() < 0.5);
@@ -748,14 +740,14 @@ mod tests {
     fn index_at_picks_the_nearest_boundary() {
         let f = Font::default();
         let a = f.measure("M", 20.0).0;
-        let lh = f.layout("M", 20.0).line_height;
+        let lh = f.layout_wrapped("M", 20.0, None).line_height;
         // Just past the first glyph's midpoint rounds to the next boundary.
-        assert_eq!(f.index_at("MMM", 20.0, [0.4 * a, 0.0]), 0);
-        assert_eq!(f.index_at("MMM", 20.0, [0.6 * a, 0.0]), 1);
+        assert_eq!(f.index_at_wrapped("MMM", 20.0, None, [0.4 * a, 0.0]), 0);
+        assert_eq!(f.index_at_wrapped("MMM", 20.0, None, [0.6 * a, 0.0]), 1);
         // Way off to the right clamps to the line end; clicking the lower line
         // (by y) lands on it.
-        assert_eq!(f.index_at("MMM", 20.0, [99.0 * a, 0.0]), 3);
-        assert_eq!(f.index_at("M\nMM", 20.0, [0.0, lh]), 2); // start of line 2
+        assert_eq!(f.index_at_wrapped("MMM", 20.0, None, [99.0 * a, 0.0]), 3);
+        assert_eq!(f.index_at_wrapped("M\nMM", 20.0, None, [0.0, lh]), 2); // start of line 2
     }
 
     #[test]

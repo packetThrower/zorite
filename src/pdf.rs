@@ -62,9 +62,11 @@ const PALETTE: &[(&str, f32, f32, f32)] = &[
     ("orange", 0.07, 0.90, 0.55),
 ];
 
-/// The default highlight fill (yellow) — used for entries with no `{color}` tag.
+/// The default highlight fill (yellow, `PALETTE[0]`) — used for entries with no
+/// `{color}` tag.
 fn default_highlight_color() -> gpui::Hsla {
-    gpui::hsla(0.14, 0.95, 0.55, 1.0)
+    let (_, h, s, l) = PALETTE[0];
+    gpui::hsla(h, s, l, 1.0)
 }
 
 /// Resolve a stored color name to its fill, or `None` if it isn't a known palette

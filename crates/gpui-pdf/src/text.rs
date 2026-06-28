@@ -232,26 +232,45 @@ impl PageText {
         self.runs.is_empty()
     }
 
+    /// The whitespace-stripped, lowercased search key for `s` — the same normalization
+    /// `letters` is built with, so a key produced here matches against it.
+    fn search_key(s: &str) -> String {
+        s.chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(|c| c.to_lowercase())
+            .collect()
+    }
+
     /// A readable reconstruction of the page text (spaces inserted on horizontal
     /// gaps, newlines on baseline changes). For search / display — `locate` uses the
     /// whitespace-insensitive index instead.
     pub fn text(&self) -> String {
+        Self::join_runs(&self.runs, true)
+    }
+
+    /// Walk `runs`, appending each run's text with a break inserted between two *real*
+    /// glyphs (the PDF's own space glyphs carry word breaks, so spaces are excluded from
+    /// the compare — an unreliable space rect mustn't force a break). With `newlines`, a
+    /// baseline change becomes a newline and a horizontal gap a space (the readable
+    /// reconstruction); without it, either one becomes a single space (the one-line join).
+    fn join_runs(runs: &[Run], newlines: bool) -> String {
         let mut out = String::new();
         let mut prev: Option<&Run> = None;
-        for run in &self.runs {
-            // The PDF's own space glyphs carry the word breaks, so only compare two
-            // *real* glyphs — to detect a line wrap (or a positioning-based gap with no
-            // space glyph). This keeps an unreliable space rect from forcing a break.
+        for run in runs {
             if let Some(p) = prev
                 && run.text != " "
                 && p.text != " "
             {
                 let line_h = run.rect.h.max(p.rect.h).max(0.001);
-                if (run.rect.center_y() - p.rect.center_y()).abs() > line_h * 0.6 {
-                    out.push('\n');
-                } else if run.rect.x - p.rect.right() > line_h * 0.6
-                    && !out.ends_with(|c: char| c.is_whitespace())
-                {
+                let new_line = (run.rect.center_y() - p.rect.center_y()).abs() > line_h * 0.6;
+                let gap = run.rect.x - p.rect.right() > line_h * 0.6;
+                if newlines {
+                    if new_line {
+                        out.push('\n');
+                    } else if gap && !out.ends_with(|c: char| c.is_whitespace()) {
+                        out.push(' ');
+                    }
+                } else if new_line || gap {
                     out.push(' ');
                 }
             }
@@ -265,11 +284,7 @@ impl PageText {
     /// `needle` on the page and return one normalized rect per line it spans (so a
     /// wrapped quote highlights as multiple line boxes). Empty if not found.
     pub fn locate(&self, needle: &str, occurrence: usize) -> Vec<NormRect> {
-        let key: String = needle
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .flat_map(|c| c.to_lowercase())
-            .collect();
+        let key = Self::search_key(needle);
         if key.is_empty() {
             return Vec::new();
         }
@@ -304,11 +319,7 @@ impl PageText {
     /// Matches are returned in reading order. (`search` feature.)
     #[cfg(feature = "search")]
     pub fn find_matches(&self, needle: &str) -> Vec<Vec<NormRect>> {
-        let key: String = needle
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .flat_map(|c| c.to_lowercase())
-            .collect();
+        let key = Self::search_key(needle);
         if key.is_empty() {
             return Vec::new();
         }
@@ -375,23 +386,7 @@ impl PageText {
     /// The text of runs `lo..=hi` joined into one line (gaps and line breaks become
     /// spaces), suitable for storing as a one-line quote.
     fn runs_text(&self, lo: usize, hi: usize) -> String {
-        let mut out = String::new();
-        let mut prev: Option<&Run> = None;
-        for run in &self.runs[lo..=hi] {
-            // Only compare two real glyphs (see `text`); recorded spaces carry breaks.
-            if let Some(p) = prev
-                && run.text != " "
-                && p.text != " "
-            {
-                let line_h = run.rect.h.max(p.rect.h).max(0.001);
-                let new_line = (run.rect.center_y() - p.rect.center_y()).abs() > line_h * 0.6;
-                if new_line || run.rect.x - p.rect.right() > line_h * 0.6 {
-                    out.push(' ');
-                }
-            }
-            out.push_str(&run.text);
-            prev = Some(run);
-        }
+        let out = Self::join_runs(&self.runs[lo..=hi], false);
         // Collapse recorded + inserted spaces to single spaces, trim.
         out.split_whitespace().collect::<Vec<_>>().join(" ")
     }
@@ -399,11 +394,7 @@ impl PageText {
     /// Which occurrence (0-based) of `quote` on the page the run at `lo` begins — so
     /// the stored highlight re-locates to the right match.
     fn occurrence_at(&self, lo: usize, quote: &str) -> usize {
-        let key: String = quote
-            .chars()
-            .filter(|c| !c.is_whitespace())
-            .flat_map(|c| c.to_lowercase())
-            .collect();
+        let key = Self::search_key(quote);
         if key.is_empty() {
             return 0;
         }
