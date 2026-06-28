@@ -2441,11 +2441,7 @@ impl AppView {
             return;
         };
         cx.notify();
-        let home = std::env::var("HOME").unwrap_or_default();
-        let rx = cx.prompt_for_new_path(
-            Path::new(&home).join("Desktop").as_path(),
-            Some("formula.png"),
-        );
+        let rx = cx.prompt_for_new_path(crate::paths::desktop_dir().as_path(), Some("formula.png"));
         cx.spawn_in(window, async move |_this, _cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             let Some(png) = ratex_gpui::render::render_latex_to_png(&source, 48.0, 4.0) else {
@@ -2461,11 +2457,7 @@ impl AppView {
             return;
         };
         cx.notify();
-        let home = std::env::var("HOME").unwrap_or_default();
-        let rx = cx.prompt_for_new_path(
-            Path::new(&home).join("Desktop").as_path(),
-            Some("formula.svg"),
-        );
+        let rx = cx.prompt_for_new_path(crate::paths::desktop_dir().as_path(), Some("formula.svg"));
         cx.spawn_in(window, async move |_this, _cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             let Some(svg) = ratex_gpui::render::render_latex_to_svg(&source, 48.0) else {
