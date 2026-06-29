@@ -1,0 +1,79 @@
+# AGENTS.md
+
+Guidance for AI agents and human contributors. Keep changes consistent with what's
+already here — match the surrounding code, and prefer deleting over adding.
+
+## What this is
+
+Zorite — a cross-platform (macOS / Windows / Linux) Markdown daily-journal desktop app.
+Rust + [GPUI](https://www.gpui.rs) + gpui-component + SQLite. The repo is a Cargo
+workspace (edition 2024): the app at the root, plus six reusable crates under `crates/`.
+
+## Layout
+
+- `src/` — the app: window, journal feed, editor wiring, SQLite (`db.rs`), import,
+  settings, and the host-side renderers (`ui/`).
+- `crates/gpui-editor` — from-scratch text editor for GPUI (the WYSIWYG markdown surface).
+- `crates/gpui-markdown` — Markdown reading-view renderer.
+- `crates/gpui-pdf` — page-virtualized PDF viewer (pure-Rust `hayro`, no native libs).
+- `crates/gpui-whiteboard` — infinite pan/zoom whiteboard canvas.
+- `crates/ratex-gpui` — LaTeX math renderer + structural editor (RaTeX engine).
+- `crates/os-spellcheck` — native OS spell-check (no deps; macOS/Windows, Linux no-op).
+- `docs/` — Astro Starlight docs site (auto-deploys on push to `main`).
+
+## Build, run, and the gate
+
+```
+cargo run                                            # launch the app (root bin: zorite)
+```
+
+Before every commit, run what CI runs (`.github/workflows/ci.yml`) — these must pass:
+
+```
+cargo fmt --check                                    # or `cargo fmt` to fix
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+`cargo check` alone is **not** the gate — clippy is, and any warning fails the build.
+CI also compiles on five targets (macOS, Linux x64/arm, Windows x64/arm), so every
+change must stay cross-platform.
+
+## Code conventions
+
+- **No speculative abstraction.** This codebase has zero one-impl traits and no
+  factories or config nobody sets. Climb the ladder: does it need to exist? → reuse an
+  existing helper → stdlib → one line → only then new code. Don't add a dependency for
+  what a few lines do.
+- **Surgical diffs.** Every changed line should trace to the change you're making. Don't
+  reformat or "improve" adjacent code. It's a `-D warnings` repo — leave no orphaned
+  `dead_code`/`unused` behind your edit.
+- **Crates stay host-agnostic.** `crates/*` depend on `gpui` only — not `gpui-component`,
+  not the app — and run on all three platforms with no native libraries. Keep the
+  editor/rendering cores GUI-free where a crate already splits them (e.g. ratex-gpui's
+  `editor::{model,cursor,geometry,input,latex}` are GUI-free; only `view` is gpui glue).
+- **The app owns rendering.** Renderers in the crates are host-agnostic; the app supplies
+  the concrete one (see the `MarkdownView::on_math` / `on_inline_math` wiring in `ui/`).
+- **Cross-platform IO.** No `$HOME` or Unix-only assumptions — use `paths::*`
+  (e.g. `paths::desktop_dir()`) and gate platform code with `#[cfg(...)]`.
+- **Optional functionality sits behind a Cargo feature** so consumers can drop it
+  (ratex-gpui's default-on `editor`; gpui-pdf's opt-in `markup`/`search`).
+
+## Tests
+
+- Unit tests live in-file under `#[cfg(test)]`; cover non-trivial logic (import parsers,
+  editor/whiteboard geometry, DB and link-rewriting).
+- Live-testing the GUI: synthetic **keyboard** input does not reach a GPUI window (mouse
+  does) — verify shortcuts by hand. Kill all running instances before relaunching, and
+  close the app before touching its SQLite DB (it opens a real one in the platform data dir).
+
+## Commits
+
+Conventional commits with a scope: `fix(math): …`, `refactor: …`, `docs(changelog): …`.
+
+## Releases
+
+Stable = add a `## [x.y.z]` section to `CHANGELOG.md` and push an **annotated** tag
+`vX.Y.Z` (no `Cargo.toml` bump — the version comes from the tag). Pre-release = a
+`-suffix` tag (e.g. `v0.4.0-beta.1`). `release.yml` builds every platform; winget
+submission for a stable tag is a manual `gh workflow run after_release.yml -f tag_name=vX.Y.Z`.
