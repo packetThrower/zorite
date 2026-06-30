@@ -323,30 +323,47 @@ fn marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
     });
 }
 
+/// Heading styling (`#`..`######` + a space) for `text[from..end]`: dim the
+/// marker, bold the rest. The larger heading SIZE is applied per line at
+/// layout time (variable line heights), not here — so the rest of the line
+/// isn't scanned for inline constructs in W2. (W2) Returns whether it matched,
+/// so callers can `return` and skip inline scanning the same as a bare
+/// heading line. Shared by the line-start check and the post-list-marker
+/// check (`- ### Heading` nests like the reading view's AST does).
+fn apply_heading(
+    text: &str,
+    from: usize,
+    end: usize,
+    st: &SyntaxStyle,
+    out: &mut Vec<Span>,
+) -> bool {
+    let Some(level) = heading_level(&text[from..end]) else {
+        return false;
+    };
+    let b = text.as_bytes();
+    let mut marker_end = from + level as usize;
+    if marker_end < end && b[marker_end] == b' ' {
+        marker_end += 1;
+    }
+    marker(out, from..marker_end, st.marker);
+    if marker_end < end {
+        push(
+            out,
+            marker_end..end,
+            Style {
+                bold: true,
+                ..Default::default()
+            },
+        );
+    }
+    true
+}
+
 /// Scan one line `text[start..end]`. Markers are ASCII, so byte scanning is
 /// UTF-8-safe (an ASCII byte never appears inside a multi-byte char).
 fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut Vec<Span>) {
     let b = text.as_bytes();
-    // Heading: `#`..`######` + a space. Dim the marker, bold the rest. The
-    // larger heading SIZE is applied per line at layout time (variable line
-    // heights), not here — so the rest of the line isn't scanned for inline
-    // constructs in W2. (W2)
-    if let Some(level) = heading_level(&text[start..end]) {
-        let mut marker_end = start + level as usize;
-        if marker_end < end && b[marker_end] == b' ' {
-            marker_end += 1;
-        }
-        marker(out, start..marker_end, st.marker);
-        if marker_end < end {
-            push(
-                out,
-                marker_end..end,
-                Style {
-                    bold: true,
-                    ..Default::default()
-                },
-            );
-        }
+    if apply_heading(text, start, end, st, out) {
         return;
     }
     // Blockquote: leading `>` (GFM nesting) + optional spaces. Hide the markers;
@@ -370,6 +387,11 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         // bullet/number/box is painted in its place, body keeps inline styling.
         marker(out, start..start + prefix_len, st.marker);
         i = start + prefix_len;
+        // A heading right after the marker (`- ### Notes`) — same treatment as
+        // a top-level heading, skipping inline scanning past it.
+        if apply_heading(text, i, end, st, out) {
+            return;
+        }
     }
     while i < end {
         let c = b[i];
@@ -766,8 +788,11 @@ pub(crate) fn image_row(line: &str) -> Option<(&str, Option<f32>, usize)> {
 
 /// Font-size multiplier for a line — larger for headings (matching the reading
 /// view's scale), 1.0 for body text. Drives the editor's variable line heights.
+/// A heading right after a list/task marker (`- ### Notes`) counts too, same
+/// as [`apply_heading`].
 pub(crate) fn line_scale(line: &str) -> f32 {
-    match heading_level(line) {
+    let body = list_prefix(line).map_or(line, |(p, ..)| &line[p..]);
+    match heading_level(body) {
         Some(1) => 1.8,
         Some(2) => 1.5,
         Some(3) => 1.3,
@@ -1493,6 +1518,26 @@ mod tests {
         assert_eq!(image_row("1. ![a](b.png)"), Some(("b.png", None, 3)));
         assert_eq!(image_row("![a](b.png)"), Some(("b.png", None, 0)));
         assert_eq!(image_row("- text ![a](b.png)"), None);
+    }
+
+    #[test]
+    fn heading_nested_in_list_item() {
+        // A heading right after a list marker scales like a top-level heading
+        // (`- ### Hi` nests like the reading view's AST does), not like plain text.
+        assert_eq!(line_scale("### Hi"), 1.3);
+        assert_eq!(line_scale("- ### Hi"), 1.3);
+        assert_eq!(line_scale("  - ## Hi"), 1.5);
+        assert_eq!(line_scale("1. # Hi"), 1.8);
+        // Plain list text (no heading) is unaffected.
+        assert_eq!(line_scale("- not a heading"), 1.0);
+
+        // Both the list marker and the heading marker are hidden, leaving just
+        // the heading text — same as a bare "## Hi" line.
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+        let (disp, ..) = hidden_runs("- ### Notes", &font, c, &[], None, 0, &st);
+        assert_eq!(disp, "Notes");
     }
 
     fn test_style() -> SyntaxStyle {
