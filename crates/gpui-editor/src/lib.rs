@@ -129,8 +129,9 @@ const UNDO_LIMIT: usize = 256;
 /// Line height as a multiple of the font size. Derived from the editor's own
 /// font (not the ambient `window.line_height()`, which tracks the host's UI text
 /// style and would leave the caret/rows mismatched against differently-sized
-/// editor text). 1.25 matches the spacing the editor replaced.
-const LINE_HEIGHT_RATIO: f32 = 1.25;
+/// editor text). 1.45 for comfortable reading density while typing (1.25 felt
+/// cramped, especially stacking several list rows).
+const LINE_HEIGHT_RATIO: f32 = 1.45;
 
 /// Caret thickness (px) — thin like a native text caret, so it doesn't blend into
 /// the first glyph at the start of a line/cell.
