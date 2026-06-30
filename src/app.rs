@@ -1012,15 +1012,17 @@ impl AppView {
         self.refresh_sidebar();
     }
 
-    /// Build the initial feed the first time this window shows the journal.
-    /// Runs from `render` (gated to the Journal tab being active), so the cost —
-    /// editors, day text, and the cross-window reload work that comes with them —
-    /// is only ever paid by windows that actually display the feed.
+    /// Build the feed the first time this window shows the journal, and top up
+    /// today's entry if a new calendar day has started since (e.g. the window
+    /// sat open overnight) — otherwise "today" silently drops out of the feed,
+    /// since `journal::render` only shows a row when `day_editors` has it.
+    /// Runs from `render` (gated to the Journal tab being active); cheap after
+    /// the first call (one `HashMap` lookup), so paying it every frame is fine.
     fn ensure_feed_loaded(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.loaded_days > 0 {
+        if self.day_editors.contains_key(&date_for_offset(0)) {
             return;
         }
-        self.loaded_days = 14;
+        self.loaded_days = self.loaded_days.max(14);
         for i in 0..self.loaded_days {
             self.ensure_day_editor(date_for_offset(i), window, cx);
         }
@@ -5536,8 +5538,10 @@ impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Lazy journal feed: build it on the first frame that shows the Journal
         // tab (covers startup, ⌘N windows, and a later tab click — the editors
-        // are created just above the feed render in this same pass).
-        if self.loaded_days == 0 && matches!(self.tabs[self.active].kind, TabKind::Journal) {
+        // are created just above the feed render in this same pass), and keep
+        // checking on every Journal-tab render so a midnight rollover during a
+        // long-lived window tops up today's entry instead of leaving it missing.
+        if matches!(self.tabs[self.active].kind, TabKind::Journal) {
             self.ensure_feed_loaded(window, cx);
         }
         // First paint after a failed DB open: surface it once (deferred so we
