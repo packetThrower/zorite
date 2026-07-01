@@ -199,9 +199,13 @@ fn local_source(
     store: &Rc<RefCell<ImageStore>>,
     weak: &WeakEntity<AppView>,
 ) -> LocalImage {
-    match crate::paths::resolve_local(&info.src) {
+    let resolved = crate::paths::resolve_local(&info.src);
+    match &resolved {
         Some(p) if p.exists() => {}
-        _ => return LocalImage::Missing,
+        _ => {
+            log::warn!("image not found: src={:?} resolved={resolved:?}", info.src);
+            return LocalImage::Missing;
+        }
     }
     let store_ref = store.borrow();
     if let Some(arc) = store_ref.get(&info.src) {

@@ -1824,9 +1824,23 @@ impl EditorState {
             return;
         }
         let range = start..end;
+        let delta = new_line.len() as isize - (end - start) as isize;
         self.record_edit(&range, &new_line);
         self.content = self.content[..start].to_owned() + &new_line + &self.content[end..];
         self.remap_diagnostics(&range, new_line.len());
+        // The line just grew/shrank by `delta` — shift a caret at/after its old
+        // end with the text (the drop path parks it on the line below), else its
+        // stale offset lands inside the new `{width=N}` tail and reveal-on-caret
+        // swaps the freshly resized image for raw source. An offset inside the
+        // line clamps to the new line end.
+        let remap = |o: usize| {
+            if o >= end {
+                o.saturating_add_signed(delta)
+            } else {
+                o.min(start + new_line.len())
+            }
+        };
+        self.selected_range = remap(self.selected_range.start)..remap(self.selected_range.end);
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
@@ -4088,7 +4102,13 @@ fn shape_document(
             }
             _ => px(0.),
         };
-        let widget: Option<Block> = if Some(idx) != caret_row
+        // A grip drag on this row wins even if the caret nominally sits here too:
+        // starting a drag doesn't move the caret (`on_mouse_down`), so a stale
+        // caret left over from a prior edit would otherwise re-trigger raw-source
+        // reveal the instant the click below also refocuses the editor, yanking
+        // the grip out from under the drag before it can start.
+        let dragging_this_row = resize.is_some_and(|r| r.line == idx);
+        let widget: Option<Block> = if (Some(idx) != caret_row || dragging_this_row)
             && let Some(st) = md
             && let Some((src, w_attr, _)) = img_row
         {

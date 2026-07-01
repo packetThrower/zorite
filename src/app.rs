@@ -821,6 +821,13 @@ impl AppView {
                     if !this.maybe_autopair(&SlashTarget::Day(key.clone()), window, cx) {
                         let value = st.read(cx).text().to_string();
                         this.save_journal(&key, &value, cx);
+                        // Pick up a freshly-inserted image/mermaid/math reference (typed,
+                        // pasted, or dropped) so it previews without leaving and
+                        // re-entering edit mode — `ensure_day_editor` already does this
+                        // once at creation; content changes need the same re-scan.
+                        this.ensure_content_images(&value, cx);
+                        this.ensure_content_mermaid(&value, cx);
+                        this.ensure_content_math(&value, cx);
                     }
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -1357,7 +1364,22 @@ impl AppView {
             TabKind::Journal => {
                 self.page_editor = None;
                 for i in 0..self.loaded_days {
-                    self.ensure_day_editor(date_for_offset(i), window, cx);
+                    let date = date_for_offset(i);
+                    self.ensure_day_editor(date.clone(), window, cx);
+                    // `ensure_day_editor` no-ops for an already-open day, but
+                    // `release_images` above just freed any bitmaps it referenced —
+                    // re-scan unconditionally so they redecode (mirrors
+                    // `load_page_editor`, which rebuilds its editor and re-scans
+                    // unconditionally on every activation).
+                    let content = self
+                        .day_editors
+                        .get(&date)
+                        .map(|de| de.state.read(cx).value().to_string());
+                    if let Some(content) = content {
+                        self.ensure_content_images(&content, cx);
+                        self.ensure_content_mermaid(&content, cx);
+                        self.ensure_content_math(&content, cx);
+                    }
                 }
             }
             TabKind::Page(id) => self.load_page_editor(id, window, cx),
@@ -1608,6 +1630,11 @@ impl AppView {
                     if !this.maybe_autopair(&SlashTarget::Page(pid), window, cx) {
                         let value = st.read(cx).text().to_string();
                         this.save_page_content(pid, &value, cx);
+                        // Pick up a freshly-inserted image/mermaid/math reference, same
+                        // as the journal day handler above.
+                        this.ensure_content_images(&value, cx);
+                        this.ensure_content_mermaid(&value, cx);
+                        this.ensure_content_math(&value, cx);
                     }
                     this.update_slash(SlashTarget::Page(pid), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -2125,6 +2152,12 @@ impl AppView {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
             SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
+        // A template snippet can carry math/mermaid/image refs; `set_text` is
+        // programmatic (no `EditorEvent::Changed`), so kick their renders off
+        // here or they'd stay raw until the next real keystroke.
+        self.ensure_content_images(&new, cx);
+        self.ensure_content_mermaid(&new, cx);
+        self.ensure_content_math(&new, cx);
         cx.notify();
     }
 
@@ -2314,7 +2347,13 @@ impl AppView {
                 .spawn(async move { crate::mermaid::render_to_image(&src, theme, &svg, 1.0) })
                 .await;
             store.borrow_mut().finish(source, result);
-            let _ = this.update(cx, |_, cx| cx.notify());
+            // `cx.notify()` alone can leave an editor's cached row layout stale
+            // (it was built before the bitmap existed) — force a full repaint so
+            // the diagram replaces the raw-source placeholder immediately.
+            let _ = this.update(cx, |_, cx| {
+                cx.notify();
+                cx.refresh_windows();
+            });
         })
         .detach();
     }
@@ -2349,7 +2388,13 @@ impl AppView {
                 })
                 .await;
             store.borrow_mut().finish(source, result);
-            let _ = this.update(cx, |_, cx| cx.notify());
+            // See the analogous comment in `ensure_mermaid_loaded`: `cx.notify()`
+            // alone can leave a stale cached row layout, painted before the
+            // formula existed.
+            let _ = this.update(cx, |_, cx| {
+                cx.notify();
+                cx.refresh_windows();
+            });
         })
         .detach();
     }
@@ -2761,7 +2806,11 @@ impl AppView {
                     store.borrow_mut().finish(src, decoded);
                     this.image_decodes -= 1;
                     this.pump_image_decodes(cx);
+                    // See the analogous comment in `ensure_mermaid_loaded`:
+                    // `cx.notify()` alone can leave a stale cached row layout,
+                    // painted before the bitmap existed.
                     cx.notify();
+                    cx.refresh_windows();
                 });
             })
             .detach();
@@ -3825,7 +3874,12 @@ impl AppView {
         };
         let trail = if after.starts_with('\n') { "" } else { "\n" };
         let snippet = format!("{lead}![]({rel}){trail}");
-        let caret = pos + snippet.len();
+        // Caret on the line BELOW the image, never the image's own line — the
+        // caret's row reveals raw source, which would hide the just-inserted
+        // image (and its resize grip) until the user clicked away. With a
+        // `trail` newline the snippet already ends past the image line; when
+        // `after` supplied the newline instead, hop over it.
+        let caret = pos + snippet.len() + if trail.is_empty() { 1 } else { 0 };
         let new = format!("{before}{snippet}{after}");
         editor.update(cx, |st, cx| {
             st.set_text(new.clone(), cx);
@@ -3834,6 +3888,13 @@ impl AppView {
         match target {
             SlashTarget::Day(d) => self.save_journal(d, &new, cx),
             SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        // Kick off the decode NOW: `set_text` is programmatic and does not emit
+        // `EditorEvent::Changed`, so the Changed-handler re-scan never fires for
+        // a drop/paste — without this the image stayed raw until the next real
+        // keystroke. (PDFs render as chips, no bitmap to decode.)
+        if !crate::pdf::is_pdf(rel) {
+            self.ensure_image_loaded(rel.to_string().into(), cx);
         }
         cx.notify();
     }

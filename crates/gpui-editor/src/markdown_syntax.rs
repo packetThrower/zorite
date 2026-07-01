@@ -517,14 +517,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             i = close + 2;
             continue;
         }
-        // Link: [text](url) — `text` colored, brackets + target dimmed.
+        // Link: [text](url) — or an image `![alt](src)` (the caret's own line
+        // falls through to this generic scan, since the block-image widget is
+        // suppressed there — W4's image_row() only handles other lines). Treated
+        // the same: `text`/`alt` colored, brackets dimmed — plus the `!` for an
+        // image, so an empty-alt `![](src)` hides cleanly instead of leaving a
+        // bare unhidden `!`.
         if c == b'['
             && let Some(rb) = find1(b, i + 1, end, b']')
             && rb + 1 < end
             && b[rb + 1] == b'('
             && let Some(rp) = find1(b, rb + 2, end, b')')
         {
-            marker(out, i..i + 1, st.marker);
+            let marker_start = if i > start && b[i - 1] == b'!' {
+                i - 1
+            } else {
+                i
+            };
+            marker(out, marker_start..i + 1, st.marker);
             push(
                 out,
                 i + 1..rb,
@@ -1608,6 +1618,24 @@ mod tests {
         let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, 0, &st);
         assert_eq!(disp, "plain text");
         assert_eq!(map, (0..=10).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn hidden_runs_image_link_hides_the_bang_too() {
+        // `![](src)` (empty alt — the shape a fresh drop/paste inserts) must hide
+        // the leading `!` along with the rest of the markers, not leave it as a
+        // bare visible character (the editor falls back to this generic inline
+        // scan on the caret's own image line, where the block-image widget is
+        // suppressed).
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+        let (disp, ..) = hidden_runs("![](images/a.png)", &font, c, &[], None, 0, &st);
+        assert_eq!(disp, "");
+
+        // A named alt still shows it, same as a plain link.
+        let (disp, ..) = hidden_runs("![alt](images/a.png)", &font, c, &[], None, 0, &st);
+        assert_eq!(disp, "alt");
     }
 
     #[test]
