@@ -467,6 +467,9 @@ pub struct EditorState {
     table_menu: Option<Point<Pixels>>,
     /// Scroll state for the table menu, so its overflow scrolls + shows a thumb.
     table_menu_scroll: ScrollHandle,
+    /// The open image right-click menu, if any: the image's logical line + the
+    /// menu's anchor (window space). Offers Word-style object actions (Delete).
+    image_menu: Option<(usize, Point<Pixels>)>,
     /// Supplies replacement suggestions for a flagged word, fetched lazily when
     /// the user right-clicks it. Set by the host via [`Self::on_suggest`];
     /// without it, the right-click menu has nothing to offer.
@@ -566,6 +569,7 @@ impl EditorState {
             menu: None,
             table_menu: None,
             table_menu_scroll: ScrollHandle::new(),
+            image_menu: None,
             suggest: None,
             block_image: None,
             block_chip: None,
@@ -1193,6 +1197,20 @@ impl EditorState {
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
+            // Word-style image deletion: with the caret on an image row — or at
+            // the start of the line just below one — remove the whole picture
+            // (line + newline) as one edit, never stepping into its hidden
+            // markdown character by character.
+            let (row, col) = self.row_col(self.cursor_offset());
+            if let Some(range) = self.image_row_range(row).or_else(|| {
+                (col == 0 && row > 0)
+                    .then(|| self.image_row_range(row - 1))
+                    .flatten()
+            }) {
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
             let prev = self.previous_boundary(self.cursor_offset());
             if self.cursor_offset() == prev {
                 return;
@@ -1204,6 +1222,19 @@ impl EditorState {
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
+            // Word-style, mirroring `backspace`: the caret on an image row — or
+            // at the end of the line just above one — removes the whole picture.
+            let off = self.cursor_offset();
+            let (row, _) = self.row_col(off);
+            if let Some(range) = self.image_row_range(row).or_else(|| {
+                (off == self.line_end(row))
+                    .then(|| self.image_row_range(row + 1))
+                    .flatten()
+            }) {
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
             let next = self.next_boundary(self.cursor_offset());
             if self.cursor_offset() == next {
                 return;
@@ -1591,6 +1622,7 @@ impl EditorState {
             self.is_selecting = false;
             self.menu = None;
             self.table_menu = None;
+            self.image_menu = None;
             cx.notify();
             return;
         }
@@ -1688,6 +1720,7 @@ impl EditorState {
             .unwrap_or_else(|| self.index_for_mouse_position(event.position));
         self.menu = None;
         self.table_menu = None;
+        self.image_menu = None;
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
@@ -1845,6 +1878,33 @@ impl EditorState {
         cx.notify();
     }
 
+    /// If logical line `row` renders as an inline image (a standalone `![](src)`
+    /// or list-item image in markdown mode — not a file chip), the byte range of
+    /// the whole line plus its trailing newline: the atomic unit Word-style
+    /// deletion removes. `None` with styling off (raw mode edits as plain text).
+    fn image_row_range(&self, row: usize) -> Option<Range<usize>> {
+        self.markdown_style.as_ref()?;
+        let start = *self.line_starts().get(row)?;
+        let end = self.line_end(row);
+        let (src, ..) = markdown_syntax::image_row(&self.content[start..end])?;
+        if let Some(chip) = &self.block_chip
+            && chip(src).is_some()
+        {
+            return None; // a chip's line edits as text (reveal-on-caret)
+        }
+        Some(start..(end + 1).min(self.content.len()))
+    }
+
+    /// Delete the image occupying logical line `row` — line + trailing newline,
+    /// one undoable edit. Backs the right-click "Delete image" and the
+    /// Word-style Backspace/Delete on an image row.
+    fn delete_image_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        if let Some(range) = self.image_row_range(row) {
+            self.replace_range(range, "", cx);
+            cx.emit(EditorEvent::Changed);
+        }
+    }
+
     /// Right-click: if the click lands on a flagged word, fetch its suggestions
     /// (lazily, via the provider) and open a menu anchored there; otherwise close
     /// any open menu.
@@ -1854,6 +1914,20 @@ impl EditorState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Right-click on an inline image: Word-style object menu (Delete) — the
+        // row renders as a picture, there's no text under the pointer to edit.
+        if let Some(&(line, _)) = self
+            .image_rects
+            .iter()
+            .find(|(_, rect)| rect.contains(&event.position))
+        {
+            self.menu = None;
+            self.table_menu = None;
+            self.focus(window, cx);
+            self.image_menu = Some((line, event.position));
+            cx.notify();
+            return;
+        }
         // Right-click a file chip places the caret to edit its source (the line
         // then reveals raw `![](src)`), instead of opening the spell menu.
         if self.chip_at(event.position).is_some() {
@@ -1914,7 +1988,10 @@ impl EditorState {
 
     /// Close the suggestions menu (Escape, or a click elsewhere).
     fn dismiss(&mut self, _: &Dismiss, _: &mut Window, cx: &mut Context<Self>) {
-        if self.menu.take().is_some() || self.table_menu.take().is_some() {
+        if self.menu.take().is_some()
+            || self.table_menu.take().is_some()
+            || self.image_menu.take().is_some()
+        {
             cx.notify();
         }
     }
@@ -3408,6 +3485,51 @@ impl Render for EditorState {
                     ),
                 )
             }))
+            // The image right-click menu: Word-style object actions on an inline
+            // image (Delete), anchored at the click. Chrome matches the table menu.
+            .children(self.image_menu.map(|(line, anchor)| {
+                let st = self.markdown_style.as_ref();
+                let menu_bg = st.map_or(rgb(0x26262b).into(), |s| s.popover_bg);
+                let menu_border = st.map_or(rgb(0x45454c).into(), |s| s.popover_border);
+                let menu_fg = st.map_or(rgb(0xe6e6e6).into(), |s| s.popover_fg);
+                let hover = st.map_or(rgba(0x2f6fd628).into(), |s| s.popover_hover);
+                gpui::deferred(
+                    gpui::anchored().position(anchor).snap_to_window().child(
+                        div()
+                            .occlude()
+                            .min_w(px(140.))
+                            .cursor(CursorStyle::Arrow)
+                            .bg(menu_bg)
+                            .border_1()
+                            .border_color(menu_border)
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .text_color(menu_fg)
+                            .text_size(px(14.))
+                            .py(px(4.))
+                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                                editor.image_menu = None;
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .id("image-menu-delete")
+                                    .px(px(12.))
+                                    .py(px(5.))
+                                    .hover(move |s| s.bg(hover))
+                                    .child("Delete image")
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            editor.image_menu = None;
+                                            editor.delete_image_row(line, cx);
+                                        }),
+                                    ),
+                            ),
+                    ),
+                )
+            }))
     }
 }
 
@@ -4102,18 +4224,13 @@ fn shape_document(
             }
             _ => px(0.),
         };
-        // A grip drag on this row wins even if the caret nominally sits here too:
-        // starting a drag doesn't move the caret (`on_mouse_down`), so a stale
-        // caret left over from a prior edit would otherwise re-trigger raw-source
-        // reveal the instant the click below also refocuses the editor, yanking
-        // the grip out from under the drag before it can start.
-        let dragging_this_row = resize.is_some_and(|r| r.line == idx);
-        let widget: Option<Block> = if (Some(idx) != caret_row || dragging_this_row)
-            && let Some(st) = md
+        let widget: Option<Block> = if let Some(st) = md
             && let Some((src, w_attr, _)) = img_row
         {
             if let Some(label) = block_chip.and_then(|f| f(src)) {
-                Some(Block::Chip {
+                // A chip's line still edits as text: the caret's own row reveals
+                // raw source instead of the chip.
+                (Some(idx) != caret_row).then(|| Block::Chip {
                     src: src.into(),
                     label,
                     link: st.link,
@@ -4122,6 +4239,11 @@ fn shape_document(
                     height: fs * LINE_HEIGHT_RATIO + px(CHIP_PAD * 2.),
                 })
             } else {
+                // An image renders even on the caret's own row — a Word-style
+                // atomic object: the caret parks beside the picture (painted at
+                // its edge) instead of revealing the markdown. Delete it via
+                // Backspace/Delete or the right-click menu; WYSIWYG-off still
+                // shows the raw source for hand-editing.
                 block_image
                     .and_then(|f| f(src))
                     .and_then(|img| {
@@ -4181,12 +4303,14 @@ fn shape_document(
         let sel_empty = selection.0 == selection.1;
         let caret_col = (sel_empty && selection.0 >= line_start && selection.0 <= line_end)
             .then(|| selection.0 - line_start);
-        // An `![](src)` line (image/chip candidate) shows full raw source while the
-        // caret is on it, so editing reveals the whole `![](src)` rather than the
-        // per-construct view (where the caret at the `!` would hide the link).
-        let widget_line = md.is_some() && img_row.is_some();
+        // An `![](src)` chip line shows full raw source while the caret is on it,
+        // so editing reveals the whole `![](src)` rather than the per-construct
+        // view. Image rows are exempt — they keep rendering the picture with the
+        // caret parked beside it (Word-style; see the widget gate above).
+        let chip_line =
+            md.is_some() && img_row.is_some() && !matches!(widget, Some(Block::Image(_)));
         let full_source = (!sel_empty && selection.0 <= line_end && selection.1 >= line_start)
-            || (caret_col.is_some() && widget_line);
+            || (caret_col.is_some() && chip_line);
         // This line's diagnostics, clipped + shifted to line-local byte offsets —
         // used as spell-check squiggles whether the line shows source or hides its
         // markers.
@@ -5355,9 +5479,23 @@ impl Element for EditorElement {
             let (row, col) = editor.row_col(editor.cursor_offset());
             let lh = line_heights.get(row).copied().unwrap_or(base_lh);
             let top = line_tops.get(row).copied().unwrap_or(px(0.));
-            // Caret inside a table cell: position it within the rendered cell
-            // (centered vertically like the cell text), not by the raw source line.
-            if let Some(t) = tables.get(row).and_then(Option::as_ref)
+            // Caret on an image row: the picture stays rendered (a Word-style
+            // atomic object), so paint an image-height caret parked at its edge
+            // — before the picture at the line's start, after it anywhere else —
+            // instead of a text caret placed by the hidden source glyphs.
+            if let Some(Block::Image(img)) = widgets.get(row).and_then(Option::as_ref) {
+                let inset = code_inset(row);
+                let (img_w, img_h) = image_display_size(img, image_resize, row);
+                let x = bounds.left() + inset + if col == 0 { px(-3.) } else { img_w + px(3.) };
+                let c = fill(
+                    Bounds::new(
+                        point(x, bounds.top() + top + px(IMG_ROW_PAD / 2.)),
+                        size(px(CARET_WIDTH), img_h),
+                    ),
+                    text_color,
+                );
+                (Some(c), Vec::new())
+            } else if let Some(t) = tables.get(row).and_then(Option::as_ref)
                 && let Some((x, _, _)) = table_caret_pos(
                     t,
                     col,
