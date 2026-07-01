@@ -11,6 +11,20 @@ use gpui::{Hsla, RenderImage, SharedString, SvgRenderer};
 
 use crate::theme;
 
+/// Rasterize at the diagram's natural SVG size, display at half of it:
+/// mermaid-rs-renderer's output is typographically large beside Zorite's 16px
+/// body text, and half-size is the proportion the app has always read best at.
+/// The 2:1 texture-to-display ratio doubles as the crispness DPR — 1:1 device
+/// pixels on a 2× display. Display code must size by the store's logical
+/// dimensions, never texture pixels ÷ window scale factor: the density here is
+/// fixed, so that division is only correct on a 2× display (it drew diagrams
+/// double-size on a 1× monitor).
+pub const RASTER_SCALE: f32 = 1.0;
+const DISPLAY_SCALE: f32 = 0.5;
+
+/// A ready diagram: the bitmap plus its logical (display) px size.
+type Image = (Arc<RenderImage>, f32, f32);
+
 /// Cache of rendered diagrams, keyed by a ```mermaid block's source text.
 #[derive(Default)]
 pub struct MermaidStore {
@@ -19,15 +33,15 @@ pub struct MermaidStore {
 
 enum Slot {
     Loading,
-    Ready(Arc<RenderImage>),
+    Ready(Image),
     Failed,
 }
 
 impl MermaidStore {
-    /// The rendered diagram for `source`, if it's ready.
-    pub fn get(&self, source: &SharedString) -> Option<Arc<RenderImage>> {
+    /// The rendered diagram for `source` (image + logical size), if it's ready.
+    pub fn get(&self, source: &SharedString) -> Option<Image> {
         match self.slots.get(source) {
-            Some(Slot::Ready(image)) => Some(image.clone()),
+            Some(Slot::Ready((image, w, h))) => Some((image.clone(), *w, *h)),
             _ => None,
         }
     }
@@ -47,10 +61,19 @@ impl MermaidStore {
         true
     }
 
-    /// Record a finished render (ready or failed).
+    /// Record a finished render (ready or failed). The logical size is derived
+    /// here from the texture × [`DISPLAY_SCALE`], so every consumer sizes
+    /// consistently.
     pub fn finish(&mut self, source: SharedString, result: Result<Arc<RenderImage>, String>) {
         let slot = match result {
-            Ok(image) => Slot::Ready(image),
+            Ok(image) => {
+                let size = image.size(0);
+                let (w, h) = (
+                    size.width.0 as f32 * DISPLAY_SCALE,
+                    size.height.0 as f32 * DISPLAY_SCALE,
+                );
+                Slot::Ready((image, w, h))
+            }
             Err(e) => {
                 log::warn!("mermaid render failed: {e}");
                 Slot::Failed

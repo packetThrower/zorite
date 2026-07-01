@@ -2344,7 +2344,9 @@ impl AppView {
             let src = source.to_string();
             let result = cx
                 .background_executor()
-                .spawn(async move { crate::mermaid::render_to_image(&src, theme, &svg, 1.0) })
+                .spawn(async move {
+                    crate::mermaid::render_to_image(&src, theme, &svg, crate::mermaid::RASTER_SCALE)
+                })
                 .await;
             store.borrow_mut().finish(source, result);
             // `cx.notify()` alone can leave an editor's cached row layout stale
@@ -5719,7 +5721,8 @@ impl Render for AppView {
             .mermaid_lightbox
             .clone()
             .and_then(|source| self.mermaid_store.borrow().get(&source))
-            .map(|image| {
+            // The zoom view shows the texture at its full (2×-raster) size.
+            .map(|(image, ..)| {
                 gpui::deferred(
                     div()
                         .occlude()
@@ -6361,20 +6364,20 @@ fn make_editor(
         });
         // A ```mermaid block renders as its diagram from the shared store (None
         // until the off-thread render finishes — the block shows raw code then).
+        // The logical size goes along, same rationale as the math provider below.
         editor.set_block_mermaid_provider(move |source| {
             mermaid_store
                 .borrow()
                 .get(&gpui::SharedString::from(source))
         });
         // A $$…$$ block renders as its typeset equation from the shared store (None
-        // until the off-thread render finishes — the block shows raw source then). The
-        // store keeps a logical size for the reading view; the editor sizes the bitmap
-        // itself, so hand it just the image.
+        // until the off-thread render finishes — the block shows raw source then).
+        // The store's logical (pre-DPR) size goes along: the raster is typeset at a
+        // fixed 2× DPR, so the editor must NOT size it from texture pixels ÷ window
+        // scale factor — that only cancels on a 2× display and drew formulas twice
+        // as large on Linux/X11 at 1×.
         editor.set_block_math_provider(move |source| {
-            math_store
-                .borrow()
-                .get(&gpui::SharedString::from(source))
-                .map(|(img, _, _)| img)
+            math_store.borrow().get(&gpui::SharedString::from(source))
         });
         // Inline `$…$` formulas reuse those rasters (typeset at this em) scaled to text size.
         editor.set_block_math_em(crate::math::FONT_SIZE);

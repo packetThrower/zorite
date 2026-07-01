@@ -33,7 +33,7 @@ fn build(
 ) -> AnyElement {
     {
         let store = store.borrow();
-        if let Some(image) = store.get(&source) {
+        if let Some((image, width, _)) = store.get(&source) {
             // A stable id per diagram (from its source) so the click handler works.
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             source.hash(&mut hasher);
@@ -48,6 +48,9 @@ fn build(
                 .child(
                     img(ImageSource::from(image))
                         .id(("mermaid", id))
+                        // Logical size, not the texture's (rastered at 2×; height
+                        // follows from the aspect ratio). Clamped to the column.
+                        .w(px(width))
                         .max_w(relative(1.0))
                         .rounded(px(6.0))
                         .cursor_pointer()

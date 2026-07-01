@@ -333,16 +333,20 @@ type BlockImageFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
 /// clickable chip (left-click emits [`EditorEvent::OpenLink`]).
 type BlockChipFn = Box<dyn Fn(&str) -> Option<SharedString>>;
 
-/// Resolves a ` ```mermaid ` block's source to a rendered diagram bitmap, so the
-/// editor can render the block as the diagram (caret outside) instead of code.
-/// Set via [`EditorState::set_block_mermaid_provider`]; the host renders +
-/// caches off-thread (see [`EditorState::mermaid_sources`] to pre-render).
-type BlockMermaidFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
+/// Resolves a ` ```mermaid ` block's source to a rendered diagram bitmap plus its
+/// **logical** (display) px size — supplied by the host for the same reason as
+/// [`BlockMathFn`]. Set via [`EditorState::set_block_mermaid_provider`]; the host
+/// renders + caches off-thread (see [`mermaid_sources`] to pre-render).
+type BlockMermaidFn = Box<dyn Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)>>;
 
-/// Resolves a `$$…$$` math block's LaTeX to a typeset bitmap, so the editor can
-/// render the block as the equation (caret outside) instead of raw source. Set via
-/// [`EditorState::set_block_math_provider`]; pre-render with [`math_sources`].
-type BlockMathFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
+/// Resolves a `$$…$$` math block's LaTeX to a typeset bitmap plus its **logical**
+/// (display) px size, so the editor can render the block as the equation (caret
+/// outside) instead of raw source. The host supplies the logical size because it
+/// knows the raster's pixel density (e.g. typeset at a fixed 2× DPR); deriving it
+/// from texture pixels ÷ window scale factor renders 2× too large on a 1× display
+/// (the Linux/X11 bug — the division only cancels on a 2× "Retina" screen). Set
+/// via [`EditorState::set_block_math_provider`]; pre-render with [`math_sources`].
+type BlockMathFn = Box<dyn Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)>>;
 
 /// The diagram sources of every ` ```mermaid ` block in `content`, so a host can
 /// pre-render them (the editor's mermaid provider then finds the ready bitmap).
@@ -702,23 +706,27 @@ impl EditorState {
     }
 
     /// Install the provider that resolves a ` ```mermaid ` block's source to a
-    /// rendered diagram. With it, such a block renders as the diagram when the
-    /// caret is elsewhere; with the caret inside (or while it renders) it shows
-    /// the raw fenced source. Pre-render with [`mermaid_sources`].
+    /// rendered diagram: the bitmap plus its logical (display) px size — see
+    /// [`BlockMathFn`] for why the host supplies the size. With it, such a block
+    /// renders as the diagram when the caret is elsewhere; with the caret inside
+    /// (or while it renders) it shows the raw fenced source. Pre-render with
+    /// [`mermaid_sources`].
     pub fn set_block_mermaid_provider(
         &mut self,
-        provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
+        provider: impl Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)> + 'static,
     ) {
         self.block_mermaid = Some(Box::new(provider));
     }
 
     /// Install the provider that resolves a `$$…$$` block's LaTeX to a typeset
-    /// equation. With it, such a block renders as the equation when the caret is
-    /// elsewhere; with the caret inside (or while it renders) it shows the raw
-    /// `$$…$$` source. Pre-render with [`math_sources`].
+    /// equation: the bitmap plus its logical (display) px size — see
+    /// [`BlockMathFn`] for why the host supplies the size. With it, such a block
+    /// renders as the equation when the caret is elsewhere; with the caret inside
+    /// (or while it renders) it shows the raw `$$…$$` source. Pre-render with
+    /// [`math_sources`].
     pub fn set_block_math_provider(
         &mut self,
-        provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static,
+        provider: impl Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)> + 'static,
     ) {
         self.block_math = Some(Box::new(provider));
     }
@@ -1916,10 +1924,13 @@ impl EditorState {
     ) {
         // Right-click on an inline image: Word-style object menu (Delete) — the
         // row renders as a picture, there's no text under the pointer to edit.
+        // Only for real `![](src)` rows: mermaid/math rasters share the widget
+        // type but delete as text (their menu would silently no-op).
         if let Some(&(line, _)) = self
             .image_rects
             .iter()
             .find(|(_, rect)| rect.contains(&event.position))
+            .filter(|&&(line, _)| self.image_row_range(line).is_some())
         {
             self.menu = None;
             self.table_menu = None;
@@ -3878,12 +3889,11 @@ fn shape_inline_math(
     caret_col: Option<usize>,
     base_font: &Font,
     fs: Pixels,
-    sf: f32,
     block_math: &BlockMathFn,
     em: f32,
 ) -> (String, Vec<TextRun>, Vec<usize>, Vec<InlineMath>) {
     let spans = markdown_syntax::inline_math_spans(line);
-    if spans.is_empty() || sf <= 0. || em <= 0. {
+    if spans.is_empty() || em <= 0. {
         return (disp, runs, map, Vec::new());
     }
     let space_w = f32::from(measure_width(window, " ", base_font, fs)).max(1.);
@@ -3899,15 +3909,15 @@ fn shape_inline_math(
             continue;
         }
         let latex = &line[span.start + 1..span.end - 1];
-        let Some(img) = block_math(latex) else {
+        let Some((img, lw, lh)) = block_math(latex) else {
             continue; // not yet rasterized — leave the raw source until it lands
         };
-        let dev = img.size(0);
-        let (dw, dh) = (dev.width.0 as f32, dev.height.0 as f32);
-        if dw <= 0. || dh <= 0. {
+        if lw <= 0. || lh <= 0. {
             continue;
         }
-        let (w, h) = (dw / sf * scale, dh / sf * scale);
+        // The provider's logical size, scaled from the typeset em down to text
+        // size — no window-scale-factor division (see [`BlockMathFn`]).
+        let (w, h) = (lw * scale, lh * scale);
         let n = ((w / space_w).ceil() as usize).max(1);
         let latex: SharedString = latex.to_string().into();
         formulas.push((span, n));
@@ -4002,9 +4012,25 @@ fn shape_document(
             .into_iter()
             .filter(|(range, _)| caret_row.is_none_or(|cr| !range.contains(&cr)))
             .filter_map(|(range, source)| {
-                let img = f(&source)?;
-                let bi = block_img(img, None, wrap_width, scale_factor)?;
-                Some((range, bi))
+                // Sized by the provider's logical dimensions, like math below —
+                // never texture pixels ÷ window scale factor.
+                let (img, lw, lh) = f(&source)?;
+                if lw <= 0. || lh <= 0. {
+                    return None;
+                }
+                let w = lw.min(wrap_width.map_or(lw, f32::from)).max(1.);
+                Some((
+                    range,
+                    BlockImg {
+                        img,
+                        width: px(w),
+                        height: px(w * lh / lw),
+                        // No grip: there's no `{width=N}` to persist on a fence
+                        // line (the old grip silently no-oped on release).
+                        resizable: false,
+                        align: MathAlign::Left,
+                    },
+                ))
             })
             .collect(),
         None => Vec::new(),
@@ -4016,17 +4042,25 @@ fn shape_document(
             .into_iter()
             .filter(|r| caret_row.is_none_or(|cr| !r.range.contains(&cr)))
             .filter_map(|r| {
-                let img = f(&r.source)?;
-                let bi = block_img(img, None, wrap_width, scale_factor)?;
+                // Sized by the provider's logical dimensions — NOT texture pixels
+                // ÷ window scale factor (see [`BlockMathFn`]: the raster's density
+                // is fixed, so that division is only correct on a 2× display).
+                let (img, lw, lh) = f(&r.source)?;
+                if lw <= 0. || lh <= 0. {
+                    return None;
+                }
+                let w = lw.min(wrap_width.map_or(lw, f32::from)).max(1.);
                 // Math renders at its natural typeset size — no resize grip (nothing to
                 // persist a width to, and it goes inline eventually). It carries its
                 // horizontal alignment (centered by default) for the paint to honor.
                 Some((
                     r.range,
                     BlockImg {
+                        img,
+                        width: px(w),
+                        height: px(w * lh / lw),
                         resizable: false,
                         align: r.align,
-                        ..bi
                     },
                 ))
             })
@@ -4455,17 +4489,7 @@ fn shape_document(
             match (block_math, block_math_em) {
                 (Some(mathf), Some(em)) => {
                     let (disp, runs, m, im) = shape_inline_math(
-                        window,
-                        line,
-                        line_start,
-                        disp,
-                        runs,
-                        m,
-                        caret_col,
-                        base_font,
-                        fs,
-                        scale_factor,
-                        mathf,
+                        window, line, line_start, disp, runs, m, caret_col, base_font, fs, mathf,
                         em,
                     );
                     line_inline_math = im;
