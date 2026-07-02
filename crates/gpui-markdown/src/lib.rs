@@ -281,9 +281,39 @@ pub const SNIPPETS: &[Snippet] = &[
         caret: 2,
     },
     Snippet {
+        label: "Note alert",
+        snippet: "> [!NOTE] ",
+        caret: 10,
+    },
+    Snippet {
+        label: "Tip alert",
+        snippet: "> [!TIP] ",
+        caret: 9,
+    },
+    Snippet {
+        label: "Important alert",
+        snippet: "> [!IMPORTANT] ",
+        caret: 15,
+    },
+    Snippet {
+        label: "Warning alert",
+        snippet: "> [!WARNING] ",
+        caret: 13,
+    },
+    Snippet {
+        label: "Caution alert",
+        snippet: "> [!CAUTION] ",
+        caret: 13,
+    },
+    Snippet {
         label: "Code block",
         snippet: "```\n\n```",
         caret: 4,
+    },
+    Snippet {
+        label: "Mermaid diagram",
+        snippet: "```mermaid\n\n```",
+        caret: 11,
     },
     Snippet {
         label: "Math",
@@ -322,9 +352,24 @@ pub const SNIPPETS: &[Snippet] = &[
         caret: 1,
     },
     Snippet {
+        label: "Inline math",
+        snippet: "$$",
+        caret: 1,
+    },
+    Snippet {
+        label: "Highlight",
+        snippet: "<mark></mark>",
+        caret: 6,
+    },
+    Snippet {
         label: "Link",
         snippet: "[]()",
         caret: 1,
+    },
+    Snippet {
+        label: "Wiki link",
+        snippet: "[[]]",
+        caret: 2,
     },
     Snippet {
         label: "Image",
