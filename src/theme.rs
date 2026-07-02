@@ -7,7 +7,7 @@
 
 use std::cell::RefCell;
 
-use gpui::{App, Hsla, Rgba, Window, px};
+use gpui::{App, Hsla, Pixels, Rgba, Window, px};
 use gpui_component::{Theme, ThemeMode};
 
 /// Opaque-or-translucent color from a packed `0xRRGGBB` literal.
@@ -185,12 +185,14 @@ fn mono_font() -> &'static str {
 
 /// Build the markdown render style from the active palette. `indent_spaces` is the
 /// user's list-indent setting; the per-level pixel indent is sized to roughly match
-/// that many spaces of the editor font, so reading and editing line up.
-pub fn markdown_style(indent_spaces: usize) -> gpui_markdown::MarkdownStyle {
+/// that many spaces of the editor font, so reading and editing line up. `text_size`
+/// is the user's note text size — the same value the editor wrappers set, so the
+/// reader and the editor render at one size.
+pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown::MarkdownStyle {
     let p = get();
     gpui_markdown::MarkdownStyle {
         text_color: p.text_primary,
-        text_size: px(16.0),
+        text_size,
         heading_color: p.text_primary,
         link_color: p.accent,
         tag_color: p.tag,

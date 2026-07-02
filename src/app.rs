@@ -57,6 +57,10 @@ const FEED_MAX_DAYS: usize = 3650;
 const DEFAULT_PDF_QUALITY: f32 = 0.75;
 /// Default list-indent width in spaces (Tab / nesting). Configurable in Settings.
 const DEFAULT_LIST_INDENT: usize = 4;
+/// Default note text size in px. Configurable in Settings; see `AppView::text_size`.
+const DEFAULT_TEXT_SIZE: f32 = 16.0;
+/// The Settings-selectable note text sizes.
+pub const TEXT_SIZES: &[f32] = &[14.0, 15.0, 16.0, 17.0, 18.0, 20.0];
 
 /// What a tab shows. The Journal is the pinned tab 0; the rest are pages or PDFs.
 #[derive(Clone, PartialEq, Eq)]
@@ -374,6 +378,10 @@ pub struct AppView {
     /// List-indent width in spaces (2 / 4 / 8), persisted. Drives both the editor's
     /// Tab/nesting unit and the markdown render's per-level indent, so they line up.
     list_indent: usize,
+    /// Note text size in px, persisted. One value drives all three views (the
+    /// editor wrappers' ambient size and the reader's `markdown_style`);
+    /// headings and inline math scale from it in both engines.
+    text_size: f32,
     /// Check GitHub Releases for a newer version at startup, persisted.
     check_updates: bool,
     /// Whether the update check considers pre-releases (betas), persisted.
@@ -664,6 +672,7 @@ impl AppView {
             ui_font: String::new(),
             pdf_quality: DEFAULT_PDF_QUALITY,
             list_indent: DEFAULT_LIST_INDENT,
+            text_size: DEFAULT_TEXT_SIZE,
             check_updates: true,
             include_prerelease: false,
             wysiwyg: true,
@@ -755,6 +764,12 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .filter(|n| matches!(n, 2 | 4 | 8))
             .unwrap_or(DEFAULT_LIST_INDENT);
+        this.text_size = this
+            .db
+            .get_setting("text_size")
+            .and_then(|s| s.parse().ok())
+            .filter(|s| TEXT_SIZES.contains(s))
+            .unwrap_or(DEFAULT_TEXT_SIZE);
         this.check_updates = this
             .db
             .get_setting("check_updates")
@@ -2590,10 +2605,7 @@ impl AppView {
         // Inline `$…$` renders at text size with no alignment; a `$$` block at its larger
         // display font and its saved justification.
         let (font_size, align) = if inline {
-            (
-                f32::from(EDITOR_TEXT_SIZE),
-                ratex_gpui::MathAlign::default(),
-            )
+            (self.text_size, ratex_gpui::MathAlign::default())
         } else {
             (
                 crate::math::FONT_SIZE,
@@ -4156,7 +4168,8 @@ impl AppView {
         // markdown root (the editor takes over its slot in the day section).
         let slot = de.md_scroll.bounds();
         if slot.size.width > px(0.0) {
-            let (rows, line_height) = predict_caret_row(&source, off, slot.size.width, window, cx);
+            let (rows, line_height) =
+                predict_caret_row(&source, off, slot.size.width, self.text_size(), window, cx);
             let caret_y = slot.origin.y + INPUT_PY + line_height * rows as f32;
             let new_y = (self.feed_scroll.offset().y + (click_y - caret_y)).min(px(0.0));
             self.feed_scroll.set_offset(gpui::point(px(0.0), new_y));
@@ -4223,7 +4236,8 @@ impl AppView {
         // Clamping at the top keeps near-top lines put instead of force-centering.
         let slot = self.md_block_scroll.bounds();
         if slot.size.width > px(0.0) {
-            let (rows, line_height) = predict_caret_row(&source, off, slot.size.width, window, cx);
+            let (rows, line_height) =
+                predict_caret_row(&source, off, slot.size.width, self.text_size(), window, cx);
             let caret_y = slot.origin.y + INPUT_PY + line_height * rows as f32;
             let new_y = (self.page_scroll.offset().y + (click_y - caret_y)).min(px(0.0));
             self.page_scroll.set_offset(gpui::point(px(0.0), new_y));
@@ -4584,6 +4598,23 @@ impl AppView {
     /// The list-indent width in spaces (the Tab / nesting unit).
     pub fn list_indent(&self) -> usize {
         self.list_indent
+    }
+
+    /// The note text size — the one value all three views render body text at.
+    pub fn text_size(&self) -> Pixels {
+        px(self.text_size)
+    }
+
+    /// Set the note text size, persist, and re-render this window. The views
+    /// read it at render time, so no per-editor re-push is needed. No-op if
+    /// unchanged or not one of the offered sizes.
+    pub fn set_text_size(&mut self, size: f32, cx: &mut Context<Self>) {
+        if !TEXT_SIZES.contains(&size) || size == self.text_size {
+            return;
+        }
+        self.text_size = size;
+        let _ = self.db.set_setting("text_size", &size.to_string());
+        cx.notify();
     }
 
     /// The list-indent as a run of spaces, for inserting in the editor.
@@ -6299,39 +6330,36 @@ fn clamp_to_boundary(source: &str, offset: usize) -> usize {
 /// [`predict_caret_row`] to position the caret *before* the editor first paints.
 /// gpui-editor draws no internal padding and soft-wraps at its full width, so
 /// the padding / wrap-margin are zero (kept named so the click-to-edit math
-/// reads clearly). Its line height is `EDITOR_TEXT_SIZE * 1.25`, which matches
-/// the `rems(1.25)` used below.
+/// reads clearly). Its line height is the text size × its `LINE_HEIGHT_RATIO`.
 const INPUT_PY: Pixels = px(0.0);
 const INPUT_PX: Pixels = px(0.0);
 const INPUT_WRAP_RIGHT_MARGIN: Pixels = px(0.0);
-const EDITOR_TEXT_SIZE: Pixels = px(16.0);
 
 /// Predict where the caret at byte `off` will land inside one of our editors:
 /// `(wrap rows above the caret, line height)`. `slot_width` is the width of the
-/// element the editor will occupy. Counts soft-wrap rows with the same
-/// `LineWrapper` machinery (same font, size, and wrap width) gpui-component
-/// wraps with, so the prediction matches the editor's own layout.
+/// element the editor will occupy; `text_size` is the user's note text size the
+/// editor will shape at. Counts soft-wrap rows with the same `LineWrapper`
+/// machinery (same font, size, and wrap width) the editor wraps with, so the
+/// prediction matches its layout.
 fn predict_caret_row(
     source: &str,
     off: usize,
     slot_width: Pixels,
+    text_size: Pixels,
     window: &Window,
     cx: &App,
 ) -> (usize, Pixels) {
     use gpui_component::ActiveTheme as _;
     // The editor inherits the root text style with the theme font family
-    // (applied by gpui-component's Root) and the host's text size, while the
-    // Input element pins line height to 1.25 rems (its `LINE_HEIGHT`). The
+    // (applied by gpui-component's Root) and the host's text size. The
     // inheritance stack isn't populated during event dispatch, so mirror it.
     let mut style = window.text_style();
-    style.font_size = EDITOR_TEXT_SIZE.into();
+    style.font_size = text_size.into();
     style.font_family = cx.theme().font_family.clone();
-    style.line_height = gpui::rems(1.25).into();
-    let line_height = style.line_height_in_pixels(window.rem_size());
+    // gpui-editor sizes rows from its own font, not the ambient line height.
+    let line_height = text_size * gpui_editor::LINE_HEIGHT_RATIO;
     let wrap_width = slot_width - INPUT_PX * 2.0 - INPUT_WRAP_RIGHT_MARGIN;
-    let mut wrapper = cx
-        .text_system()
-        .line_wrapper(style.font(), EDITOR_TEXT_SIZE);
+    let mut wrapper = cx.text_system().line_wrapper(style.font(), text_size);
     let off = clamp_to_boundary(source, off);
     let mut rows = 0usize;
     let mut line_start = 0usize;

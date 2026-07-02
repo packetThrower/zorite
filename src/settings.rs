@@ -137,6 +137,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
     ),
     (
         Tab::Appearance,
+        "Text size",
+        "font size zoom bigger smaller larger scale px",
+    ),
+    (
+        Tab::Appearance,
         "Installed themes",
         "custom user json reload reveal folder",
     ),
@@ -198,6 +203,7 @@ pub struct SettingsView {
     theme_select: Entity<SelectState<Vec<Opt>>>,
     appearance_select: Entity<SelectState<Vec<Opt>>>,
     font_select: Entity<SelectState<Vec<Opt>>>,
+    text_size_select: Entity<SelectState<Vec<Opt>>>,
     quality_slider: Entity<SliderState>,
     indent_select: Entity<SelectState<Vec<Opt>>>,
     date_format_select: Entity<SelectState<Vec<Opt>>>,
@@ -229,9 +235,41 @@ impl SettingsView {
         let (f_opts, current_font) = font_opts(&app, cx);
         let font_select = make_select(f_opts, &current_font, window, cx);
 
+        // Note text size (Appearance pane) — one value for all three views.
+        let size_opts: Vec<Opt> = crate::app::TEXT_SIZES
+            .iter()
+            .map(|&s| {
+                let id = format!("{s}");
+                let label = if s == 16.0 {
+                    format!("{s} px (default)")
+                } else {
+                    format!("{s} px")
+                };
+                Opt::new(&id, &label)
+            })
+            .collect();
+        let cur_size = app
+            .upgrade()
+            .map(|a| format!("{}", f32::from(a.read(cx).text_size())))
+            .unwrap_or_else(|| "16".to_string());
+        let text_size_select = make_select(size_opts, &cur_size, window, cx);
+
         let mut subs = Vec::new();
         subs.push(Self::on_theme_select(&theme_select, window, cx));
         subs.push(Self::on_font_select(&font_select, window, cx));
+        subs.push(cx.subscribe_in(
+            &text_size_select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Ok(size) = id.parse::<f32>()
+                    && let Some(app) = this.app.upgrade()
+                {
+                    app.update(cx, |a, cx| a.set_text_size(size, cx));
+                    cx.notify();
+                }
+            },
+        ));
         subs.push(cx.subscribe_in(
             &appearance_select,
             window,
@@ -362,6 +400,7 @@ impl SettingsView {
             theme_select,
             appearance_select,
             font_select,
+            text_size_select,
             quality_slider,
             indent_select,
             date_format_select,
@@ -1117,6 +1156,12 @@ impl Render for SettingsView {
                                          .otf file to use a font that isn't installed on your \
                                          system.",
                                     font_control,
+                                ))
+                                .child(self.section_card(
+                                    "Text size",
+                                    "Size of note text when editing and reading. Headings and \
+                                         inline math scale with it.",
+                                    Select::new(&self.text_size_select).w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Installed themes",

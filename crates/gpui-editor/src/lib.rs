@@ -143,8 +143,9 @@ const UNDO_LIMIT: usize = 256;
 /// font (not the ambient `window.line_height()`, which tracks the host's UI text
 /// style and would leave the caret/rows mismatched against differently-sized
 /// editor text). 1.45 for comfortable reading density while typing (1.25 felt
-/// cramped, especially stacking several list rows).
-const LINE_HEIGHT_RATIO: f32 = 1.45;
+/// cramped, especially stacking several list rows). Public so a host's scroll
+/// math (e.g. Zorite's click-to-edit caret prediction) can mirror row heights.
+pub const LINE_HEIGHT_RATIO: f32 = 1.45;
 
 /// Caret thickness (px) — thin like a native text caret, so it doesn't blend into
 /// the first glyph at the start of a line/cell.
@@ -463,6 +464,11 @@ pub struct EditorState {
     line_insets: Vec<Pixels>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
+    /// Font size from the last paint. Hit-testing that runs during event
+    /// dispatch (e.g. table-cell clicks) must measure at this size — the
+    /// window's text-style stack is unwound there, so `window.text_style()`
+    /// would report the root size, not the host wrapper's.
+    font_size: Pixels,
     is_selecting: bool,
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
@@ -581,6 +587,7 @@ impl EditorState {
             table_hover_cell: None,
             last_bounds: None,
             line_height: px(20.),
+            font_size: px(16.),
             is_selecting: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -2530,9 +2537,11 @@ impl EditorState {
         if t.is_separator || t.col_widths.is_empty() {
             return None;
         }
+        // Measure at the last paint's size — the style stack is unwound during
+        // event dispatch, so `text_style()` here reports the root size.
         let style = window.text_style();
         let font = style.font();
-        let font_size = style.font_size.to_pixels(window.rem_size());
+        let font_size = self.font_size;
         let pad = px(TABLE_CELL_PAD);
         // Column the click is in, and its left x.
         let last = t.col_widths.len() - 1;
@@ -5166,12 +5175,18 @@ impl Element for EditorElement {
         // Height depends on the resolved width (soft-wrap), so measure it: shape
         // the content at the available width and count wrapped rows.
         let editor = self.editor.clone();
+        // Capture the ambient text style NOW, while the host wrapper's style is
+        // on the window's style stack (gpui's Text element does the same). The
+        // measure closure runs later, in the layout pass, where the stack is
+        // unwound and `text_style()` reverts to the root size — measuring at a
+        // different size than paint leaves the element shorter than its painted
+        // text (days/pages overlapped at >16px text sizes).
+        let text_style = window.text_style();
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
         let mut style = Style::default();
         style.size.width = relative(1.).into();
         let id = window.request_measured_layout(style, move |known, available, window, cx| {
             let editor = editor.read(cx);
-            let text_style = window.text_style();
-            let font_size = text_style.font_size.to_pixels(window.rem_size());
             let base_lh = font_size * LINE_HEIGHT_RATIO;
             let wrap_width = match available.width {
                 AvailableSpace::Definite(w) => Some(w),
@@ -6233,6 +6248,7 @@ impl Element for EditorElement {
             editor.table_col_del = table_col_del;
             editor.last_bounds = Some(bounds);
             editor.line_height = base_lh;
+            editor.font_size = font_size;
         });
     }
 }

@@ -72,7 +72,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             // gpui-editor draws no chrome; the wrapper sets the
                             // ambient text style it inherits when shaping lines.
                             div()
-                                .text_size(px(16.0))
+                                .text_size(app.text_size())
                                 .text_color(theme::text_primary())
                                 .child(pe.state.clone())
                                 .into_any_element()
@@ -162,7 +162,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
     let content = pe.state.read(cx).value();
     let inner = if content.trim().is_empty() {
         div()
-            .text_size(px(16.0))
+            .text_size(app.text_size())
             .text_color(theme::text_tertiary())
             .child("Empty — click to write")
             .into_any_element()
@@ -173,7 +173,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         let toggle_content = content.to_string();
         let toggle_page_id = pe.id;
         let mut md = gpui_markdown::MarkdownView::new("page-md", content)
-            .style(theme::markdown_style(app.list_indent()))
+            .style(theme::markdown_style(app.list_indent(), app.text_size()))
             // Track block bounds so find can scroll the active match into view.
             .track_blocks(app.md_block_scroll.clone())
             .on_image(crate::ui::image::renderer(

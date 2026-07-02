@@ -73,7 +73,7 @@ fn day_section(
         // gpui-editor has no chrome of its own; the wrapper sets the ambient
         // text style (size/color) the editor inherits when it shapes lines.
         div()
-            .text_size(px(16.0))
+            .text_size(app.text_size())
             .text_color(theme::text_primary())
             .child(state.clone())
             .into_any_element()
@@ -139,7 +139,7 @@ fn rendered_day(
     let d = date.to_string();
     let inner = if content.trim().is_empty() {
         div()
-            .text_size(px(16.0))
+            .text_size(app.text_size())
             .text_color(theme::text_tertiary())
             .child("Empty — click to write")
             .into_any_element()
@@ -151,7 +151,7 @@ fn rendered_day(
         let toggle_content = content.to_string();
         let toggle_date = d.clone();
         let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
-            .style(theme::markdown_style(app.list_indent()))
+            .style(theme::markdown_style(app.list_indent(), app.text_size()))
             .on_image(crate::ui::image::renderer(
                 app,
                 SlashTarget::Day(d.clone()),
