@@ -840,9 +840,16 @@ impl AppView {
                     this.schedule_spellcheck(st.clone(), cx);
                 }
                 EditorEvent::OpenLink(src) => {
-                    if let Some(path) = crate::pdf::resolve_path(src) {
+                    // An http(s) url opens externally (like the reading view);
+                    // anything else resolves as a local file (PDF viewer).
+                    if src.starts_with("http://") || src.starts_with("https://") {
+                        cx.open_url(src);
+                    } else if let Some(path) = crate::pdf::resolve_path(src) {
                         this.open_pdf(path, window, cx);
                     }
+                }
+                EditorEvent::OpenWikiLink(title) => {
+                    this.open_page_title(title, window, cx);
                 }
                 EditorEvent::SelectionChanged => {
                     this.scroll_caret_into_view(st, &this.feed_scroll, cx)
@@ -1647,9 +1654,16 @@ impl AppView {
                     this.schedule_spellcheck(st.clone(), cx);
                 }
                 EditorEvent::OpenLink(src) => {
-                    if let Some(path) = crate::pdf::resolve_path(src) {
+                    // An http(s) url opens externally (like the reading view);
+                    // anything else resolves as a local file (PDF viewer).
+                    if src.starts_with("http://") || src.starts_with("https://") {
+                        cx.open_url(src);
+                    } else if let Some(path) = crate::pdf::resolve_path(src) {
                         this.open_pdf(path, window, cx);
                     }
+                }
+                EditorEvent::OpenWikiLink(title) => {
+                    this.open_page_title(title, window, cx);
                 }
                 EditorEvent::SelectionChanged => {
                     this.scroll_caret_into_view(st, &this.page_scroll, cx)

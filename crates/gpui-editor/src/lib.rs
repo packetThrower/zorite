@@ -281,9 +281,13 @@ pub enum EditorEvent {
     /// The document text changed via a user edit (typing, delete, paste, IME,
     /// applying a suggestion). Not emitted for programmatic `set_text`.
     Changed,
-    /// A file chip (e.g. a PDF embed) was left-clicked — the host opens its
-    /// `src`. The chip itself stays in the document; this is a navigation hint.
+    /// A file chip (e.g. a PDF embed) or an inline `[text](url)` link was
+    /// left-clicked — the host opens the `src`/url (http externally, files
+    /// via its own resolution). A navigation hint; the text is untouched.
     OpenLink(SharedString),
+    /// A `[[wiki-link]]` or `#tag` was left-clicked — the host opens the page
+    /// with this title (Logseq semantics, matching the reading view).
+    OpenWikiLink(SharedString),
     /// The caret / selection moved without a text change — so a host can update a
     /// caret-anchored affordance (e.g. the table-alignment toolbar).
     SelectionChanged,
@@ -1670,6 +1674,33 @@ impl EditorState {
                 inline: true,
             });
             return;
+        }
+        // Left-click a link navigates, like the reading view: a `[[wiki]]` /
+        // `#tag` opens that page, a `[text](url)` opens the url — consistent
+        // with chips and inline math above. Only a plain single click: a
+        // double-click still selects the word, shift still extends the
+        // selection, and the caret goes anywhere else as usual (to edit a
+        // link's own text, click beside it and arrow in — reveal-on-caret).
+        if event.click_count == 1
+            && !event.modifiers.shift
+            && !event.modifiers.control
+            && self.markdown_style.is_some()
+        {
+            let offset = self.index_for_mouse_position(event.position);
+            let (row, _) = self.row_col(offset);
+            let start = self.line_starts()[row];
+            let line = &self.content[start..self.line_end(row)];
+            match markdown_syntax::link_at(line, offset - start) {
+                Some(markdown_syntax::LinkHit::Page(title)) => {
+                    cx.emit(EditorEvent::OpenWikiLink(title.into()));
+                    return;
+                }
+                Some(markdown_syntax::LinkHit::Url(url)) => {
+                    cx.emit(EditorEvent::OpenLink(url.into()));
+                    return;
+                }
+                None => {}
+            }
         }
         // A press on a table's hover "+" strip adds a row (below) or column (right).
         // The insert APIs are caret-driven, so seat the caret in the table to target
@@ -5076,6 +5107,9 @@ struct PrepaintState {
     /// grips' resize cursor). Set in paint via `set_cursor_style`.
     checkbox_grips: Vec<(usize, Hitbox)>,
     chip_grips: Vec<(usize, Hitbox)>,
+    /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
+    /// `[text](url)`), so hovering a clickable link shows a hand.
+    link_grips: Vec<Hitbox>,
     /// Per-table hover-revealed add-row/add-column "+" affordances (issue #16).
     table_adds: Vec<TableAdds>,
     /// Hovered-cell delete handles (issue #16): the "−" for the hovered row + column.
@@ -5361,6 +5395,65 @@ impl Element for EditorElement {
                     size(bounds.size.width, *lh),
                 );
                 chip_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+        }
+
+        // Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
+        // `[text](url)`), so hovering shows a hand like the reading view.
+        // Geometry from this frame's shaping: source range → display cols (the
+        // row's offset map) → kerned x via position_for_index. A link that
+        // crosses a wrap boundary gets a box per end (the rare middle rows of
+        // a 3+-row link are skipped). Widget/code/table rows carry no inline
+        // links (images and chips have their own machinery).
+        let mut link_grips = Vec::new();
+        if editor.markdown_style.is_some() && !editor.content.is_empty() {
+            let starts = editor.line_starts();
+            for (i, line_shaped) in wrapped.iter().enumerate() {
+                if widgets.get(i).and_then(Option::as_ref).is_some()
+                    || backgrounds.get(i).and_then(Option::as_ref).is_some()
+                    || tables.get(i).and_then(Option::as_ref).is_some()
+                {
+                    continue;
+                }
+                let (Some(&start), Some(lh)) = (starts.get(i), line_heights.get(i)) else {
+                    continue;
+                };
+                let line = &editor.content[start..editor.line_end(i)];
+                let inset = row_inset(
+                    backgrounds.get(i).copied().flatten(),
+                    marks.get(i).copied().flatten(),
+                );
+                for (range, _) in markdown_syntax::links(line) {
+                    let map = maps.get(i).and_then(Option::as_ref);
+                    let d1 = display_col_in(map, range.start);
+                    let d2 = display_col_in(map, range.end);
+                    let (Some(p1), Some(p2)) = (
+                        line_shaped.position_for_index(d1, *lh),
+                        line_shaped.position_for_index(d2, *lh),
+                    ) else {
+                        continue;
+                    };
+                    if d1 >= d2 {
+                        continue; // fully hidden (e.g. collapsed markers)
+                    }
+                    let origin = point(bounds.origin.x + inset, bounds.origin.y + line_tops[i]);
+                    if p1.y == p2.y {
+                        let hit = Bounds::new(
+                            point(origin.x + p1.x, origin.y + p1.y),
+                            size(p2.x - p1.x, *lh),
+                        );
+                        link_grips.push(window.insert_hitbox(hit, HitboxBehavior::Normal));
+                    } else {
+                        // Wrapped: head runs to the row's end, tail from its row's start.
+                        let head = Bounds::new(
+                            point(origin.x + p1.x, origin.y + p1.y),
+                            size((line_shaped.width() - p1.x).max(px(0.)), *lh),
+                        );
+                        let tail = Bounds::new(point(origin.x, origin.y + p2.y), size(p2.x, *lh));
+                        link_grips.push(window.insert_hitbox(head, HitboxBehavior::Normal));
+                        link_grips.push(window.insert_hitbox(tail, HitboxBehavior::Normal));
+                    }
+                }
             }
         }
 
@@ -5672,6 +5765,7 @@ impl Element for EditorElement {
             image_grips,
             checkbox_grips,
             chip_grips,
+            link_grips,
             table_adds,
             row_del,
             col_del,
@@ -6097,6 +6191,11 @@ impl Element for EditorElement {
                 _ => None,
             })
             .collect();
+        // Hovering an inline link shows a hand, like the reading view (the
+        // hitboxes come from prepaint; cursor styles must be set during paint).
+        for hb in &prepaint.link_grips {
+            window.set_cursor_style(CursorStyle::PointingHand, hb);
+        }
         self.editor.update(cx, |editor, _| {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;

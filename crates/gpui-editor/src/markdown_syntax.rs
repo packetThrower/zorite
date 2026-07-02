@@ -626,6 +626,103 @@ fn find2(b: &[u8], from: usize, end: usize, c1: u8, c2: u8) -> Option<usize> {
     (from..end.saturating_sub(1)).find(|&k| b[k] == c1 && b[k + 1] == c2)
 }
 
+/// What a click at byte `col` of `line` lands on, link-wise. `Page` opens a
+/// page by title (a `[[wiki-link]]` or a `#tag` — Logseq semantics, matching
+/// the reading view); `Url` is a `[text](url)`'s target (the host opens http
+/// externally, resolves files itself).
+#[derive(Debug, PartialEq)]
+pub(crate) enum LinkHit {
+    Page(String),
+    Url(String),
+}
+
+/// Every clickable link in `line`, as `(source byte range, target)` — the
+/// click-navigation twin of [`scan_line`]'s styling, walking the same
+/// constructs with the same precedence so what LOOKS like a link acts like
+/// one. Images (`![](src)`), footnote refs, and anything inside inline code
+/// are opaque — not links. Feeds both the click hit-test ([`link_at`]) and
+/// the hover pointer-cursor hitboxes.
+pub(crate) fn links(line: &str) -> Vec<(Range<usize>, LinkHit)> {
+    let b = line.as_bytes();
+    let end = line.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < end {
+        let c = b[i];
+        // Inline code: the span is opaque (a URL inside backticks is verbatim).
+        if c == b'`'
+            && let Some(close) = find1(b, i + 1, end, b'`')
+        {
+            i = close + 1;
+            continue;
+        }
+        // Wiki-link: [[target]] / [[target|alias]] — anywhere on it opens
+        // `target` (the alias is display-only, same as the reading view).
+        if c == b'['
+            && i + 1 < end
+            && b[i + 1] == b'['
+            && let Some(close) = find2(b, i + 2, end, b']', b']')
+        {
+            let inner = line[i + 2..close].trim();
+            let target = inner.split_once('|').map_or(inner, |(t, _)| t).trim();
+            if !target.is_empty() {
+                out.push((i..close + 2, LinkHit::Page(target.to_string())));
+            }
+            i = close + 2;
+            continue;
+        }
+        // Footnote reference [^label]: styled like a link but not one.
+        if c == b'['
+            && i + 1 < end
+            && b[i + 1] == b'^'
+            && let Some(rb) = find1(b, i + 2, end, b']')
+            && rb > i + 2
+        {
+            i = rb + 1;
+            continue;
+        }
+        // Inline link [text](url) — or an image ![alt](src), which is NOT a
+        // link click (images render as widgets / have their own machinery).
+        if c == b'['
+            && let Some(rb) = find1(b, i + 1, end, b']')
+            && rb + 1 < end
+            && b[rb + 1] == b'('
+            && let Some(rp) = find1(b, rb + 2, end, b')')
+        {
+            let is_image = i > 0 && b[i - 1] == b'!';
+            let url = line[rb + 2..rp].trim();
+            if !is_image && !url.is_empty() {
+                out.push((i..rp + 1, LinkHit::Url(url.to_string())));
+            }
+            i = rp + 1;
+            continue;
+        }
+        // Tag: #tag → the page of that name (Logseq semantics, like the
+        // reading view's tag links).
+        if c == b'#' && (i == 0 || !is_word(b[i - 1])) {
+            let mut j = i + 1;
+            while j < end && is_tag(b[j]) {
+                j += 1;
+            }
+            if j > i + 1 {
+                out.push((i..j, LinkHit::Page(line[i + 1..j].to_string())));
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The link under byte `col` of `line`, if any (see [`links`]).
+pub(crate) fn link_at(line: &str, col: usize) -> Option<LinkHit> {
+    links(line)
+        .into_iter()
+        .find(|(r, _)| r.contains(&col))
+        .map(|(_, hit)| hit)
+}
+
 /// ATX heading depth (1–6) if `line` is a heading: 1–6 leading `#` followed by
 /// a space or end-of-line. `None` otherwise.
 pub(crate) fn heading_level(line: &str) -> Option<u8> {
@@ -1528,6 +1625,29 @@ mod tests {
         assert_eq!(image_row("1. ![a](b.png)"), Some(("b.png", None, 3)));
         assert_eq!(image_row("![a](b.png)"), Some(("b.png", None, 0)));
         assert_eq!(image_row("- text ![a](b.png)"), None);
+    }
+
+    #[test]
+    fn link_at_hits_every_linkable_construct() {
+        use LinkHit::*;
+        let line = "see [[Ops Net|the net]] and #scada plus [docs](https://x.io/d) `#not` [[]]";
+        // Anywhere on the wiki link (brackets included) → its target, not the alias.
+        assert_eq!(link_at(line, 4), Some(Page("Ops Net".into())));
+        assert_eq!(link_at(line, 15), Some(Page("Ops Net".into())));
+        // The tag, including its `#`.
+        assert_eq!(link_at(line, 28), Some(Page("scada".into())));
+        assert_eq!(link_at(line, 33), Some(Page("scada".into())));
+        // The inline link: label, brackets, or url all navigate.
+        assert_eq!(link_at(line, 41), Some(Url("https://x.io/d".into())));
+        assert_eq!(link_at(line, 55), Some(Url("https://x.io/d".into())));
+        // Plain text, a tag inside code, and an empty wiki link are not links.
+        assert_eq!(link_at(line, 0), None);
+        assert_eq!(link_at(line, 66), None); // inside `#not`
+        assert_eq!(link_at(line, 72), None); // [[]]
+        // An image is a widget, not a link — even on its url.
+        assert_eq!(link_at("![alt](images/a.png)", 10), None);
+        // A footnote ref is styled like a link but isn't one.
+        assert_eq!(link_at("x [^1] y", 3), None);
     }
 
     #[test]
