@@ -9,6 +9,35 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-01
+
+Links are clickable while editing again, plus a CRT theme and themed
+widgets everywhere.
+
+### Added
+
+- **CRT (Green Phosphor) theme** — pure black, phosphor-green text, amber
+  tags; a VT100 look, dark-only. Pick it under Settings → Appearance.
+
+### Fixed
+
+- **Links navigate in WYSIWYG editing** — `[[wiki-links]]` (aliases too),
+  `#tags`, and `[text](url)` open on a plain click, with a hand cursor on
+  hover, matching the reading view. Double-click still selects, and
+  clicking beside a link still edits its text.
+- **Custom themes reach every widget** — buttons, sliders, focus rings, and
+  tab labels previously kept stock colors on any theme whose foreground
+  isn't near-white; accent-button labels now pick black or white for
+  contrast automatically.
+- **Theme switches apply live to open notes** — tag/code/link colors no
+  longer keep the old theme until a restart.
+- **Mermaid diagram borders** are clearly visible on dark themes.
+
+### Changed
+
+- **GUI framework refresh** (gpui + gpui-component, ~a month of upstream
+  fixes) — no user-facing changes expected; report anything that moved.
+
 ## [0.4.0] - 2026-07-01
 
 LaTeX math — write and edit equations in your notes, inline and as display
