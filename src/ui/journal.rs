@@ -68,7 +68,7 @@ fn day_section(
 
     // WYSIWYG on → the live editor is the only view (it renders fully when
     // unfocused, reveals on caret while editing). Off → the classic flow: the
-    // rendered reading view, swapped for the editor only while editing this day.
+    // reader view, swapped for the editor only while editing this day.
     let body = if app.wysiwyg() || app.is_editing_day(date) {
         // gpui-editor has no chrome of its own; the wrapper sets the ambient
         // text style (size/color) the editor inherits when it shapes lines.
@@ -127,8 +127,8 @@ fn day_open_area(i: usize, date: &str, cx: &mut Context<AppView>) -> impl IntoEl
         )
 }
 
-/// A non-editing day: rendered markdown (or a placeholder when empty),
-/// clickable to enter edit mode.
+/// A non-editing day in the reader view (WYSIWYG off): rendered markdown via
+/// gpui-markdown (or a placeholder when empty), clickable to enter edit mode.
 fn rendered_day(
     app: &AppView,
     i: usize,

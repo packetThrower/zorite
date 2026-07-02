@@ -1,4 +1,9 @@
-//! A from-scratch multi-line text editor for GPUI.
+//! Zorite's **WYSIWYG** (live-preview) markdown editor — and, without a
+//! [`SyntaxStyle`] installed, its **raw**-markdown editor. A from-scratch
+//! multi-line text editor for GPUI. (The third view, the read-only
+//! **reader**, is the separate `gpui-markdown` crate — the two engines share
+//! nothing, so any markdown behavior added here must be checked there and
+//! vice versa. See AGENTS.md "The three views".)
 //!
 //! Host-agnostic — depends only on `gpui` (+ `unicode-segmentation`); no
 //! `gpui-component`. Built directly on gpui's text primitives: an
@@ -6,13 +11,21 @@
 //! text shaping, and a custom [`Element`] that lays out + paints the lines,
 //! cursor, and selection. The editor **auto-grows** to its content height (no
 //! inner scrollbar), so a host can stack many editors in one scroll view.
+//! Editing fundamentals: cursor/selection, undo/redo, IME, soft-wrap,
+//! clipboard, spell-check diagnostics (squiggles + suggestion menu).
 //!
-//! This is the basis for Zorite's note editor, built so we own the editor and
-//! can add things gpui-component gates behind its code-editor mode — first up,
-//! spell-check squiggles. **Done:** multi-line text, cursor + selection,
-//! type/backspace/delete/enter, arrow + Home/End nav, copy/cut/paste, click +
-//! drag selection, IME, and **soft-wrap** with content-driven height. Undo/redo,
-//! visual-row up/down, diagnostics/squiggles, and richer styling come next.
+//! WYSIWYG mode is [`EditorState::set_markdown_style`] plus the block
+//! providers (`set_block_image_provider` & co). Comments reference its
+//! feature milestones by code:
+//!
+//! - **W1** — inline styling: bold/italic/strike/code/links/wiki-links/tags,
+//!   markers dimmed in place (`markdown_syntax::scan_line`).
+//! - **W2** — heading font sizes (variable per-line heights).
+//! - **W4** — block widgets: **W4a** inline images, **W4b** fenced code
+//!   blocks, **W4c** tables (Word-style editing); mermaid + `$$math$$`
+//!   rasters ride the same widget path.
+//! - **W6** — marker *hiding* with reveal-on-caret: the painted text drops
+//!   the syntax markers, and per-row offset maps translate display ↔ source.
 //!
 //! Usage: create an [`EditorState`] entity and render it; call [`bind_keys`]
 //! once at startup so the editing actions resolve while it's focused.
@@ -393,6 +406,8 @@ pub fn inline_math_sources(content: &str) -> Vec<SharedString> {
 
 /// The editor: text + cursor/selection state, an undo/redo history, plus a
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
+/// Renders the WYSIWYG view when a markdown [`SyntaxStyle`] is installed, the
+/// raw-markdown view otherwise.
 pub struct EditorState {
     focus_handle: FocusHandle,
     /// The whole document, newline-separated. Byte offsets index into this.
@@ -465,8 +480,9 @@ pub struct EditorState {
     /// Spans to underline (misspellings, etc.), set by the host via
     /// [`Self::set_diagnostics`].
     diagnostics: Vec<Diagnostic>,
-    /// Inline-markdown styling palette; `Some` turns on live-preview rendering
-    /// (W1), `None` is plain text. Set by the host via [`Self::set_markdown_style`].
+    /// Inline-markdown styling palette; `Some` = the WYSIWYG (live-preview)
+    /// view (W1), `None` = the raw view (plain text). Set by the host via
+    /// [`Self::set_markdown_style`].
     markdown_style: Option<SyntaxStyle>,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
@@ -661,10 +677,11 @@ impl EditorState {
         cx.notify();
     }
 
-    /// Turn on live-preview markdown styling with the given color/font palette
-    /// (call once at setup). Inline bold/italic/code/link/tag formatting then
-    /// renders as you type — markers stay in the text, dimmed. Without it the
-    /// editor renders plain text (spell-check underlines only).
+    /// Turn on WYSIWYG (live-preview) markdown styling with the given
+    /// color/font palette (call once at setup). Inline bold/italic/code/link/
+    /// tag formatting then renders as you type — markers stay in the text,
+    /// dimmed. Without it the editor is the raw view: plain text, spell-check
+    /// underlines only.
     pub fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>) {
         self.markdown_style = Some(style);
         cx.notify();
@@ -3984,15 +4001,16 @@ fn shape_inline_math(
     (nd, nr, nm, inline)
 }
 
-/// Shape `content` line-by-line so each logical line can use its own font size
-/// (headings are larger — W2) and a standalone image line can render as the image
-/// (W4). Returns, per logical line: the shaped source [`WrappedLine`], its row
-/// height, and `Some(BlockImg)` when it paints as an image. `md` drives the
-/// per-line size + inline styling (`None` keeps the base size, no images);
-/// `diagnostics` are clipped + shifted to each line. The caret's line
-/// (`caret_row`) always shows source, so an image stays editable ("raw on
-/// caret"). A single line always shapes to one wrapped line (incl. empty), so the
-/// counts match the logical lines and blank rows stay positionable.
+/// The WYSIWYG layout pass: shape `content` line-by-line so each logical line
+/// can use its own font size (headings are larger — W2) and a standalone image
+/// line can render as the image (W4). Returns, per logical line: the shaped
+/// source [`WrappedLine`], its row height, and `Some(BlockImg)` when it paints
+/// as an image. `md` drives the per-line size + inline styling (`None` = the
+/// raw view: base size, no widgets); `diagnostics` are clipped + shifted to
+/// each line. The caret's line (`caret_row`) always shows source, so an image
+/// stays editable ("raw on caret"). A single line always shapes to one wrapped
+/// line (incl. empty), so the counts match the logical lines and blank rows
+/// stay positionable.
 #[allow(clippy::too_many_arguments)]
 fn shape_document(
     window: &mut Window,

@@ -15,6 +15,19 @@ work is collected under [Completed](#completed) at the bottom.
 - [Completed](#completed)
 
 ## Editor & rendering
+- [ ] **Shared markdown-construct parser for the reader and WYSIWYG** — the two
+  views are separate engines that share zero code (see AGENTS.md "The three
+  views"): gpui-markdown parses via mdast, gpui-editor via its own line
+  scanner (`markdown_syntax`), so every construct is recognized twice and
+  features drift — links navigated in the reader for months while WYSIWYG
+  ignored clicks (fixed 0.4.1), and `markdown_syntax::links()` now duplicates
+  target-extraction knowledge gpui-markdown already had. Idea: a small shared
+  crate (or module) owning "what counts as a construct and what's its
+  payload" — wiki-link target/alias split, tag boundaries, link URL, image
+  src/width, task boxes — that both engines consume for *recognition*, while
+  each keeps its own rendering. Cuts the class of carry-over bugs at the
+  root; the AGENTS.md cross-view rule is the interim guard. Start with the
+  linkables (wiki/tag/url), the most drift-prone
 - [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 - [ ] WYSIWYG table editing (`wysiwyg` branch): deleting the **last row or last column** via the right-click menu drops the caret just below the table. The op computes a correct in-table caret offset (confirmed via logging — e.g. `caret=2 rc=(0,2)`), but a later step in the editor's `Changed` flow moves the caret to the document end before the next paint. Other rows/columns are fine. Auto-pair was ruled out (it now skips non-keystroke edits); the resetter is still unidentified — likely a `set_cursor`/`set_text` on a reactive path (save / slash / spellcheck / toolbar refresh)

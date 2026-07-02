@@ -1,4 +1,7 @@
-//! A small markdown renderer for GPUI.
+//! Zorite's **reader** view: a small read-only markdown renderer for GPUI.
+//! (Editing — WYSIWYG and raw — is the separate `gpui-editor` crate; the two
+//! engines share nothing, so any markdown behavior added here must be checked
+//! there and vice versa. See AGENTS.md "The three views".)
 //!
 //! It parses markdown to an AST (via the `markdown` crate) and renders
 //! it with gpui's own `StyledText` / `InteractiveText`, so paragraphs
@@ -236,7 +239,7 @@ pub type ClickSourceHandler = Rc<dyn Fn(usize, Pixels, &mut Window, &mut App)>;
 /// [`MarkdownView::on_task_toggle`].
 pub type TaskToggleHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
-/// A rendered markdown document element.
+/// A rendered markdown document element — the reader view of a note.
 #[derive(IntoElement)]
 pub struct MarkdownView {
     id_base: SharedString,

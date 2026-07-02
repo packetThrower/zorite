@@ -21,6 +21,33 @@ workspace (edition 2024): the app at the root, plus six reusable crates under `c
 - `crates/os-spellcheck` — native OS spell-check (no deps; macOS/Windows, Linux no-op).
 - `docs/` — Astro Starlight docs site (auto-deploys on push to `main`).
 
+## The three views
+
+A note renders in exactly one of three views. Use these names — in code,
+comments, and commits — so a search for the view name finds its implementation:
+
+| View | What it is | Owner | Switched by |
+|---|---|---|---|
+| **WYSIWYG** | Live-preview *editing*: markers dimmed/hidden, headings sized, images/tables/math render inline, reveal-on-caret | `crates/gpui-editor` with a `markdown_style` installed | `AppView.wysiwyg` on (the default; Settings → Markdown) |
+| **raw** | Plain-text *editing*: the bare markdown source, no styling | `crates/gpui-editor` with no `markdown_style` | `AppView.wysiwyg` off, while editing |
+| **reader** | *Read-only* rendered markdown (clickable links, checkboxes) | `crates/gpui-markdown` (`MarkdownView`) | `AppView.wysiwyg` off, when not editing |
+
+The app picks the view in `day_section` (`src/ui/journal.rs`) and its
+`src/ui/page_view.rs` twin; hosts wire renderers/handlers to both crates from
+`src/ui/` and the `EditorEvent` subscriptions in `src/app.rs`.
+
+**The cross-view rule:** any user-facing markdown behavior — rendering a
+construct, clicking it, hover cursors — must be implemented (or knowingly
+skipped) in **both** the reader (`gpui-markdown`) and WYSIWYG
+(`gpui-editor`); raw is plain text by design. They are separate engines and
+share nothing: a feature added to one does NOT appear in the other. This has
+bitten before — links (`[[wiki]]`, `#tag`, `[text](url)`) navigated in the
+reader for months while WYSIWYG silently ignored clicks (fixed in 0.4.1).
+When you touch one side, grep the other for the same construct.
+
+`gpui-editor` comments use `W1`/`W2`/`W4a–c`/`W6` milestone codes for WYSIWYG
+features — the legend is in that crate's `lib.rs` top doc.
+
 ## Build, run, and the gate
 
 ```

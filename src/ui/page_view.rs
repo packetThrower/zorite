@@ -67,7 +67,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .min_h(relative(1.0))
                         .child(page_title(pe))
                         // WYSIWYG on → the live editor is the only view; off → the
-                        // rendered reading view, swapped for the editor while editing.
+                        // reader view, swapped for the editor while editing.
                         .child(if app.wysiwyg() || app.is_page_editing() {
                             // gpui-editor draws no chrome; the wrapper sets the
                             // ambient text style it inherits when shaping lines.
