@@ -9,10 +9,12 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
-## [0.4.0]
+## [0.4.0] - 2026-07-01
 
 LaTeX math — write and edit equations in your notes, inline and as display
-blocks, with a two-dimensional structural editor.
+blocks, with a two-dimensional structural editor. Images grow up too: they
+behave like objects in the editor, and dropping, resizing, and deleting them
+all work the way you'd expect.
 
 ### Added
 
@@ -28,6 +30,32 @@ blocks, with a two-dimensional structural editor.
 - **Copy and export** — right-click a formula to copy its LaTeX or export it as a
   PNG or a self-contained SVG.
 - **`/math`** inserts a math block from the command palette.
+
+### Changed
+
+- **Images are objects in the editor** (Word-style): moving the caret onto a
+  picture no longer flips it to raw markdown — the caret parks beside it,
+  Backspace/Delete removes the whole picture as one undoable edit, and
+  right-click offers **Delete image**.
+- **Roomier editor line height**, so stacked lines and lists read less cramped.
+- **Mermaid diagrams display at half their natural size** — better proportioned
+  next to note text, and pixel-crisp on Retina displays.
+
+### Fixed
+
+- **Math and diagrams are the same size on every display.** Formulas rendered
+  twice as large on Linux (1× displays), and mermaid diagrams changed size from
+  one monitor to another — both now size platform-independently.
+- **Dropped and pasted images render immediately**, instead of showing a bare
+  `!` until the next keystroke or tab switch.
+- **Resizing works right after a drop**, and a resized image survives switching
+  tabs and back (it used to come back as bare `{width=…}` text).
+- **The journal rolls over midnight** — a window left open overnight now shows
+  the new day without a restart.
+- **Headings nested in list items** (`- ### Notes`) render as headings while
+  editing, not as literal `###` text.
+- **Search results reopen** when clicking back into a search box that still
+  holds a query — no more editing the text to get the results back.
 
 ## [0.3.0] - 2026-06-24
 
