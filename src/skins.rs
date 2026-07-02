@@ -116,6 +116,16 @@ pub fn builtin_skins() -> Vec<Skin> {
                 0x120522, 0x0A0317, 0x1A0D2E, 0xF0E6FF, 0xFF006E, 0x00E5FF, 0xFFE600,
             ),
         ),
+        // CRT (green phosphor, dark-only): pure black surfaces, phosphor-green
+        // text/accent, amber tags — Baudrun's VT100 skin mapped to the palette
+        // (its scan-lines / glyph glow / VT323 font are effects, not colors).
+        Skin::builtin_dark(
+            "crt",
+            "CRT (Green Phosphor)",
+            (
+                0x000000, 0x030703, 0x000000, 0x33FF33, 0x55FF55, 0xFFFF55, 0x88FF88,
+            ),
+        ),
         // E-Ink (paper/ink) — monochrome; its native accent is near-invisible on
         // its dark ground, so we use the sepia tone so the active tab / headings
         // stay legible.
