@@ -112,6 +112,9 @@ fn main() {
     let application = gpui_platform::application().with_assets(Assets);
     application.run(|cx: &mut App| {
         gpui_component::init(cx);
+        // User-added UI fonts (Settings → Appearance → Font) live in the
+        // managed fonts/ dir; register them before any window measures text.
+        theme::register_user_fonts(cx);
         // Slash-menu keys (up/down/enter/escape, gated on the menu being open)
         // plus the app-wide shortcuts (new tab/window, close tab, quit, …).
         // The from-scratch editor binds its own editing keys in the "Editor"

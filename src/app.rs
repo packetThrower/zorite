@@ -365,6 +365,9 @@ pub struct AppView {
     /// Available themes (built-ins + user) and the active one's id.
     skins: Vec<Skin>,
     skin_id: String,
+    /// App-wide font family override ("" = the platform default), persisted.
+    /// Applied via gpui-component's theme, so every window/editor inherits it.
+    ui_font: String,
     /// PDF render-quality multiplier (1.0 = native DPI), persisted; mirrored into the
     /// `crate::pdf` global that each `PdfView`'s quality closure reads.
     pdf_quality: f32,
@@ -658,6 +661,7 @@ impl AppView {
             settings_window: None,
             skins: skins::builtin_skins(),
             skin_id: String::new(),
+            ui_font: String::new(),
             pdf_quality: DEFAULT_PDF_QUALITY,
             list_indent: DEFAULT_LIST_INDENT,
             check_updates: true,
@@ -733,6 +737,7 @@ impl AppView {
             .db
             .get_setting("theme_skin")
             .unwrap_or_else(|| "zorite".to_string());
+        this.ui_font = this.db.get_setting("ui_font").unwrap_or_default();
         this.mode = this
             .db
             .get_setting("theme_mode")
@@ -4326,7 +4331,15 @@ impl AppView {
                 theme::Mode::Auto => self.system_dark,
             };
         let palette = if is_dark { skin.dark } else { skin.light };
+        // Font precedence: the user's explicit Font setting wins over the
+        // theme's `font`, which wins over the platform default.
+        let font = if self.ui_font.is_empty() {
+            skin.font.clone().unwrap_or_default()
+        } else {
+            self.ui_font.clone()
+        };
         theme::apply(palette, is_dark, window, cx);
+        theme::set_ui_font(&font, cx);
         // Diagrams are themed at render time — drop the cache so they re-render
         // with the new palette (Rc<RefCell>, so this is fine from `&self`).
         self.mermaid_store.borrow_mut().clear();
@@ -4353,6 +4366,59 @@ impl AppView {
         self.skin_id = id;
         self.apply_theme(window, cx);
         let _ = self.db.set_setting("theme_skin", &self.skin_id);
+    }
+
+    /// The app-wide font family override ("" = the platform default).
+    pub fn ui_font(&self) -> &str {
+        &self.ui_font
+    }
+
+    /// Set the app-wide font family (empty = default), persist, and re-apply.
+    pub fn set_ui_font(&mut self, family: String, window: &mut Window, cx: &mut Context<Self>) {
+        if family == self.ui_font {
+            return;
+        }
+        self.ui_font = family;
+        let _ = self.db.set_setting("ui_font", &self.ui_font);
+        self.apply_theme(window, cx);
+        cx.notify();
+    }
+
+    /// Import a picked font file as the app font: register it with the text
+    /// system, copy it into the managed `fonts/` dir (so it re-registers on
+    /// launch), and select its family. Returns the family name, or `None` if
+    /// the file isn't a usable font (or its family is already installed —
+    /// then it's already in the font list, nothing to import).
+    pub fn add_ui_font_file(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let bytes = std::fs::read(&path)
+            .map_err(|e| log::error!("read font {}: {e}", path.display()))
+            .ok()?;
+        // gpui has no "family name of these bytes" API — diff the installed
+        // set around registration. Registering doubles as validation.
+        let before: std::collections::HashSet<String> =
+            cx.text_system().all_font_names().into_iter().collect();
+        if let Err(e) = cx.text_system().add_fonts(vec![bytes.into()]) {
+            log::warn!("not a usable font {}: {e}", path.display());
+            return None;
+        }
+        let family = cx
+            .text_system()
+            .all_font_names()
+            .into_iter()
+            .find(|n| !before.contains(n))?;
+        if let Err(e) =
+            crate::images::import_into(&path, &crate::paths::fonts_dir(), "fonts", "ttf")
+        {
+            // Usable this session but won't survive a relaunch — still apply.
+            log::error!("copy font {}: {e}", path.display());
+        }
+        self.set_ui_font(family.clone(), window, cx);
+        Some(family)
     }
 
     /// Re-scan the themes folder (built-ins + user) and re-apply, so edits

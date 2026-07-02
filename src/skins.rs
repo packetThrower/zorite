@@ -19,6 +19,11 @@ pub struct Skin {
     /// True for the bundled skins, false for user themes loaded from disk. Lets the
     /// Settings "Installed themes" list show only the user's own (no stale id list).
     pub is_builtin: bool,
+    /// Font family the theme asks for (Zed-style: a reference by name, no
+    /// bundled file — install it or add it via Settings → Font). Applied when
+    /// the user's own Font setting is "Default"; an unknown family silently
+    /// falls back to the default font.
+    pub font: Option<String>,
 }
 
 /// Base colors for one mode: `(bg_window, bg_sidebar, bg_content, fg, accent, tag, code)`.
@@ -44,6 +49,7 @@ impl Skin {
             ),
             dark_only: false,
             is_builtin: true,
+            font: None,
         }
     }
 
@@ -59,6 +65,7 @@ impl Skin {
             light: palette,
             dark_only: true,
             is_builtin: true,
+            font: None,
         }
     }
 }
@@ -154,8 +161,12 @@ pub fn builtin_skins() -> Vec<Skin> {
 
 // --- User themes (JSON) ---
 
-/// Per-mode color overrides in a user theme. Any omitted token falls back
-/// to the base ("Zorite") palette, so a theme can be just a few colors.
+/// Per-mode color overrides in a user theme. The first block is the base
+/// colors — any omitted one falls back to the base ("Zorite") palette, and
+/// every other `Palette` token derives from them (see `make_palette`), so a
+/// theme can be just a few colors. The second block optionally pins any
+/// derived token directly; those accept `#RRGGBBAA` since most defaults are
+/// translucent.
 #[derive(Default, Deserialize)]
 #[serde(default)]
 struct ColorSet {
@@ -166,11 +177,26 @@ struct ColorSet {
     accent: Option<String>,
     tag: Option<String>,
     code: Option<String>,
+    // Derived-token overrides, one per remaining Palette field.
+    elevated: Option<String>,
+    glass: Option<String>,
+    glass_strong: Option<String>,
+    hover: Option<String>,
+    border_subtle: Option<String>,
+    divider: Option<String>,
+    accent_hover: Option<String>,
+    accent_active: Option<String>,
+    accent_tint: Option<String>,
+    text_primary: Option<String>,
+    text_secondary: Option<String>,
+    text_tertiary: Option<String>,
 }
 
 /// A user theme file: `{ "id", "name", "dark": {…}, "light": {…} }`. Set
 /// `"dark_only": true` for an always-dark theme — the light block is ignored and
 /// the window chrome stays dark regardless of the Light/Dark/Auto setting.
+/// An optional `"font": "Family Name"` names the theme's typeface (see
+/// [`Skin::font`]).
 #[derive(Deserialize)]
 struct SkinFile {
     id: String,
@@ -181,6 +207,8 @@ struct SkinFile {
     light: ColorSet,
     #[serde(default)]
     dark_only: bool,
+    #[serde(default)]
+    font: Option<String>,
 }
 
 /// Parse `#RRGGBB` / `#RRGGBBAA` (alpha ignored) to packed RGB.
@@ -197,8 +225,28 @@ fn pick(opt: &Option<String>, base: u32) -> u32 {
     opt.as_deref().and_then(parse_hex).unwrap_or(base)
 }
 
+/// Parse `#RRGGBB` / `#RRGGBBAA` (alpha honored) for derived-token overrides.
+fn parse_hsla(s: &str) -> Option<gpui::Hsla> {
+    let s = s.trim().trim_start_matches('#');
+    let (rgb, alpha) = match s.len() {
+        6 => (u32::from_str_radix(s, 16).ok()?, 1.0),
+        8 => (
+            u32::from_str_radix(&s[..6], 16).ok()?,
+            u8::from_str_radix(&s[6..], 16).ok()? as f32 / 255.0,
+        ),
+        _ => return None,
+    };
+    Some(crate::theme::from_rgb(rgb, alpha))
+}
+
+fn override_token(field: &mut gpui::Hsla, opt: &Option<String>) {
+    if let Some(c) = opt.as_deref().and_then(parse_hsla) {
+        *field = c;
+    }
+}
+
 fn build_palette(cs: &ColorSet, base: Base, is_dark: bool) -> Palette {
-    make_palette(
+    let mut p = make_palette(
         pick(&cs.bg_window, base.0),
         pick(&cs.bg_sidebar, base.1),
         pick(&cs.bg_content, base.2),
@@ -207,7 +255,20 @@ fn build_palette(cs: &ColorSet, base: Base, is_dark: bool) -> Palette {
         pick(&cs.tag, base.5),
         pick(&cs.code, base.6),
         is_dark,
-    )
+    );
+    override_token(&mut p.elevated, &cs.elevated);
+    override_token(&mut p.glass, &cs.glass);
+    override_token(&mut p.glass_strong, &cs.glass_strong);
+    override_token(&mut p.hover, &cs.hover);
+    override_token(&mut p.border_subtle, &cs.border_subtle);
+    override_token(&mut p.divider, &cs.divider);
+    override_token(&mut p.accent_hover, &cs.accent_hover);
+    override_token(&mut p.accent_active, &cs.accent_active);
+    override_token(&mut p.accent_tint, &cs.accent_tint);
+    override_token(&mut p.text_primary, &cs.text_primary);
+    override_token(&mut p.text_secondary, &cs.text_secondary);
+    override_token(&mut p.text_tertiary, &cs.text_tertiary);
+    p
 }
 
 /// Load user themes from the themes dir (created if missing). Invalid files
@@ -243,10 +304,33 @@ pub fn load_user_skins() -> Vec<Skin> {
                     dark,
                     dark_only: f.dark_only,
                     is_builtin: false,
+                    font: f.font,
                 });
             }
             Err(e) => log::warn!("theme {}: {e}", path.display()),
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derived_tokens_override_and_alpha_parses() {
+        let cs: ColorSet = serde_json::from_str(
+            r##"{ "fg": "#112233", "text_secondary": "#FF000080", "divider": "#00FF00" }"##,
+        )
+        .unwrap();
+        let p = build_palette(&cs, ZORITE_DARK, true);
+        // Overridden: opaque green divider, half-alpha red secondary text.
+        assert_eq!(p.divider, crate::theme::from_rgb(0x00FF00, 1.0));
+        assert_eq!(
+            p.text_secondary,
+            crate::theme::from_rgb(0xFF0000, 128.0 / 255.0)
+        );
+        // Not overridden: primary text still derives from fg at 0.92 alpha.
+        assert_eq!(p.text_primary, crate::theme::from_rgb(0x112233, 0.92));
+    }
 }

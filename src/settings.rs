@@ -77,6 +77,21 @@ fn theme_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt
     }
 }
 
+/// Font-dropdown choices: Default, then every installed family (including the
+/// user-added ones registered at startup / via "Add font file…").
+fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>, String) {
+    let mut names = cx.text_system().all_font_names();
+    names.sort();
+    names.dedup();
+    let mut opts = vec![Opt::new("", "Default")];
+    opts.extend(names.iter().map(|n| Opt::new(n, n)));
+    let current = app
+        .upgrade()
+        .map(|a| a.read(cx).ui_font().to_string())
+        .unwrap_or_default();
+    (opts, current)
+}
+
 /// Which settings category the left nav has selected.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -114,6 +129,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
         Tab::Appearance,
         "Appearance",
         "light dark auto system mode variant",
+    ),
+    (
+        Tab::Appearance,
+        "Font",
+        "typeface family typography text ttf otf custom",
     ),
     (
         Tab::Appearance,
@@ -177,6 +197,7 @@ pub struct SettingsView {
     app: WeakEntity<AppView>,
     theme_select: Entity<SelectState<Vec<Opt>>>,
     appearance_select: Entity<SelectState<Vec<Opt>>>,
+    font_select: Entity<SelectState<Vec<Opt>>>,
     quality_slider: Entity<SliderState>,
     indent_select: Entity<SelectState<Vec<Opt>>>,
     date_format_select: Entity<SelectState<Vec<Opt>>>,
@@ -205,9 +226,12 @@ impl SettingsView {
 
         let theme_select = make_select(t_opts, &active_skin, window, cx);
         let appearance_select = make_select(a_opts, mode.as_str(), window, cx);
+        let (f_opts, current_font) = font_opts(&app, cx);
+        let font_select = make_select(f_opts, &current_font, window, cx);
 
         let mut subs = Vec::new();
         subs.push(Self::on_theme_select(&theme_select, window, cx));
+        subs.push(Self::on_font_select(&font_select, window, cx));
         subs.push(cx.subscribe_in(
             &appearance_select,
             window,
@@ -337,6 +361,7 @@ impl SettingsView {
             app,
             theme_select,
             appearance_select,
+            font_select,
             quality_slider,
             indent_select,
             date_format_select,
@@ -374,6 +399,63 @@ impl SettingsView {
                 }
             },
         )
+    }
+
+    /// Subscribe to the font `Select`'s confirm → apply the picked family.
+    fn on_font_select(
+        select: &Entity<SelectState<Vec<Opt>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(
+            select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev {
+                    let id = id.clone();
+                    if let Some(app) = this.app.upgrade() {
+                        app.update(cx, |a, cx| a.set_ui_font(id, window, cx));
+                        cx.notify();
+                    }
+                }
+            },
+        )
+    }
+
+    /// Pick a font file, import it via the app (validate / copy / apply), and
+    /// rebuild the font dropdown so the new family shows up selected.
+    fn choose_font_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Use font".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                if let Some(app) = this.app.upgrade() {
+                    app.update(cx, |a, cx| {
+                        a.add_ui_font_file(path, window, cx);
+                    });
+                }
+                this.rebuild_font_select(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn rebuild_font_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (opts, current) = font_opts(&self.app, cx);
+        let select = make_select(opts, &current, window, cx);
+        self._subs.push(Self::on_font_select(&select, window, cx));
+        self.font_select = select;
+        cx.notify();
     }
 
     /// Re-scan themes on disk and rebuild the theme dropdown to include them.
@@ -766,6 +848,19 @@ impl Render for SettingsView {
             },
         );
 
+        // Font card body: the family dropdown + an import button.
+        let font_control = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(Select::new(&self.font_select).w_full())
+            .child(div().flex().flex_row().child(text_button(
+                "font-add",
+                "Add font file…",
+                cx,
+                |this, w, cx| this.choose_font_file(w, cx),
+            )));
+
         // Installed-themes card body: the actions + the list (or empty state).
         let actions = div()
             .flex()
@@ -1014,6 +1109,14 @@ impl Render for SettingsView {
                                     "Light or dark variant of the active theme. Auto follows \
                                          your system.",
                                     Select::new(&self.appearance_select).w_full(),
+                                ))
+                                .child(self.section_card(
+                                    "Font",
+                                    "The typeface for the app and your notes. Default follows \
+                                         the active theme's font, if it names one. Add a .ttf or \
+                                         .otf file to use a font that isn't installed on your \
+                                         system.",
+                                    font_control,
                                 ))
                                 .child(self.section_card(
                                     "Installed themes",

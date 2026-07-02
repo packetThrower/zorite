@@ -37,6 +37,8 @@ pub struct SyntaxStyle {
     pub tag: Hsla,
     /// Blockquote text + left-border color (a muted tone).
     pub quote: Hsla,
+    /// Thematic break (`---`) divider color.
+    pub rule: Hsla,
     /// `<mark>` highlight background.
     pub mark_bg: Hsla,
     /// Popover/menu surface background (e.g. the right-click table menu).
@@ -1679,6 +1681,7 @@ mod tests {
             link: c,
             tag: c,
             quote: c,
+            rule: c,
             mark_bg: c,
             popover_bg: c,
             popover_border: c,

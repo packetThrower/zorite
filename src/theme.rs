@@ -11,7 +11,7 @@ use gpui::{App, Hsla, Rgba, Window, px};
 use gpui_component::{Theme, ThemeMode};
 
 /// Opaque-or-translucent color from a packed `0xRRGGBB` literal.
-fn from_rgb(hex: u32, alpha: f32) -> Hsla {
+pub(crate) fn from_rgb(hex: u32, alpha: f32) -> Hsla {
     Rgba {
         r: ((hex >> 16) & 0xFF) as f32 / 255.0,
         g: ((hex >> 8) & 0xFF) as f32 / 255.0,
@@ -197,7 +197,10 @@ pub fn markdown_style(indent_spaces: usize) -> gpui_markdown::MarkdownStyle {
         code_color: p.code,
         code_bg: p.glass,
         muted_color: p.text_tertiary,
-        rule_color: p.border_subtle,
+        // A note's `---` follows the divider token, like the journal-day rule;
+        // the nested-list guides stay on the fainter hairline token.
+        rule_color: p.divider,
+        guide_color: p.border_subtle,
         // Translucent amber highlight for `<mark>`; blends over any theme's background.
         mark_bg: gpui::rgba(0xFFD60066).into(),
         // In-page find: a soft yellow on every match, a stronger orange on the
@@ -220,6 +223,7 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
         link: p.accent,
         tag: p.tag,
         quote: p.text_tertiary,
+        rule: p.divider,
         mark_bg: gpui::rgba(0xFFD60066).into(),
         popover_bg: p.bg_sidebar,
         popover_border: p.border_subtle,
@@ -284,6 +288,44 @@ pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App)
     );
     apply_to_component_theme(&palette, cx);
     cx.refresh_windows();
+}
+
+/// Override the app-wide font family on gpui-component's `Theme` (its `Root`
+/// propagates it to every window, so the editors and the reader inherit it).
+/// Empty = gpui-component's default. Run after [`apply`], which can reset it.
+pub fn set_ui_font(family: &str, cx: &mut App) {
+    Theme::global_mut(cx).font_family = if family.is_empty() {
+        // gpui-component's own default (see its `Theme` impl).
+        ".SystemUIFont".into()
+    } else {
+        family.to_string().into()
+    };
+}
+
+/// Register every font file in the managed `fonts/` dir with gpui's text
+/// system, so a user-added face is usable by family name like an installed
+/// one. Run once at startup, before any window opens.
+pub fn register_user_fonts(cx: &App) {
+    let Ok(entries) = std::fs::read_dir(crate::paths::fonts_dir()) else {
+        return;
+    };
+    let fonts: Vec<std::borrow::Cow<'static, [u8]>> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            matches!(
+                p.extension().and_then(|e| e.to_str()),
+                Some(e) if e.eq_ignore_ascii_case("ttf") || e.eq_ignore_ascii_case("otf")
+            )
+        })
+        .filter_map(|p| std::fs::read(p).ok())
+        .map(Into::into)
+        .collect();
+    if !fonts.is_empty()
+        && let Err(e) = cx.text_system().add_fonts(fonts)
+    {
+        log::warn!("registering user fonts: {e}");
+    }
 }
 
 /// Overlay the palette onto gpui-component's `Theme` so its widgets

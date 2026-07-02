@@ -47,7 +47,10 @@ pub struct MarkdownStyle {
     pub code_color: Hsla,
     pub code_bg: Hsla,
     pub muted_color: Hsla,
+    /// Thematic break (`---`) divider color.
     pub rule_color: Hsla,
+    /// Nested-list indent guide — a hairline, fainter than `rule_color`.
+    pub guide_color: Hsla,
     /// Background for `<mark>…</mark>` highlighted text. Translucent so the body text
     /// stays readable over it in any theme.
     pub mark_bg: Hsla,
@@ -77,6 +80,7 @@ impl Default for MarkdownStyle {
             code_bg: rgba(0xFFFFFF14).into(),
             muted_color: rgb(0x9AA0A6).into(),
             rule_color: rgba(0xFFFFFF22).into(),
+            guide_color: rgba(0xFFFFFF14).into(),
             mark_bg: rgba(0xFFD60066).into(),
             search_bg: rgba(0xFFD60055).into(),
             search_current_bg: rgba(0xFF9500DD).into(),
@@ -757,7 +761,7 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
     // A faint vertical guide down each nested level (Logseq-style) makes deep
     // outlines easy to track; the indent padding sits to its right.
     if nested {
-        col = col.border_l_1().border_color(ctx.style.rule_color);
+        col = col.border_l_1().border_color(ctx.style.guide_color);
     }
     let start = list.start.unwrap_or(1) as usize;
 

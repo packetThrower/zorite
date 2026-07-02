@@ -4464,7 +4464,7 @@ fn shape_document(
             && md.is_some()
             && markdown_syntax::thematic_break(line);
         let mark = if is_rule {
-            md.map(|st| LineMark::Rule(st.quote))
+            md.map(|st| LineMark::Rule(st.rule))
         } else {
             gutter
                 .filter(|_| !caret_here && !full_source)
