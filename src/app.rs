@@ -4316,6 +4316,22 @@ impl AppView {
         // Diagrams are themed at render time — drop the cache so they re-render
         // with the new palette (Rc<RefCell>, so this is fine from `&self`).
         self.mermaid_store.borrow_mut().clear();
+        // Open editors hold a SyntaxStyle cloned at creation — re-push it so the
+        // inline tag/code/link colors track the new palette live, instead of
+        // keeping the old theme's until a restart or a WYSIWYG toggle.
+        if self.wysiwyg {
+            let states: Vec<Entity<EditorState>> = self
+                .day_editors
+                .values()
+                .map(|de| de.state.clone())
+                .chain(self.page_editor.as_ref().map(|pe| pe.state.clone()))
+                .collect();
+            for state in states {
+                state.update(cx, |editor, cx| {
+                    editor.set_markdown_style(theme::editor_syntax_style(), cx)
+                });
+            }
+        }
     }
 
     /// Switch to theme `id`, apply it live, and persist.
