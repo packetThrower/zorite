@@ -17,6 +17,7 @@ ignore = [
     { id = "RUSTSEC-2025-0052", reason = "async-std discontinued. Transitive via gpui -> http_client -> async-tar. Upstream Zed will eventually migrate off; revisit at each gpui pull." },
     { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 unmaintained. Transitive via gpui-component and notify -> notify-types. Both upstream; revisit at each gpui-component rev bump." },
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained. Transitive via gpui -> stacksafe -> stacksafe-macro (build-dep). Upstream Zed; revisit at each gpui pull." },
+    { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained (no safe upgrade). Transitive via fontdb, whose parents are all upstream: usvg (gpui + gpui-component), mermaid-rs-renderer (Zed), and ratex-render/-svg. Clears when upstreams move to skrifa; revisit at each gpui/ratex pull." },
 ]
 
 [licenses]
