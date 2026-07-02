@@ -6,9 +6,8 @@ description = "Page-virtualized PDF viewing for GPUI, via the pure-Rust hayro ra
 license = "GPL-3.0-or-later"
 
 [dependencies]
-# Same git spec (no rev) as the workspace root so Cargo unifies to one gpui;
-# the lock pins the actual revision.
-gpui = { git = "https://github.com/zed-industries/zed" }
+# Shared workspace spec (the root pins the rev) so Cargo unifies to one gpui.
+gpui = { workspace = true }
 
 # Pure-Rust PDF rasterizer (no native library, no system-font dependency).
 hayro = "0.7"

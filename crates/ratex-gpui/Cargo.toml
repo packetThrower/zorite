@@ -26,23 +26,19 @@ ratex-render = { version = "0.1", features = ["embed-fonts"] }
 # KaTeX font-families the viewer won't have — which renders with the wrong shapes.
 ratex-svg = { version = "0.1", features = ["embed-fonts"] }
 
-# Same git spec (no rev) as the workspace root + gpui-editor, so Cargo unifies to one
-# gpui; the lockfile pins the actual revision. NOT crates.io 0.2 — Zed doesn't keep that
+# Shared workspace spec (the root pins the rev) so Cargo unifies to one gpui.
+# NOT crates.io 0.2 — Zed doesn't keep that
 # current. Used by the `render` + `editor::view` modules (landing in later milestones).
-gpui = { git = "https://github.com/zed-industries/zed" }
+gpui = { workspace = true }
 
 # Decode RaTeX's PNG into BGRA frames for `RenderImage`. Pin to gpui's `image` minor
 # (0.25), like `gpui-pdf`, so `Frame`/`RgbaImage` unify with what `RenderImage::new` wants.
 image = "0.25"
 
 [dev-dependencies]
-# Opens a real window for `examples/editor.rs` (same git gpui). The Linux backends are
+# Opens a real window for `examples/editor.rs` (shared workspace gpui). The Linux backends are
 # harmless no-ops on macOS; mirrors gpui-editor's example setup.
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
-    "font-kit",
-    "wayland",
-    "x11",
-] }
+gpui_platform = { workspace = true }
 
 # The interactive example needs the editor feature (a render-only build skips it).
 [[example]]

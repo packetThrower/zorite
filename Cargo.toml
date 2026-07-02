@@ -15,6 +15,30 @@ path = "src/main.rs"
 members = ["crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-spellcheck", "crates/ratex-gpui"]
 resolver = "2"
 
+[workspace.dependencies]
+# ONE shared gpui spec for the app and every crate, so Cargo unifies the
+# whole workspace on a single gpui graph (git deps only unify when their
+# specs match exactly). The rev is the one gpui-component's Cargo.toml
+# pins — to upgrade, take gpui-component's new tip, read the gpui rev
+# from ITS Cargo.toml, and update these two plus the gpui-component revs
+# in [dependencies] below. Dependabot's standalone gpui bumps break the
+# lockstep — close them.
+gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+# Per-platform backend. The Linux `wayland` / `x11` features are NOT
+# default — without them `gpui::guess_compositor()` hits `unreachable!`
+# inside a Wayland session before the first paint. Harmless on macOS /
+# Windows. `runtime_shaders` compiles the Metal shaders at app startup
+# instead of at build time — as of this gpui rev the build-time path
+# needs Xcode's separately-downloaded Metal Toolchain, on every dev
+# machine and CI runner (gpui-component's own workspace makes the same
+# choice).
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = [
+    "font-kit",
+    "wayland",
+    "x11",
+    "runtime_shaders",
+] }
+
 [dependencies]
 # Our own markdown renderer (clickable wiki-links), a workspace crate.
 gpui-markdown = { path = "crates/gpui-markdown" }
@@ -66,34 +90,22 @@ env_logger = "0.11"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# --- GUI stack — mirrors ~/git/etch341 exactly ---
+# --- GUI stack ---
 #
-# `gpui` / `gpui_platform` deliberately have NO rev. gpui-component's
-# git tip pins gpui with no rev either, and Cargo only unifies two git
-# deps of the same crate when their specs match — a rev here would
-# duplicate the gpui graph. Reproducibility comes from Cargo.lock,
-# seeded from etch341's known-good graph.
-gpui = { git = "https://github.com/zed-industries/zed" }
-
-# Per-platform backend. The Linux `wayland` / `x11` features are NOT
-# default — without them `gpui::guess_compositor()` hits `unreachable!`
-# inside a Wayland session before the first paint. Harmless on macOS /
-# Windows.
-gpui_platform = { git = "https://github.com/zed-industries/zed", features = [
-    "font-kit",
-    "wayland",
-    "x11",
-] }
+# gpui / gpui_platform come from [workspace.dependencies] (one shared
+# spec, one unified graph — the rev-lockstep rules live up there).
+gpui = { workspace = true }
+gpui_platform = { workspace = true }
 
 # Widget library. Pinned to a git rev because the crates.io release
-# targets a different gpui than our git pin; the git tip pins gpui with
-# no rev so Cargo unifies it against ours.
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
+# targets a different gpui than our git pin; the rev's Cargo.toml names
+# the gpui rev to unify against (see the gpui comment above).
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
 
 # Lucide icon SVGs. Without `.with_assets(Assets)` at startup, every
 # gpui-component icon renders as an empty rect. Pin to the same rev so
 # the icon set tracks the `IconName` enum in gpui-component.
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "b2472cd798422b05e2448d07aaab1550c21155f7" }
+gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
 
 # Parse `file://` URLs into filesystem paths correctly across platforms (Windows
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.
