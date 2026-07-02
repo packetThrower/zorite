@@ -9,6 +9,19 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-02
+
+A single fix for table editing.
+
+### Fixed
+
+- **The table add-row "+" button works along its full height** — it was
+  mostly unclickable (only a sliver at its top edge responded, and clicking
+  lower placed the caret instead), worst for a table at the bottom of a
+  note. Every document with a table also interacted as ~22px shorter than
+  it looked; clicks in that band now land correctly too. The add-column
+  "+" was never affected.
+
 ## [0.4.1] - 2026-07-01
 
 Links are clickable while editing again, plus a CRT theme and themed
