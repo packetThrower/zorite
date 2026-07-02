@@ -18,6 +18,8 @@ ignore = [
     { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 unmaintained. Transitive via gpui-component and notify -> notify-types. Both upstream; revisit at each gpui-component rev bump." },
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained. Transitive via gpui -> stacksafe -> stacksafe-macro (build-dep). Upstream Zed; revisit at each gpui pull." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained (no safe upgrade). Transitive via fontdb, whose parents are all upstream: usvg (gpui + gpui-component), mermaid-rs-renderer (Zed), and ratex-render/-svg. Clears when upstreams move to skrifa; revisit at each gpui/ratex pull." },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml O(N²) attribute-duplicate check (DoS parsing hostile XML). Our 0.39.4 copy is wayland-scanner/-client's (gpui_linux), which parse bundled Wayland protocol XML, never attacker input. Fixed in 0.41, but wayland-* pins ^0.39; clears at the next gpui/wayland bump." },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml unbounded namespace-binding allocation (DoS parsing hostile XML). Same wayland-scanner/-client copy as RUSTSEC-2026-0194 — bundled protocol XML only; clears at the next gpui/wayland bump." },
 ]
 
 [licenses]
