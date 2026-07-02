@@ -190,6 +190,11 @@ struct ColorSet {
     text_primary: Option<String>,
     text_secondary: Option<String>,
     text_tertiary: Option<String>,
+    alert_note: Option<String>,
+    alert_tip: Option<String>,
+    alert_important: Option<String>,
+    alert_warning: Option<String>,
+    alert_caution: Option<String>,
 }
 
 /// A user theme file: `{ "id", "name", "dark": {…}, "light": {…} }`. Set
@@ -268,6 +273,11 @@ fn build_palette(cs: &ColorSet, base: Base, is_dark: bool) -> Palette {
     override_token(&mut p.text_primary, &cs.text_primary);
     override_token(&mut p.text_secondary, &cs.text_secondary);
     override_token(&mut p.text_tertiary, &cs.text_tertiary);
+    override_token(&mut p.alert_note, &cs.alert_note);
+    override_token(&mut p.alert_tip, &cs.alert_tip);
+    override_token(&mut p.alert_important, &cs.alert_important);
+    override_token(&mut p.alert_warning, &cs.alert_warning);
+    override_token(&mut p.alert_caution, &cs.alert_caution);
     p
 }
 

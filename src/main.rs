@@ -50,6 +50,12 @@ struct Assets;
 // `icons/<name>.svg` scheme so [`gpui_component::Icon::path`] can use them.
 const CLIPBOARD_PLUS: &[u8] = include_bytes!("../assets/icons/clipboard-plus.svg");
 const STICKY_NOTE_PLUS: &[u8] = include_bytes!("../assets/icons/sticky-note-plus.svg");
+// GitHub-style alert icons (`> [!NOTE]` …), NOTE → CAUTION.
+const ALERT_INFO: &[u8] = include_bytes!("../assets/icons/info.svg");
+const ALERT_LIGHTBULB: &[u8] = include_bytes!("../assets/icons/lightbulb.svg");
+const ALERT_REPORT: &[u8] = include_bytes!("../assets/icons/message-square-warning.svg");
+const ALERT_TRIANGLE: &[u8] = include_bytes!("../assets/icons/triangle-alert.svg");
+const ALERT_OCTAGON: &[u8] = include_bytes!("../assets/icons/octagon-alert.svg");
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -57,6 +63,11 @@ impl AssetSource for Assets {
         let custom = match path {
             "icons/clipboard-plus.svg" => Some(CLIPBOARD_PLUS),
             "icons/sticky-note-plus.svg" => Some(STICKY_NOTE_PLUS),
+            "icons/info.svg" => Some(ALERT_INFO),
+            "icons/lightbulb.svg" => Some(ALERT_LIGHTBULB),
+            "icons/message-square-warning.svg" => Some(ALERT_REPORT),
+            "icons/triangle-alert.svg" => Some(ALERT_TRIANGLE),
+            "icons/octagon-alert.svg" => Some(ALERT_OCTAGON),
             _ => None,
         };
         if let Some(bytes) = custom {

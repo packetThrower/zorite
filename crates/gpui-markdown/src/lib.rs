@@ -31,7 +31,7 @@ use gpui::{
     AnyElement, App, Bounds, Corners, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, MouseButton, MouseDownEvent, ParentElement,
     Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, Window, canvas, div, point, px, rgb, rgba, size,
+    StrikethroughStyle, Styled, StyledText, Window, canvas, div, point, px, rgb, rgba, size, svg,
 };
 use markdown::mdast;
 
@@ -66,6 +66,22 @@ pub struct MarkdownStyle {
     /// Monospace font family for code blocks + inline code. The host picks one that
     /// exists on the platform; an unknown family just falls back to the default font.
     pub mono_font: SharedString,
+    /// GitHub-style alert (`> [!NOTE]` …) border + title colors.
+    pub alerts: AlertColors,
+    /// SVG asset paths for the alert title icons, resolved through the host's
+    /// `AssetSource`. `None` (the default) renders the title without an icon,
+    /// keeping the crate asset-free.
+    pub alert_icons: Option<AlertIcons>,
+}
+
+/// Per-kind SVG asset paths for the alert title icons.
+#[derive(Clone)]
+pub struct AlertIcons {
+    pub note: SharedString,
+    pub tip: SharedString,
+    pub important: SharedString,
+    pub warning: SharedString,
+    pub caution: SharedString,
 }
 
 impl Default for MarkdownStyle {
@@ -86,8 +102,134 @@ impl Default for MarkdownStyle {
             search_current_bg: rgba(0xFF9500DD).into(),
             list_indent: px(18.0),
             mono_font: "monospace".into(),
+            alerts: AlertColors::default(),
+            alert_icons: None,
         }
     }
+}
+
+/// Border + title colors for the five GitHub-style alerts (`> [!NOTE]` …).
+/// Defaults are GitHub's dark palette; the host overlays its theme.
+#[derive(Clone, Copy)]
+pub struct AlertColors {
+    pub note: Hsla,
+    pub tip: Hsla,
+    pub important: Hsla,
+    pub warning: Hsla,
+    pub caution: Hsla,
+}
+
+impl Default for AlertColors {
+    fn default() -> Self {
+        Self {
+            note: rgb(0x4493F8).into(),
+            tip: rgb(0x3FB950).into(),
+            important: rgb(0xAB7DF8).into(),
+            warning: rgb(0xD29922).into(),
+            caution: rgb(0xF85149).into(),
+        }
+    }
+}
+
+/// The five GitHub alert kinds, from a `[!NOTE]`-style marker.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+impl AlertKind {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Note => "Note",
+            Self::Tip => "Tip",
+            Self::Important => "Important",
+            Self::Warning => "Warning",
+            Self::Caution => "Caution",
+        }
+    }
+
+    fn color(self, c: &AlertColors) -> Hsla {
+        match self {
+            Self::Note => c.note,
+            Self::Tip => c.tip,
+            Self::Important => c.important,
+            Self::Warning => c.warning,
+            Self::Caution => c.caution,
+        }
+    }
+
+    fn icon(self, i: &AlertIcons) -> SharedString {
+        match self {
+            Self::Note => i.note.clone(),
+            Self::Tip => i.tip.clone(),
+            Self::Important => i.important.clone(),
+            Self::Warning => i.warning.clone(),
+            Self::Caution => i.caution.clone(),
+        }
+    }
+}
+
+/// Match a GitHub alert marker at the start of a blockquote's first text.
+/// GitHub requires the marker alone on its first line (`> [!NOTE]`,
+/// uppercase); we also accept text on the marker line (`> [!NOTE] like so`) —
+/// the way people naturally type it — as the body. Returns the kind and how
+/// many bytes to strip (the marker plus its newline/space separator).
+fn alert_marker(value: &str) -> Option<(AlertKind, usize)> {
+    const MARKERS: [(AlertKind, &str); 5] = [
+        (AlertKind::Note, "[!NOTE]"),
+        (AlertKind::Tip, "[!TIP]"),
+        (AlertKind::Important, "[!IMPORTANT]"),
+        (AlertKind::Warning, "[!WARNING]"),
+        (AlertKind::Caution, "[!CAUTION]"),
+    ];
+    for (kind, m) in MARKERS {
+        if let Some(rest) = value.strip_prefix(m) {
+            if rest.is_empty() {
+                return Some((kind, m.len()));
+            }
+            if rest.starts_with('\n') || rest.starts_with(' ') {
+                return Some((kind, m.len() + 1));
+            }
+        }
+    }
+    None
+}
+
+/// If blockquote `b` is a GitHub alert, return its kind and a copy of its
+/// children with the marker stripped (the first text's source offset advances
+/// by the stripped length, so the rendered→source click map stays aligned).
+fn alert_children(b: &mdast::Blockquote) -> Option<(AlertKind, Vec<mdast::Node>)> {
+    let Some(mdast::Node::Paragraph(p)) = b.children.first() else {
+        return None;
+    };
+    let Some(mdast::Node::Text(t)) = p.children.first() else {
+        return None;
+    };
+    let (kind, strip) = alert_marker(&t.value)?;
+    let mut children = b.children.clone();
+    if let Some(mdast::Node::Paragraph(p)) = children.first_mut() {
+        if strip >= t.value.len() {
+            // The marker was the whole text node: drop it (and a following
+            // hard Break, if the marker line ended with one).
+            p.children.remove(0);
+            if matches!(p.children.first(), Some(mdast::Node::Break(_))) {
+                p.children.remove(0);
+            }
+            if p.children.is_empty() {
+                children.remove(0);
+            }
+        } else if let Some(mdast::Node::Text(t)) = p.children.first_mut() {
+            t.value.drain(..strip);
+            if let Some(pos) = &mut t.position {
+                pos.start.offset += strip;
+            }
+        }
+    }
+    Some((kind, children))
 }
 
 /// An authoring snippet for a markdown construct: a label, the text to
@@ -578,6 +720,44 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             )
         }
         mdast::Node::Blockquote(b) => {
+            // A GitHub alert (`> [!NOTE]` …): colored border + bold title, body
+            // in the normal text color (unlike a plain quote's muted tone).
+            if let Some((kind, children)) = alert_children(b) {
+                let color = kind.color(&ctx.style.alerts);
+                let mut title = div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(color);
+                if let Some(icons) = &ctx.style.alert_icons {
+                    let sz = px(f32::from(ctx.style.text_size));
+                    title = title.child(
+                        svg()
+                            .path(kind.icon(icons))
+                            .text_color(color)
+                            .w(sz)
+                            .h(sz)
+                            .flex_shrink_0(),
+                    );
+                }
+                title = title.child(kind.label());
+                let mut q = div()
+                    .border_l_2()
+                    .border_color(color)
+                    .pl(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .gap(px(6.0))
+                    .child(title);
+                for child in &children {
+                    if let Some(el) = render_block(child, ctx) {
+                        q = q.child(el);
+                    }
+                }
+                return Some(q.into_any_element());
+            }
             let muted = ctx.style.muted_color;
             let mut q = div()
                 .border_l_2()
@@ -1529,7 +1709,15 @@ fn for_each_inline_text(
             mdast::Node::TableCell(c) => f(&inline_text(&c.children, style, defs)),
             mdast::Node::List(l) => for_each_inline_text(&l.children, style, defs, f),
             mdast::Node::ListItem(li) => for_each_inline_text(&li.children, style, defs, f),
-            mdast::Node::Blockquote(b) => for_each_inline_text(&b.children, style, defs, f),
+            mdast::Node::Blockquote(b) => {
+                // Mirror the alert-marker strip in `render_block`, so search
+                // match indices line up with what's painted.
+                if let Some((_, children)) = alert_children(b) {
+                    for_each_inline_text(&children, style, defs, f);
+                } else {
+                    for_each_inline_text(&b.children, style, defs, f);
+                }
+            }
             mdast::Node::Table(t) => for_each_inline_text(&t.children, style, defs, f),
             mdast::Node::TableRow(r) => for_each_inline_text(&r.children, style, defs, f),
             mdast::Node::FootnoteDefinition(fd) => {
@@ -1893,6 +2081,48 @@ pub fn outdent_line(value: &str, cursor: usize, indent: &str) -> Option<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alert_marker_and_strip() {
+        assert!(matches!(
+            alert_marker("[!NOTE]\nbody"),
+            Some((AlertKind::Note, 8))
+        ));
+        assert!(matches!(
+            alert_marker("[!WARNING]"),
+            Some((AlertKind::Warning, 10))
+        ));
+        // Lenient form: body text on the marker line (strip includes the space).
+        assert!(matches!(
+            alert_marker("[!NOTE] trailing"),
+            Some((AlertKind::Note, 8))
+        ));
+        // Wrong case / glued text → plain blockquote.
+        assert!(alert_marker("[!note]\nbody").is_none());
+        assert!(alert_marker("[!NOTEXT]").is_none());
+
+        // End-to-end through mdast: the marker strips, its text's source
+        // offset advances, and the body survives.
+        let ast =
+            markdown::to_mdast("> [!TIP]\n> body here", &markdown::ParseOptions::gfm()).unwrap();
+        let mdast::Node::Root(root) = &ast else {
+            panic!("no root")
+        };
+        let mdast::Node::Blockquote(b) = &root.children[0] else {
+            panic!("no blockquote")
+        };
+        let (kind, children) = alert_children(b).expect("alert detected");
+        assert_eq!(kind.label(), "Tip");
+        let mdast::Node::Paragraph(p) = &children[0] else {
+            panic!("no paragraph")
+        };
+        let mdast::Node::Text(t) = &p.children[0] else {
+            panic!("no text")
+        };
+        assert_eq!(t.value, "body here");
+        // Source offset advanced past "[!TIP]\n" (starts at "> " = 2, +7).
+        assert_eq!(t.position.as_ref().unwrap().start.offset, 9);
+    }
 
     fn cont(s: &str) -> Option<ListEdit> {
         list_continuation(s, s.len())

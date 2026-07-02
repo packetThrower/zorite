@@ -13,7 +13,8 @@
 use std::ops::Range;
 
 use gpui::{
-    Font, FontStyle, FontWeight, Hsla, StrikethroughStyle, TextRun, UnderlineStyle, hsla, px,
+    Font, FontStyle, FontWeight, Hsla, SharedString, StrikethroughStyle, TextRun, UnderlineStyle,
+    hsla, px,
 };
 
 use crate::Diagnostic;
@@ -37,6 +38,16 @@ pub struct SyntaxStyle {
     pub tag: Hsla,
     /// Blockquote text + left-border color (a muted tone).
     pub quote: Hsla,
+    /// GitHub-style alert (`> [!NOTE]` …) border + marker colors, per kind.
+    pub alert_note: Hsla,
+    pub alert_tip: Hsla,
+    pub alert_important: Hsla,
+    pub alert_warning: Hsla,
+    pub alert_caution: Hsla,
+    /// SVG asset paths for the alert title icons, resolved through the host's
+    /// `AssetSource`. `None` (the default host choice) paints the bold label
+    /// alone, keeping the crate asset-free.
+    pub alert_icons: Option<AlertIcons>,
     /// Thematic break (`---`) divider color.
     pub rule: Hsla,
     /// `<mark>` highlight background.
@@ -378,6 +389,11 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             if p < end && b[p] == b' ' {
                 p += 1;
             }
+        }
+        // A GitHub alert's `[!NOTE]`-style marker hides with the quote prefix —
+        // the paint draws a bold colored label in its place (LineMark::Alert).
+        if let Some((_, mlen)) = alert_prefix(&text[p..end]) {
+            p += mlen;
         }
         marker(out, start..p, st.marker);
         i = p;
@@ -780,6 +796,100 @@ pub(crate) fn html_block(line: &str) -> bool {
 /// each with an optional trailing space — if `line` is a blockquote. `None`
 /// otherwise. The editor hides this marker (reveal-on-caret) and renders the line
 /// with a muted color + a left border.
+/// GitHub alert kinds (`> [!NOTE]` …).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum AlertKind {
+    Note,
+    Tip,
+    Important,
+    Warning,
+    Caution,
+}
+
+/// Per-kind SVG asset paths for the alert title icons.
+#[derive(Clone)]
+pub struct AlertIcons {
+    pub note: SharedString,
+    pub tip: SharedString,
+    pub important: SharedString,
+    pub warning: SharedString,
+    pub caution: SharedString,
+}
+
+impl AlertIcons {
+    /// The icon path for one alert kind.
+    pub(crate) fn get(&self, kind: AlertKind) -> SharedString {
+        match kind {
+            AlertKind::Note => self.note.clone(),
+            AlertKind::Tip => self.tip.clone(),
+            AlertKind::Important => self.important.clone(),
+            AlertKind::Warning => self.warning.clone(),
+            AlertKind::Caution => self.caution.clone(),
+        }
+    }
+}
+
+impl SyntaxStyle {
+    /// The themed color for one alert kind.
+    pub(crate) fn alert_color(&self, kind: AlertKind) -> Hsla {
+        match kind {
+            AlertKind::Note => self.alert_note,
+            AlertKind::Tip => self.alert_tip,
+            AlertKind::Important => self.alert_important,
+            AlertKind::Warning => self.alert_warning,
+            AlertKind::Caution => self.alert_caution,
+        }
+    }
+}
+
+impl AlertKind {
+    /// The label painted in place of the hidden marker ("Note", "Tip", …).
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            AlertKind::Note => "Note",
+            AlertKind::Tip => "Tip",
+            AlertKind::Important => "Important",
+            AlertKind::Warning => "Warning",
+            AlertKind::Caution => "Caution",
+        }
+    }
+}
+
+/// The alert kind if `body` — a blockquote line's text after its `>` prefix —
+/// starts with an alert marker (uppercase, per GitHub). GitHub wants the
+/// marker alone on its line; text after it (`> [!NOTE] like so`) is accepted
+/// too, the way people naturally type it.
+pub(crate) fn alert_kind(body: &str) -> Option<AlertKind> {
+    alert_prefix(body).map(|(kind, _)| kind)
+}
+
+/// [`alert_kind`] plus the marker's byte length within `body`: leading spaces,
+/// the `[!NOTE]`-style marker, and one following separator space. The editor
+/// hides this prefix and paints the kind's label in its place (like a list
+/// bullet), revealing the raw source on caret.
+pub(crate) fn alert_prefix(body: &str) -> Option<(AlertKind, usize)> {
+    const MARKERS: [(AlertKind, &str); 5] = [
+        (AlertKind::Note, "[!NOTE]"),
+        (AlertKind::Tip, "[!TIP]"),
+        (AlertKind::Important, "[!IMPORTANT]"),
+        (AlertKind::Warning, "[!WARNING]"),
+        (AlertKind::Caution, "[!CAUTION]"),
+    ];
+    let trimmed = body.trim_start();
+    let ws = body.len() - trimmed.len();
+    for (kind, m) in MARKERS {
+        if let Some(rest) = trimmed.strip_prefix(m) {
+            if rest.is_empty() {
+                return Some((kind, ws + m.len()));
+            }
+            if rest.starts_with(' ') {
+                return Some((kind, ws + m.len() + 1));
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn blockquote_prefix(line: &str) -> Option<usize> {
     let b = line.as_bytes();
     if b.first() != Some(&b'>') {
@@ -1681,6 +1791,12 @@ mod tests {
             link: c,
             tag: c,
             quote: c,
+            alert_note: c,
+            alert_tip: c,
+            alert_important: c,
+            alert_warning: c,
+            alert_caution: c,
+            alert_icons: None,
             rule: c,
             mark_bg: c,
             popover_bg: c,
@@ -1820,6 +1936,17 @@ mod tests {
         // No caret on the line → fully hidden (W6).
         let (disp, _, _) = hidden_runs(line, &font, c, &[], None, 0, &st);
         assert_eq!(disp, "bold it");
+    }
+
+    #[test]
+    fn alert_kinds_detected() {
+        assert_eq!(alert_kind("[!NOTE]"), Some(AlertKind::Note));
+        assert_eq!(alert_kind(" [!CAUTION] "), Some(AlertKind::Caution));
+        // Lenient form: body text on the marker line.
+        assert_eq!(alert_kind("[!NOTE] text after"), Some(AlertKind::Note));
+        for s in ["[!note]", "[!NOTEXT]", "note", ""] {
+            assert_eq!(alert_kind(s), None, "{s:?}");
+        }
     }
 
     #[test]

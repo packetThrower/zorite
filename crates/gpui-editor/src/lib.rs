@@ -36,7 +36,7 @@ use std::sync::Arc;
 use gpui::{
     App, AvailableSpace, BorderStyle, Bounds, ClipboardItem, Context, Corners, CursorStyle, Edges,
     Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
+    Focusable, Font, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
     InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, PathBuilder, Pixels, Point, Render,
     RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement, Style, Styled, TextRun,
@@ -46,7 +46,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 mod markdown_syntax;
-pub use markdown_syntax::{MathAlign, SyntaxStyle};
+pub use markdown_syntax::{AlertIcons, MathAlign, SyntaxStyle};
 
 /// Key context the editing actions are scoped to (so they only fire while an
 /// editor is focused).
@@ -3776,9 +3776,21 @@ struct TableRow {
 /// room. Covers blockquotes now; list bullets + task checkboxes reuse it.
 #[derive(Clone, Copy)]
 enum LineMark {
-    /// Blockquote: a muted left border; the `>` markers are hidden and the body
-    /// text is muted (`SyntaxStyle::quote`).
-    Quote(Hsla),
+    /// Blockquote: a left border (`bar`); the `>` markers are hidden. `text`
+    /// colors the body — `Some` = muted quote tone, `None` = the editor's
+    /// normal text color (alert bodies).
+    Quote { bar: Hsla, text: Option<Hsla> },
+    /// A GitHub alert's marker line (`> [!NOTE]` …): the marker is hidden and
+    /// a bold `label` paints in the alert color; any same-line body insets to
+    /// `text_inset` (QUOTE_INSET + the label's measured width + a gap) — the
+    /// list-bullet pattern. Continuation lines are `Quote` marks with the
+    /// alert's bar color.
+    Alert {
+        bar: Hsla,
+        label: &'static str,
+        kind: markdown_syntax::AlertKind,
+        text_inset: Pixels,
+    },
     /// List item: a painted bullet (`•`) or number (`N.`) at `bullet_x` (where the
     /// hidden source marker began), muted; the body sits at `text_inset` — the
     /// measured width of the whole source prefix, so the rendered + raw views
@@ -3807,7 +3819,8 @@ impl LineMark {
     /// Horizontal inset (px) applied to the body text + caret for this mark.
     fn inset(self) -> Pixels {
         match self {
-            LineMark::Quote(_) => px(QUOTE_INSET),
+            LineMark::Quote { .. } => px(QUOTE_INSET),
+            LineMark::Alert { text_inset, .. } => text_inset,
             LineMark::List { text_inset, .. } | LineMark::Check { text_inset, .. } => text_inset,
             LineMark::Rule(_) => px(0.),
         }
@@ -4179,6 +4192,10 @@ fn shape_document(
     let mut code_w = px(0.);
     let mut line_start = 0;
     let mut in_fence = false;
+    // Active GitHub alert run (`> [!NOTE]` …): set by a marker line, carried
+    // while blockquote lines continue, cleared by anything else — so every
+    // line of the alert gets the kind's bar color.
+    let mut alert_run: Option<Hsla> = None;
     for (idx, &line) in lines.iter().enumerate() {
         let line_end = line_start + line.len();
 
@@ -4213,6 +4230,7 @@ fn shape_document(
             marks.push(None);
             inline_maths.push(Vec::new());
             line_start = line_end + 1;
+            alert_run = None;
             continue;
         }
 
@@ -4241,6 +4259,7 @@ fn shape_document(
             marks.push(None);
             inline_maths.push(Vec::new());
             line_start = line_end + 1;
+            alert_run = None;
             continue;
         }
 
@@ -4271,6 +4290,7 @@ fn shape_document(
             marks.push(None);
             inline_maths.push(Vec::new());
             line_start = line_end + 1;
+            alert_run = None;
             continue;
         }
 
@@ -4280,6 +4300,27 @@ fn shape_document(
         // no heading size, no squiggles. Styling-mode only.
         let is_fence = md.is_some() && line.trim_start().starts_with("```");
         let is_code = md.is_some() && (in_fence || is_fence);
+        // This line's alert membership: `(color, is_marker_line)`.
+        let alert_line: Option<(Hsla, bool)> = if let Some(st) = md.filter(|_| !is_code) {
+            match markdown_syntax::blockquote_prefix(line) {
+                Some(plen) => {
+                    if let Some(kind) = markdown_syntax::alert_kind(&line[plen..]) {
+                        let c = st.alert_color(kind);
+                        alert_run = Some(c);
+                        Some((c, true))
+                    } else {
+                        alert_run.map(|c| (c, false))
+                    }
+                }
+                None => {
+                    alert_run = None;
+                    None
+                }
+            }
+        } else {
+            alert_run = None;
+            None
+        };
         if is_fence {
             in_fence = !in_fence;
         }
@@ -4450,7 +4491,41 @@ fn shape_document(
             !is_code && table.is_none() && (widget.is_none() || img_inset > px(0.))
         }) {
             if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
-                Some((plen, LineMark::Quote(st.quote)))
+                if let Some((kind, mlen)) = markdown_syntax::alert_prefix(&line[plen..]) {
+                    // The alert's marker line: hide `> [!NOTE] ` (the scan
+                    // does the same) and paint a bold label in its place; a
+                    // same-line body insets past the label's measured width.
+                    let color = st.alert_color(kind);
+                    let label_font = Font {
+                        weight: FontWeight::BOLD,
+                        ..base_font.clone()
+                    };
+                    let label_w = measure_width(window, kind.label(), &label_font, base_font_size);
+                    // The icon (when the host supplies paths) sits before the
+                    // label; both shift the same-line body's inset.
+                    let icon_w = if st.alert_icons.is_some() {
+                        base_font_size + px(6.)
+                    } else {
+                        px(0.)
+                    };
+                    Some((
+                        plen + mlen,
+                        LineMark::Alert {
+                            bar: color,
+                            label: kind.label(),
+                            kind,
+                            text_inset: px(QUOTE_INSET) + icon_w + label_w + px(8.),
+                        },
+                    ))
+                } else {
+                    // Continuation lines of an alert keep its colored bar with
+                    // normal body text; plain quotes are muted throughout.
+                    let (bar, text) = match alert_line {
+                        Some((c, _)) => (c, None),
+                        None => (st.quote, Some(st.quote)),
+                    };
+                    Some((plen, LineMark::Quote { bar, text }))
+                }
             } else if let Some((plen, indent, checked)) = markdown_syntax::task_prefix(line) {
                 let bullet_x = measure_width(window, &line[..indent], base_font, base_font_size);
                 let text_inset = measure_width(window, &line[..plen], base_font, base_font_size);
@@ -4511,7 +4586,7 @@ fn shape_document(
         // A blockquote's body is muted; a list keeps the normal body color (only
         // its bullet is muted).
         let line_base = match mark {
-            Some(LineMark::Quote(c)) => c,
+            Some(LineMark::Quote { text, .. }) => text.unwrap_or(base_color),
             _ => muted_line.unwrap_or(base_color),
         };
         // Inline `$…$` formulas spliced into this line (populated by the hidden-markers branch).
@@ -5157,6 +5232,9 @@ struct PrepaintState {
     /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
     /// `[text](url)`), so hovering a clickable link shows a hand.
     link_grips: Vec<Hitbox>,
+    /// Icon asset paths for alert marker lines, cloned from the style so the
+    /// paint can draw them next to the labels.
+    alert_icons: Option<markdown_syntax::AlertIcons>,
     /// Per-table hover-revealed add-row/add-column "+" affordances (issue #16).
     table_adds: Vec<TableAdds>,
     /// Hovered-cell delete handles (issue #16): the "−" for the hovered row + column.
@@ -5825,6 +5903,10 @@ impl Element for EditorElement {
             checkbox_grips,
             chip_grips,
             link_grips,
+            alert_icons: editor
+                .markdown_style
+                .as_ref()
+                .and_then(|st| st.alert_icons.clone()),
             table_adds,
             row_del,
             col_del,
@@ -5947,8 +6029,55 @@ impl Element for EditorElement {
             }
             // Blockquote: a muted 2px left border down the line (the body is inset
             // past it by QUOTE_INSET).
-            if let Some(LineMark::Quote(c)) = prepaint.marks.get(i).copied().flatten() {
-                window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), c));
+            if let Some(LineMark::Quote { bar, .. }) = prepaint.marks.get(i).copied().flatten() {
+                window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), bar));
+            }
+            // Alert marker line: the colored bar plus a bold label ("Note", …)
+            // where the hidden `[!NOTE]` marker was.
+            if let Some(LineMark::Alert {
+                bar, label, kind, ..
+            }) = prepaint.marks.get(i).copied().flatten()
+            {
+                window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), bar));
+                // Icon (when the host supplies asset paths), then the bold label.
+                let mut label_x = origin.x + px(QUOTE_INSET);
+                if let Some(icons) = &prepaint.alert_icons {
+                    let sz = font_size;
+                    let icon_bounds =
+                        Bounds::new(point(label_x, origin.y + (*lh - sz) / 2.), size(sz, sz));
+                    let _ = window.paint_svg(
+                        icon_bounds,
+                        icons.get(kind),
+                        None,
+                        gpui::TransformationMatrix::unit(),
+                        bar,
+                        cx,
+                    );
+                    label_x += sz + px(6.);
+                }
+                let label_font = Font {
+                    weight: FontWeight::BOLD,
+                    ..font.clone()
+                };
+                let run = TextRun {
+                    len: label.len(),
+                    font: label_font,
+                    color: bar,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window
+                    .text_system()
+                    .shape_line(label.into(), font_size, &[run], None);
+                let _ = shaped.paint(
+                    point(label_x, origin.y),
+                    *lh,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
             }
             // Thematic break: a 1px full-width divider centered in the row.
             if let Some(LineMark::Rule(c)) = prepaint.marks.get(i).copied().flatten() {

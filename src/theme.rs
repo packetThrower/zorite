@@ -46,6 +46,14 @@ pub struct Palette {
     pub text_tertiary: Hsla,
     pub tag: Hsla,
     pub code: Hsla,
+    /// GitHub-style markdown alerts (`> [!NOTE]` …) — border + title colors.
+    /// Per-mode defaults from GitHub's palette (not derived from the base
+    /// colors); each is overridable per theme like the other tokens.
+    pub alert_note: Hsla,
+    pub alert_tip: Hsla,
+    pub alert_important: Hsla,
+    pub alert_warning: Hsla,
+    pub alert_caution: Hsla,
 }
 
 /// Derive hover/active/tint variants from a base accent.
@@ -100,6 +108,11 @@ pub fn make_palette(
         text_tertiary: from_rgb(fg, 0.40),
         tag: from_rgb(tag, 1.0),
         code: from_rgb(code, 1.0),
+        alert_note: from_rgb(if is_dark { 0x4493F8 } else { 0x0969DA }, 1.0),
+        alert_tip: from_rgb(if is_dark { 0x3FB950 } else { 0x1A7F37 }, 1.0),
+        alert_important: from_rgb(if is_dark { 0xAB7DF8 } else { 0x8250DF }, 1.0),
+        alert_warning: from_rgb(if is_dark { 0xD29922 } else { 0x9A6700 }, 1.0),
+        alert_caution: from_rgb(if is_dark { 0xF85149 } else { 0xCF222E }, 1.0),
     }
 }
 
@@ -166,6 +179,15 @@ pub fn text_tertiary() -> Hsla {
 
 /// Styling for the markdown reading view (the `gpui-markdown` crate),
 /// mapped from the active palette.
+/// SVG asset paths for the GitHub-alert title icons, served by the app's
+/// `AssetSource` (bundled Lucide faces — see `main.rs`). One set of names for
+/// both the reader and WYSIWYG, so the views can't drift.
+const ALERT_ICON_NOTE: &str = "icons/info.svg";
+const ALERT_ICON_TIP: &str = "icons/lightbulb.svg";
+const ALERT_ICON_IMPORTANT: &str = "icons/message-square-warning.svg";
+const ALERT_ICON_WARNING: &str = "icons/triangle-alert.svg";
+const ALERT_ICON_CAUTION: &str = "icons/octagon-alert.svg";
+
 /// Per-OS monospace family for code. An unknown name falls back to the default
 /// font, so this is safe everywhere.
 fn mono_font() -> &'static str {
@@ -211,6 +233,20 @@ pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown:
         search_current_bg: gpui::rgba(0xFF9500DD).into(),
         list_indent: px(indent_spaces as f32 * 4.5),
         mono_font: mono_font().into(),
+        alerts: gpui_markdown::AlertColors {
+            note: p.alert_note,
+            tip: p.alert_tip,
+            important: p.alert_important,
+            warning: p.alert_warning,
+            caution: p.alert_caution,
+        },
+        alert_icons: Some(gpui_markdown::AlertIcons {
+            note: ALERT_ICON_NOTE.into(),
+            tip: ALERT_ICON_TIP.into(),
+            important: ALERT_ICON_IMPORTANT.into(),
+            warning: ALERT_ICON_WARNING.into(),
+            caution: ALERT_ICON_CAUTION.into(),
+        }),
     }
 }
 
@@ -225,6 +261,18 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
         link: p.accent,
         tag: p.tag,
         quote: p.text_tertiary,
+        alert_note: p.alert_note,
+        alert_tip: p.alert_tip,
+        alert_important: p.alert_important,
+        alert_warning: p.alert_warning,
+        alert_caution: p.alert_caution,
+        alert_icons: Some(gpui_editor::AlertIcons {
+            note: ALERT_ICON_NOTE.into(),
+            tip: ALERT_ICON_TIP.into(),
+            important: ALERT_ICON_IMPORTANT.into(),
+            warning: ALERT_ICON_WARNING.into(),
+            caution: ALERT_ICON_CAUTION.into(),
+        }),
         rule: p.divider,
         mark_bg: gpui::rgba(0xFFD60066).into(),
         popover_bg: p.bg_sidebar,

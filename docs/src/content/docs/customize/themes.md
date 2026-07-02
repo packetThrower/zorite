@@ -90,6 +90,11 @@ accept `#RRGGBBAA` too (the derived defaults are mostly translucent):
 | `accent_hover` | Accent when hovered |
 | `accent_active` | Accent when pressed |
 | `accent_tint` | Translucent accent wash (selection highlights) |
+| `alert_note` | `> [!NOTE]` alert border + title (default: GitHub blue) |
+| `alert_tip` | `> [!TIP]` (default: GitHub green) |
+| `alert_important` | `> [!IMPORTANT]` (default: GitHub purple) |
+| `alert_warning` | `> [!WARNING]` (default: GitHub yellow) |
+| `alert_caution` | `> [!CAUTION]` (default: GitHub red) |
 
 ### Fonts
 
