@@ -296,7 +296,13 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.primary = p.accent;
     t.primary_hover = p.accent_hover;
     t.primary_active = p.accent_active;
-    t.primary_foreground = from_rgb(0xFFFFFF, 0.95);
+    // Readable label on the accent: dark text on a bright accent (e.g. CRT's
+    // phosphor green), white on a dark/saturated one (the usual blue).
+    t.primary_foreground = if p.accent.l > 0.6 {
+        from_rgb(0x000000, 0.9)
+    } else {
+        from_rgb(0xFFFFFF, 0.95)
+    };
     t.border = p.border_subtle;
     t.input = p.border_subtle;
     t.popover = p.bg_sidebar;
@@ -305,4 +311,34 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.accent_foreground = p.text_primary;
     t.muted = p.glass;
     t.muted_foreground = p.text_tertiary;
+    // Tabs have their own tokens (the strip renders white labels on a theme
+    // whose foreground isn't near-white otherwise — e.g. green-on-black CRT).
+    t.tab_foreground = p.text_secondary;
+    t.tab_active_foreground = p.text_primary;
+    t.secondary_foreground = p.text_secondary;
+    // So do the per-widget families — without these, buttons and sliders keep
+    // the stock white regardless of the `primary`/`foreground` overlay above.
+    let on_accent = t.primary_foreground;
+    t.button_primary = p.accent;
+    t.button_primary_hover = p.accent_hover;
+    t.button_primary_active = p.accent_active;
+    t.button_primary_foreground = on_accent;
+    t.button_foreground = p.text_primary;
+    t.button_hover = p.hover;
+    t.button_active = p.glass_strong;
+    t.button_secondary = p.glass_strong;
+    t.button_secondary_hover = p.hover;
+    t.button_secondary_active = p.glass_strong;
+    t.button_secondary_foreground = p.text_primary;
+    t.slider_bar = p.accent;
+    t.slider_thumb = p.accent;
+    // Focus ring on inputs/selects — stock is a bright near-white in dark mode.
+    t.ring = p.accent;
+    // gpui-component is mid-migration to a parallel `tokens` color store;
+    // newer widget paths (Button, Slider, some Tab styles) read
+    // `theme.tokens.*` instead of the legacy fields above — without this,
+    // e.g. the primary button keeps the stock white pill on every custom
+    // theme. Regenerate the tokens from the overlaid colors so both stores
+    // agree. Keep this LAST.
+    t.tokens = (**t).into();
 }

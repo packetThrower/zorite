@@ -113,7 +113,10 @@ fn hex(color: Hsla) -> String {
 pub fn current_theme() -> mermaid_rs_renderer::Theme {
     let bg = hex(theme::bg_content());
     let text = hex(theme::text_primary());
-    let border = hex(theme::border_subtle());
+    // Node/actor borders take the text tint (like the edges below), not the
+    // near-invisible `border_subtle` — an 8%-white hairline disappears entirely
+    // on a pure-black theme (CRT), and boxes read better outlined everywhere.
+    let border = hex(theme::text_tertiary());
     let line = hex(theme::text_tertiary());
     // A solid elevated surface for node fills (not the translucent `glass`), so node
     // text stays readable.
