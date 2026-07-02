@@ -3904,6 +3904,26 @@ fn code_pads(bg: Option<CodeBg>) -> (Pixels, Pixels) {
     }
 }
 
+/// A row's full reserved gap above (`.0`) and below (`.1`): the code-block pads
+/// plus a table's gutter rows (above the header for the column "−" handles,
+/// below the last row for the add-row "+" strip). ONE function shared by the
+/// measured layout and prepaint so they can never disagree — when they did
+/// (measure missed the table gutters), the element laid out ~2×TABLE_GUTTER
+/// shorter per table than it painted, and clicks over the shortfall never
+/// reached the editor (the add-row "+" strip's dead bottom half).
+fn line_pads(bg: Option<CodeBg>, table: Option<&TableRow>) -> (Pixels, Pixels) {
+    let (mut top, mut bot) = code_pads(bg);
+    if let Some(t) = table {
+        if t.is_header {
+            top += px(TABLE_GUTTER);
+        }
+        if t.is_last {
+            bot += px(TABLE_GUTTER);
+        }
+    }
+    (top, bot)
+}
+
 /// Splice inline `$…$` spacers into one line's shaped output. For each formula whose raster is
 /// ready (`block_math`) and that the caret isn't inside (left raw for editing), reserve a spacer
 /// of whole spaces ≥ the raster's text-em width and record where to paint it. The raster is
@@ -5185,7 +5205,7 @@ impl Element for EditorElement {
                     (usize::MAX, usize::MAX)
                 };
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, backgrounds, _, _, _, _) = shape_document(
+                let (wrapped, heights, _, backgrounds, tables, _, _, _) = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -5211,16 +5231,31 @@ impl Element for EditorElement {
                     selection,
                     editor.image_resize,
                 );
-                wrapped
-                    .iter()
-                    .zip(&heights)
-                    .zip(&backgrounds)
-                    .map(|((line, h), bg)| {
-                        let (top, bot) = code_pads(*bg);
-                        *h * (line.wrap_boundaries().len() + 1) as f32 + top + bot
-                    })
-                    .sum::<Pixels>()
-                    .max(base_lh)
+                // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
+                // or the element lays out shorter than it paints.
+                let mut y = px(0.);
+                let mut needed = px(0.);
+                for (i, (line, h)) in wrapped.iter().zip(&heights).enumerate() {
+                    let tbl = tables.get(i).and_then(Option::as_ref);
+                    let (top, bot) = line_pads(backgrounds[i], tbl);
+                    y += top;
+                    let row_h = *h * (line.wrap_boundaries().len() + 1) as f32;
+                    // A table's hover "+" add-row strip paints just below its
+                    // last row (see `TableAdds`). Keep that space inside the
+                    // element for a table near the document's end — outside
+                    // the element the strip's hitbox is masked off and its
+                    // clicks never reach the bounds-gated mouse handlers
+                    // (the add-column strip never has this problem: it
+                    // borrows horizontal space, which always exists).
+                    if let Some(t) = tbl
+                        && t.is_last
+                        && !t.col_widths.is_empty()
+                    {
+                        needed = needed.max(y + row_h + (*h * 0.75).max(px(12.)));
+                    }
+                    y += row_h + bot;
+                }
+                y.max(base_lh).max(needed)
             };
             let width = wrap_width.or(known.width).unwrap_or(px(0.));
             size(width, height)
@@ -5323,19 +5358,10 @@ impl Element for EditorElement {
             .zip(backgrounds.iter())
             .enumerate()
         {
-            let (mut top_pad, mut bot_pad) = code_pads(*bg);
-            // Reserve a gutter above the header (column-delete "−" handles) and below
-            // the last row (the add-row "+" strip), mirroring the left gutter from
-            // TABLE_GUTTER — baked into line_tops so the caret / click / paint all
-            // shift with it, and neither affordance overlaps the adjacent line.
-            if let Some(t) = tables.get(idx).and_then(Option::as_ref) {
-                if t.is_header {
-                    top_pad += px(TABLE_GUTTER);
-                }
-                if t.is_last {
-                    bot_pad += px(TABLE_GUTTER);
-                }
-            }
+            // Code-box pads plus the table gutter rows (see `line_pads`) — baked
+            // into line_tops so the caret / click / paint all shift with them,
+            // and neither table affordance overlaps the adjacent line.
+            let (top_pad, bot_pad) = line_pads(*bg, tables.get(idx).and_then(Option::as_ref));
             y += top_pad;
             line_tops.push(y);
             y += *lh * (line.wrap_boundaries().len() + 1) as f32 + bot_pad;
@@ -6131,15 +6157,18 @@ impl Element for EditorElement {
         let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
         for ta in &prepaint.table_adds {
             table_hover_zones.push(ta.zone);
+            // Commit the strip rects EVERY frame — a click can land before any
+            // hovered paint ran (a fast flick-click), and on_mouse_down checks
+            // these rects. Only the visuals below stay hover-gated.
+            table_row_add_rects.push((ta.below, ta.below_row));
+            table_col_add_rects.push((ta.right, ta.right_row));
             if !ta.zone.contains(&mouse) {
                 continue;
             }
             paint_add_strip(ta.below, ta.border, ta.below.contains(&mouse), window);
             window.set_cursor_style(CursorStyle::PointingHand, &ta.below_hit);
-            table_row_add_rects.push((ta.below, ta.below_row));
             paint_add_strip(ta.right, ta.border, ta.right.contains(&mouse), window);
             window.set_cursor_style(CursorStyle::PointingHand, &ta.right_hit);
-            table_col_add_rects.push((ta.right, ta.right_row));
         }
 
         // Per-row / per-column delete "−" handles for the hovered cell (issue #16).
