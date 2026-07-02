@@ -588,9 +588,16 @@ impl AppView {
         let search_sub = cx.subscribe_in(
             &search_input,
             window,
-            |this: &mut AppView, _state, ev: &InputEvent, _window, cx| {
-                if let InputEvent::Change = ev {
-                    this.run_search(cx);
+            |this: &mut AppView, state, ev: &InputEvent, _window, cx| {
+                match ev {
+                    InputEvent::Change => this.run_search(cx),
+                    // Clicking back into a box that still holds a query re-runs it,
+                    // so the results pane reopens without having to edit the text
+                    // (opening a hit closes the pane but keeps the query).
+                    InputEvent::Focus if !state.read(cx).value().trim().is_empty() => {
+                        this.run_search(cx)
+                    }
+                    _ => {}
                 }
             },
         );
