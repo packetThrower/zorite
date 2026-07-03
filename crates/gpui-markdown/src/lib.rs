@@ -31,7 +31,8 @@ use gpui::{
     AnyElement, App, Bounds, Corners, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, MouseButton, MouseDownEvent, ParentElement,
     Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, Window, canvas, div, point, px, rgb, rgba, size, svg,
+    StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas, div, point, px, rgb, rgba,
+    size, svg,
 };
 use markdown::mdast;
 
@@ -566,7 +567,7 @@ impl MarkdownView {
 }
 
 impl RenderOnce for MarkdownView {
-    fn render(self, _window: &mut Window, _cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let source = self.source;
         let block_scroll = self.block_scroll;
         let root_id: SharedString = format!("{}-md-root", self.id_base).into();
@@ -623,11 +624,12 @@ impl RenderOnce for MarkdownView {
                             t,
                             &mut ctx,
                             pending_style.take().unwrap_or_default(),
+                            window,
                         ));
                         continue;
                     }
                     pending_style = None;
-                    if let Some(el) = render_block(node, &mut ctx) {
+                    if let Some(el) = render_block(node, &mut ctx, window) {
                         col = col.child(el);
                     }
                 }
@@ -683,7 +685,7 @@ fn heading_scale(depth: u8) -> f32 {
     }
 }
 
-fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
+fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Option<AnyElement> {
     match node {
         mdast::Node::Paragraph(p) => {
             // A paragraph that *starts* with `![alt](src)` (optionally
@@ -735,7 +737,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                     .into_any_element(),
             )
         }
-        mdast::Node::List(list) => Some(render_list(list, ctx, 0)),
+        mdast::Node::List(list) => Some(render_list(list, ctx, 0, window)),
         mdast::Node::Code(c) => {
             // A ```mermaid fence renders as a diagram when the host supplies a
             // renderer; otherwise it falls through to a normal code block.
@@ -755,9 +757,38 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                 }
                 _ => StyledText::new(c.value.clone()),
             };
+            // Size the card to its widest line, like WYSIWYG's code box (a
+            // full-width card left most of the page as empty gray). Capped to
+            // the column; a longer line wraps inside.
+            let mut mono = window.text_style().font();
+            mono.family = ctx.style.mono_font.clone();
+            let widest = c
+                .value
+                .lines()
+                .map(|l| {
+                    let run = TextRun {
+                        len: l.len(),
+                        font: mono.clone(),
+                        color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    window
+                        .text_system()
+                        .shape_line(
+                            SharedString::from(l.to_string()),
+                            ctx.style.text_size,
+                            &[run],
+                            None,
+                        )
+                        .width()
+                })
+                .fold(px(0.0), Pixels::max);
             Some(
                 div()
-                    .w_full()
+                    .w(widest + px(24.0))
+                    .max_w_full()
                     .rounded(px(6.0))
                     .bg(bg)
                     .px(px(12.0))
@@ -822,7 +853,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                     .gap(px(6.0))
                     .child(title);
                 for child in &children {
-                    if let Some(el) = render_block(child, ctx) {
+                    if let Some(el) = render_block(child, ctx, window) {
                         q = q.child(el);
                     }
                 }
@@ -838,7 +869,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                 .gap(px(6.0))
                 .text_color(muted);
             for child in &b.children {
-                if let Some(el) = render_block(child, ctx) {
+                if let Some(el) = render_block(child, ctx, window) {
                     q = q.child(el);
                 }
             }
@@ -854,7 +885,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
         ),
         // Top-level tables get their style from a preceding marker (see the root
         // loop); a nested/standalone table here renders as the default Grid.
-        mdast::Node::Table(t) => Some(render_table(t, ctx, TableStyle::default())),
+        mdast::Node::Table(t) => Some(render_table(t, ctx, TableStyle::default(), window)),
         // A footnote definition: `[label] <content>`, rendered muted/smaller
         // where it sits (authors put these at the bottom).
         mdast::Node::FootnoteDefinition(f) => {
@@ -862,7 +893,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             let muted = ctx.style.muted_color;
             let mut body = div().flex().flex_col().gap(px(4.0));
             for child in &f.children {
-                if let Some(el) = render_block(child, ctx) {
+                if let Some(el) = render_block(child, ctx, window) {
                     body = body.child(el);
                 }
             }
@@ -1001,7 +1032,7 @@ fn text_node(value: &str) -> mdast::Node {
     })
 }
 
-fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
+fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Window) -> AnyElement {
     let nested = depth > 0;
     let mut col = div().flex().flex_col().gap(px(4.0)).pl(if nested {
         ctx.style.list_indent
@@ -1032,13 +1063,15 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize) -> AnyElement {
         let mut content = div().flex().flex_col().gap(px(4.0));
         for (ci, child) in li.children.iter().enumerate() {
             match child {
-                mdast::Node::List(sub) => content = content.child(render_list(sub, ctx, depth + 1)),
+                mdast::Node::List(sub) => {
+                    content = content.child(render_list(sub, ctx, depth + 1, window))
+                }
                 other => {
                     // Drop a leading heading's top margin so the bullet lines up
                     // with the heading; later blocks in the item keep theirs.
                     let prev = ctx.suppress_heading_top;
                     ctx.suppress_heading_top = ci == 0;
-                    if let Some(el) = render_block(other, ctx) {
+                    if let Some(el) = render_block(other, ctx, window) {
                         content = content.child(el);
                     }
                     ctx.suppress_heading_top = prev;
@@ -1585,16 +1618,78 @@ fn table_style_marker(html: &str) -> Option<TableStyle> {
     }
 }
 
-fn render_table(table: &mdast::Table, ctx: &mut Ctx, style: TableStyle) -> AnyElement {
+fn render_table(
+    table: &mdast::Table,
+    ctx: &mut Ctx,
+    style: TableStyle,
+    window: &mut Window,
+) -> AnyElement {
     let border = ctx.style.muted_color;
     let shade = ctx.style.code_bg;
+    // Content-measured column widths, like WYSIWYG's `table_column_widths`
+    // (the old equal-width `flex_1` columns stretched every table to the full
+    // content width). Cells measure at their rendered size — bold header —
+    // with the same 10px cell pad and 48px floor; an over-wide table scrolls
+    // horizontally in its own row (the wide-image pattern) instead of
+    // squeezing.
+    let cell_pad = px(10.0);
+    let ncols = table
+        .children
+        .iter()
+        .filter_map(|r| match r {
+            mdast::Node::TableRow(r) => Some(r.children.len()),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(1)
+        .max(1);
+    let base_font = window.text_style().font();
+    let mut widths = vec![px(0.0); ncols];
+    for (ri, row) in table.children.iter().enumerate() {
+        let mdast::Node::TableRow(r) = row else {
+            continue;
+        };
+        for (ci, cell) in r.children.iter().enumerate().take(ncols) {
+            let mdast::Node::TableCell(c) = cell else {
+                continue;
+            };
+            let text = inline_text(&c.children, &ctx.style, &ctx.definitions);
+            if text.is_empty() {
+                continue;
+            }
+            let mut font = base_font.clone();
+            if ri == 0 {
+                font.weight = FontWeight::BOLD;
+            }
+            let run = TextRun {
+                len: text.len(),
+                font,
+                color: ctx.style.text_color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let w = window
+                .text_system()
+                .shape_line(SharedString::from(text), ctx.style.text_size, &[run], None)
+                .width();
+            widths[ci] = widths[ci].max(w + cell_pad * 2.0);
+        }
+    }
+    for w in &mut widths {
+        *w = (*w).max(px(48.0));
+    }
+    // The grid must be sized explicitly: gpui's default stretch alignment
+    // would otherwise fill the parent's full width, leaving a void after the
+    // last column (borders: one vline per cell + the outer box).
+    let total: Pixels = widths.iter().copied().sum::<Pixels>() + px((ncols + 2) as f32);
     let boxed = matches!(style, TableStyle::Grid);
     let vlines = matches!(style, TableStyle::Grid);
     let row_lines = matches!(style, TableStyle::Grid);
     // A single rule under the header instead of a divider between every row.
     let header_rule = matches!(style, TableStyle::Striped | TableStyle::Minimal);
 
-    let mut grid = div().flex().flex_col();
+    let mut grid = div().flex().flex_col().w(total).flex_shrink_0();
     if boxed {
         grid = grid
             .border_1()
@@ -1635,8 +1730,12 @@ fn render_table(table: &mdast::Table, ctx: &mut Ctx, style: TableStyle) -> AnyEl
             let mdast::Node::TableCell(c) = cell else {
                 continue;
             };
-            let mut cell_el = div().flex_1().min_w_0().px(px(10.0)).py(px(6.0));
-            if vlines {
+            let mut cell_el = div()
+                .w(widths.get(ci).copied().unwrap_or(px(48.0)))
+                .flex_shrink_0()
+                .px(px(10.0))
+                .py(px(6.0));
+            if vlines && ci + 1 < r.children.len() {
                 cell_el = cell_el.border_r_1().border_color(border);
             }
             // Honor the column's GFM alignment (`:---:` / `---:`).
@@ -1652,7 +1751,16 @@ fn render_table(table: &mdast::Table, ctx: &mut Ctx, style: TableStyle) -> AnyEl
         }
         grid = grid.child(row_el);
     }
-    grid.into_any_element()
+    // Content-sized: the grid hugs its columns; a table wider than the note
+    // column scrolls horizontally in its own row (like oversized images)
+    // while the text around it keeps wrapping normally.
+    ctx.counter += 1;
+    div()
+        .id(("md-table", ctx.counter))
+        .max_w_full()
+        .overflow_x_scroll()
+        .child(grid)
+        .into_any_element()
 }
 
 // --- In-page search ---
