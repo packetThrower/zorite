@@ -4,7 +4,7 @@
 
 use gpui::{
     AppContext, Context, InteractiveElement, IntoElement, MouseButton, ParentElement, SharedString,
-    StatefulInteractiveElement, Styled, canvas, div, px,
+    StatefulInteractiveElement, Styled, canvas, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::menu::ContextMenuExt;
 use gpui_component::tab::{Tab, TabBar};
@@ -139,6 +139,24 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             .inset_0(),
         )
         .child(bar)
+        // Paint over the selected Journal tab's 1px left border at the strip's
+        // very edge (a border against the sidebar reads as a stray line).
+        // gpui-component would drop a first tab's left border itself, but its
+        // TabBar defaults every child's `tab_bar_prefix` to true — disabling
+        // that rule — and the setter is crate-private. An overlay can't
+        // disturb the tab layout the way a style override could.
+        .when(app.active == 0, |this| {
+            use gpui_component::ActiveTheme as _;
+            this.child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom(px(1.0))
+                    .w(px(1.0))
+                    .bg(cx.theme().tokens.tab_active),
+            )
+        })
 }
 
 /// A translucent, dashed placeholder tab showing where a tab dragged in from
