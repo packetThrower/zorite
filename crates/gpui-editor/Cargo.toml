@@ -17,7 +17,7 @@ unicode-segmentation = "1"
 # table styles, heading scales — so WYSIWYG and the reader can never drift
 # apart on what a construct IS. The one sanctioned sibling-crate dependency
 # (see AGENTS.md); rendering stays entirely this crate's own.
-gpui-markdown = { path = "../gpui-markdown" }
+gpui-markdown = { path = "../gpui-markdown", default-features = false }
 
 # The standalone demo needs a platform backend to open a real window (the `gpui`
 # crate alone has no app entry point in this setup — it's split into

@@ -130,6 +130,166 @@ pub fn heading_scale(depth: u8) -> f32 {
     }
 }
 
+// --- Linkables ---
+
+/// What a click on a link-like construct targets. `Page` opens a page by
+/// title (a `[[wiki-link]]` or a `#tag` — Logseq semantics); `Url` is an
+/// inline or bare URL (hosts open http(s) externally, resolve files
+/// themselves).
+#[derive(Debug, PartialEq)]
+pub enum LinkHit {
+    Page(String),
+    Url(String),
+}
+
+/// Split a wiki-link's inner text into `(target, display)`:
+/// `target|label` shows `label` (falling back to the target when the label is
+/// empty); `name` shows itself. Both sides trimmed.
+pub fn wiki_target_display(inner: &str) -> (&str, &str) {
+    match inner.split_once('|') {
+        Some((t, l)) if !l.trim().is_empty() => (t.trim(), l.trim()),
+        Some((t, _)) => (t.trim(), t.trim()),
+        None => (inner.trim(), inner.trim()),
+    }
+}
+
+/// Whether `c` can appear inside a `#tag` name (after the `#`). `/` is
+/// included — Logseq-style namespaced tags (`#area/sub`) are one tag.
+pub fn is_tag_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'/')
+}
+
+/// A word character for boundary checks (a `#` glued to a word isn't a tag;
+/// a URL glued to a word isn't a link).
+pub fn is_word_char(c: u8) -> bool {
+    c.is_ascii_alphanumeric() || c == b'_'
+}
+
+/// Where a bare URL starting at `start` ends: consumes to whitespace or a
+/// wrapping delimiter, then backs off trailing punctuation (GFM-ish).
+pub fn url_end(line: &str, start: usize) -> usize {
+    let b = line.as_bytes();
+    let mut j = start;
+    while j < line.len()
+        && !b[j].is_ascii_whitespace()
+        && !matches!(b[j], b'<' | b'>' | b'"' | b'`')
+    {
+        j += 1;
+    }
+    while j > start
+        && matches!(
+            b[j - 1],
+            b'.' | b',' | b';' | b':' | b'!' | b'?' | b')' | b']'
+        )
+    {
+        j -= 1;
+    }
+    j
+}
+
+/// Every clickable link in `line`, as `(source byte range, target)`.
+/// Wiki-links (anywhere on one opens its target; the alias is display-only),
+/// inline `[text](url)` links, `#tags`, and bare `http(s)://` URLs. Images
+/// (`![](src)`), footnote refs, and anything inside inline code are opaque —
+/// not links. One grammar for every renderer's click hit-tests, hover
+/// cursors, and styling.
+pub fn links(line: &str) -> Vec<(std::ops::Range<usize>, LinkHit)> {
+    let b = line.as_bytes();
+    let end = line.len();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < end {
+        let c = b[i];
+        // Inline code: the span is opaque (a URL inside backticks is verbatim).
+        if c == b'`'
+            && let Some(close) = find1(b, i + 1, end, b'`')
+        {
+            i = close + 1;
+            continue;
+        }
+        // Wiki-link: [[target]] / [[target|alias]].
+        if c == b'['
+            && i + 1 < end
+            && b[i + 1] == b'['
+            && let Some(close) = find2(b, i + 2, end, b']', b']')
+        {
+            let (target, _) = wiki_target_display(&line[i + 2..close]);
+            if !target.is_empty() {
+                out.push((i..close + 2, LinkHit::Page(target.to_string())));
+            }
+            i = close + 2;
+            continue;
+        }
+        // Footnote reference [^label]: styled like a link but not one.
+        if c == b'['
+            && i + 1 < end
+            && b[i + 1] == b'^'
+            && let Some(rb) = find1(b, i + 2, end, b']')
+            && rb > i + 2
+        {
+            i = rb + 1;
+            continue;
+        }
+        // Inline link [text](url) — or an image ![alt](src), which is NOT a
+        // link click (images render as widgets / have their own machinery).
+        if c == b'['
+            && let Some(rb) = find1(b, i + 1, end, b']')
+            && rb + 1 < end
+            && b[rb + 1] == b'('
+            && let Some(rp) = find1(b, rb + 2, end, b')')
+        {
+            let is_image = i > 0 && b[i - 1] == b'!';
+            let url = line[rb + 2..rp].trim();
+            if !is_image && !url.is_empty() {
+                out.push((i..rp + 1, LinkHit::Url(url.to_string())));
+            }
+            i = rp + 1;
+            continue;
+        }
+        // Tag: #tag → the page of that name (Logseq semantics).
+        if c == b'#' && (i == 0 || !is_word_char(b[i - 1])) {
+            let mut j = i + 1;
+            while j < end && is_tag_char(b[j]) {
+                j += 1;
+            }
+            if j > i + 1 {
+                out.push((i..j, LinkHit::Page(line[i + 1..j].to_string())));
+                i = j;
+                continue;
+            }
+        }
+        // Bare URL: http(s)://… at a word boundary (GFM autolink literal).
+        if (line[i..].starts_with("http://") || line[i..].starts_with("https://"))
+            && (i == 0 || !is_word_char(b[i - 1]))
+        {
+            let j = url_end(line, i);
+            if j > i + 8 {
+                out.push((i..j, LinkHit::Url(line[i..j].to_string())));
+                i = j;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The link under byte `col` of `line`, if any (see [`links`]).
+pub fn link_at(line: &str, col: usize) -> Option<LinkHit> {
+    links(line)
+        .into_iter()
+        .find(|(r, _)| r.contains(&col))
+        .map(|(_, hit)| hit)
+}
+
+fn find1(b: &[u8], from: usize, end: usize, c: u8) -> Option<usize> {
+    (from..end).find(|&i| b[i] == c)
+}
+
+fn find2(b: &[u8], from: usize, end: usize, c1: u8, c2: u8) -> Option<usize> {
+    (from..end.saturating_sub(1)).find(|&i| b[i] == c1 && b[i + 1] == c2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +312,22 @@ mod tests {
             Some((AlertKind::Tip, 9))
         ));
         assert_eq!(AlertKind::Caution.label(), "Caution");
+    }
+
+    #[test]
+    fn links_cover_every_kind() {
+        let hits = links("see [[Page|alias]] and [x](https://a.io) #tag/sub https://b.io/p, done");
+        assert_eq!(
+            hits.iter().map(|(_, h)| h).collect::<Vec<_>>(),
+            vec![
+                &LinkHit::Page("Page".into()),
+                &LinkHit::Url("https://a.io".into()),
+                &LinkHit::Page("tag/sub".into()),
+                &LinkHit::Url("https://b.io/p".into()), // trailing comma trimmed
+            ]
+        );
+        // Opaque: code spans, images, footnotes, glued #.
+        assert!(links("`https://x.io` ![a](i.png) [^1] word#no").is_empty());
     }
 
     #[test]

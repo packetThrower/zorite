@@ -15,7 +15,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [Completed](#completed)
 
 ## Editor & rendering
-- [ ] **gpui-markdown becomes THE markdown crate; gpui-editor consumes it**
+- [x] **gpui-markdown becomes THE markdown crate; gpui-editor consumes it**
   (design agreed 2026-07-02, replacing the earlier third-crate idea). The two
   views recognize every construct separately and drift — links (fixed 0.4.1),
   alerts (recognized in 3 places incl. PDF export), math parse options. Plan:
@@ -31,12 +31,16 @@ work is collected under [Completed](#completed) at the bottom.
   3. gpui-editor's whole markdown/WYSIWYG side moves behind a default-on
      `markdown` feature — it's a text editor first (ratex-gpui's `editor`
      feature is the precedent).
-  **Progress:** `gpui_markdown::syntax` exists and all three consumers use it
-  for alerts, table styles, and heading scales (commit bca140c); the sibling
-  dep + AGENTS exception are in place. **Remaining:** the linkables
-  (wiki/tag/url — would make WYSIWYG bare-URL autolinks nearly free), then
-  the `view` / `markdown` feature gates. Parity rules (which view's look
-  wins) live in AGENTS.md "The three views".
+  **DONE** (2026-07-02) except one deliberate cut: `gpui_markdown::syntax`
+  holds alerts, table styles, heading scales, AND the linkables (one grammar —
+  unification caught live tag-rule drift and gave WYSIWYG bare-URL autolinks);
+  the `view` feature ships (recognition-only builds are dependency-free, the
+  editor consumes `default-features = false`). **Cut: the gpui-editor
+  `markdown` feature** — ~102 integration points would need cfg or a 30-item
+  stub mirror, while the benefit evaporated once recognition became a
+  dependency-free module (unused markdown paths are dead-code-eliminated for
+  consumers that never call `set_markdown_style`). "Text editor first" is
+  documented in the crate README instead. Parity rules live in AGENTS.md.
 - [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 

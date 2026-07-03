@@ -3,8 +3,11 @@
 A from-scratch, multi-line **text editor for [GPUI](https://github.com/zed-industries/zed)** —
 the basis for [Zorite](https://github.com/packetThrower/zorite)'s note editor.
 
-Host-agnostic: it depends only on `gpui` (+ `unicode-segmentation`), **not** on
-`gpui-component`. It's built directly on GPUI's text primitives — an
+Host-agnostic: it depends on `gpui` (+ `unicode-segmentation`), **not** on
+`gpui-component` — plus one sibling, [`gpui-markdown`](../gpui-markdown/README.md)
+with default features off, which contributes only `gpui_markdown::syntax`: the
+**dependency-free** construct-recognition module (what counts as a link / alert /
+table style) shared with the reader so the two views can never drift apart. It's built directly on GPUI's text primitives — an
 `EntityInputHandler` for keyboard + IME input, `shape_line` for per-line text
 shaping, and a custom `Element` that lays out and paints the lines, caret, and
 selection.
@@ -47,10 +50,10 @@ It's a path/git crate (not on crates.io — `gpui` is a git-only dependency):
 gpui-editor = { path = "crates/gpui-editor" }   # or a git dependency
 ```
 
-> **gpui revision:** this crate pins `gpui = { git = ".../zed" }` with **no rev**
-> and relies on the workspace's single lockfile to unify everything onto one
-> `gpui`. In a separate workspace, keep the `gpui` rev in lockstep with this
-> crate's lock or you'll get two `gpui` versions in one build (won't compile).
+> **gpui revision:** this crate takes the workspace's pinned `gpui` rev
+> (`[workspace.dependencies]` — one spec, byte-for-byte). In a separate
+> workspace, keep your `gpui` rev in lockstep with this crate's or you'll get
+> two `gpui` versions in one build (won't compile).
 
 ## Quick start
 
@@ -93,6 +96,45 @@ div()
     .text_color(rgb(0xe6e6e6))
     .child(editor.clone())
 ```
+
+## Markdown live preview — opt in at runtime, not compile time
+
+The editor is a **text editor first**: create it, focus it, and it edits plain
+text. The whole Markdown/WYSIWYG side is dormant until the host installs a
+[`SyntaxStyle`] — there is deliberately **no cargo feature** for it, because
+its only compile-time cost is the dependency-free `gpui_markdown::syntax`
+module, and every markdown code path is dead (and dead-code-eliminated) unless
+these calls are made:
+
+```rust
+editor.update(cx, |ed, cx| {
+    // 1. REQUIRED for any live styling: colors + fonts, from your theme.
+    ed.set_markdown_style(my_syntax_style(), cx);
+
+    // 2. OPTIONAL, feature by feature — skip any you don't need:
+    // standalone image rows render via your image pipeline…
+    ed.set_block_image_provider(|src| my_images.get(src));
+    // …file chips (e.g. PDF embeds) show a label and click through OpenLink…
+    ed.set_block_chip_provider(|src| is_pdf(src).then(|| file_name(src).into()));
+    // …```mermaid fences render as diagrams (raster + logical w/h)…
+    ed.set_block_mermaid_provider(|src| my_mermaid.get(src));
+    // …$$…$$ blocks and inline $…$ render typeset (logical size; set the em
+    // the rasters were typeset at so inline formulas scale to your text)…
+    ed.set_block_math_provider(|src| my_math.get(src));
+    ed.set_block_math_em(22.0);
+    // …and fenced code with a language tag colors its tokens.
+    ed.set_code_highlighter(|lang, code| my_highlighter.highlight(lang, code));
+});
+```
+
+Then handle the interaction events (see [Events](#events)): `OpenLink` /
+`OpenWikiLink` for clicks on links, chips, and bare URLs; `EditMath` /
+`MathMenu` if you host a math editor. Alert titles (`> [!NOTE]` …) can show
+icons by supplying SVG asset paths in `SyntaxStyle::alert_icons`.
+
+Everything renders **raw under the caret** (move onto a construct to edit its
+source), and `clear_markdown_style` reverts the whole surface to plain text at
+runtime — e.g. a user's "WYSIWYG off" toggle.
 
 ## Key bindings
 
@@ -217,7 +259,10 @@ fn clear_markdown_style(&mut self, cx: &mut Context<Self>)
 
 With a [`SyntaxStyle`] installed, the editor renders Markdown live (markers hidden
 except around the caret). `clear_markdown_style` falls back to plain text (spell
-squiggles only) — e.g. when the host's WYSIWYG setting is toggled off.
+squiggles only) — e.g. when the host's WYSIWYG setting is toggled off. See
+[Markdown live preview](#markdown-live-preview--opt-in-at-runtime-not-compile-time)
+for the full recipe, including `set_code_highlighter` for token-colored fenced
+code.
 
 #### Block widgets
 
@@ -294,7 +339,11 @@ editor stays theme-agnostic. All fields are `gpui::Hsla` except `mono: gpui::Fon
 | `link` | `[text](url)`, `[[wiki-links]]`, footnote/reference refs |
 | `tag` | `#tags` |
 | `quote` | blockquote text + left border (a muted tone) |
+| `alert_note` … `alert_caution` | GitHub alert (`> [!NOTE]` …) bar + title, one per kind |
+| `alert_icons` | `Option<AlertIcons>` — SVG asset paths for the alert title icons (`None` = label only) |
+| `rule` | thematic break (`---`) divider |
 | `mark_bg` | `<mark>` highlight background |
+| `popover_*` | the built-in right-click menus (table ops, spell suggestions) |
 | `mono` | monospace font for inline code + code blocks |
 
 ### `struct Diagnostic`

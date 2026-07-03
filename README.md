@@ -106,10 +106,16 @@ Developed in close collaboration with Claude (Anthropic).
   [`hayro`](https://crates.io/crates/hayro), no native dependencies — the
   reusable [`gpui-pdf`](crates/gpui-pdf/README.md) crate.
 - **Markdown rendering** — CommonMark + GFM (headings, bold/italic/code, lists,
-  quotes, tables, strikethrough, `<mark>` highlights) and **Mermaid diagrams**
+  quotes, tables, strikethrough, `<mark>` highlights), **GitHub alerts**
+  (`> [!NOTE]` … `[!CAUTION]`, themeable colors + icons), **syntax-highlighted
+  code blocks** (tree-sitter, ~20 languages), and **Mermaid diagrams**
   (flowchart / sequence / class, rendered pure-Rust and themed to your skin;
   click one to expand it) — via the [`gpui-markdown`](crates/gpui-markdown/README.md)
   crate. **Find in page** searches the rendered text with highlight and count.
+- **Export to PDF** — right-click a tab or sidebar page, or press
+  `⌘P` / `Ctrl+P` for the active tab: a native save dialog, then a real PDF —
+  wrapped styled text, tables, images, alerts, typeset math, and mermaid
+  diagrams (pure-Rust `oxidize-pdf`; no browser, no native deps).
 - **Math** — write LaTeX inline (`$…$`) or as display blocks (`$$…$$`); both
   typeset to crisp formulas (KaTeX-grade coverage). Click or arrow into one for a
   **2-D structural editor** — edit fractions, roots, matrices, and ~100 symbols
@@ -153,10 +159,15 @@ insert: `{{date}}`, `{{time}}`, `{{title}}` (the current page/day), and
 ## Themes
 
 Zorite ships several built-in themes (Zorite, Nord, Solarized, Dracula, Tokyo
-Night, Foundry, Cyberpunk, E-Ink), each with a light and dark variant (Cyberpunk
-is dark-only). Open **Settings** (the ⚙ in the title bar) to pick a theme and
-choose **Light / Dark / Auto** (Auto follows your system appearance). A quick
-light/dark toggle also lives in the title bar.
+Night, Foundry, Cyberpunk, CRT, E-Ink), each with a light and dark variant
+(Cyberpunk and CRT are dark-only). Open **Settings** (the ⚙ in the title bar) to
+pick a theme and choose **Light / Dark / Auto** (Auto follows your system
+appearance). A quick light/dark toggle also lives in the title bar.
+
+Settings → Appearance also picks the app **font** (any installed family, or
+import a `.ttf`/`.otf`) and the note **text size**; a custom theme can name its
+own font and override every palette token — see the
+[themes docs](https://packetthrower.github.io/zorite/customize/themes/).
 
 Drop a `.json` file in your themes folder (Settings → **Reveal themes folder**)
 and click **Reload**. Any color you omit falls back to the base palette, so a

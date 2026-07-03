@@ -6,8 +6,18 @@ through a real **callback** — unlike renderers that only `cx.open_url` externa
 
 It is host-agnostic: styling comes in via [`MarkdownStyle`](#markdownstyle), and the
 host supplies closures for clicking a `[[wiki-link]]`/`#tag`, rendering an image,
-rendering a mermaid diagram, and click-to-caret. Standard `[text](url)` links open
-externally.
+rendering a mermaid diagram, syntax-highlighting code, and click-to-caret. Standard
+`[text](url)` links open externally.
+
+This is **the** markdown crate of the Zorite workspace, in two layers:
+
+- **`gpui_markdown::syntax`** — always compiled, **dependency-free**: the shared
+  construct *recognition* (linkables, GitHub alert kinds, table styles, heading
+  scales) that this reader, the [`gpui-editor`](../gpui-editor/README.md) WYSIWYG
+  view, and the PDF exporter all consume, so what a construct IS is defined once.
+- **The reader view** (everything below) — behind the default-on **`view`**
+  feature, which owns the `gpui` + `markdown` dependencies. Consumers that only
+  need recognition (like gpui-editor) depend with `default-features = false`.
 
 ## Features
 
@@ -15,8 +25,15 @@ externally.
   `<mark>` highlight, hard breaks
 - Bullet / numbered / nested / **task** lists (`- [ ]` / `- [x]`), blockquotes,
   fenced code blocks, thematic breaks
-- GFM **tables** — column alignment, plus **per-table visual designs** (striped /
-  header-shaded / minimal) chosen by a hidden `<!-- table:STYLE -->` marker
+- GFM **tables** — content-measured columns, column alignment, plus **per-table
+  visual designs** (striped / header-shaded / minimal) chosen by a hidden
+  `<!-- table:STYLE -->` marker
+- **GitHub alerts** — `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` /
+  `[!CAUTION]` blockquotes render with a colored bar, bold title, and optional
+  host-supplied icons; the natural inline form (`> [!NOTE] like so`) works too
+- **Syntax highlighting** — fenced code with a language tag colors its tokens via
+  a host-supplied `on_highlight` closure (bring your own engine; Zorite passes
+  gpui-component's tree-sitter highlighter)
 - **Footnotes** and reference-style `[text][id]` links/images; raw HTML shown
   literally (never executed)
 - `[[wiki-links]]` (and `[[target|label]]` aliases) and `#tags` → clickable,
@@ -95,11 +112,15 @@ pub struct MarkdownStyle {
     pub code_bg: Hsla,            // fenced code background; also striped/header table shade
     pub muted_color: Hsla,        // blockquotes, list markers, table borders, footnote defs, raw HTML
     pub rule_color: Hsla,         // thematic break (---)
+    pub guide_color: Hsla,        // nested-list indent guide (hairline)
     pub mark_bg: Hsla,            // <mark>…</mark> highlight (translucent)
     pub search_bg: Hsla,          // in-page find: every match (translucent)
     pub search_current_bg: Hsla,  // in-page find: the active match
     pub list_indent: Pixels,      // horizontal indent per nested list level
     pub mono_font: SharedString,  // monospace family for code (unknown → default font)
+    pub line_height: f32,         // body line height × text_size (match your editor's)
+    pub alerts: AlertColors,      // GitHub alert bar/title colors, one per kind
+    pub alert_icons: Option<AlertIcons>, // SVG asset paths for alert icons (None = label only)
 }
 ```
 
@@ -324,11 +345,17 @@ Not handled (not enabled by `gfm()`): frontmatter (YAML/TOML) and MDX. Footnote
 references render as `[label]` markers but aren't click-to-jump (that would need
 anchors this text-based renderer doesn't have).
 
+Also rendered: **GitHub alerts** on blockquotes (both marker forms), Zorite-style
+`[[wiki-links]]` and `#tags` (namespaced `#a/b` included — the grammar is the
+shared `syntax` module's), and table-style / math-alignment control comments,
+which — like all HTML comments — never render.
+
 ## Status
 
-Early, but feature-complete for CommonMark + GFM. Parses with the
-[`markdown`](https://crates.io/crates/markdown) crate (mdast). Not yet published to
-crates.io (gpui is a git-only dependency).
+Feature-complete for CommonMark + GFM. The view parses with the
+[`markdown`](https://crates.io/crates/markdown) crate (mdast); `syntax` is pure
+text and dependency-free. Not yet published to crates.io (gpui is a git-only
+dependency).
 
 ## License
 

@@ -5,7 +5,13 @@ edition = "2024"
 description = "Markdown rendering for GPUI with clickable wiki-links."
 license = "GPL-3.0-or-later"
 
+[features]
+default = ["view"]
+# The reader view (MarkdownView + renderers). Without it the crate is just
+# `syntax` — the dependency-free construct recognition gpui-editor consumes.
+view = ["dep:gpui", "dep:markdown"]
+
 [dependencies]
 # Shared workspace spec (the root pins the rev) so Cargo unifies to one gpui.
-gpui = { workspace = true }
-markdown = "1"
+gpui = { workspace = true, optional = true }
+markdown = { version = "1", optional = true }
