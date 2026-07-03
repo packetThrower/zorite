@@ -450,6 +450,7 @@ pub struct AppView {
     all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
     /// The graph view's model (nodes + layout + camera), rebuilt on open.
     pub graph: Option<crate::ui::graph::GraphState>,
+    pub graph_search: Option<GraphSearch>,
     // Auto-link-as-you-type state, shared into the editors' auto-replace
     // closures: lowercase page title -> canonical title, rebuilt with the
     // sidebar; and the live on/off switch (Settings -> Markdown).
@@ -573,6 +574,13 @@ pub struct PageFind {
     /// Block index (per `gpui_markdown::find_matches`) of each match, used to scroll
     /// the active match's block into view.
     match_blocks: Vec<usize>,
+    _sub: Subscription,
+}
+
+/// The graph view's search box (top of its panel). A Change event just
+/// repaints — matching happens in the graph's render.
+pub struct GraphSearch {
+    pub input: Entity<InputState>,
     _sub: Subscription,
 }
 
@@ -712,6 +720,7 @@ impl AppView {
             all_pages_kind: Default::default(),
             all_pages_pdfs: Vec::new(),
             graph: None,
+            graph_search: None,
             auto_link_titles: Rc::new(RefCell::new(Default::default())),
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
@@ -3161,6 +3170,19 @@ impl AppView {
 
     /// Open (or focus) the graph view tab, rebuilding nodes and layout.
     pub fn open_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.graph_search.is_none() {
+            let input = cx.new(|cx| InputState::new(window, cx).placeholder("Search nodes…"));
+            let sub = cx.subscribe_in(
+                &input,
+                window,
+                |_this: &mut AppView, _st, ev: &InputEvent, _w, cx| {
+                    if matches!(ev, InputEvent::Change) {
+                        cx.notify();
+                    }
+                },
+            );
+            self.graph_search = Some(GraphSearch { input, _sub: sub });
+        }
         self.rebuild_graph();
         if let Some(ix) = self
             .tabs
@@ -3195,9 +3217,13 @@ impl AppView {
             Vec::new()
         };
         let links = self.db.all_page_links().unwrap_or_default();
-        self.graph = Some(crate::ui::graph::GraphState::build(
-            &pages, &boards, &journals, &links, filters,
-        ));
+        let mut graph =
+            crate::ui::graph::GraphState::build(&pages, &boards, &journals, &links, filters);
+        if let Some(old) = self.graph.as_ref() {
+            // Keep the known canvas size so the fit-to-view lands frame one.
+            graph.adopt_camera_bounds(old);
+        }
+        self.graph = Some(graph);
     }
 
     /// Apply a panel filter change: rebuild the graph's nodes and layout.

@@ -1,20 +1,22 @@
 //! The **graph view** (All pages → top-right "Graph"; its own tab): every
 //! named page and whiteboard as a node, every `page_links` edge as a line,
-//! laid out by a small force simulation on open. Drag or scroll to pan,
-//! pinch or ⌘/Ctrl+scroll to zoom, click a node to open it, hover to
-//! highlight its neighborhood. A floating panel holds the legend, node
-//! statistics, and filters (journal days default off, Logseq-style).
+//! laid out by a small force simulation on open (then zoomed to fit). Drag
+//! the background or scroll to pan, pinch or ⌘/Ctrl+scroll to zoom, drag a
+//! node to reposition it, click one to open it, hover to highlight its
+//! neighborhood. A floating panel holds search, the legend, node statistics,
+//! and filters (journal days default off, Logseq-style).
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{
-    Bounds, ClickEvent, Context, Corners, Hsla, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent, Pixels,
-    Point, ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
-    TextRun, canvas, div, fill, point, px, size,
+    Bounds, ClickEvent, Context, Corners, Entity, Hsla, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder,
+    PinchEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    StatefulInteractiveElement, Styled, TextRun, canvas, div, fill, point, px, size,
 };
+use gpui_component::input::{Input, InputState};
 use gpui_component::switch::Switch;
 
 use crate::app::AppView;
@@ -23,7 +25,7 @@ use crate::theme;
 
 /// Trackpad scroll lines → px, matching the whiteboard's feel.
 const LINE_PX: f32 = 40.0;
-/// A press that moves less than this is a click, not a pan.
+/// A press that moves less than this is a click, not a drag.
 const CLICK_SLOP: f32 = 4.0;
 
 /// Which node sets are in the graph. Journal days default off — thousands of
@@ -70,6 +72,20 @@ struct Node {
     radius: f32,
 }
 
+/// A left-button press in flight: panning the background or moving a node.
+#[derive(Clone, Copy)]
+enum Drag {
+    Pan {
+        last: Point<Pixels>,
+        moved: bool,
+    },
+    Node {
+        i: usize,
+        press: Point<Pixels>,
+        moved: bool,
+    },
+}
+
 /// The graph tab's model: nodes laid out once on open, plus the camera and
 /// interaction state. Rebuilt by [`AppView::open_graph`] and filter changes.
 pub struct GraphState {
@@ -83,9 +99,11 @@ pub struct GraphState {
     /// Camera: screen-px offset from the canvas center, and scale.
     pan: [f32; 2],
     zoom: f32,
+    /// Fit-to-view once the canvas size is known (the first painted frame
+    /// computes the same fit locally so nothing flashes unfitted).
+    fit_pending: bool,
     hover: Option<usize>,
-    /// Left-button press: (last position, has it moved past the click slop).
-    drag: Option<(Point<Pixels>, bool)>,
+    drag: Option<Drag>,
     /// Canvas bounds, captured at prepaint for event → world math.
     bounds: Rc<Cell<Bounds<Pixels>>>,
 }
@@ -115,7 +133,14 @@ impl GraphState {
                 id_edges.insert((s.min(t), s.max(t)));
             }
         }
-        let linked: HashSet<i64> = id_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
+        // Orphan-ness is judged against the FULL link table, not the visible
+        // subgraph — a page linked only from (hidden) journal days is not an
+        // orphan, it just has no visible edges right now.
+        let linked: HashSet<i64> = links
+            .iter()
+            .filter(|(s, t)| s != t)
+            .flat_map(|&(s, t)| [s, t])
+            .collect();
         let orphan_count = cand.iter().filter(|(id, ..)| !linked.contains(id)).count();
         let (visible_orphans, hidden_orphans) = if filters.orphans {
             (orphan_count, 0)
@@ -156,6 +181,7 @@ impl GraphState {
             hidden_orphans,
             pan: [0.0, 0.0],
             zoom: 1.0,
+            fit_pending: true,
             hover: None,
             drag: None,
             bounds: Rc::default(),
@@ -164,6 +190,12 @@ impl GraphState {
 
     pub fn filters(&self) -> GraphFilters {
         self.filters
+    }
+
+    /// Carry the previous state's canvas bounds across a rebuild, so the
+    /// fit-to-view has a real size on its first frame.
+    pub fn adopt_camera_bounds(&mut self, prev: &Self) {
+        self.bounds = prev.bounds.clone();
     }
 
     /// Canvas-local vector from the canvas center to a window-coords point.
@@ -195,31 +227,242 @@ impl GraphState {
     }
 }
 
-/// Fruchterman–Reingold force layout: all pairs repel, linked nodes attract,
-/// displacement capped by a cooling temperature. Deterministic (golden-angle
-/// spiral start), one-shot on open — no animation to keep in sync.
+/// The camera (pan, zoom) that fits every node inside `size` with margin.
+fn fit_camera(size: Size<Pixels>, nodes: impl Iterator<Item = ([f32; 2], f32)>) -> ([f32; 2], f32) {
+    let (mut minx, mut miny) = (f32::MAX, f32::MAX);
+    let (mut maxx, mut maxy) = (f32::MIN, f32::MIN);
+    let mut any = false;
+    for (p, r) in nodes {
+        any = true;
+        minx = minx.min(p[0] - r);
+        miny = miny.min(p[1] - r);
+        maxx = maxx.max(p[0] + r);
+        maxy = maxy.max(p[1] + r);
+    }
+    if !any {
+        return ([0.0, 0.0], 1.0);
+    }
+    const PAD: f32 = 60.0;
+    let (bw, bh) = (maxx - minx + PAD * 2.0, maxy - miny + PAD * 2.0);
+    let (w, h) = (
+        f32::from(size.width).max(1.0),
+        f32::from(size.height).max(1.0),
+    );
+    let zoom = (w / bw).min(h / bh).clamp(0.05, 1.25);
+    let (cx, cy) = ((minx + maxx) / 2.0, (miny + maxy) / 2.0);
+    ([-cx * zoom, -cy * zoom], zoom)
+}
+
+/// Layout: a Fruchterman–Reingold force pass per connected component (all
+/// pairs repel, linked nodes attract, displacement capped by a cooling
+/// temperature), then the components shelf-packed into a roughly square
+/// sheet — isolated clusters and singletons form a tidy grid instead of
+/// being crushed against the big component's rim. Deterministic
+/// (golden-angle spiral start), one-shot on open — no animation to keep in
+/// sync.
 fn layout(nodes: &mut [Node], edges: &[(usize, usize)]) {
     let n = nodes.len();
     if n == 0 {
         return;
     }
-    for (i, node) in nodes.iter_mut().enumerate() {
-        let a = i as f32 * 2.399_963; // golden angle
-        let r = 28.0 * (i as f32).sqrt();
-        node.pos = [r * a.cos(), r * a.sin()];
+    // Connected components (BFS).
+    let mut adj = vec![Vec::new(); n];
+    for &(a, b) in edges {
+        adj[a].push(b);
+        adj[b].push(a);
     }
+    let mut comp_of = vec![usize::MAX; n];
+    let mut comps: Vec<Vec<usize>> = Vec::new();
+    for start in 0..n {
+        if comp_of[start] != usize::MAX {
+            continue;
+        }
+        let ci = comps.len();
+        comp_of[start] = ci;
+        let mut members = vec![start];
+        let mut head = 0;
+        while head < members.len() {
+            let v = members[head];
+            head += 1;
+            for &w in &adj[v] {
+                if comp_of[w] == usize::MAX {
+                    comp_of[w] = ci;
+                    members.push(w);
+                }
+            }
+        }
+        comps.push(members);
+    }
+    // Each component's edges, re-indexed to its member list.
+    let mut local_of = vec![0usize; n];
+    for comp in &comps {
+        for (li, &g) in comp.iter().enumerate() {
+            local_of[g] = li;
+        }
+    }
+    let mut comp_edges: Vec<Vec<(usize, usize)>> = vec![Vec::new(); comps.len()];
+    for &(a, b) in edges {
+        comp_edges[comp_of[a]].push((local_of[a], local_of[b]));
+    }
+    // Lay out each component alone; leave its box origin at (0, 0).
+    let mut boxes: Vec<[f32; 2]> = vec![[0.0, 0.0]; comps.len()];
+    for (ci, (comp, ce)) in comps.iter().zip(&comp_edges).enumerate() {
+        if let [g] = comp[..] {
+            let r = nodes[g].radius;
+            nodes[g].pos = [r, r];
+            boxes[ci] = [r * 2.0, r * 2.0];
+            continue;
+        }
+        let mut pos = fr(comp.len(), ce);
+        let (mut minx, mut miny) = (f32::MAX, f32::MAX);
+        let (mut maxx, mut maxy) = (f32::MIN, f32::MIN);
+        for p in &pos {
+            minx = minx.min(p[0]);
+            miny = miny.min(p[1]);
+            maxx = maxx.max(p[0]);
+            maxy = maxy.max(p[1]);
+        }
+        for (p, &g) in pos.iter_mut().zip(comp) {
+            nodes[g].pos = [p[0] - minx, p[1] - miny];
+        }
+        boxes[ci] = [maxx - minx, maxy - miny];
+    }
+    // The largest component anchors the center. The other LINKED groups
+    // disperse on rings just around it — inside the field of dots — and the
+    // singletons alone form the surrounding rings, Logseq-style.
+    let mut order: Vec<usize> = (0..comps.len()).collect();
+    order.sort_by(|&a, &b| half_diag(boxes[b]).total_cmp(&half_diag(boxes[a])));
+    let center_ci = order[0];
+    {
+        let [w, h] = boxes[center_ci];
+        for &g in &comps[center_ci] {
+            nodes[g].pos[0] -= w / 2.0;
+            nodes[g].pos[1] -= h / 2.0;
+        }
+    }
+    let (groups, dots): (Vec<usize>, Vec<usize>) =
+        order[1..].iter().partition(|&&ci| comps[ci].len() > 1);
+    let base = half_diag(boxes[center_ci]) + RING_GAP;
+    let outer = ring_disperse(nodes, &comps, &boxes, &groups, base, true);
+    ring_disperse(nodes, &comps, &boxes, &dots, outer + RING_GAP, false);
+    // Center the arrangement so the camera math starts near the middle.
+    let (mut minx, mut miny) = (f32::MAX, f32::MAX);
+    let (mut maxx, mut maxy) = (f32::MIN, f32::MIN);
+    for node in nodes.iter() {
+        minx = minx.min(node.pos[0]);
+        miny = miny.min(node.pos[1]);
+        maxx = maxx.max(node.pos[0]);
+        maxy = maxy.max(node.pos[1]);
+    }
+    let (mx, my) = ((minx + maxx) / 2.0, (miny + maxy) / 2.0);
+    for node in nodes.iter_mut() {
+        node.pos[0] -= mx;
+        node.pos[1] -= my;
+    }
+}
+
+const GAP: f32 = 60.0; // arc length reserved between ring neighbors
+const RING_GAP: f32 = 70.0; // radial gap between rings
+
+/// A deterministic hash → [-1, 1), for layout jitter (`rand` stays out of
+/// the tree, and a seeded look survives rebuilds).
+fn hash_unit(seed: usize) -> f32 {
+    let mut x = seed as u64 ^ 0x9E37_79B9_7F4A_7C15;
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xFF51_AFD7_ED55_8CCD);
+    x ^= x >> 33;
+    (x & 0xFFFF) as f32 / 32768.0 - 1.0
+}
+
+/// Half the diagonal of a layout box — the radius that fully contains it.
+fn half_diag(b: [f32; 2]) -> f32 {
+    (b[0] * b[0] + b[1] * b[1]).sqrt() / 2.0
+}
+
+/// Disperse the selected components onto rings around the origin, starting
+/// at `base` and stepping outward as rings fill. Two passes: greedily assign
+/// members to rings by the arc each needs, then spread every ring's members
+/// evenly around the full circle. Returns the outer edge consumed.
+fn ring_disperse(
+    nodes: &mut [Node],
+    comps: &[Vec<usize>],
+    boxes: &[[f32; 2]],
+    sel: &[usize],
+    mut base: f32,
+    jitter: bool,
+) -> f32 {
+    let mut rings: Vec<(f32, Vec<usize>)> = Vec::new(); // (radius, components)
+    let mut used = 0.0f32;
+    let mut ring_max = 0.0f32;
+    for &ci in sel {
+        let d = half_diag(boxes[ci]).max(10.0);
+        let need = 2.0 * d + GAP;
+        let full = rings
+            .last()
+            .is_none_or(|(r, _)| used + need > std::f32::consts::TAU * r);
+        if full {
+            if let Some((r, _)) = rings.last() {
+                // Descending sizes: a ring's first (largest) member sets its
+                // radial thickness.
+                base = r + ring_max + RING_GAP;
+            }
+            rings.push((base + d, Vec::new()));
+            ring_max = d;
+            used = 0.0;
+        }
+        rings.last_mut().unwrap().1.push(ci);
+        used += need;
+    }
+    for (ri, (r, members)) in rings.iter().enumerate() {
+        let step = std::f32::consts::TAU / members.len() as f32;
+        let offset = ri as f32 * 0.35; // stagger successive rings
+        for (j, &ci) in members.iter().enumerate() {
+            // Optional deterministic scatter, so linked groups look strewn
+            // around the center rather than machined onto a ring.
+            let (ja, jr) = if jitter {
+                (
+                    hash_unit(ci * 2) * step * 0.35,
+                    hash_unit(ci * 2 + 1) * RING_GAP,
+                )
+            } else {
+                (0.0, 0.0)
+            };
+            let ang = offset + j as f32 * step + ja;
+            let rj = r + jr;
+            let (cx, cy) = (rj * ang.cos(), rj * ang.sin());
+            let [w, h] = boxes[ci];
+            for &g in &comps[ci] {
+                nodes[g].pos[0] += cx - w / 2.0;
+                nodes[g].pos[1] += cy - h / 2.0;
+            }
+        }
+    }
+    rings.last().map_or(base, |(r, _)| r + ring_max)
+}
+
+/// The FR core for one connected component: returns settled positions
+/// (arbitrary origin — the caller normalizes).
+fn fr(n: usize, edges: &[(usize, usize)]) -> Vec<[f32; 2]> {
+    let mut pos: Vec<[f32; 2]> = (0..n)
+        .map(|i| {
+            let a = i as f32 * 2.399_963; // golden angle
+            let r = 28.0 * (i as f32).sqrt();
+            [r * a.cos(), r * a.sin()]
+        })
+        .collect();
     let side = 260.0 + 46.0 * (n as f32).sqrt();
     let k = side / (n as f32).sqrt();
-    // ponytail: O(n²·iters) all-pairs; a Barnes-Hut grid if graphs pass ~2k nodes.
+    // ponytail: O(n²·iters) all-pairs; a Barnes-Hut grid if one component passes ~2k nodes.
     let iters = if n > 800 { 80 } else { 200 };
+    let half = side * 0.8;
     let mut disp = vec![[0.0f32; 2]; n];
     for it in 0..iters {
         let t = side / 8.0 * (1.0 - it as f32 / iters as f32);
         disp.iter_mut().for_each(|d| *d = [0.0, 0.0]);
         for i in 0..n {
             for j in (i + 1)..n {
-                let dx = nodes[i].pos[0] - nodes[j].pos[0];
-                let dy = nodes[i].pos[1] - nodes[j].pos[1];
+                let dx = pos[i][0] - pos[j][0];
+                let dy = pos[i][1] - pos[j][1];
                 let d2 = (dx * dx + dy * dy).max(0.01);
                 let f = k * k / d2; // repulsion / distance, folded into the vector
                 disp[i][0] += dx * f;
@@ -229,8 +472,8 @@ fn layout(nodes: &mut [Node], edges: &[(usize, usize)]) {
             }
         }
         for &(a, b) in edges {
-            let dx = nodes[a].pos[0] - nodes[b].pos[0];
-            let dy = nodes[a].pos[1] - nodes[b].pos[1];
+            let dx = pos[a][0] - pos[b][0];
+            let dy = pos[a][1] - pos[b][1];
             let d = (dx * dx + dy * dy).sqrt().max(0.1);
             let f = d / k; // attraction d²/k, divided by d for the unit vector
             disp[a][0] -= dx * f;
@@ -238,30 +481,45 @@ fn layout(nodes: &mut [Node], edges: &[(usize, usize)]) {
             disp[b][0] += dx * f;
             disp[b][1] += dy * f;
         }
-        for (node, d) in nodes.iter_mut().zip(&disp) {
+        // A CIRCULAR frame clamp: it binds when hub-and-spoke fans inflate
+        // past the frame, and a square one visibly flattens the cluster's
+        // edges — a circle reads organic.
+        for (p, d) in pos.iter_mut().zip(&disp) {
             let len = (d[0] * d[0] + d[1] * d[1]).sqrt().max(0.01);
             let cap = len.min(t);
-            node.pos[0] += d[0] / len * cap;
-            node.pos[1] += d[1] / len * cap;
+            p[0] += d[0] / len * cap;
+            p[1] += d[1] / len * cap;
+            let rr = (p[0] * p[0] + p[1] * p[1]).sqrt();
+            if rr > half {
+                p[0] *= half / rr;
+                p[1] *= half / rr;
+            }
         }
     }
-    // Center on the centroid so pan starts at the middle of the graph.
-    let (mut sx, mut sy) = (0.0, 0.0);
-    for node in nodes.iter() {
-        sx += node.pos[0];
-        sy += node.pos[1];
-    }
-    let (mx, my) = (sx / n as f32, sy / n as f32);
-    for node in nodes.iter_mut() {
-        node.pos[0] -= mx;
-        node.pos[1] -= my;
-    }
+    pos
 }
 
-pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
-    let Some(state) = app.graph.as_ref() else {
+pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
+    let query = app
+        .graph_search
+        .as_ref()
+        .map(|s| s.input.read(cx).value().trim().to_lowercase())
+        .filter(|q| !q.is_empty());
+    let search_input = app.graph_search.as_ref().map(|s| s.input.clone());
+    let Some(state) = app.graph.as_mut() else {
         return div().size_full().into_any_element();
     };
+
+    // Bake the pending fit once the canvas size is known (frame two; frame
+    // one's paint computes the identical fit locally below).
+    let b = state.bounds.get();
+    if state.fit_pending && b.size.width > px(0.0) {
+        let (pan, zoom) = fit_camera(b.size, state.nodes.iter().map(|n| (n.pos, n.radius)));
+        state.pan = pan;
+        state.zoom = zoom;
+        state.fit_pending = false;
+    }
+    let state = &*state;
 
     // Snapshot for the paint closure (the state itself stays on AppView).
     let nodes: Vec<([f32; 2], f32, Kind, SharedString)> = state
@@ -271,6 +529,16 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
         .collect();
     let edges = state.edges.clone();
     let (pan, zoom, hover) = (state.pan, state.zoom, state.hover);
+    let fit_pending = state.fit_pending;
+    let matches: Option<HashSet<usize>> = query.map(|q| {
+        state
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.title.to_lowercase().contains(&q))
+            .map(|(i, _)| i)
+            .collect()
+    });
     let neighbors: HashSet<usize> = hover
         .map(|h| {
             edges
@@ -279,6 +547,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                 .collect()
         })
         .unwrap_or_default();
+    let match_count = matches.as_ref().map(|m| m.len());
     let bounds_cell = state.bounds.clone();
     let (accent, accent_tint) = (theme::accent(), theme::accent_tint());
     let (edge_color, label_color) = (theme::divider(), theme::text_secondary());
@@ -293,37 +562,67 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
             MouseButton::Left,
             cx.listener(|this: &mut AppView, ev: &MouseDownEvent, _w, _cx| {
                 if let Some(g) = this.graph.as_mut() {
-                    g.drag = Some((ev.position, false));
+                    g.drag = Some(match g.hit(ev.position) {
+                        Some(i) => Drag::Node {
+                            i,
+                            press: ev.position,
+                            moved: false,
+                        },
+                        None => Drag::Pan {
+                            last: ev.position,
+                            moved: false,
+                        },
+                    });
                 }
             }),
         )
         .on_mouse_move(
             cx.listener(|this: &mut AppView, ev: &MouseMoveEvent, _w, cx| {
                 let Some(g) = this.graph.as_mut() else { return };
-                if let Some((last, moved)) = g.drag {
-                    let (dx, dy) = (
-                        f32::from(ev.position.x - last.x),
-                        f32::from(ev.position.y - last.y),
-                    );
-                    g.pan = [g.pan[0] + dx, g.pan[1] + dy];
-                    g.drag = Some((ev.position, moved || dx.abs() + dy.abs() > CLICK_SLOP));
-                    cx.notify();
-                } else {
-                    let hover = g.hit(ev.position);
-                    if hover != g.hover {
-                        g.hover = hover;
+                match g.drag {
+                    Some(Drag::Pan { last, moved }) => {
+                        let (dx, dy) = (
+                            f32::from(ev.position.x - last.x),
+                            f32::from(ev.position.y - last.y),
+                        );
+                        g.pan = [g.pan[0] + dx, g.pan[1] + dy];
+                        g.drag = Some(Drag::Pan {
+                            last: ev.position,
+                            moved: moved || dx.abs() + dy.abs() > CLICK_SLOP,
+                        });
                         cx.notify();
+                    }
+                    Some(Drag::Node { i, press, moved }) => {
+                        let (dx, dy) = (
+                            f32::from(ev.position.x - press.x),
+                            f32::from(ev.position.y - press.y),
+                        );
+                        let moved = moved || dx.abs() + dy.abs() > CLICK_SLOP;
+                        if moved {
+                            let [ox, oy] = g.center_offset(ev.position);
+                            g.nodes[i].pos = [(ox - g.pan[0]) / g.zoom, (oy - g.pan[1]) / g.zoom];
+                        }
+                        g.drag = Some(Drag::Node { i, press, moved });
+                        cx.notify();
+                    }
+                    None => {
+                        let hover = g.hit(ev.position);
+                        if hover != g.hover {
+                            g.hover = hover;
+                            cx.notify();
+                        }
                     }
                 }
             }),
         )
         .on_mouse_up(
             MouseButton::Left,
-            cx.listener(|this: &mut AppView, ev: &MouseUpEvent, window, cx| {
+            cx.listener(|this: &mut AppView, _ev: &MouseUpEvent, window, cx| {
                 let Some(g) = this.graph.as_mut() else { return };
-                let was_click = matches!(g.drag, Some((_, false)));
-                g.drag = None;
-                if was_click && let Some(i) = g.hit(ev.position) {
+                if let Some(Drag::Node {
+                    i, moved: false, ..
+                }) = g.drag.take()
+                {
                     let title = g.nodes[i].title.clone();
                     // Routes like a wiki-link: boards open their canvas.
                     this.open_page_title(&title, window, cx);
@@ -359,6 +658,11 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
         canvas(
             move |bounds, _, _| bounds_cell.set(bounds),
             move |bounds, _, window, cx| {
+                let (pan, zoom) = if fit_pending {
+                    fit_camera(bounds.size, nodes.iter().map(|(p, r, ..)| (*p, *r)))
+                } else {
+                    (pan, zoom)
+                };
                 let c = bounds.center();
                 let to_screen = |p: [f32; 2]| {
                     point(
@@ -366,9 +670,14 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                         c.y + px(pan[1] + p[1] * zoom),
                     )
                 };
-                // Edges: one path for the quiet ones, one for the hovered
-                // node's, so the highlight paints on top.
-                for (pass, color, width) in [(false, edge_color, 1.0), (true, accent, 1.5)] {
+                // Edges: one path for the quiet ones (dimmed while searching),
+                // one for the hovered node's, so the highlight paints on top.
+                let quiet = if matches.is_some() {
+                    edge_color.opacity(0.3)
+                } else {
+                    edge_color
+                };
+                for (pass, color, width) in [(false, quiet, 1.0), (true, accent, 1.5)] {
                     let mut pb = PathBuilder::stroke(px(width));
                     let mut any = false;
                     for &(a, b) in &edges {
@@ -383,6 +692,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                         window.paint_path(path, color);
                     }
                 }
+                let is_match = |i: usize| matches.as_ref().is_some_and(|m| m.contains(&i));
                 for (i, (pos, radius, kind, _)) in nodes.iter().enumerate() {
                     let p = to_screen(*pos);
                     let r = px((radius * zoom).max(3.0));
@@ -390,6 +700,12 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                         accent
                     } else if neighbors.contains(&i) {
                         accent_tint
+                    } else if let Some(m) = &matches {
+                        if m.contains(&i) {
+                            accent
+                        } else {
+                            kind.color().opacity(0.25)
+                        }
                     } else {
                         kind.color()
                     };
@@ -400,21 +716,18 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                     q.corner_radii = Corners::all(r);
                     window.paint_quad(q);
                 }
-                // Labels: all of them when zoomed in enough to read the map,
-                // otherwise just the hovered node's.
+                // Labels: all of them when zoomed in enough to read the map;
+                // search matches and the hovered node always.
                 for (i, (pos, radius, _, title)) in nodes.iter().enumerate() {
-                    if zoom < 0.7 && hover != Some(i) {
+                    if zoom < 0.7 && hover != Some(i) && !is_match(i) {
                         continue;
                     }
                     let font_size = px(11.0);
+                    let emphasized = hover == Some(i) || is_match(i);
                     let run = TextRun {
                         len: title.len(),
                         font: window.text_style().font(),
-                        color: if hover == Some(i) {
-                            accent
-                        } else {
-                            label_color
-                        },
+                        color: if emphasized { accent } else { label_color },
                         background_color: None,
                         underline: None,
                         strikethrough: None,
@@ -441,7 +754,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
         .absolute()
         .size_full(),
     )
-    .child(panel(state, cx))
+    .child(panel(state, search_input, match_count, cx))
     .child(
         // A quiet hint; doubles as the empty-graph message.
         div()
@@ -453,15 +766,20 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
             .child(if empty {
                 "No linked pages yet — [[wiki-links]] and #tags build the graph."
             } else {
-                "Drag or scroll to pan · pinch or ⌘-scroll to zoom · click a node to open"
+                "Drag to pan or move a node · pinch or ⌘-scroll to zoom · click a node to open"
             }),
     )
     .into_any_element()
 }
 
-/// The floating control panel: legend + statistics up top, node filters and
-/// a reset action below.
-fn panel(state: &GraphState, cx: &mut Context<AppView>) -> impl IntoElement {
+/// The floating control panel: search and the legend + statistics up top,
+/// node filters and a reset action below.
+fn panel(
+    state: &GraphState,
+    search: Option<Entity<InputState>>,
+    match_count: Option<usize>,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
     let f = state.filters;
     let count = |k: Kind| state.nodes.iter().filter(|n| n.kind == k).count();
     let (pages, boards, journals) = (count(Kind::Page), count(Kind::Board), count(Kind::Journal));
@@ -561,6 +879,17 @@ fn panel(state: &GraphState, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(format!("{} shown", state.nodes.len())),
                 ),
         )
+        .children(search.map(|input| Input::new(&input).text_size(px(12.0))))
+        .children(match_count.map(|n| {
+            div()
+                .text_size(px(11.0))
+                .text_color(theme::text_tertiary())
+                .child(match n {
+                    0 => "No matches".to_string(),
+                    1 => "1 match".to_string(),
+                    n => format!("{n} matches"),
+                })
+        }))
         .child(legend)
         .child(div().h(px(1.0)).bg(theme::divider()))
         .child(toggle_row(
@@ -583,7 +912,7 @@ fn panel(state: &GraphState, cx: &mut Context<AppView>) -> impl IntoElement {
                 .cursor_pointer()
                 .hover(|s| s.text_color(theme::text_primary()))
                 .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
-                    // Fresh layout + camera, same filters.
+                    // Fresh layout + camera fit, same filters.
                     this.rebuild_graph();
                     cx.notify();
                 }))
