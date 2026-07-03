@@ -35,9 +35,9 @@ use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
     CloseTab, DeletePage, ExportActivePdf, ExportPdf, FindInPage, FitImages, GlobalSearch,
-    ImportLogseq, InsertTab, NewPage, NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow,
-    OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
-    SlashUp, ToggleFavorite,
+    ImportLogseq, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenInNewTab,
+    OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel,
+    SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -5754,8 +5754,28 @@ impl AppView {
     /// `NewPage` handler: prompt for a title in a dialog, then create and
     /// open the page (dispatched from a pages-area right-click menu).
     fn on_new_page(&mut self, _: &NewPage, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_new_page_dialog("New page", String::new(), window, cx);
+    }
+
+    /// `NewSubPage` handler: the same dialog, pre-filled with the
+    /// right-clicked page's namespace prefix (`Parent::`).
+    fn on_new_sub_page(&mut self, _: &NewSubPage, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((_, title)) = self.context_page.take() else {
+            return;
+        };
+        let prefill = format!("{title}{}", crate::hierarchy::SEP);
+        self.open_new_page_dialog("New sub-page", prefill, window, cx);
+    }
+
+    fn open_new_page_dialog(
+        &mut self,
+        dialog_title: &'static str,
+        prefill: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.new_page_input
-            .update(cx, |s, cx| s.set_value("", window, cx));
+            .update(cx, |s, cx| s.set_value(prefill, window, cx));
         let input = self.new_page_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -5765,7 +5785,7 @@ impl AppView {
             let weak_btn = weak.clone();
             let weak_key = weak.clone();
             dialog
-                .title("New page")
+                .title(dialog_title)
                 .w(px(420.0))
                 .child(Input::new(&input_body))
                 .footer(
@@ -6549,6 +6569,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_toggle_favorite))
             .on_action(cx.listener(Self::on_new_page))
+            .on_action(cx.listener(Self::on_new_sub_page))
             .on_action(cx.listener(Self::on_new_whiteboard))
             .on_action(cx.listener(Self::on_import_logseq))
             .on_action(cx.listener(Self::on_fit_images))

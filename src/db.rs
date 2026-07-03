@@ -622,29 +622,59 @@ impl Db {
             return Ok(false);
         }
 
-        let old_link = format!("[[{}]]", page.title);
-        let new_link = format!("[[{new_title}]]");
-        let like = format!("%{}%", escape_like(&old_link));
-
-        let tx = self.conn.unchecked_transaction()?;
-        tx.execute(
-            "UPDATE pages SET title = ?2, updated_at = datetime('now') WHERE id = ?1 AND is_journal = 0",
-            params![id, new_title],
-        )?;
-        let affected: Vec<(i64, String)> = {
-            let mut stmt =
-                tx.prepare("SELECT id, content FROM pages WHERE content LIKE ?1 ESCAPE '\\'")?;
+        // Cascade: renaming a namespace takes its `Foo::*` children along
+        // (`Foo::Task` follows `Foo` → `Bar` as `Bar::Task`). Every rename —
+        // the page itself plus each child — rewrites its exact `[[links]]`.
+        let prefix = format!("{}{}", page.title, crate::hierarchy::SEP);
+        let mut renames = vec![(id, page.title.clone(), new_title.to_string())];
+        {
+            let like = format!("{}%", escape_like(&prefix));
+            let mut stmt = self.conn.prepare(
+                "SELECT id, title FROM pages WHERE is_journal = 0 AND title LIKE ?1 ESCAPE '\\'",
+            )?;
             let rows = stmt.query_map(params![like], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
             })?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        for (pid, content) in &affected {
-            let updated = content.replace(&old_link, &new_link);
+            for row in rows {
+                let (cid, old) = row?;
+                let new = format!("{new_title}{}", &old[page.title.len()..]);
+                renames.push((cid, old, new));
+            }
+        }
+        // Any child landing on an existing title aborts the whole rename, so
+        // there's never a half-moved namespace.
+        for (cid, _, new) in &renames[1..] {
+            if let Some(existing) = self.get_page_by_title(new)?
+                && existing.id != *cid
+            {
+                return Ok(false);
+            }
+        }
+
+        let tx = self.conn.unchecked_transaction()?;
+        for (pid, old, new) in &renames {
             tx.execute(
-                "UPDATE pages SET content = ?2 WHERE id = ?1",
-                params![pid, updated],
+                "UPDATE pages SET title = ?2, updated_at = datetime('now') WHERE id = ?1 AND is_journal = 0",
+                params![pid, new],
             )?;
+            let old_link = format!("[[{old}]]");
+            let new_link = format!("[[{new}]]");
+            let like = format!("%{}%", escape_like(&old_link));
+            let affected: Vec<(i64, String)> = {
+                let mut stmt =
+                    tx.prepare("SELECT id, content FROM pages WHERE content LIKE ?1 ESCAPE '\\'")?;
+                let rows = stmt.query_map(params![like], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            for (pid, content) in &affected {
+                let updated = content.replace(&old_link, &new_link);
+                tx.execute(
+                    "UPDATE pages SET content = ?2 WHERE id = ?1",
+                    params![pid, updated],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(true)
@@ -1096,6 +1126,39 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n2, 1, "trigram is case-insensitive");
+    }
+
+    #[test]
+    fn rename_cascades_to_namespace_children() {
+        let db = Db::open_in_memory().unwrap();
+        let parent = db.get_or_create_page("Projects").unwrap();
+        let child = db.get_or_create_page("Projects::Tasks").unwrap();
+        let deep = db.get_or_create_page("Projects::Tasks::Old").unwrap();
+        let other = db.get_or_create_page("Notes").unwrap();
+        db.set_page_content(other.id, "see [[Projects]] and [[Projects::Tasks]]")
+            .unwrap();
+        assert!(db.rename_page(parent.id, "Work").unwrap());
+        assert_eq!(db.get_page(child.id).unwrap().unwrap().title, "Work::Tasks");
+        assert_eq!(
+            db.get_page(deep.id).unwrap().unwrap().title,
+            "Work::Tasks::Old"
+        );
+        assert_eq!(
+            db.get_page(other.id).unwrap().unwrap().content,
+            "see [[Work]] and [[Work::Tasks]]"
+        );
+    }
+
+    #[test]
+    fn rename_aborts_when_a_child_would_collide() {
+        let db = Db::open_in_memory().unwrap();
+        let parent = db.get_or_create_page("Foo").unwrap();
+        let child = db.get_or_create_page("Foo::A").unwrap();
+        db.get_or_create_page("Bar::A").unwrap();
+        // "Bar" itself is free, but Foo::A -> Bar::A collides: nothing moves.
+        assert!(!db.rename_page(parent.id, "Bar").unwrap());
+        assert_eq!(db.get_page(parent.id).unwrap().unwrap().title, "Foo");
+        assert_eq!(db.get_page(child.id).unwrap().unwrap().title, "Foo::A");
     }
 
     #[test]

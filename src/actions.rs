@@ -30,6 +30,8 @@ actions!(
         ExportPdf,
         ExportActivePdf,
         RenamePage,
+        // Sidebar right-click → create a page under this one's namespace.
+        NewSubPage,
         // Sidebar right-click → pin/unpin a page to the "Favorites" group.
         ToggleFavorite,
         NewPage,
