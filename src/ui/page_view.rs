@@ -66,7 +66,10 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         // Fill the viewport so the open area below the content
                         // is clickable all the way down.
                         .min_h(relative(1.0))
-                        .child(page_title(pe))
+                        .child(page_title(
+                            pe,
+                            parent_breadcrumb(&pe.title, cx).map(IntoElement::into_any_element),
+                        ))
                         // WYSIWYG on → the live editor is the only view; off → the
                         // reader view, swapped for the editor while editing.
                         .child(if app.wysiwyg() || app.is_page_editing() {
@@ -97,10 +100,58 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .into_any_element()
 }
 
+/// Ancestor breadcrumb above a namespaced page's title — `Projects › Tasks`
+/// for `Projects::Tasks::Old` — each segment opening (or creating, like a
+/// wiki-link would) that page. The counterpart of the parent's SUB-PAGES
+/// section. `None` for top-level pages and malformed paths.
+fn parent_breadcrumb(title: &str, cx: &mut Context<AppView>) -> Option<impl IntoElement> {
+    let segments: Vec<&str> = title.split(hierarchy::SEP).map(str::trim).collect();
+    if segments.len() < 2 || segments.iter().any(|s| s.is_empty()) {
+        return None;
+    }
+    let mut row = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .items_center()
+        .gap_1()
+        .text_size(px(12.0))
+        .text_color(theme::text_tertiary());
+    let mut path = String::new();
+    for (i, seg) in segments[..segments.len() - 1].iter().enumerate() {
+        if i > 0 {
+            path.push_str(hierarchy::SEP);
+            row = row.child("›");
+        }
+        path.push_str(seg);
+        let target = path.clone();
+        // A pill, not bare text — a lone ancestor still reads as a
+        // navigable path rather than a stray word above the title.
+        row = row.child(
+            div()
+                .id(("crumb", i))
+                .px(px(8.0))
+                .py(px(2.0))
+                .rounded(px(10.0))
+                .bg(theme::glass())
+                .text_color(theme::text_secondary())
+                .cursor_pointer()
+                .hover(|s| s.bg(theme::accent_tint()).text_color(theme::accent()))
+                .on_click(
+                    cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                        this.open_page_title(&target, window, cx);
+                    }),
+                )
+                .child((*seg).to_string()),
+        );
+    }
+    Some(row)
+}
+
 /// The page heading. Journals keep their date as static text; named pages
 /// get a borderless, heading-styled `Input` that renames the page when
 /// edited (commit on Enter/blur is wired in `load_page_editor`).
-fn page_title(pe: &PageEditor) -> impl IntoElement {
+fn page_title(pe: &PageEditor, crumb: Option<gpui::AnyElement>) -> impl IntoElement {
     if pe.is_journal {
         div()
             .mb_4()
@@ -114,7 +165,9 @@ fn page_title(pe: &PageEditor) -> impl IntoElement {
             .mb_4()
             .flex()
             .flex_col()
+            // One rhythm for all three rows: breadcrumb, title, aliases.
             .gap_1()
+            .children(crumb)
             .child(
                 // The input's default line-height/height are sized for body
                 // text; at 24px they clip descenders, so override them.
@@ -123,7 +176,10 @@ fn page_title(pe: &PageEditor) -> impl IntoElement {
                     .text_size(px(24.0))
                     .line_height(px(30.0))
                     .py(px(0.0))
-                    .h(px(36.0))
+                    // Match the line height exactly — extra box height gets
+                    // centered as invisible slack and skews the even spacing
+                    // between the breadcrumb, title, and alias rows.
+                    .h(px(30.0))
                     .font_weight(FontWeight::SEMIBOLD)
                     .text_color(theme::text_primary()),
             )
