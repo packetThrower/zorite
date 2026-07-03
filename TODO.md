@@ -50,7 +50,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)
 - [x] **Auto-link existing page titles as you type** (2026-07-03) — a completed word or trailing phrase (up to 4 words) matching an existing page title (case-insensitive, 3+ chars) wraps as `[[Canonical Title]]` on the boundary keystroke. Settings → Markdown toggle (default off, persisted); one undo step reverts a wrap; never fires inside code, `[[ ]]`, tags, or `[text](` syntax. Editor side is a generic `set_auto_replace` hook; the matcher + title cache live in the app
-- [ ] Sidebar: a "show all pages" affordance (browse the full tree, not just recent)
+- [x] Sidebar: **"All pages" browser** (2026-07-03) — a list-icon in the sidebar toolbar opens an index tab of every named page and whiteboard: an A–Z / 0–9 / `#` strip filters by first character (letters with no matches dim; clicking the active letter clears), kind chips (All / Pages / Whiteboards) compose with it, each row shows a type badge, and clicking opens the page or canvas. Journal days excluded by design (the calendar is their browser). See `src/ui/all_pages.rs`
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 
 ## Performance

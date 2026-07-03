@@ -114,6 +114,7 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                                 .gap_1()
                                 .child(new_page_icon(cx))
                                 .child(new_whiteboard_icon(cx))
+                                .child(all_pages_icon(cx))
                                 .child(date_icon(cx))
                                 .child(settings_gear(cx)),
                         ),
@@ -212,6 +213,7 @@ fn collapsed_rail(cx: &mut Context<AppView>) -> impl IntoElement {
         .border_color(theme::border_subtle())
         .child(expand_caret(cx))
         .child(new_page_icon(cx))
+        .child(all_pages_icon(cx))
         .child(date_icon(cx))
         .child(settings_gear(cx))
 }
@@ -268,6 +270,18 @@ fn new_page_icon(cx: &mut Context<AppView>) -> impl IntoElement {
             }),
         )
         .tooltip(|window, cx| Tooltip::new("New page").build(window, cx))
+}
+
+/// The "All pages" browser button — every named page and whiteboard in one
+/// filterable index tab (the sidebar itself shows only favorites + recents).
+fn all_pages_icon(cx: &mut Context<AppView>) -> impl IntoElement {
+    icon_btn("all-pages", Icon::empty().path("icons/layout-list.svg"))
+        .on_click(
+            cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.open_all_pages(window, cx);
+            }),
+        )
+        .tooltip(|window, cx| Tooltip::new("All pages").build(window, cx))
 }
 
 /// The settings gear. Opens the Settings window (deferred — opening a window

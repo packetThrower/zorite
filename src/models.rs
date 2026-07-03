@@ -17,6 +17,10 @@ pub struct Page {
     pub journal_date: Option<String>,
     /// The page's markdown text.
     pub content: String,
+    /// UTC `YYYY-MM-DD HH:MM:SS` DB timestamps, populated only by the list
+    /// queries that feed the All pages browser (`None` elsewhere).
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
 }
 
 /// One row of a page's "Linked References" panel: another page whose

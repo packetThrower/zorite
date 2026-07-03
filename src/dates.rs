@@ -120,6 +120,36 @@ pub fn current_time() -> String {
     fmt_time(&time_format(), now_local())
 }
 
+/// Local ISO date for a DB `datetime('now')` timestamp (UTC
+/// `YYYY-MM-DD HH:MM:SS`). `None` when the string doesn't parse.
+pub fn db_timestamp_local_date(ts: &str) -> Option<String> {
+    let (d, t) = ts.split_once(' ')?;
+    let mut dp = d.splitn(3, '-');
+    let (y, m, day): (i32, u8, u8) = (
+        dp.next()?.parse().ok()?,
+        dp.next()?.parse().ok()?,
+        dp.next()?.parse().ok()?,
+    );
+    let mut tp = t.splitn(3, ':');
+    let (h, min, sec): (u8, u8, u8) = (
+        tp.next()?.parse().ok()?,
+        tp.next()?.parse().ok()?,
+        tp.next()?.parse().ok()?,
+    );
+    let utc = time::Date::from_calendar_date(y, time::Month::try_from(m).ok()?, day)
+        .ok()?
+        .with_hms(h, min, sec)
+        .ok()?
+        .assume_utc();
+    Some(fmt_date("iso", utc.to_offset(now_local().offset())))
+}
+
+/// Local ISO date for a file timestamp.
+pub fn system_time_local_date(t: std::time::SystemTime) -> String {
+    let dt = time::OffsetDateTime::from(t).to_offset(now_local().offset());
+    fmt_date("iso", dt)
+}
+
 /// Human label for a date-format id, for the Settings dropdown.
 pub fn date_format_label(id: &str) -> &'static str {
     match id {
@@ -176,6 +206,15 @@ mod tests {
         let noon = dt.replace_hour(12).unwrap();
         assert_eq!(fmt_time("12h", midnight), "12:30 AM");
         assert_eq!(fmt_time("12h", noon), "12:30 PM");
+    }
+
+    #[test]
+    fn db_timestamps_parse_or_bail() {
+        // Midday: no plausible local offset shifts the date.
+        let d = db_timestamp_local_date("2026-07-03 12:00:00").unwrap();
+        assert!(d.starts_with("2026-07-0"), "{d}");
+        assert!(db_timestamp_local_date("not a timestamp").is_none());
+        assert!(db_timestamp_local_date("2026-13-99 12:00:00").is_none());
     }
 
     #[test]

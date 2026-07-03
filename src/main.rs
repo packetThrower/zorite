@@ -58,6 +58,8 @@ const ALERT_LIGHTBULB: &[u8] = include_bytes!("../assets/icons/lightbulb.svg");
 const ALERT_REPORT: &[u8] = include_bytes!("../assets/icons/message-square-warning.svg");
 const ALERT_TRIANGLE: &[u8] = include_bytes!("../assets/icons/triangle-alert.svg");
 const ALERT_OCTAGON: &[u8] = include_bytes!("../assets/icons/octagon-alert.svg");
+// Sidebar "All pages" browser button.
+const LAYOUT_LIST: &[u8] = include_bytes!("../assets/icons/layout-list.svg");
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -70,6 +72,7 @@ impl AssetSource for Assets {
             "icons/message-square-warning.svg" => Some(ALERT_REPORT),
             "icons/triangle-alert.svg" => Some(ALERT_TRIANGLE),
             "icons/octagon-alert.svg" => Some(ALERT_OCTAGON),
+            "icons/layout-list.svg" => Some(LAYOUT_LIST),
             _ => None,
         };
         if let Some(bytes) = custom {

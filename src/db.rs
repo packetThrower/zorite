@@ -332,6 +332,8 @@ impl Db {
             is_journal: true,
             journal_date: Some(date.to_string()),
             content: String::new(),
+            created_at: None,
+            updated_at: None,
         })
     }
 
@@ -378,6 +380,8 @@ impl Db {
             is_journal: false,
             journal_date: None,
             content: String::new(),
+            created_at: None,
+            updated_at: None,
         })
     }
 
@@ -419,6 +423,8 @@ impl Db {
             is_journal: false,
             journal_date: None,
             content: "{}".to_string(),
+            created_at: None,
+            updated_at: None,
         })
     }
 
@@ -442,6 +448,8 @@ impl Db {
             is_journal: false,
             journal_date: None,
             content: content.to_string(),
+            created_at: None,
+            updated_at: None,
         })
     }
 
@@ -451,7 +459,7 @@ impl Db {
     /// [`list_pages`]: Self::list_pages
     pub fn list_whiteboards(&self) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, is_journal, journal_date FROM pages \
+            "SELECT id, title, is_journal, journal_date, created_at, updated_at FROM pages \
              WHERE kind = 'whiteboard' ORDER BY updated_at DESC, id DESC",
         )?;
         stmt.query_map([], |row| {
@@ -461,6 +469,8 @@ impl Db {
                 is_journal: row.get::<_, i64>(2)? != 0,
                 journal_date: row.get(3)?,
                 content: String::new(),
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })?
         .collect()
@@ -540,7 +550,7 @@ impl Db {
     /// you need a page's body.
     pub fn list_pages(&self) -> rusqlite::Result<Vec<Page>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, title, is_journal, journal_date FROM pages \
+            "SELECT id, title, is_journal, journal_date, created_at, updated_at FROM pages \
              WHERE is_journal = 0 AND kind = 'page' ORDER BY title COLLATE NOCASE",
         )?;
         stmt.query_map([], |row| {
@@ -550,6 +560,8 @@ impl Db {
                 is_journal: row.get::<_, i64>(2)? != 0,
                 journal_date: row.get(3)?,
                 content: String::new(),
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })?
         .collect()
@@ -890,6 +902,8 @@ fn row_to_page(row: &rusqlite::Row) -> rusqlite::Result<Page> {
         is_journal: row.get::<_, i64>(2)? != 0,
         journal_date: row.get(3)?,
         content: row.get(4)?,
+        created_at: None,
+        updated_at: None,
     })
 }
 

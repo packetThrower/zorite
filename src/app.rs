@@ -72,6 +72,9 @@ pub enum TabKind {
     Pdf(PathBuf),
     /// A whiteboard canvas (the `kind = 'whiteboard'` page id).
     Whiteboard(i64),
+    /// The "All pages" browser (sidebar → list icon): every named page and
+    /// whiteboard, filterable by first letter and kind.
+    AllPages,
 }
 
 /// An open tab: its content kind + a cached title for the tab strip.
@@ -437,6 +440,11 @@ pub struct AppView {
     // `cx`) so it can read a ready formula during paint; `ensure_math_loaded` drives the
     // off-thread render. See `math::MathStore`.
     math_store: Rc<RefCell<crate::math::MathStore>>,
+    // "All pages" browser filters (per window, not persisted) + the managed
+    // pdf/ store's files, listed when the tab opens (not per frame — it's IO).
+    all_pages_letter: Option<char>,
+    all_pages_kind: crate::ui::all_pages::KindFilter,
+    all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
     // Auto-link-as-you-type state, shared into the editors' auto-replace
     // closures: lowercase page title -> canonical title, rebuilt with the
     // sidebar; and the live on/off switch (Settings -> Markdown).
@@ -695,6 +703,9 @@ impl AppView {
             rotated_images: std::collections::HashMap::new(),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
             math_store: Rc::new(RefCell::new(crate::math::MathStore::default())),
+            all_pages_letter: None,
+            all_pages_kind: Default::default(),
+            all_pages_pdfs: Vec::new(),
             auto_link_titles: Rc::new(RefCell::new(Default::default())),
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
@@ -1447,6 +1458,10 @@ impl AppView {
             TabKind::Page(id) => self.load_page_editor(id, window, cx),
             TabKind::Pdf(_) => self.page_editor = None,
             TabKind::Whiteboard(_) => self.page_editor = None,
+            TabKind::AllPages => {
+                self.page_editor = None;
+                self.refresh_all_pages_pdfs();
+            }
         }
         // Focus the AppView so the window's key dispatch reaches its global shortcuts
         // (⌘F, ⌘W, …) right after a tab click — without having to click into the
@@ -3049,6 +3064,88 @@ impl AppView {
     /// Open a whiteboard in its own canvas tab (focusing it if already open). A
     /// board is a `kind = 'whiteboard'` page; its canvas JSON lives in the page
     /// `content`, deserialized into a `Scene` the view renders.
+    /// "All pages" browser state + actions (see `ui::all_pages`).
+    pub fn all_pages_letter(&self) -> Option<char> {
+        self.all_pages_letter
+    }
+
+    pub fn all_pages_kind(&self) -> crate::ui::all_pages::KindFilter {
+        self.all_pages_kind
+    }
+
+    pub fn set_all_pages_letter(&mut self, l: Option<char>, cx: &mut Context<Self>) {
+        // Clicking the active letter clears it (toggle).
+        self.all_pages_letter = if self.all_pages_letter == l { None } else { l };
+        cx.notify();
+    }
+
+    pub fn set_all_pages_kind(
+        &mut self,
+        k: crate::ui::all_pages::KindFilter,
+        cx: &mut Context<Self>,
+    ) {
+        self.all_pages_kind = k;
+        cx.notify();
+    }
+
+    pub fn pages(&self) -> &[Page] {
+        &self.pages
+    }
+
+    pub fn whiteboards(&self) -> &[Page] {
+        &self.whiteboards
+    }
+
+    pub fn all_pages_pdfs(&self) -> &[(String, PathBuf, Option<String>, Option<String>)] {
+        &self.all_pages_pdfs
+    }
+
+    /// List the managed `pdf/` store for the All-pages browser (name, path).
+    fn refresh_all_pages_pdfs(&mut self) {
+        let dir = crate::paths::pdf_dir();
+        let mut out: Vec<(String, PathBuf, Option<String>, Option<String>)> =
+            std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    (!name.starts_with('.') && name.to_lowercase().ends_with(".pdf")).then(|| {
+                        let meta = e.metadata().ok();
+                        let created = meta
+                            .as_ref()
+                            .and_then(|m| m.created().ok())
+                            .map(crate::dates::system_time_local_date);
+                        let updated = meta
+                            .as_ref()
+                            .and_then(|m| m.modified().ok())
+                            .map(crate::dates::system_time_local_date);
+                        (name, e.path(), created, updated)
+                    })
+                })
+                .collect();
+        out.sort_by_key(|(n, ..)| n.to_lowercase());
+        self.all_pages_pdfs = out;
+    }
+
+    /// Open (or focus) the "All pages" browser tab.
+    pub fn open_all_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_all_pages_pdfs();
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::AllPages))
+        {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        self.tabs.push(OpenTab {
+            kind: TabKind::AllPages,
+            title: "All pages".into(),
+        });
+        self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
     pub fn open_whiteboard(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ix) = self
             .tabs
@@ -4934,6 +5031,9 @@ impl AppView {
                     TabKind::Whiteboard(id) => {
                         view.update(cx, |this, cx| this.open_whiteboard(id, window, cx));
                     }
+                    TabKind::AllPages => {
+                        view.update(cx, |this, cx| this.open_all_pages(window, cx));
+                    }
                     TabKind::Journal => {}
                 }
                 view.update(cx, |this, _| {
@@ -5069,7 +5169,7 @@ impl AppView {
             // A board reloads cheaply from the DB on the destination window, so
             // it carries no live entity (no unsaved in-memory edits in Phase 0).
             TabKind::Whiteboard(_) => TabSeed::default(),
-            TabKind::Journal => TabSeed::default(),
+            TabKind::Journal | TabKind::AllPages => TabSeed::default(),
         }
     }
 
@@ -5186,6 +5286,7 @@ impl AppView {
             TabKind::Page(id) => self.open_page_id(id, window, cx),
             TabKind::Pdf(path) => self.open_pdf(path, window, cx),
             TabKind::Whiteboard(id) => self.open_whiteboard(id, window, cx),
+            TabKind::AllPages => self.open_all_pages(window, cx),
             TabKind::Journal => {}
         }
         // After the open (whose tab switch wiped this window's store), adopt the
@@ -5396,7 +5497,7 @@ impl AppView {
                 }
                 ("Journal".to_string(), out)
             }
-            TabKind::Pdf(_) | TabKind::Whiteboard(_) => return,
+            TabKind::Pdf(_) | TabKind::Whiteboard(_) | TabKind::AllPages => return,
         };
         // Native save dialog, then write the PDF (fast enough to run inline).
         let name: String = title
@@ -6403,6 +6504,9 @@ impl Render for AppView {
                                             Some(v) => v.into_any_element(),
                                             None => gpui::div().into_any_element(),
                                         }
+                                    }
+                                    TabKind::AllPages => {
+                                        ui::all_pages::render(self, cx).into_any_element()
                                     }
                                 }
                             })),
