@@ -104,8 +104,12 @@ fn main() {
             |window, cx| {
                 let text = "# Heading 1\n## Heading 2\n\nHeadings get bigger as you type (W2). \
                             **Bold**, *italic*, ~~strike~~, `inline code`, a \
-                            [link](https://example.com), a [[Wiki Page]], and a #tag style \
-                            inline.\n\nA fenced code block (W4b):\n\n```rust\nfn main() {\n    \
+                            [link](https://example.com), a [[Wiki Page]], a #tag and a \
+                            namespaced #area/sub tag, plus a bare https://example.com/auto \
+                            autolink.\n\n> [!NOTE] GitHub alerts render with a colored bar \
+                            and label\n> across their lines.\n\n> [!WARNING]\n> The classic \
+                            two-line form works too.\n\nA fenced code block (W4b):\n\n\
+                            ```rust\nfn main() {\n    \
                             println!(\"hello, world\");\n}\n```\n\nA table (W4c):\n\n| Name | \
                             Role | Score |\n| :-- | :--: | --: |\n| Ada | Engineer | 99 |\n\
                             | Linus | Kernel | 88 |\n\n> A blockquote, *muted* with a left \
@@ -134,6 +138,29 @@ fn main() {
                 editor.update(cx, |editor, cx| {
                     editor.on_suggest(|word| SpellChecker::new().suggestions(word));
                     editor.set_markdown_style(demo_markdown_style(), cx);
+                    // A toy syntax highlighter, to demo the hook: real hosts
+                    // plug in an engine (Zorite passes gpui-component's
+                    // tree-sitter highlighter) — the editor only wants
+                    // `(lang, code) -> sorted styled ranges`.
+                    editor.set_code_highlighter(|_lang, code| {
+                        let mut out = Vec::new();
+                        for kw in ["fn", "let", "println!"] {
+                            let mut from = 0;
+                            while let Some(i) = code[from..].find(kw) {
+                                let at = from + i;
+                                out.push((
+                                    at..at + kw.len(),
+                                    gpui::HighlightStyle {
+                                        color: Some(hsla(0.83, 0.6, 0.7, 1.)),
+                                        ..Default::default()
+                                    },
+                                ));
+                                from = at + kw.len();
+                            }
+                        }
+                        out.sort_by_key(|(r, _)| r.start);
+                        out
+                    });
                     // Treat a `![](*.pdf)` as a clickable chip (label = file name).
                     editor.set_block_chip_provider(|src| {
                         src.ends_with(".pdf")
