@@ -259,7 +259,9 @@ pub fn links(line: &str) -> Vec<(std::ops::Range<usize>, LinkHit)> {
             }
         }
         // Bare URL: http(s)://… at a word boundary (GFM autolink literal).
-        if (line[i..].starts_with("http://") || line[i..].starts_with("https://"))
+        // Compare BYTES: `i` walks bytes, so a str slice here would panic
+        // mid-char on any non-ASCII text.
+        if (b[i..].starts_with(b"http://") || b[i..].starts_with(b"https://"))
             && (i == 0 || !is_word_char(b[i - 1]))
         {
             let j = url_end(line, i);
@@ -328,6 +330,10 @@ mod tests {
         );
         // Opaque: code spans, images, footnotes, glued #.
         assert!(links("`https://x.io` ![a](i.png) [^1] word#no").is_empty());
+        // Regression: multi-byte text before a URL must not panic the
+        // byte-wise walk (it once str-sliced at a continuation byte).
+        let hits = links("shrug ¯\\_(ツ)_/¯ then https://a.io done");
+        assert_eq!(hits.len(), 1);
     }
 
     #[test]

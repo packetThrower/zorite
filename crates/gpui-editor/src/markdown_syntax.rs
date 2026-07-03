@@ -589,7 +589,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         // <mark>…</mark>: a highlight — the one safe inline-HTML tag the reading
         // view honors. Tags hidden, body gets a highlight background.
         if c == b'<'
-            && text[i..end].starts_with("<mark>")
+            && b[i..end].starts_with(b"<mark>")
             && let Some(rel) = text[i + 6..end].find("</mark>")
         {
             let body = i + 6;
@@ -609,7 +609,9 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         // Bare URL: colored like a link (it clicks like one — see the shared
         // `links()` grammar; `url_end` keeps styling and hit-tests identical).
-        if (text[i..end].starts_with("http://") || text[i..end].starts_with("https://"))
+        // Compare BYTES: `i` walks bytes, so a str slice here would panic
+        // mid-char on any non-ASCII text (`¯\_(ツ)_/¯` did, v0.5.0 dev).
+        if (b[i..end].starts_with(b"http://") || b[i..end].starts_with(b"https://"))
             && (i == start || !is_word(b[i - 1]))
         {
             let j = i + gpui_markdown::syntax::url_end(&text[i..end], 0);
@@ -1389,6 +1391,21 @@ use gpui_markdown::syntax::is_tag_char as is_tag;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scan_line_survives_multibyte_text() {
+        // Regression: byte-wise scanning once str-sliced at continuation
+        // bytes and panicked on this exact line.
+        let text = "- I don't know what is wrong ¯\\_(ツ)_/¯ https://a.io";
+        let st = test_style();
+        let mut out = Vec::new();
+        scan_line(text, 0, text.len(), &st, &mut out);
+        // The trailing URL still gets recognized (spans cover it).
+        assert!(
+            out.iter()
+                .any(|s| s.range.start == text.find("https").unwrap())
+        );
+    }
 
     /// Helper: the substrings the spans cover, for readable assertions.
     fn spans(line: &str) -> Vec<&str> {
