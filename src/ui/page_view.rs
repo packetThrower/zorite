@@ -94,6 +94,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         })
                         .when(!pe.backlinks.is_empty(), |this| {
                             this.child(backlinks_section(&pe.backlinks, cx))
+                        })
+                        .when(!pe.unlinked.is_empty(), |this| {
+                            this.child(unlinked_section(&pe.unlinked, cx))
                         }),
                 ),
         )
@@ -494,6 +497,94 @@ fn backlinks_section(backlinks: &[Backlink], cx: &mut Context<AppView>) -> impl 
                 .enumerate()
                 .map(|(i, bl)| backlink_row(i, bl, cx).into_any_element())
                 .collect::<Vec<_>>(),
+        )
+}
+
+/// Plain-text mentions of this page's title that aren't linked yet; each row
+/// opens the source, and its Link button wraps the mentions as `[[links]]`.
+fn unlinked_section(unlinked: &[Backlink], cx: &mut Context<AppView>) -> impl IntoElement {
+    div()
+        .mt(px(28.0))
+        .pt_4()
+        .border_t_1()
+        .border_color(theme::border_subtle())
+        .flex()
+        .flex_col()
+        .gap_2()
+        .child(
+            div()
+                .pb_1()
+                .text_size(px(11.0))
+                .text_color(theme::text_tertiary())
+                .child(format!("UNLINKED REFERENCES ({})", unlinked.len())),
+        )
+        .children(
+            unlinked
+                .iter()
+                .enumerate()
+                .map(|(i, bl)| unlinked_row(i, bl, cx).into_any_element())
+                .collect::<Vec<_>>(),
+        )
+}
+
+fn unlinked_row(i: usize, bl: &Backlink, cx: &mut Context<AppView>) -> impl IntoElement {
+    let page_id = bl.source_page_id;
+    div()
+        .id(("ul", i))
+        .px_3()
+        .py_2()
+        .rounded(px(6.0))
+        .bg(theme::glass())
+        .cursor_pointer()
+        .hover(|h| h.bg(theme::glass_strong()))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme::accent())
+                        .child(bl.source_page_title.clone()),
+                )
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(theme::text_secondary())
+                        .child(bl.snippet.clone()),
+                ),
+        )
+        .child(
+            div()
+                .id(("ul-link", i))
+                .flex_shrink_0()
+                .px(px(10.0))
+                .py(px(3.0))
+                .rounded(px(6.0))
+                .bg(theme::accent_tint())
+                .text_size(px(12.0))
+                .text_color(theme::accent())
+                .cursor_pointer()
+                .hover(|h| h.bg(theme::accent()).text_color(theme::bg_content()))
+                .on_click(
+                    cx.listener(move |this: &mut AppView, _: &ClickEvent, _window, cx| {
+                        cx.stop_propagation();
+                        this.link_unlinked_mentions(page_id, cx);
+                    }),
+                )
+                .child("Link"),
+        )
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.open_page_id(page_id, window, cx);
+            }),
         )
 }
 

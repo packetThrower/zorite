@@ -211,6 +211,9 @@ pub struct PageEditor {
     _title_sub: Subscription,
     _alias_sub: Subscription,
     pub backlinks: Vec<Backlink>,
+    /// Plain-text mentions of this page's title that aren't `[[linked]]` yet
+    /// (the "Unlinked References" panel; refreshed with `backlinks`).
+    pub unlinked: Vec<Backlink>,
 }
 
 /// An in-progress image resize drag (dragging the corner handle of a rendered
@@ -1085,6 +1088,7 @@ impl AppView {
             && pe.id == id
         {
             pe.backlinks = bl;
+            pe.unlinked = self.db.unlinked_mentions(id).unwrap_or_default();
         }
         self.refresh_sidebar();
         cx.notify();
@@ -1842,6 +1846,7 @@ impl AppView {
             .ok();
         });
         let backlinks = self.db.backlinks(pid).unwrap_or_default();
+        let unlinked = self.db.unlinked_mentions(pid).unwrap_or_default();
 
         // Inline-editable title: renames the page on Enter or blur.
         let title_state =
@@ -1890,8 +1895,46 @@ impl AppView {
             _title_sub: title_sub,
             _alias_sub: alias_sub,
             backlinks,
+            unlinked,
         });
         self.page_editing = false;
+    }
+
+    /// "Link" on an unlinked-references row: wrap every unlinked mention of
+    /// the open page's title in `source_id` as a `[[link]]` (original casing
+    /// kept — links resolve case-insensitively), then refresh both lists.
+    pub fn link_unlinked_mentions(&mut self, source_id: i64, cx: &mut Context<Self>) {
+        let Some((page_id, title)) = self
+            .page_editor
+            .as_ref()
+            .map(|pe| (pe.id, pe.title.clone()))
+        else {
+            return;
+        };
+        let Ok(Some(src)) = self.db.get_page(source_id) else {
+            return;
+        };
+        let mut content = src.content.clone();
+        for range in crate::mentions::unlinked_mention_ranges(&content, &title)
+            .into_iter()
+            .rev()
+        {
+            let mention = content[range.clone()].to_string();
+            content.replace_range(range, &format!("[[{mention}]]"));
+        }
+        // Persist + re-index the source's outgoing links, and let every
+        // window (including this one) reload what it has open.
+        self.save_page_content(source_id, &content, cx);
+        let titles = ui::links::parse_links(&content);
+        if let Err(e) = self.db.rebuild_page_links(source_id, &titles) {
+            log::error!("rebuild links for page {source_id}: {e}");
+        }
+        self.signal_doc_changed(cx);
+        if let Some(pe) = self.page_editor.as_mut() {
+            pe.backlinks = self.db.backlinks(page_id).unwrap_or_default();
+            pe.unlinked = self.db.unlinked_mentions(page_id).unwrap_or_default();
+        }
+        cx.notify();
     }
 
     // --- Persistence ---
@@ -6255,9 +6298,11 @@ impl AppView {
             Ok(true) => {
                 // Backlink snippets now show the rewritten `[[new]]` text.
                 let backlinks = self.db.backlinks(id).unwrap_or_default();
+                let unlinked = self.db.unlinked_mentions(id).unwrap_or_default();
                 if let Some(pe) = self.page_editor.as_mut() {
                     pe.title = new_title.clone();
                     pe.backlinks = backlinks;
+                    pe.unlinked = unlinked;
                 }
                 let title: SharedString = new_title.into();
                 for tab in &mut self.tabs {

@@ -940,6 +940,56 @@ impl Db {
         .collect()
     }
 
+    /// Pages (and journal days) whose text mentions `page_id`'s title
+    /// without linking it — the "Unlinked References" list. A LIKE narrows
+    /// candidates; the mention scanner verifies real, word-bounded,
+    /// outside-code occurrences. Whiteboards are excluded (their content is
+    /// scene JSON, not prose).
+    pub fn unlinked_mentions(&self, page_id: i64) -> rusqlite::Result<Vec<Backlink>> {
+        let Some(target) = self.get_page(page_id)? else {
+            return Ok(Vec::new());
+        };
+        let title = target.title.trim().to_string();
+        if title.len() < 2 {
+            return Ok(Vec::new());
+        }
+        let like = format!("%{}%", escape_like(&title));
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, content FROM pages \
+             WHERE id != ?1 AND kind = 'page' AND content LIKE ?2 ESCAPE '\\' \
+             ORDER BY is_journal DESC, journal_date DESC, title COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map(params![page_id, like], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, source_title, content) = row?;
+            let Some(range) = crate::mentions::unlinked_mention_ranges(&content, &title)
+                .into_iter()
+                .next()
+            else {
+                continue;
+            };
+            // Snippet the mention's own line (the generic `snippet` would
+            // find the first occurrence, which may be a [[linked]] one).
+            let line_start = content[..range.start].rfind('\n').map_or(0, |i| i + 1);
+            let line_end = content[range.start..]
+                .find('\n')
+                .map_or(content.len(), |i| range.start + i);
+            out.push(Backlink {
+                source_page_id: id,
+                source_page_title: source_title,
+                snippet: clip_line(content[line_start..line_end].trim()),
+            });
+        }
+        Ok(out)
+    }
+
     /// The ISO date of every journal day with actual content — the calendar's
     /// entry markers. Days auto-created empty (by a jump) don't count.
     pub fn journal_dates(&self) -> rusqlite::Result<Vec<String>> {
@@ -1085,6 +1135,11 @@ pub(crate) fn snippet(content: &str, needle: &str) -> String {
         .or_else(|| content.lines().find(|l| !l.trim().is_empty()))
         .unwrap_or("")
         .trim();
+    clip_line(line)
+}
+
+/// Truncate a snippet line to a readable length.
+fn clip_line(line: &str) -> String {
     const MAX: usize = 140;
     if line.chars().count() > MAX {
         line.chars().take(MAX).collect::<String>() + "…"

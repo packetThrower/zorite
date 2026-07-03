@@ -20,6 +20,7 @@ mod highlight;
 mod images;
 mod import;
 mod math;
+mod mentions;
 mod mermaid;
 mod migration;
 mod models;
