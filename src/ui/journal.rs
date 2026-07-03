@@ -7,6 +7,7 @@ use gpui::{
     MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString, StatefulInteractiveElement,
     Styled, div, prelude::FluentBuilder as _, px,
 };
+use gpui_component::{Icon, IconName};
 use gpui_editor::EditorState;
 
 use crate::app::{self, AppView};
@@ -22,10 +23,15 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
         }
     }
 
+    // Floating back-to-top, once the feed is meaningfully scrolled (like the
+    // PDF viewer's nav) — offset.y goes negative as you scroll down.
+    let scrolled = f32::from(app.feed_scroll.offset().y).abs() > 400.0;
+
     div()
         .flex_1()
         .min_w_0()
         .h_full()
+        .relative()
         .bg(theme::bg_content())
         .child(
             div()
@@ -48,6 +54,33 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                         .child(load_older(cx)),
                 ),
         )
+        .when(scrolled, |this| {
+            this.child(gpui::deferred(
+                div()
+                    .id("feed-top")
+                    .absolute()
+                    .bottom(px(18.0))
+                    .right(px(22.0))
+                    .w(px(36.0))
+                    .h(px(36.0))
+                    .rounded_full()
+                    .bg(theme::elevated())
+                    .border_1()
+                    .border_color(theme::border_subtle())
+                    .shadow_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(theme::text_secondary())
+                    .cursor_pointer()
+                    .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+                    .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
+                        this.feed_scroll.set_offset(gpui::point(px(0.0), px(0.0)));
+                        cx.notify();
+                    }))
+                    .child(Icon::new(IconName::ChevronUp).size_4()),
+            ))
+        })
 }
 
 fn day_section(

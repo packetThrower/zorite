@@ -7,7 +7,7 @@
 
 use std::ops::Range;
 
-use gpui_markdown::syntax::{is_word_char, links};
+use gpui_markdown::syntax::{LinkHit, is_word_char, links};
 
 /// Byte ranges of every unlinked, word-bounded mention of `title` in
 /// `content`, skipping fenced code blocks, inline code, and anything inside
@@ -64,6 +64,59 @@ pub fn unlinked_mention_ranges(content: &str, title: &str) -> Vec<Range<usize>> 
     out
 }
 
+/// Rewrite `[[wiki-links]]` targeting `old_title` to `new_title`, tolerating
+/// whitespace variants (`[[ Foo ]]`, `[[Foo |label]]`) and preserving alias
+/// labels. Case-SENSITIVE by design: a differently-cased link reads as the
+/// writer's choice, and links resolve case-insensitively anyway. Fenced code
+/// is left alone. `None` when nothing matched.
+pub fn rewrite_wiki_links(content: &str, old_title: &str, new_title: &str) -> Option<String> {
+    let old = old_title.trim();
+    let mut changed = false;
+    let mut out = String::with_capacity(content.len());
+    let mut in_fence = false;
+    for (i, line) in content.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            out.push_str(line);
+            continue;
+        }
+        if in_fence {
+            out.push_str(line);
+            continue;
+        }
+        let mut last = 0;
+        for (range, hit) in links(line) {
+            // `Page` hits are wiki-links AND #tags; only bracketed ones here.
+            if !matches!(hit, LinkHit::Page(_)) || !line[range.clone()].starts_with("[[") {
+                continue;
+            }
+            let inner = &line[range.start + 2..range.end - 2];
+            let (target, label) = match inner.split_once('|') {
+                Some((t, l)) => (t, Some(l)),
+                None => (inner, None),
+            };
+            if target.trim() != old {
+                continue;
+            }
+            out.push_str(&line[last..range.start]);
+            out.push_str("[[");
+            out.push_str(new_title);
+            if let Some(label) = label {
+                out.push('|');
+                out.push_str(label);
+            }
+            out.push_str("]]");
+            last = range.end;
+            changed = true;
+        }
+        out.push_str(&line[last..]);
+    }
+    changed.then_some(out)
+}
+
 /// Inline `code` span ranges (the shared `links` grammar treats them as
 /// opaque but doesn't report them, and a mention inside backticks isn't a
 /// mention).
@@ -110,6 +163,19 @@ mod tests {
     fn code_and_links_are_opaque() {
         let content = "```\nSubstation in a fence\n```\n`Substation` inline\n[Substation](https://x.io) linked\n[[Other|Substation]] alias";
         assert!(unlinked_mention_ranges(content, "Substation").is_empty());
+    }
+
+    #[test]
+    fn rewrite_handles_whitespace_and_labels_not_case() {
+        let content = "a [[ Foo ]] b [[Foo|nick]] c [[FOO]] d [[Foobar]] e `[[Foo]]`";
+        let out = rewrite_wiki_links(content, "Foo", "Bar").unwrap();
+        assert_eq!(
+            out,
+            "a [[Bar]] b [[Bar|nick]] c [[FOO]] d [[Foobar]] e `[[Foo]]`"
+        );
+        // Fenced code is untouched; no match → None.
+        assert!(rewrite_wiki_links("```\n[[Foo]]\n```", "Foo", "Bar").is_none());
+        assert!(rewrite_wiki_links("no links here", "Foo", "Bar").is_none());
     }
 
     #[test]

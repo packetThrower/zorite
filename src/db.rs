@@ -771,9 +771,11 @@ impl Db {
                 "UPDATE pages SET title = ?2, updated_at = datetime('now') WHERE id = ?1 AND is_journal = 0",
                 params![pid, new],
             )?;
-            let old_link = format!("[[{old}]]");
-            let new_link = format!("[[{new}]]");
-            let like = format!("%{}%", escape_like(&old_link));
+            // Candidates by bare title text; the rewrite tolerates whitespace
+            // variants ([[ Foo ]]) and alias labels ([[Foo|nick]]) but leaves
+            // case variants alone — a differently-cased link is the writer's
+            // choice, and links resolve case-insensitively regardless.
+            let like = format!("%{}%", escape_like(old));
             let affected: Vec<(i64, String)> = {
                 let mut stmt =
                     tx.prepare("SELECT id, content FROM pages WHERE content LIKE ?1 ESCAPE '\\'")?;
@@ -783,11 +785,12 @@ impl Db {
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             };
             for (pid, content) in &affected {
-                let updated = content.replace(&old_link, &new_link);
-                tx.execute(
-                    "UPDATE pages SET content = ?2 WHERE id = ?1",
-                    params![pid, updated],
-                )?;
+                if let Some(updated) = crate::mentions::rewrite_wiki_links(content, old, new) {
+                    tx.execute(
+                        "UPDATE pages SET content = ?2 WHERE id = ?1",
+                        params![pid, updated],
+                    )?;
+                }
             }
         }
         tx.commit()?;
@@ -1365,6 +1368,23 @@ mod tests {
         assert_eq!(
             db.get_page(other.id).unwrap().unwrap().content,
             "see [[Work]] and [[Work::Tasks]]"
+        );
+    }
+
+    #[test]
+    fn rename_rewrites_whitespace_and_label_variants_only() {
+        let db = Db::open_in_memory().unwrap();
+        let page = db.get_or_create_page("Foo").unwrap();
+        let other = db.get_or_create_page("Notes").unwrap();
+        db.set_page_content(
+            other.id,
+            "a [[ Foo ]] b [[Foo|nick]] c [[FOO]] d [[Foobar]]",
+        )
+        .unwrap();
+        assert!(db.rename_page(page.id, "Bar").unwrap());
+        assert_eq!(
+            db.get_page(other.id).unwrap().unwrap().content,
+            "a [[Bar]] b [[Bar|nick]] c [[FOO]] d [[Foobar]]"
         );
     }
 

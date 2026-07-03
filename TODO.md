@@ -46,7 +46,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [x] Images: **AVIF/HEIC/HEIF** decode via the pure-Rust `heic_decoder` (commit 28a5ebd, PR #15) — EXIF orientation applied, rav1d runs on a big-stack thread. Known gap: grid-tiled primary items fall back to a placeholder
 
 ## Notes & navigation
-- [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
+- [x] Rename: whitespace + alias-label link variants rewrite (2026-07-03) — `[[ Foo ]]` and `[[Foo|nick]]` follow a rename (fenced code untouched; `mentions::rewrite_wiki_links` on the shared links grammar). **Case variants (`[[FOO]]`) deliberately left alone** — that casing reads as the writer's choice, and links resolve case-insensitively anyway
 - [x] Hierarchy follow-ups: cascade-rename a namespace (renaming `Foo` retitles `Foo::*` children and rewrites their exact `[[links]]`, atomically — any child collision aborts the whole rename); sidebar right-click → "New sub-page" (the New-page dialog pre-filled with `Parent::`)
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
 - [x] Unlinked references (2026-07-03) — an "UNLINKED REFERENCES" panel under Linked References: word-bounded, case-insensitive title mentions outside links/tags/code (`src/mentions.rs`, built on the shared `syntax::links` grammar; whiteboard JSON excluded), each row with a one-click **Link** that wraps that source's mentions as `[[links]]` and re-indexes
