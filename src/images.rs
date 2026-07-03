@@ -34,9 +34,17 @@ pub fn is_supported(path: &Path) -> bool {
 }
 
 /// Copy an external image file into the images dir; return its `images/<name>`
-/// reference for the markdown.
+/// reference for the markdown. Dedupe: importing a file whose exact contents
+/// are already in the store reuses the existing copy under its name.
 pub fn import_file(src: &Path) -> std::io::Result<String> {
-    import_into(src, &paths::images_dir(), "images", "png")
+    let dir = paths::images_dir();
+    fs::create_dir_all(&dir)?;
+    if let Ok(bytes) = fs::read(src)
+        && let Some(name) = existing_with_content(&dir, &bytes)
+    {
+        return Ok(format!("images/{name}"));
+    }
+    import_into(src, &dir, "images", "png")
 }
 
 /// Copy `src` into `dir`, giving it a unique, sanitized name; return the relative
@@ -62,13 +70,46 @@ pub fn import_into(
     Ok(format!("{rel_prefix}/{name}"))
 }
 
-/// Save pasted image bytes into the images dir; return its `images/<name>` ref.
+/// Save pasted image bytes into the images dir; return its `images/<name>`
+/// ref. Content-addressed: identical bytes get identical names, so re-pasting
+/// the same screenshot reuses the existing file instead of stacking copies.
 pub fn import_bytes(bytes: &[u8], ext: &str) -> std::io::Result<String> {
     let dir = paths::images_dir();
     fs::create_dir_all(&dir)?;
-    let name = unique_name(&dir, "pasted", ext);
+    // Any existing copy wins, whatever its name (it may have arrived as a
+    // dragged file rather than a paste).
+    if let Some(name) = existing_with_content(&dir, bytes) {
+        return Ok(format!("images/{name}"));
+    }
+    let name = bytes_name(bytes, ext);
     fs::write(dir.join(&name), bytes)?;
     Ok(format!("images/{name}"))
+}
+
+/// A file in `dir` with exactly these contents, if any — the paste/drag
+/// dedupe check. Candidates are narrowed by size, so at most a file or two
+/// is ever read and compared.
+fn existing_with_content(dir: &Path, bytes: &[u8]) -> Option<String> {
+    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let Ok(meta) = entry.metadata() else { continue };
+        if name.starts_with('.') || !meta.is_file() || meta.len() != bytes.len() as u64 {
+            continue;
+        }
+        if fs::read(entry.path()).is_ok_and(|c| c == bytes) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// The content-addressed filename for pasted bytes:
+/// `pasted-<sha256, first 64 bits>.<ext>`.
+fn bytes_name(bytes: &[u8], ext: &str) -> String {
+    use sha2::Digest;
+    let hash = sha2::Sha256::digest(bytes);
+    let hex: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("pasted-{hex}.{ext}")
 }
 
 /// A filename in `dir` that doesn't collide (`stem.ext`, then `stem-1.ext`, …).
@@ -353,6 +394,30 @@ fn scale_and_bgra(img: image::DynamicImage) -> RgbaImage {
 mod tests {
     use super::*;
     use image::{DynamicImage, Rgba, RgbaImage};
+
+    #[test]
+    fn identical_content_is_found_whatever_its_name() {
+        let dir = std::env::temp_dir().join(format!("zorite-imgtest-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Screenshot-old.png"), b"same pixels").unwrap();
+        assert_eq!(
+            existing_with_content(&dir, b"same pixels").as_deref(),
+            Some("Screenshot-old.png")
+        );
+        // Same size, different bytes: no false positive.
+        assert_eq!(existing_with_content(&dir, b"diff pixels"), None);
+        assert_eq!(existing_with_content(&dir, b"other"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pasted_bytes_are_content_addressed() {
+        let a = bytes_name(b"same bytes", "png");
+        assert_eq!(a, bytes_name(b"same bytes", "png"));
+        assert_ne!(a, bytes_name(b"other bytes", "png"));
+        assert_ne!(a, bytes_name(b"same bytes", "jpg"));
+        assert!(a.starts_with("pasted-") && a.ends_with(".png"));
+    }
 
     #[test]
     fn large_images_downscale_to_the_cap() {

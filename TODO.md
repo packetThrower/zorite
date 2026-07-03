@@ -42,7 +42,7 @@ work is collected under [Completed](#completed) at the bottom.
   consumers that never call `set_markdown_style`). "Text editor first" is
   documented in the crate README instead. Parity rules live in AGENTS.md.
 - [x] Images: **orphan GC** — Settings → General → "Unused images" deletes `images/` files no page, whiteboard, or template references (substring scan of all content; files under an hour old kept for the autosave race)
-- [ ] Images: optional content-addressed names (dedupe identical pastes)
+- [x] Images: import dedupe — pastes AND dragged files reuse any existing store file with identical contents (size-narrowed byte compare), whatever its name; new pastes get content-addressed names (`pasted-<sha256/64bit>.<ext>`). Pre-existing duplicates aren't retro-deduped (would need reference rewriting)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 
 ## Notes & navigation

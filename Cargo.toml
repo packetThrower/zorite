@@ -170,6 +170,7 @@ semver = "1"
 # they fall back to the placeholder). Added on the heic-avif-test branch.
 heic_decoder = { git = "https://github.com/ente-io/heic-decoder" }
 trash = "5.2.6"
+sha2 = "0.10"
 
 # Embeds the Windows .exe icon (resources/icon.rc -> resources/icons/icon.ico)
 # into the PE resource section via build.rs. `embed_resource::compile` is a
