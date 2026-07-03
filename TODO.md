@@ -43,7 +43,7 @@ work is collected under [Completed](#completed) at the bottom.
   documented in the crate README instead. Parity rules live in AGENTS.md.
 - [x] Images: **orphan GC** — Settings → General → "Unused images" deletes `images/` files no page, whiteboard, or template references (substring scan of all content; files under an hour old kept for the autosave race)
 - [x] Images: import dedupe — pastes AND dragged files reuse any existing store file with identical contents (size-narrowed byte compare), whatever its name; new pastes get content-addressed names (`pasted-<sha256/64bit>.<ext>`). Pre-existing duplicates aren't retro-deduped (would need reference rewriting)
-- [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
+- [x] Images: **AVIF/HEIC/HEIF** decode via the pure-Rust `heic_decoder` (commit 28a5ebd, PR #15) — EXIF orientation applied, rav1d runs on a big-stack thread. Known gap: grid-tiled primary items fall back to a placeholder
 
 ## Notes & navigation
 - [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
