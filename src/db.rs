@@ -387,6 +387,20 @@ impl Db {
     /// canvas JSON in `content` (empty `{}` for a new board); it stays out of the
     /// page tree ([`list_pages`](Self::list_pages)) and full-text search but is
     /// listed by [`list_whiteboards`](Self::list_whiteboards) for the sidebar.
+    /// The whiteboard with `title` (case-insensitive), if any — wiki-links
+    /// check this before the page path so `[[Board]]` opens the canvas
+    /// instead of its scene JSON as a text page.
+    pub fn get_whiteboard_by_title(&self, title: &str) -> rusqlite::Result<Option<Page>> {
+        self.conn
+            .query_row(
+                "SELECT id, title, is_journal, journal_date, content \
+                 FROM pages WHERE kind = 'whiteboard' AND title = ?1 COLLATE NOCASE",
+                params![title.trim()],
+                row_to_page,
+            )
+            .optional()
+    }
+
     pub fn create_whiteboard(&self) -> rusqlite::Result<Page> {
         let base = "Untitled Whiteboard";
         let mut title = base.to_string();

@@ -49,7 +49,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] Hierarchy follow-ups: cascade-rename a namespace (rename `Foo` → rewrite `Foo::*` children + their `[[links]]`); a "New sub-page" action
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
 - [ ] Unlinked references (mentions of a page title without `[[ ]]`)
-- [ ] **Auto-link existing page titles as you type** — when the typed word matches an existing page (e.g. a `meetings` page exists and the user types "meetings" in a page/journal), auto-wrap it as `[[meetings]]`. Settings on/off toggle. The typing-time counterpart of unlinked references (above)
+- [x] **Auto-link existing page titles as you type** (2026-07-03) — a completed word or trailing phrase (up to 4 words) matching an existing page title (case-insensitive, 3+ chars) wraps as `[[Canonical Title]]` on the boundary keystroke. Settings → Markdown toggle (default off, persisted); one undo step reverts a wrap; never fires inside code, `[[ ]]`, tags, or `[text](` syntax. Editor side is a generic `set_auto_replace` hook; the matcher + title cache live in the app
 - [ ] Sidebar: a "show all pages" affordance (browse the full tree, not just recent)
 - [ ] Calendar: mark/indicate days that already have entries (would read `Page.journal_date`, which is populated for exactly this)
 

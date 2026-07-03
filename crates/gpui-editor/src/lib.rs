@@ -388,6 +388,16 @@ type BlockMathFn = Box<dyn Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)>>;
 /// [`EditorState::set_code_highlighter`].
 type CodeHighlightFn = Box<dyn Fn(&str, &str) -> Vec<(Range<usize>, HighlightStyle)>>;
 
+/// Host auto-replace hook, consulted when a word-boundary character (space,
+/// punctuation, Enter) completes a word: receives the just-finished line's
+/// text up to the boundary and returns the slice range to replace plus its
+/// replacement — e.g. wrapping a completed page title as `[[title]]`. The
+/// edit is one undo step (⌫Z restores the plain word) and the caret keeps its
+/// place after the boundary. Not consulted inside fenced code, and only for
+/// single-character insertions (never pastes or IME commits). Set via
+/// [`EditorState::set_auto_replace`].
+type AutoReplaceFn = Box<dyn Fn(&str) -> Option<(Range<usize>, String)>>;
+
 /// The diagram sources of every ` ```mermaid ` block in `content`, so a host can
 /// pre-render them (the editor's mermaid provider then finds the ready bitmap).
 pub fn mermaid_sources(content: &str) -> Vec<SharedString> {
@@ -540,6 +550,8 @@ pub struct EditorState {
     block_math: Option<BlockMathFn>,
     /// Fenced-code syntax highlighter, see [`CodeHighlightFn`].
     code_highlight: Option<CodeHighlightFn>,
+    /// Host auto-replace hook, see [`Self::set_auto_replace`].
+    auto_replace: Option<AutoReplaceFn>,
     /// The em (px/font-size) the `block_math` provider rasterizes at — set via
     /// [`Self::set_block_math_em`]. Inline `$…$` formulas reuse those rasters scaled by
     /// `text_em / this`, so they sit at text size. `None` disables inline math rendering.
@@ -632,6 +644,7 @@ impl EditorState {
             block_math: None,
             block_math_em: None,
             code_highlight: None,
+            auto_replace: None,
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
@@ -798,6 +811,51 @@ impl EditorState {
         f: impl Fn(&str, &str) -> Vec<(Range<usize>, HighlightStyle)> + 'static,
     ) {
         self.code_highlight = Some(Box::new(f));
+    }
+
+    /// Set the word-completion auto-replace hook (see [`AutoReplaceFn`]).
+    pub fn set_auto_replace(
+        &mut self,
+        f: impl Fn(&str) -> Option<(Range<usize>, String)> + 'static,
+    ) {
+        self.auto_replace = Some(Box::new(f));
+    }
+
+    /// Run the host's auto-replace hook after a boundary character landed at
+    /// `boundary` (the byte offset of the char itself). Applies the returned
+    /// replacement as its own undo step and shifts the caret by the growth.
+    fn apply_auto_replace(&mut self, boundary: usize) {
+        let Some(f) = self.auto_replace.as_ref() else {
+            return;
+        };
+        let line_start = self.content[..boundary].rfind('\n').map_or(0, |p| p + 1);
+        let line = &self.content[line_start..boundary];
+        if line.is_empty() {
+            return;
+        }
+        // Inside a fenced code block (odd count of ``` fences above), the
+        // text is verbatim — never rewrite it.
+        let fences = self.content[..line_start]
+            .lines()
+            .filter(|l| l.trim_start().starts_with("```"))
+            .count();
+        if fences % 2 == 1 || line.trim_start().starts_with("```") {
+            return;
+        }
+        let Some((r, replacement)) = f(line) else {
+            return;
+        };
+        if r.start >= r.end || r.end > line.len() {
+            return;
+        }
+        let abs = line_start + r.start..line_start + r.end;
+        let delta = replacement.len() as isize - abs.len() as isize;
+        self.record_edit(&abs, &replacement);
+        self.content =
+            self.content[..abs.start].to_owned() + &replacement + &self.content[abs.end..];
+        self.remap_diagnostics(&abs, replacement.len());
+        let caret = (self.selected_range.start as isize + delta) as usize;
+        self.selected_range = caret..caret;
     }
 
     /// Begin an in-line structural edit of the `$$…$$` block at `range`: reserve a gap at
@@ -3233,6 +3291,17 @@ impl EntityInputHandler for EditorState {
         // Keep unaffected diagnostics valid across the edit (shift those after
         // it, drop those it overlapped); the host recomputes the edited region.
         self.remap_diagnostics(&range, new_text.len());
+        // A single boundary character (space / punctuation / Enter, incl. a
+        // list continuation's leading newline) just completed a word — offer
+        // it to the host's auto-replace hook (e.g. page-title auto-linking).
+        let boundary_typed = match new_text.as_bytes() {
+            [c] => !c.is_ascii_alphanumeric() && !matches!(c, b'_' | b'-' | b'/' | b'#' | b'['),
+            [b'\n', ..] => true,
+            _ => false,
+        };
+        if boundary_typed {
+            self.apply_auto_replace(range.start);
+        }
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }

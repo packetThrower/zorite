@@ -437,6 +437,11 @@ pub struct AppView {
     // `cx`) so it can read a ready formula during paint; `ensure_math_loaded` drives the
     // off-thread render. See `math::MathStore`.
     math_store: Rc<RefCell<crate::math::MathStore>>,
+    // Auto-link-as-you-type state, shared into the editors' auto-replace
+    // closures: lowercase page title -> canonical title, rebuilt with the
+    // sidebar; and the live on/off switch (Settings -> Markdown).
+    auto_link_titles: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    auto_link: Rc<std::cell::Cell<bool>>,
     // Highlighted code blocks, cached by (lang, content); both views' code
     // highlighter callbacks read it. See `highlight::HighlightStore`.
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
@@ -690,6 +695,8 @@ impl AppView {
             rotated_images: std::collections::HashMap::new(),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
             math_store: Rc::new(RefCell::new(crate::math::MathStore::default())),
+            auto_link_titles: Rc::new(RefCell::new(Default::default())),
+            auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
@@ -790,6 +797,12 @@ impl AppView {
             .get_setting("wysiwyg")
             .map(|v| v != "0")
             .unwrap_or(true);
+        this.auto_link.set(
+            this.db
+                .get_setting("auto_link")
+                .map(|v| v == "1")
+                .unwrap_or(false),
+        );
         // Date/time display formats for /date, /time, and {{date}}/{{time}} —
         // applied to the thread-local in `crate::dates`; validated against the
         // known ids so a stale persisted value can't stick.
@@ -837,6 +850,8 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.auto_link_titles.clone(),
+            self.auto_link.clone(),
             window,
             cx,
         );
@@ -1137,6 +1152,13 @@ impl AppView {
             {
                 v.update(cx, |v, cx| v.reveal_highlight(n - 1, cx));
             }
+            return;
+        }
+        // A whiteboard's title opens the canvas — get_or_create_page matches
+        // titles kind-blind, and opening a board's row as a text page would
+        // expose (and let edits corrupt) its scene JSON.
+        if let Ok(Some(board)) = self.db.get_whiteboard_by_title(base) {
+            self.open_whiteboard(board.id, window, cx);
             return;
         }
         match self.db.get_or_create_page(title) {
@@ -1655,6 +1677,8 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.auto_link_titles.clone(),
+            self.auto_link.clone(),
             window,
             cx,
         );
@@ -1827,6 +1851,16 @@ impl AppView {
     fn refresh_sidebar(&mut self) {
         self.pages = self.db.list_pages().unwrap_or_default();
         self.whiteboards = self.db.list_whiteboards().unwrap_or_default();
+        // Titles the auto-link closures match against — pages AND whiteboards
+        // ([[Board]] opens the canvas). Short titles would link every stray
+        // article/word, so 3+ chars only.
+        *self.auto_link_titles.borrow_mut() = self
+            .pages
+            .iter()
+            .chain(self.whiteboards.iter())
+            .filter(|p| p.title.trim().len() >= 3)
+            .map(|p| (p.title.trim().to_lowercase(), p.title.trim().to_string()))
+            .collect();
         // An import can add favorites; pick them up so they show without a relaunch.
         self.favorites = self.load_favorites();
         self.templates = self
@@ -1922,7 +1956,13 @@ impl AppView {
         let title = self.slash_title(&target);
         let items = match trigger {
             Trigger::Slash => slash::build_slash_items(level, &query, &self.templates, &title),
-            Trigger::Link => slash::build_link_items(&query, &self.pages),
+            Trigger::Link => {
+                // Boards are linkable too ([[Board]] opens the canvas), so
+                // they complete alongside pages.
+                let mut linkable = self.pages.clone();
+                linkable.extend(self.whiteboards.iter().cloned());
+                slash::build_link_items(&query, &linkable)
+            }
             Trigger::Tag => slash::build_tag_items(&query, &self.pages),
             Trigger::Placeholder => slash::build_placeholder_items(&query),
             Trigger::Math => slash::build_math_items(&query),
@@ -4701,6 +4741,16 @@ impl AppView {
 
     /// Whether WYSIWYG live-preview editing is on (default). Off = "editor mode":
     /// raw markdown while editing, rendered page on Esc.
+    /// Auto-link page titles as you type (Settings → Markdown), persisted.
+    pub fn auto_link(&self) -> bool {
+        self.auto_link.get()
+    }
+
+    pub fn set_auto_link(&mut self, on: bool) {
+        self.auto_link.set(on);
+        let _ = self.db.set_setting("auto_link", if on { "1" } else { "0" });
+    }
+
     pub fn wysiwyg(&self) -> bool {
         self.wysiwyg
     }
@@ -6590,6 +6640,8 @@ fn make_editor(
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     math_store: Rc<RefCell<crate::math::MathStore>>,
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
+    auto_link_titles: Rc<RefCell<std::collections::HashMap<String, String>>>,
+    auto_link: Rc<std::cell::Cell<bool>>,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -6627,6 +6679,15 @@ fn make_editor(
         // fixed 2× DPR, so the editor must NOT size it from texture pixels ÷ window
         // scale factor — that only cancels on a 2× display and drew formulas twice
         // as large on Linux/X11 at 1×.
+        // A completed word (or trailing phrase) matching an existing page
+        // title auto-wraps as [[Title]] — Settings → Markdown toggles the
+        // shared flag live; one undo step reverts a wrap.
+        editor.set_auto_replace(move |line| {
+            if !auto_link.get() {
+                return None;
+            }
+            auto_link_match(&auto_link_titles.borrow(), line)
+        });
         // Fenced code with a language tag colors its tokens (W1's sibling for
         // code) through the shared highlight cache.
         editor.set_code_highlighter(move |lang, code| {
@@ -6665,6 +6726,51 @@ fn spell_diagnostics(text: &str) -> Vec<Diagnostic> {
         .into_iter()
         .map(|range| Diagnostic { range })
         .collect()
+}
+
+/// The auto-link match for a just-completed line slice (text up to the typed
+/// boundary): the longest trailing run of 1–4 words that exactly equals an
+/// existing page title (case-insensitive) becomes `[[Canonical Title]]`.
+/// Skips anything already inside `[[ ]]`, right after `[[`/`[`/`#`, or inside
+/// an open inline-code span — auto-linking must never corrupt syntax the user
+/// is mid-way through typing.
+fn auto_link_match(
+    titles: &std::collections::HashMap<String, String>,
+    line: &str,
+) -> Option<(std::ops::Range<usize>, String)> {
+    if titles.is_empty() {
+        return None;
+    }
+    // Byte offsets where the trailing words start, nearest-last first.
+    let mut starts: Vec<usize> = Vec::new();
+    let mut prev_ws = true;
+    for (i, c) in line.char_indices() {
+        if !c.is_whitespace() && prev_ws {
+            starts.push(i);
+        }
+        prev_ws = c.is_whitespace();
+    }
+    if prev_ws {
+        return None; // the line ends in whitespace — no word was just completed
+    }
+    let n = starts.len().min(4);
+    for k in (1..=n).rev() {
+        let start = starts[starts.len() - k];
+        let before = &line[..start];
+        if before.ends_with("[[") || before.ends_with('[') || before.ends_with('#') {
+            continue;
+        }
+        // Inside an unclosed [[…]] or `…` on this line: leave it alone.
+        if before.matches("[[").count() > before.matches("]]").count()
+            || before.matches('`').count() % 2 == 1
+        {
+            continue;
+        }
+        if let Some(canonical) = titles.get(&line[start..].to_lowercase()) {
+            return Some((start..line.len(), format!("[[{canonical}]]")));
+        }
+    }
+    None
 }
 
 /// ISO `YYYY-MM-DD` for the day `i` days before today (local time). This is the
@@ -6728,5 +6834,47 @@ mod tests {
         assert_eq!(once, "![](a){width=400}");
         // Re-running with the now-comfortable width changes nothing.
         assert_eq!(apply_fit(&once, &[(6..17, 400.0)], 400), None);
+    }
+}
+
+#[cfg(test)]
+mod auto_link_tests {
+    use super::auto_link_match;
+    use std::collections::HashMap;
+
+    fn titles() -> HashMap<String, String> {
+        [
+            ("meetings", "Meetings"),
+            ("things to order", "Things to order"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+    }
+
+    #[test]
+    fn wraps_single_and_multi_word_titles() {
+        let t = titles();
+        // single word, case-insensitive, canonical casing in the link
+        assert_eq!(
+            auto_link_match(&t, "see MEETINGS"),
+            Some((4..12, "[[Meetings]]".to_string()))
+        );
+        // longest trailing phrase wins
+        assert_eq!(
+            auto_link_match(&t, "check things to order"),
+            Some((6..21, "[[Things to order]]".to_string()))
+        );
+    }
+
+    #[test]
+    fn leaves_existing_syntax_alone() {
+        let t = titles();
+        assert_eq!(auto_link_match(&t, "see [[meetings"), None); // typing a wiki link
+        assert_eq!(auto_link_match(&t, "see #meetings"), None); // a tag
+        assert_eq!(auto_link_match(&t, "see `meetings"), None); // open code span
+        assert_eq!(auto_link_match(&t, "see [meetings"), None); // typing [text](url)
+        assert_eq!(auto_link_match(&t, "not-a-match"), None);
+        assert_eq!(auto_link_match(&t, "meetings "), None); // trailing ws = no word completed
     }
 }

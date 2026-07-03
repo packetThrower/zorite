@@ -161,6 +161,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
         "spaces tab nesting indent bullet",
     ),
     (
+        Tab::Markdown,
+        "Auto-link page titles",
+        "wiki link automatic typing wrap unlinked references",
+    ),
+    (
         Tab::Keyboard,
         "Application",
         "shortcuts keys tab window quit settings find search",
@@ -858,6 +863,22 @@ impl Render for SettingsView {
                     }
                 });
 
+        // Auto-link-as-you-type toggle (Markdown pane).
+        let al_on = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).auto_link())
+            .unwrap_or(false);
+        let al_app = self.app.clone();
+        let auto_link_switch =
+            Switch::new("auto-link-toggle")
+                .checked(al_on)
+                .on_click(move |checked, _window, cx| {
+                    if let Some(app) = al_app.upgrade() {
+                        app.update(cx, |a, _cx| a.set_auto_link(*checked));
+                    }
+                });
+
         // Updates pane toggles — switches, like the WYSIWYG one. Controlled by
         // the persisted prefs; the click persists + (for pre-releases) re-checks.
         let check_on = self
@@ -1188,6 +1209,13 @@ impl Render for SettingsView {
                                     "Spaces per nesting level for Tab and bullet nesting. Editing \
                                      and the rendered view use the same width, so they line up.",
                                     Select::new(&self.indent_select).w_full(),
+                                ))
+                                .child(self.section_card(
+                                    "Auto-link page titles",
+                                    "Typing a word or phrase that matches an existing page's \
+                                     title wraps it as a [[wiki-link]] when you finish the word. \
+                                     Undo reverts a wrap.",
+                                    auto_link_switch,
                                 )),
                             Tab::Keyboard => {
                                 let app_rows: Vec<(&str, Vec<&str>)> = vec![
