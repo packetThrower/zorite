@@ -131,6 +131,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
     ),
     (
         Tab::General,
+        "Remember window position",
+        "bounds size resize reopen restore placement screen monitor",
+    ),
+    (
+        Tab::General,
         "Date format",
         "iso us european calendar day month year /date",
     ),
@@ -1259,6 +1264,43 @@ impl Render for SettingsView {
                     .child(msg)
             }));
 
+        // Remember-window-position toggle: the sidecar file IS the state (see
+        // paths::window_bounds_*), written from the main window's live rect.
+        let window_bounds_switch = {
+            let weak = cx.entity().downgrade();
+            Switch::new("window-bounds")
+                .checked(crate::paths::window_bounds_enabled())
+                .on_click(move |on: &bool, _w, cx| {
+                    if *on {
+                        let _ = weak.update(cx, |this, cx| {
+                            if let Some(app) = this.app.upgrade() {
+                                let handle = app.read(cx).window_handle;
+                                let _ = handle.update(cx, |_, window, _| {
+                                    if let gpui::WindowBounds::Windowed(b)
+                                    | gpui::WindowBounds::Maximized(b) = window.window_bounds()
+                                    {
+                                        crate::paths::save_window_bounds(
+                                            f32::from(b.origin.x),
+                                            f32::from(b.origin.y),
+                                            f32::from(b.size.width),
+                                            f32::from(b.size.height),
+                                            matches!(
+                                                window.window_bounds(),
+                                                gpui::WindowBounds::Maximized(_)
+                                            ),
+                                        );
+                                    }
+                                });
+                            }
+                            cx.notify();
+                        });
+                    } else {
+                        crate::paths::clear_window_bounds();
+                        let _ = weak.update(cx, |_, cx| cx.notify());
+                    }
+                })
+        };
+
         // Security cards: the password state drives which actions show.
         let encrypted = crate::db::db_is_encrypted();
         let password_control = {
@@ -1559,6 +1601,13 @@ impl Render for SettingsView {
                                          attachments. Changing it moves your data to the new \
                                          folder, then reopens Zorite.",
                                     location_control,
+                                ))
+                                .child(self.section_card(
+                                    "Remember window position",
+                                    "Reopen Zorite with the size and position it had when \
+                                         you left. Falls back to centered if the saved spot's \
+                                         display is gone.",
+                                    window_bounds_switch,
                                 ))
                                 .child(self.section_card(
                                     "Unused images",

@@ -62,7 +62,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
 - [ ] Sidebar: remember the collapsed state across launches, and add a keyboard shortcut to toggle it
 - [ ] Multi-window: same-page **concurrent edits** are last-write-wins — editing the *same* page/day in two windows at once can drop one side's changes. True resolution needs a CRDT/OT layer (out of scope for a single-user app); revisit only if real-time collaboration is ever wanted
-- [ ] Window-bounds persistence (reopen where you left off)
+- [x] Window-bounds persistence (2026-07-03) — Settings → General → "Remember window position": live-saved on move/resize (maximized tracked, fullscreen skipped) to a DB-free sidecar file (`window-bounds` — needed before an encrypted DB unlocks; file presence = on/off), restored at launch when the saved rect still touches a connected display
 
 ## Settings window
 - [ ] Use small versions of components

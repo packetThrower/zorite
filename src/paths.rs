@@ -73,6 +73,40 @@ pub fn data_dir() -> PathBuf {
     DIR.get_or_init(resolve_data_dir).clone()
 }
 
+// --- Window-bounds persistence (Settings → General toggle) ---
+//
+// A tiny sidecar file, NOT the settings table: the bounds are needed when
+// the main window opens, which is before an encrypted database unlocks.
+// File presence doubles as the on/off state.
+
+fn window_bounds_file() -> PathBuf {
+    data_dir().join("window-bounds")
+}
+
+pub fn window_bounds_enabled() -> bool {
+    window_bounds_file().exists()
+}
+
+/// The saved `(x, y, w, h, maximized)`, if persistence is on and the file
+/// parses.
+pub fn saved_window_bounds() -> Option<(f32, f32, f32, f32, bool)> {
+    let text = std::fs::read_to_string(window_bounds_file()).ok()?;
+    let mut it = text.split_whitespace();
+    let mut next = || it.next()?.parse::<f32>().ok();
+    let (x, y, w, h) = (next()?, next()?, next()?, next()?);
+    let maximized = it.next() == Some("m");
+    (w > 50.0 && h > 50.0).then_some((x, y, w, h, maximized))
+}
+
+pub fn save_window_bounds(x: f32, y: f32, w: f32, h: f32, maximized: bool) {
+    let state = if maximized { "m" } else { "w" };
+    let _ = std::fs::write(window_bounds_file(), format!("{x} {y} {w} {h} {state}"));
+}
+
+pub fn clear_window_bounds() {
+    let _ = std::fs::remove_file(window_bounds_file());
+}
+
 /// The user's Desktop directory — the default location a "save as" dialog opens at (e.g. for
 /// exporting a formula). Platform conventions:
 /// - macOS:   `~/Desktop`

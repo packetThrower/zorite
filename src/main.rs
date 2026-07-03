@@ -228,10 +228,25 @@ pub(crate) fn lock_now(cx: &mut App) {
 /// Open the main application window. On failure (no usable graphics device) pop a
 /// blocking dialog on Windows and bail; elsewhere log and return.
 pub(crate) fn open_main_window(cx: &mut App) {
-    let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+    // Reopen where the user left off (Settings → General toggle), as long as
+    // the saved rect still touches a connected display; otherwise centered.
+    let saved = paths::saved_window_bounds()
+        .map(|(x, y, w, h, maximized)| {
+            let b = Bounds {
+                origin: gpui::point(px(x), px(y)),
+                size: size(px(w), px(h)),
+            };
+            (b, maximized)
+        })
+        .filter(|(b, _)| cx.displays().iter().any(|d| d.bounds().intersects(b)));
+    let window_bounds = match saved {
+        Some((b, true)) => WindowBounds::Maximized(b),
+        Some((b, false)) => WindowBounds::Windowed(b),
+        None => WindowBounds::Windowed(Bounds::centered(None, size(px(1200.0), px(800.0)), cx)),
+    };
     if let Err(err) = cx.open_window(
         WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_bounds: Some(window_bounds),
             titlebar: Some(TitlebarOptions {
                 title: Some("Zorite".into()),
                 ..TitleBar::title_bar_options()

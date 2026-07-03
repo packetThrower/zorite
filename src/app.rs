@@ -355,7 +355,7 @@ pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
     /// hovering it (see [`GlobalDropTarget`]).
-    window_handle: AnyWindowHandle,
+    pub window_handle: AnyWindowHandle,
     /// The tab strip's window-relative rect, captured each paint. A drag from
     /// another window only treats this window as a move target when the cursor is
     /// over *this rect* — so a window hidden behind the source (whose full bounds
@@ -660,6 +660,32 @@ impl AppView {
             },
         );
 
+        // Persist the window's rect as it moves/resizes (when the Settings →
+        // General toggle is on — the sidecar file's presence is the switch).
+        // Fullscreen is skipped: the last windowed rect is the useful one.
+        let bounds_sub = cx.observe_window_bounds(window, |_this, window, _cx| {
+            if !crate::paths::window_bounds_enabled() {
+                return;
+            }
+            match window.window_bounds() {
+                WindowBounds::Windowed(b) => crate::paths::save_window_bounds(
+                    f32::from(b.origin.x),
+                    f32::from(b.origin.y),
+                    f32::from(b.size.width),
+                    f32::from(b.size.height),
+                    false,
+                ),
+                WindowBounds::Maximized(b) => crate::paths::save_window_bounds(
+                    f32::from(b.origin.x),
+                    f32::from(b.origin.y),
+                    f32::from(b.size.width),
+                    f32::from(b.size.height),
+                    true,
+                ),
+                WindowBounds::Fullscreen(_) => {}
+            }
+        });
+
         // The encrypted-PDF password field; Enter submits like the Unlock button.
         let pdf_password_input = cx.new(|cx| InputState::new(window, cx));
         let pdf_password_sub = cx.subscribe_in(
@@ -757,7 +783,7 @@ impl AppView {
             page_find: None,
             page_scroll: ScrollHandle::new(),
             md_block_scroll: ScrollHandle::new(),
-            _subs: vec![search_sub, doc_sub, pdf_password_sub],
+            _subs: vec![search_sub, doc_sub, pdf_password_sub, bounds_sub],
             focus_handle: cx.focus_handle(),
         };
 
