@@ -26,11 +26,13 @@ mod models;
 mod paths;
 mod pdf;
 mod search;
+mod security;
 mod settings;
 mod skins;
 mod slash;
 mod theme;
 mod ui;
+mod unlock;
 mod updater;
 mod whiteboard;
 
@@ -166,16 +168,65 @@ fn main() {
         // If a data move was scheduled (the user changed the data location),
         // run it behind a progress window before opening the main window;
         // otherwise open straight away.
+        // Idle auto-lock: keystrokes anywhere mark activity (pointer activity
+        // is marked on the main window's root div); a slow timer checks the
+        // threshold and locks.
+        cx.observe_keystrokes(|_, _, _| security::touch_activity())
+            .detach();
+        cx.spawn(async move |cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_secs(20))
+                    .await;
+                if security::session_key().is_some() && security::idle_past_threshold() {
+                    cx.update(lock_now);
+                }
+            }
+        })
+        .detach();
+
         match paths::pending_migration() {
             Some((source, target, total)) => start_migration(source, target, total, cx),
-            None => open_main_window(cx),
+            None => open_main_or_unlock(cx),
         }
     });
 }
 
+/// The boot gate: an encrypted database routes to the unlock screen unless a
+/// valid keychain password auto-unlocks it. Plaintext goes straight in.
+fn open_main_or_unlock(cx: &mut App) {
+    if db::db_is_encrypted() {
+        match security::keychain_password() {
+            Some(pw) if db::Db::verify_key(&pw) => {
+                security::set_session_key(Some(pw));
+                security::touch_activity();
+            }
+            _ => {
+                unlock::open_unlock_window(cx);
+                return;
+            }
+        }
+    }
+    open_main_window(cx);
+}
+
+/// Lock the app: wipe the session key, close every window (their in-memory
+/// state goes with them), and show the unlock screen. Re-unlocking always
+/// requires typing the password — the keychain is only consulted at boot.
+pub(crate) fn lock_now(cx: &mut App) {
+    if security::session_key().is_none() {
+        return;
+    }
+    security::set_session_key(None);
+    for window in cx.windows() {
+        let _ = window.update(cx, |_, window, _| window.remove_window());
+    }
+    unlock::open_unlock_window(cx);
+}
+
 /// Open the main application window. On failure (no usable graphics device) pop a
 /// blocking dialog on Windows and bail; elsewhere log and return.
-fn open_main_window(cx: &mut App) {
+pub(crate) fn open_main_window(cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
     if let Err(err) = cx.open_window(
         WindowOptions {
@@ -289,7 +340,7 @@ fn start_migration(
         // No progress window could open — do the move synchronously, then open
         // the main window.
         paths::run_migration(&source, &target, &progress);
-        open_main_window(cx);
+        open_main_or_unlock(cx);
         return;
     };
 
@@ -311,7 +362,7 @@ fn start_migration(
             ticks += 1;
             view.update(cx, |_, cx| cx.notify());
             if progress.is_finished() && ticks >= 10 {
-                cx.update(open_main_window);
+                cx.update(open_main_or_unlock);
                 let _ = pwin.update(cx, |_, window, _| window.remove_window());
                 break;
             }

@@ -15,8 +15,9 @@ use gpui::{
     Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    IndexPath, Root, TitleBar, WindowExt,
-    dialog::DialogButtonProps,
+    Disableable, IndexPath, Root, TitleBar, WindowExt,
+    button::{Button, ButtonVariants as _},
+    dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
     select::{Select, SelectEvent, SelectItem, SelectState},
     slider::{Slider, SliderEvent, SliderState},
@@ -99,8 +100,17 @@ enum Tab {
     Appearance,
     Pdf,
     Markdown,
+    Security,
     Keyboard,
     Updates,
+}
+
+/// Which password dialog is open: first-time set, change, or removal.
+#[derive(Clone, Copy, PartialEq)]
+enum PwMode {
+    Set,
+    Change,
+    Remove,
 }
 
 /// Every settings card: `(tab, card title, extra search keywords)`. Drives the
@@ -192,6 +202,21 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
     ),
     (Tab::Keyboard, "PDF viewer", "shortcuts keys page zoom find"),
     (
+        Tab::Security,
+        "Password",
+        "encrypt encryption lock database sqlcipher passphrase secure",
+    ),
+    (
+        Tab::Security,
+        "Remember on this device",
+        "keychain credential manager auto unlock remember password",
+    ),
+    (
+        Tab::Security,
+        "Auto-lock",
+        "idle timeout lock minutes away inactivity",
+    ),
+    (
         Tab::Updates,
         "Software updates",
         "version release github check download",
@@ -227,6 +252,12 @@ pub struct SettingsView {
     /// Last images-GC outcome ("Removed 12 files (3.4 MB)"), shown under the
     /// Unused images button.
     image_gc_result: Option<String>,
+    /// Password dialogs' fields (masked) + the last outcome line shown under
+    /// the Password card.
+    sec_current: Entity<InputState>,
+    sec_new: Entity<InputState>,
+    sec_confirm: Entity<InputState>,
+    security_status: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -395,6 +426,13 @@ impl SettingsView {
         // user types (Baudrun's Settings filter). Subscribed on every keystroke
         // (`Change`) so the dim updates live; the value drives `self.filter`.
         let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter settings…"));
+        let masked = |ph: &str, window: &mut Window, cx: &mut Context<Self>| {
+            let ph = ph.to_string();
+            cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(ph))
+        };
+        let sec_current = masked("Current password", window, cx);
+        let sec_new = masked("New password", window, cx);
+        let sec_confirm = masked("Confirm new password", window, cx);
         subs.push(cx.subscribe(
             &filter_input,
             |this: &mut SettingsView, input, ev: &InputEvent, cx| {
@@ -422,6 +460,10 @@ impl SettingsView {
             filter: String::new(),
             tab: Tab::Appearance,
             image_gc_result: None,
+            sec_current,
+            sec_new,
+            sec_confirm,
+            security_status: None,
             _subs: subs,
         }
     }
@@ -627,6 +669,149 @@ impl SettingsView {
                     true
                 })
         });
+    }
+
+    /// Open the set/change/remove password dialog. Validation runs on OK;
+    /// failures surface as an alert and nothing changes.
+    fn open_password_dialog(&mut self, mode: PwMode, window: &mut Window, cx: &mut Context<Self>) {
+        for input in [&self.sec_current, &self.sec_new, &self.sec_confirm] {
+            input.update(cx, |s, cx| s.set_value("", window, cx));
+        }
+        let (title, ok_label) = match mode {
+            PwMode::Set => ("Set a password", "Encrypt"),
+            PwMode::Change => ("Change password", "Change"),
+            PwMode::Remove => ("Remove password", "Decrypt"),
+        };
+        let current = self.sec_current.clone();
+        let newpw = self.sec_new.clone();
+        let confirm = self.sec_confirm.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let current_i = current.clone();
+            let new_i = newpw.clone();
+            let confirm_i = confirm.clone();
+            let weak = weak.clone();
+            let mut body = div().flex().flex_col().gap(px(10.0));
+            if mode != PwMode::Set {
+                body = body.child(Input::new(&current_i));
+            }
+            if mode != PwMode::Remove {
+                body = body.child(Input::new(&new_i)).child(Input::new(&confirm_i));
+            }
+            if mode == PwMode::Set {
+                body = body.child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_tertiary())
+                        .child(
+                            "Encrypts your entire database. If you forget this \
+                             password, your notes are unrecoverable. Earlier plaintext \
+                             backups in the data folder stay readable until you delete \
+                             them.",
+                        ),
+                );
+            }
+            dialog
+                .title(title)
+                .w(px(440.0))
+                .child(body)
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("pw-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("pw-ok").primary().label(ok_label).on_click({
+                            let current_i = current_i.clone();
+                            let new_i = new_i.clone();
+                            let confirm_i = confirm_i.clone();
+                            let weak = weak.clone();
+                            move |_, window, cx| {
+                                let cur = current_i.read(cx).value().to_string();
+                                let new = new_i.read(cx).value().to_string();
+                                let conf = confirm_i.read(cx).value().to_string();
+                                window.close_dialog(cx);
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.apply_password_change(mode, cur, new, conf, window, cx);
+                                });
+                            }
+                        })),
+                )
+                .on_ok(move |_, window, cx| {
+                    let cur = current_i.read(cx).value().to_string();
+                    let new = new_i.read(cx).value().to_string();
+                    let conf = confirm_i.read(cx).value().to_string();
+                    let _ = weak.update(cx, |this, cx| {
+                        this.apply_password_change(mode, cur, new, conf, window, cx);
+                    });
+                    true
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
+        let first = if mode == PwMode::Set {
+            self.sec_new.clone()
+        } else {
+            self.sec_current.clone()
+        };
+        first.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    /// Validate and apply a password set/change/removal, updating the status
+    /// line under the Password card.
+    fn apply_password_change(
+        &mut self,
+        mode: PwMode,
+        current: String,
+        new: String,
+        confirm: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if mode != PwMode::Set && !crate::db::Db::verify_key(&current) {
+            self.alert(
+                "Wrong password",
+                "The current password doesn't match.".into(),
+                window,
+                cx,
+            );
+            return;
+        }
+        let new_key = match mode {
+            PwMode::Remove => None,
+            _ => {
+                if new.is_empty() {
+                    self.alert(
+                        "No password",
+                        "The new password is empty.".into(),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                if new != confirm {
+                    self.alert(
+                        "Passwords don't match",
+                        "The two entries differ — try again.".into(),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
+                Some(new)
+            }
+        };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
+        let result = app.update(cx, |a, _| a.set_db_password(new_key.as_deref()));
+        self.security_status = Some(match (&result, mode) {
+            (Ok(()), PwMode::Set) => "Database encrypted.".to_string(),
+            (Ok(()), PwMode::Change) => "Password changed.".to_string(),
+            (Ok(()), PwMode::Remove) => "Password removed — database decrypted.".to_string(),
+            (Err(e), _) => format!("Failed: {e}"),
+        });
+        cx.notify();
     }
 
     /// Confirm a relocation to `target`, then record it and quit so the change
@@ -848,6 +1033,14 @@ impl SettingsView {
                 cx,
             ))
             .child(nav_item(
+                "nav-security",
+                "Security",
+                Tab::Security,
+                active,
+                !self.tab_has_matches(Tab::Security),
+                cx,
+            ))
+            .child(nav_item(
                 "nav-updates",
                 "Updates",
                 Tab::Updates,
@@ -1065,6 +1258,131 @@ impl Render for SettingsView {
                     .text_color(theme::text_tertiary())
                     .child(msg)
             }));
+
+        // Security cards: the password state drives which actions show.
+        let encrypted = crate::db::db_is_encrypted();
+        let password_control = {
+            let mut row = div().flex().flex_row().flex_wrap().gap(px(8.0));
+            if encrypted {
+                row = row
+                    .child(text_button(
+                        "sec-change",
+                        "Change password…",
+                        cx,
+                        |this, w, cx| {
+                            this.open_password_dialog(PwMode::Change, w, cx);
+                        },
+                    ))
+                    .child(text_button(
+                        "sec-remove",
+                        "Remove password…",
+                        cx,
+                        |this, w, cx| {
+                            this.open_password_dialog(PwMode::Remove, w, cx);
+                        },
+                    ))
+                    .child(text_button("sec-lock", "Lock now", cx, |_this, _w, cx| {
+                        // Deferred: locking closes this window mid-handler.
+                        cx.defer(crate::lock_now);
+                    }));
+            } else {
+                row = row.child(text_button(
+                    "sec-set",
+                    "Set password…",
+                    cx,
+                    |this, w, cx| {
+                        this.open_password_dialog(PwMode::Set, w, cx);
+                    },
+                ));
+            }
+            div().flex().flex_col().gap(px(10.0)).child(row).children(
+                self.security_status.clone().map(|msg| {
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_tertiary())
+                        .child(msg)
+                }),
+            )
+        };
+        let remember_control = {
+            let weak = cx.entity().downgrade();
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(
+                    Switch::new("sec-remember")
+                        .checked(encrypted && crate::security::is_remembered())
+                        .disabled(!encrypted)
+                        .on_click(move |on: &bool, _w, cx| {
+                            if !crate::db::db_is_encrypted() {
+                                return;
+                            }
+                            if *on {
+                                if let Some(pw) = crate::security::session_key() {
+                                    crate::security::remember_password(&pw);
+                                }
+                            } else {
+                                crate::security::forget_password();
+                            }
+                            let _ = weak.update(cx, |_, cx| cx.notify());
+                        }),
+                )
+                .children((!encrypted).then(|| {
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_tertiary())
+                        .child("Set a password first.")
+                }))
+        };
+        let auto_lock_control = {
+            let current = crate::security::auto_lock_minutes();
+            let mut row = div().flex().flex_row().flex_wrap().gap(px(6.0));
+            for (label, mins) in [
+                ("Off", 0u64),
+                ("5 min", 5),
+                ("15 min", 15),
+                ("30 min", 30),
+                ("1 hour", 60),
+            ] {
+                let app = self.app.clone();
+                let mut chip = div()
+                    .id(SharedString::from(format!("autolock-{mins}")))
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .rounded(px(8.0))
+                    .text_size(px(12.0))
+                    .cursor_pointer();
+                chip = if encrypted && current == mins {
+                    chip.bg(theme::accent_tint()).text_color(theme::accent())
+                } else {
+                    chip.bg(theme::glass()).text_color(theme::text_secondary())
+                };
+                row = row.child(
+                    chip.on_click(cx.listener(move |_this, _: &gpui::ClickEvent, _w, cx| {
+                        if !crate::db::db_is_encrypted() {
+                            return;
+                        }
+                        if let Some(app) = app.upgrade() {
+                            app.update(cx, |a, cx| a.set_auto_lock(mins, cx));
+                        }
+                        cx.notify();
+                    }))
+                    .child(label),
+                );
+            }
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .child(row)
+                .children((!encrypted).then(|| {
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_tertiary())
+                        .child("Set a password first.")
+                }))
+        };
 
         // Data-location card body (General): the current path, then change /
         // reveal / reset actions.
@@ -1423,6 +1741,34 @@ impl Render for SettingsView {
                                         pdf_rows,
                                     ))
                             }
+                            Tab::Security => content
+                                .child(self.section_card(
+                                    "Password",
+                                    "Encrypt the database with a password (SQLCipher). Zorite \
+                                         asks for it at launch; without it the file on disk is \
+                                         unreadable. A forgotten password is unrecoverable.",
+                                    password_control,
+                                ))
+                                .child(self.section_card(
+                                    "Remember on this device",
+                                    if cfg!(target_os = "linux") {
+                                        "Keep the password in the kernel keyring and unlock \
+                                         automatically at launch. On Linux this lasts until \
+                                         reboot; the idle auto-lock always requires typing it \
+                                         again."
+                                    } else {
+                                        "Keep the password in the system keychain and unlock \
+                                         automatically at launch. The idle auto-lock always \
+                                         requires typing it again."
+                                    },
+                                    remember_control,
+                                ))
+                                .child(self.section_card(
+                                    "Auto-lock",
+                                    "Lock Zorite after this much inactivity, requiring the \
+                                         password to continue.",
+                                    auto_lock_control,
+                                )),
                             Tab::Updates => content
                                 .child(self.section_card(
                                     "Software updates",

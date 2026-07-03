@@ -87,7 +87,9 @@ base64 = "0.22"
 # SQLite backend. `bundled` compiles SQLite from source and links it
 # statically into the binary — no system libsqlite3 dependency on any
 # target, and no version skew between dev machines.
-rusqlite = { version = "0.40", features = ["bundled"] }
+# bundled-sqlcipher: full SQLite + AES-256 page encryption (PRAGMA key),
+# vendored OpenSSL so all five CI targets build without system deps.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 # Local date for the daily-journal title (YYYY-MM-DD). `local-offset`
 # enables `OffsetDateTime::now_local()` so "today" follows the user's
@@ -171,6 +173,13 @@ semver = "1"
 heic_decoder = { git = "https://github.com/ente-io/heic-decoder" }
 trash = "5.2.6"
 sha2 = "0.10"
+# v3: per-platform native stores only (macOS Keychain / Windows Credential
+# Manager / kernel keyutils on Linux) — no dbus/zbus tree.
+keyring = { version = "3", default-features = false, features = [
+    "apple-native",
+    "windows-native",
+    "linux-native",
+] }
 
 # Embeds the Windows .exe icon (resources/icon.rc -> resources/icons/icon.ico)
 # into the PE resource section via build.rs. `embed_resource::compile` is a

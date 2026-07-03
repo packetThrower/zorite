@@ -596,7 +596,7 @@ struct DbError {
 
 impl AppView {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let (db, db_error) = match Db::open() {
+        let (db, db_error) = match Db::open(crate::security::session_key().as_deref()) {
             Ok(db) => (db, None),
             Err(e) => {
                 log::error!(
@@ -808,6 +808,14 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .filter(|s| TEXT_SIZES.contains(s))
             .unwrap_or(DEFAULT_TEXT_SIZE);
+        // Mirror the persisted auto-lock threshold into the process-global the
+        // lock timer reads (it has no database handle).
+        crate::security::set_auto_lock_minutes(
+            this.db
+                .get_setting("auto_lock_minutes")
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+        );
         this.check_updates = this
             .db
             .get_setting("check_updates")
@@ -3218,6 +3226,38 @@ impl AppView {
             }
         }
         (removed, freed)
+    }
+
+    /// Set, change, or remove the database password: re-encrypts the file in
+    /// place and keeps the session key + keychain in sync. `None` decrypts.
+    pub fn set_db_password(&mut self, new: Option<&str>) -> Result<(), String> {
+        let remembered = crate::security::is_remembered();
+        self.db.set_encryption(new).map_err(|e| e.to_string())?;
+        match new {
+            Some(pw) => {
+                crate::security::set_session_key(Some(pw.to_string()));
+                crate::security::touch_activity();
+                if remembered {
+                    crate::security::remember_password(pw);
+                }
+            }
+            None => {
+                crate::security::set_session_key(None);
+                crate::security::forget_password();
+                crate::security::set_auto_lock_minutes(0);
+                let _ = self.db.set_setting("auto_lock_minutes", "0");
+            }
+        }
+        Ok(())
+    }
+
+    /// Persist + apply the idle auto-lock threshold (minutes; 0 = off).
+    pub fn set_auto_lock(&mut self, minutes: u64, cx: &mut Context<Self>) {
+        let _ = self
+            .db
+            .set_setting("auto_lock_minutes", &minutes.to_string());
+        crate::security::set_auto_lock_minutes(minutes);
+        cx.notify();
     }
 
     /// Open (or focus) the graph view tab, rebuilding nodes and layout.
@@ -5942,7 +5982,9 @@ impl AppView {
         });
         let data_dir = crate::paths::data_dir();
         let task = cx.background_executor().spawn(async move {
-            let db = Db::open().map_err(|e| format!("open database: {}", e.source))?;
+            let key = crate::security::session_key();
+            let db =
+                Db::open(key.as_deref()).map_err(|e| format!("open database: {}", e.source))?;
             let opts = crate::import::logseq::Options { flatten };
             let bundle = crate::import::logseq::read_graph(&root, &opts)?;
             crate::import::write_bundle(&db, &data_dir, bundle, |_, _| {})
@@ -6474,6 +6516,10 @@ impl Render for AppView {
             .size_full()
             .bg(theme::bg_window())
             .text_color(theme::text_primary())
+            // Feed the idle auto-lock clock (keystrokes are observed app-wide
+            // in main; pointer activity is marked here).
+            .on_any_mouse_down(|_, _, _| crate::security::touch_activity())
+            .on_mouse_move(|_, _, _| crate::security::touch_activity())
             // A tab strip drag released anywhere off the strip ends here — in-window
             // (`on_mouse_up`) or past the window edge (`on_mouse_up_out`, which fires
             // because the drag began inside, so the OS keeps delivering the release).

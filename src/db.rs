@@ -116,13 +116,47 @@ impl OpenError {
     }
 }
 
+/// Whether the on-disk database is SQLCipher-encrypted: an encrypted file has
+/// no plaintext `SQLite format 3` magic. `false` for missing or empty files
+/// (fresh installs). The boot flow uses this to route to the unlock screen —
+/// and to keep an encrypted file out of the corruption-recovery path.
+pub fn db_is_encrypted() -> bool {
+    file_is_encrypted(&paths::db_path())
+}
+
+fn file_is_encrypted(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 16];
+    match f.read_exact(&mut magic) {
+        Ok(()) => &magic != b"SQLite format 3\0",
+        Err(_) => false, // shorter than a header: empty / fresh
+    }
+}
+
 impl Db {
-    pub fn open() -> Result<Self, OpenError> {
+    /// Open the app database, decrypting with `key` when one is given. A
+    /// wrong (or missing) key on an encrypted file surfaces as an error from
+    /// the first real statement — callers distinguish that from corruption
+    /// via [`db_is_encrypted`].
+    pub fn open(key: Option<&str>) -> Result<Self, OpenError> {
         let path = paths::db_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let mut conn = Connection::open(&path).map_err(OpenError::bare)?;
+        Self::open_at(&path, key)
+    }
+
+    fn open_at(path: &Path, key: Option<&str>) -> Result<Self, OpenError> {
+        let mut conn = Connection::open(path).map_err(OpenError::bare)?;
+        // The key must be the FIRST statement on the connection — anything
+        // else touches the (unreadable) pages first and fails.
+        if let Some(key) = key {
+            conn.pragma_update(None, "key", key)
+                .map_err(OpenError::bare)?;
+        }
         // WAL keeps the per-keystroke autosave write off the fsync-per-commit path
         // (rollback journal + synchronous=FULL fsyncs twice per write); in WAL,
         // synchronous=NORMAL fsyncs only at checkpoint and is still durable across an
@@ -138,9 +172,82 @@ impl Db {
         .map_err(OpenError::bare)?;
         // Snapshot the DB before any schema upgrade so a buggy migration is
         // recoverable; carry the snapshot path in the error if migration fails.
-        let backup = Self::backup_before_migration(&conn, &path);
+        let backup = Self::backup_before_migration(&conn, path);
         Self::migrate(&mut conn).map_err(|source| OpenError { source, backup })?;
         Ok(Db { conn })
+    }
+
+    /// Re-encrypt the database in place: SQLCipher-export a sibling copy under
+    /// `new_key` (`None` = plaintext), swap it in atomically, and reopen the
+    /// connection. The caller owns UX (confirmations, keychain updates). The
+    /// path comes from the connection itself, so tests run on temp files.
+    pub fn set_encryption(&mut self, new_key: Option<&str>) -> rusqlite::Result<()> {
+        let path: PathBuf = self
+            .conn
+            .query_row(
+                "SELECT file FROM pragma_database_list WHERE name = 'main'",
+                [],
+                |r| r.get::<_, String>(0),
+            )?
+            .into();
+        let tmp = path.with_extension("db.reenc");
+        let _ = std::fs::remove_file(&tmp);
+        // Fold the WAL in so the export sees every committed write.
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        self.conn.execute(
+            "ATTACH DATABASE ?1 AS reenc KEY ?2",
+            params![tmp.to_string_lossy(), new_key.unwrap_or("")],
+        )?;
+        let export = self
+            .conn
+            .query_row("SELECT sqlcipher_export('reenc')", [], |_| Ok(()));
+        // sqlcipher_export copies schema + data but NOT user_version; without
+        // it the reopen below would re-run every migration on a full DB.
+        let version: i64 = self
+            .conn
+            .query_row("PRAGMA main.user_version", [], |r| r.get(0))?;
+        let set_version = self
+            .conn
+            .execute_batch(&format!("PRAGMA reenc.user_version = {version};"));
+        let detach = self.conn.execute("DETACH DATABASE reenc", []);
+        export?;
+        set_version?;
+        detach?;
+        // Swap: release the file (SQLite holds it open), move the new one in,
+        // and clear stale WAL/SHM siblings from the old incarnation.
+        let placeholder = Connection::open_in_memory()?;
+        drop(std::mem::replace(&mut self.conn, placeholder));
+        std::fs::rename(&tmp, &path).map_err(|e| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
+                Some(format!("swap re-encrypted database: {e}")),
+            )
+        })?;
+        for ext in ["db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+        *self = Self::open_at(&path, new_key).map_err(|e| e.source)?;
+        Ok(())
+    }
+
+    /// Whether `key` opens the current on-disk database — used by the unlock
+    /// screen and to verify the current password before a change/removal, on
+    /// a throwaway connection.
+    pub fn verify_key(key: &str) -> bool {
+        Self::verify_key_at(&paths::db_path(), key)
+    }
+
+    fn verify_key_at(path: &Path, key: &str) -> bool {
+        let Ok(conn) = Connection::open(path) else {
+            return false;
+        };
+        conn.pragma_update(None, "key", key).is_ok()
+            && conn
+                .query_row("SELECT count(*) FROM sqlite_master", [], |r| {
+                    r.get::<_, i64>(0)
+                })
+                .is_ok()
     }
 
     /// If an on-disk schema upgrade is pending, copy the database to
@@ -173,6 +280,13 @@ impl Db {
                 None
             }
         }
+    }
+
+    /// Open a database at an arbitrary path — encryption round-trip tests
+    /// run on temp files instead of the real data dir.
+    #[cfg(test)]
+    fn open_file(path: &Path, key: Option<&str>) -> Result<Self, OpenError> {
+        Self::open_at(path, key)
     }
 
     /// In-memory fallback so the app still runs if the on-disk file can't
@@ -1126,6 +1240,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n2, 1, "trigram is case-insensitive");
+    }
+
+    #[test]
+    fn encryption_round_trip() {
+        let dir = std::env::temp_dir().join(format!("zorite-enc-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.db");
+        let _ = std::fs::remove_file(&path);
+
+        // Plaintext: create, write, and confirm the header magic is visible.
+        let mut db = Db::open_file(&path, None).unwrap();
+        let page = db.get_or_create_page("Secret").unwrap();
+        db.set_page_content(page.id, "classified").unwrap();
+        assert!(!file_is_encrypted(&path));
+
+        // Encrypt in place: header becomes opaque, data survives, and the
+        // connection keeps working.
+        db.set_encryption(Some("hunter2")).unwrap();
+        assert!(file_is_encrypted(&path));
+        assert_eq!(db.get_page(page.id).unwrap().unwrap().content, "classified");
+        drop(db);
+
+        // No key / wrong key: unreadable. Right key: readable.
+        assert!(Db::open_file(&path, None).is_err());
+        assert!(Db::open_file(&path, Some("wrong")).is_err());
+        assert!(Db::verify_key_at(&path, "hunter2"));
+        assert!(!Db::verify_key_at(&path, "wrong"));
+        let mut db = Db::open_file(&path, Some("hunter2")).unwrap();
+        assert_eq!(db.get_page(page.id).unwrap().unwrap().content, "classified");
+
+        // Change the password, then remove it: plaintext again.
+        db.set_encryption(Some("correct horse")).unwrap();
+        drop(db);
+        assert!(Db::open_file(&path, Some("hunter2")).is_err());
+        let mut db = Db::open_file(&path, Some("correct horse")).unwrap();
+        db.set_encryption(None).unwrap();
+        assert!(!file_is_encrypted(&path));
+        assert_eq!(db.get_page(page.id).unwrap().unwrap().content, "classified");
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
