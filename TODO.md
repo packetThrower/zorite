@@ -31,11 +31,14 @@ work is collected under [Completed](#completed) at the bottom.
   3. gpui-editor's whole markdown/WYSIWYG side moves behind a default-on
      `markdown` feature — it's a text editor first (ratex-gpui's `editor`
      feature is the precedent).
-  Start with the linkables, the most drift-prone. Parity rules (which view's
-  look wins) live in AGENTS.md "The three views".
+  **Progress:** `gpui_markdown::syntax` exists and all three consumers use it
+  for alerts, table styles, and heading scales (commit bca140c); the sibling
+  dep + AGENTS exception are in place. **Remaining:** the linkables
+  (wiki/tag/url — would make WYSIWYG bare-URL autolinks nearly free), then
+  the `view` / `markdown` feature gates. Parity rules (which view's look
+  wins) live in AGENTS.md "The three views".
 - [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
-- [ ] WYSIWYG table editing: deleting the **last row or last column** via the right-click menu drops the caret just below the table. The op computes a correct in-table caret offset (confirmed via logging — e.g. `caret=2 rc=(0,2)`), but a later step in the editor's `Changed` flow moves the caret to the document end before the next paint. Other rows/columns are fine. Auto-pair was ruled out (it now skips non-keystroke edits); the resetter is still unidentified — likely a `set_cursor`/`set_text` on a reactive path (save / slash / spellcheck / toolbar refresh)
 
 ## Notes & navigation
 - [ ] Rename: also rewrite case/whitespace link variants (`[[ Foo ]]`, `[[FOO]]`) — v1 rewrites the exact stored title only
@@ -70,9 +73,18 @@ work is collected under [Completed](#completed) at the bottom.
 ## gpui-markdown crate
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize
 - [ ] Publish to crates.io once the API is stable
-- [ ] **Split the reusable crates (`gpui-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: both pin `gpui = { git = ".../zed" }` with no rev and rely on the *workspace's single lockfile* to unify everything to one gpui; in separate repos each gets its own lockfile, and a gpui-rev mismatch puts two gpui versions in one build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
+- [ ] **Split the reusable crates (`gpui-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: the crates use the workspace's pinned gpui rev (`[workspace.dependencies]`, one spec byte-for-byte); in separate repos each picks its own rev, and a mismatch puts two gpui versions in one consumer's build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
 
 ## Completed
+
+### Editor & rendering (0.5.0)
+- [x] **WYSIWYG table: delete last row/column caret drop** — no longer reproduces (user-verified 2026-07-02); most likely resolved by the table measure/hit-box overhaul (shared `line_pads`, always-committed strip rects) that fixed the add-row "+" strip
+- [x] **Shared construct recognition** (`gpui_markdown::syntax`) — alerts, table styles, heading scales recognized in ONE place; reader, WYSIWYG, and PDF export all consume it (phase 1 of the restructure above)
+- [x] **View parity rounds** — reader ↔ WYSIWYG converged per the AGENTS.md parity rules: body line height 1.45 both (reader had gpui's phi default), content-hugging tables (WYSIWYG's measured columns, 22px gutter, row metric) and code cards (widest line, bold-measured for highlight runs), list spacing + indentation (reader's roomier look, WYSIWYG adopts), under-bullet nested-list guides (reader), HTML comments render nowhere
+- [x] **GitHub alerts** (`> [!NOTE]` …) in both views + slash menu + PDF export, five themeable palette tokens, Lucide icons; lenient inline form accepted
+- [x] **Syntax highlighting** for fenced code blocks in both views — gpui-component's tree-sitter highlighter (already in the binary), 22 grammars as Cargo features, one app-side cache, themes recolor live
+- [x] **Custom fonts** — Settings → Appearance → Font (any installed family or an imported .ttf/.otf, persisted + re-registered at startup); themes can name a `"font"`; full per-token theme overrides (19 palette tokens, #RRGGBBAA)
+- [x] **Text size setting** — 14–20px, one value drives all three views; exposed latent size-mismatch bugs (measure vs paint, table hit-testing) now fixed structurally
 
 ### Import & export (0.5.0)
 - [x] **PDF export** — tab / sidebar right-click "Export as PDF…", File menu, and ⌘P for the active tab; a native save dialog, then `src/export.rs` renders the note's mdast straight to PDF via `oxidize-pdf` (pure Rust; ~10 small new crates with default features off). We own the layout: wrapped styled runs (bold/italic/code) with real font metrics, headings/lists/tasks/quotes/tables/code/footnotes/dividers, page breaks. Render-view fidelity: `$$` math rasterizes through RaTeX, mermaid through mermaid-rs + resvg (gpui's own SVG rasterizer), images of any decodable format via the `image` crate; control comments (`<!-- math:left -->`) never print. Journal tab exports its loaded days under date headings. Known v1 gaps (documented in `export.rs`): inline `$…$` stays as source unless it's a whole paragraph, emoji/CJK degrade under the standard PDF fonts, remote images skipped, quote bars don't span page breaks
