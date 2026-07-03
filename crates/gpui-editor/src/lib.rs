@@ -147,6 +147,21 @@ const UNDO_LIMIT: usize = 256;
 /// math (e.g. Zorite's click-to-edit caret prediction) can mirror row heights.
 pub const LINE_HEIGHT_RATIO: f32 = 1.45;
 
+/// Extra height under each list/task row in WYSIWYG, matching the reader's
+/// roomier item gap (its list column uses a 4px inter-item gap) — the one
+/// place the reader's look wins over the editor's (see AGENTS.md "Parity
+/// direction"). Detected from the raw line, so it's caret-stable.
+const LIST_ROW_GAP: f32 = 4.;
+/// The gap between a painted bullet/checkbox and its item text — the reader's
+/// 8px marker gap, whose roomier indent wins (AGENTS.md "Parity direction").
+const LIST_TEXT_GAP: f32 = 8.;
+/// Per-space width (px) of one nesting level's indent, matching the reader's
+/// `list_indent` sizing (`spaces × 4.5`). A level therefore advances by
+/// bullet + gap + this — noticeably wider than the raw source spaces, so the
+/// display shifts on reveal-on-caret (the quote inset already set that
+/// precedent, just smaller).
+const LIST_LEVEL_PER_SPACE: f32 = 4.5;
+
 /// Caret thickness (px) — thin like a native text caret, so it doesn't blend into
 /// the first glyph at the start of a line/cell.
 const CARET_WIDTH: f32 = 1.0;
@@ -4087,6 +4102,7 @@ fn shape_document(
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
     code_highlight: Option<&CodeHighlightFn>,
+    tab_indent: usize,
     // The em the `block_math` provider rasterizes at, so inline `$…$` formulas can reuse those
     // rasters scaled to text size. `None` disables inline math.
     block_math_em: Option<f32>,
@@ -4590,8 +4606,14 @@ fn shape_document(
                     Some((plen, LineMark::Quote { bar, text }))
                 }
             } else if let Some((plen, indent, checked)) = markdown_syntax::task_prefix(line) {
-                let bullet_x = measure_width(window, &line[..indent], base_font, base_font_size);
-                let text_inset = measure_width(window, &line[..plen], base_font, base_font_size);
+                // Reader-style geometry: each nesting level advances by
+                // marker + gap + (spaces × 4.5), not the raw spaces' width.
+                let depth = indent as f32 / tab_indent.max(1) as f32;
+                let box_w = base_font_size * 0.78;
+                let level =
+                    box_w + px(LIST_TEXT_GAP) + px(LIST_LEVEL_PER_SPACE) * tab_indent as f32;
+                let bullet_x = level * depth;
+                let text_inset = bullet_x + box_w + px(LIST_TEXT_GAP);
                 Some((
                     plen,
                     LineMark::Check {
@@ -4602,8 +4624,18 @@ fn shape_document(
                     },
                 ))
             } else if let Some((plen, indent, ordered, num)) = markdown_syntax::list_prefix(line) {
-                let bullet_x = measure_width(window, &line[..indent], base_font, base_font_size);
-                let text_inset = measure_width(window, &line[..plen], base_font, base_font_size);
+                let depth = indent as f32 / tab_indent.max(1) as f32;
+                let glyph = if ordered {
+                    format!("{num}.")
+                } else {
+                    "\u{2022}".to_string()
+                };
+                let glyph_w = measure_width(window, &glyph, base_font, base_font_size);
+                let level = glyph_w.max(px(7.))
+                    + px(LIST_TEXT_GAP)
+                    + px(LIST_LEVEL_PER_SPACE) * tab_indent as f32;
+                let bullet_x = level * depth;
+                let text_inset = bullet_x + glyph_w + px(LIST_TEXT_GAP);
                 Some((
                     plen,
                     LineMark::List {
@@ -4790,7 +4822,13 @@ fn shape_document(
                                 .map(|im| im.height)
                                 .max()
                                 .unwrap_or(px(0.));
-                            (fs * LINE_HEIGHT_RATIO).max(math_h + px(INLINE_MATH_ROW_PAD))
+                            let mut h =
+                                (fs * LINE_HEIGHT_RATIO).max(math_h + px(INLINE_MATH_ROW_PAD));
+                            // List items breathe like the reader's (LIST_ROW_GAP).
+                            if md.is_some() && markdown_syntax::list_prefix(line).is_some() {
+                                h += px(LIST_ROW_GAP);
+                            }
+                            h
                         }
                     },
                 }
@@ -5422,6 +5460,7 @@ impl Element for EditorElement {
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
                     editor.code_highlight.as_ref(),
+                    editor.tab_indent,
                     editor.block_math_em,
                     editor.editing_block.as_ref().map(|eb| {
                         let sr = editor.row_col(eb.range.start).0;
@@ -5537,6 +5576,7 @@ impl Element for EditorElement {
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
                     editor.code_highlight.as_ref(),
+                    editor.tab_indent,
                     editor.block_math_em,
                     editor.editing_block.as_ref().map(|eb| {
                         let sr = editor.row_col(eb.range.start).0;

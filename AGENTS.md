@@ -45,6 +45,12 @@ bitten before — links (`[[wiki]]`, `#tag`, `[text](url)`) navigated in the
 reader for months while WYSIWYG silently ignored clicks (fixed in 0.4.1).
 When you touch one side, grep the other for the same construct.
 
+**Parity direction:** when the two views disagree visually, WYSIWYG's look is
+the baseline — object widths and spacing (tables, code cards, body line
+height 1.45) converge toward it. The exceptions: bullet-list item spacing
+AND list indentation (bullet→text gap) follow the READER's roomier look.
+(User-set rules, 2026-07-02.)
+
 `gpui-editor` comments use `W1`/`W2`/`W4a–c`/`W6` milestone codes for WYSIWYG
 features — the legend is in that crate's `lib.rs` top doc.
 

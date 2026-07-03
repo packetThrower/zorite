@@ -15,19 +15,24 @@ work is collected under [Completed](#completed) at the bottom.
 - [Completed](#completed)
 
 ## Editor & rendering
-- [ ] **Shared markdown-construct parser for the reader and WYSIWYG** — the two
-  views are separate engines that share zero code (see AGENTS.md "The three
-  views"): gpui-markdown parses via mdast, gpui-editor via its own line
-  scanner (`markdown_syntax`), so every construct is recognized twice and
-  features drift — links navigated in the reader for months while WYSIWYG
-  ignored clicks (fixed 0.4.1), and `markdown_syntax::links()` now duplicates
-  target-extraction knowledge gpui-markdown already had. Idea: a small shared
-  crate (or module) owning "what counts as a construct and what's its
-  payload" — wiki-link target/alias split, tag boundaries, link URL, image
-  src/width, task boxes — that both engines consume for *recognition*, while
-  each keeps its own rendering. Cuts the class of carry-over bugs at the
-  root; the AGENTS.md cross-view rule is the interim guard. Start with the
-  linkables (wiki/tag/url), the most drift-prone
+- [ ] **gpui-markdown becomes THE markdown crate; gpui-editor consumes it**
+  (design agreed 2026-07-02, replacing the earlier third-crate idea). The two
+  views recognize every construct separately and drift — links (fixed 0.4.1),
+  alerts (recognized in 3 places incl. PDF export), math parse options. Plan:
+  1. gpui-markdown owns *recognition* — construct detection + payloads
+     (wiki/tag/url linkables, alert kinds + palette, table styles, heading
+     scales) — exposed BOTH as mdast helpers and as line-level recognizers
+     (the editor can't afford full parses per keystroke). The reader view
+     moves behind a default-on `view` feature.
+  2. gpui-editor depends on gpui-markdown (recognition only,
+     default-features = false) — `markdown_syntax.rs` keeps the scanning
+     shape but consumes shared definitions. AGENTS.md's "crates depend on
+     gpui only" gains this one sibling exception.
+  3. gpui-editor's whole markdown/WYSIWYG side moves behind a default-on
+     `markdown` feature — it's a text editor first (ratex-gpui's `editor`
+     feature is the precedent).
+  Start with the linkables, the most drift-prone. Parity rules (which view's
+  look wins) live in AGENTS.md "The three views".
 - [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 - [ ] WYSIWYG table editing: deleting the **last row or last column** via the right-click menu drops the caret just below the table. The op computes a correct in-table caret offset (confirmed via logging — e.g. `caret=2 rc=(0,2)`), but a later step in the editor's `Changed` flow moves the caret to the document end before the next paint. Other rows/columns are fine. Auto-pair was ruled out (it now skips non-keystroke edits); the resetter is still unidentified — likely a `set_cursor`/`set_text` on a reactive path (save / slash / spellcheck / toolbar refresh)

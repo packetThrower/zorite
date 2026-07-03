@@ -31,8 +31,8 @@ use gpui::{
     AnyElement, App, Bounds, Corners, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, MouseButton, MouseDownEvent, ParentElement,
     Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas, div, point, px, rgb, rgba,
-    size, svg,
+    StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas, div, point, px, relative, rgb,
+    rgba, size, svg,
 };
 use markdown::mdast;
 
@@ -42,6 +42,10 @@ use markdown::mdast;
 pub struct MarkdownStyle {
     pub text_color: Hsla,
     pub text_size: Pixels,
+    /// Body line height as a multiple of `text_size`. Hosts with an editor
+    /// match it to the editor's ratio so reading and editing line up (Zorite
+    /// passes gpui-editor's 1.45); the default follows suit.
+    pub line_height: f32,
     pub heading_color: Hsla,
     pub link_color: Hsla,
     pub tag_color: Hsla,
@@ -90,6 +94,7 @@ impl Default for MarkdownStyle {
         Self {
             text_color: rgb(0xE6E6E6).into(),
             text_size: px(15.0),
+            line_height: 1.45,
             heading_color: rgb(0xFFFFFF).into(),
             link_color: rgb(0x4C9EFF).into(),
             tag_color: rgb(0x9D7CD8).into(),
@@ -596,7 +601,10 @@ impl RenderOnce for MarkdownView {
             .flex_col()
             .gap(px(10.0))
             .text_color(ctx.style.text_color)
-            .text_size(ctx.style.text_size);
+            .text_size(ctx.style.text_size)
+            // Body line height matches the host's editor (gpui's default is
+            // the taller phi), so reading and editing space text identically.
+            .line_height(relative(ctx.style.line_height));
 
         // Enable block math (`$$…$$` -> a Math node) and inline `$…$` (`math_text` -> an
         // InlineMath node). markdown's `math_text` already follows the sensible rules (a `$`

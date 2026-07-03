@@ -215,6 +215,7 @@ pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown:
     gpui_markdown::MarkdownStyle {
         text_color: p.text_primary,
         text_size,
+        line_height: gpui_editor::LINE_HEIGHT_RATIO,
         heading_color: p.text_primary,
         link_color: p.accent,
         tag_color: p.tag,
