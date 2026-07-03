@@ -3,6 +3,7 @@
 //! to read and a `Context<AppView>` for event listeners.
 
 pub mod all_pages;
+pub mod graph;
 pub mod image;
 pub mod journal;
 pub mod links;

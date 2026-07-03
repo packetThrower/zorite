@@ -75,6 +75,9 @@ pub enum TabKind {
     /// The "All pages" browser (sidebar → list icon): every named page and
     /// whiteboard, filterable by first letter and kind.
     AllPages,
+    /// The graph view (All pages → "Graph"): pages and whiteboards as nodes,
+    /// `page_links` as edges.
+    Graph,
 }
 
 /// An open tab: its content kind + a cached title for the tab strip.
@@ -445,6 +448,8 @@ pub struct AppView {
     all_pages_letter: Option<char>,
     all_pages_kind: crate::ui::all_pages::KindFilter,
     all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
+    /// The graph view's model (nodes + layout + camera), rebuilt on open.
+    pub graph: Option<crate::ui::graph::GraphState>,
     // Auto-link-as-you-type state, shared into the editors' auto-replace
     // closures: lowercase page title -> canonical title, rebuilt with the
     // sidebar; and the live on/off switch (Settings -> Markdown).
@@ -706,6 +711,7 @@ impl AppView {
             all_pages_letter: None,
             all_pages_kind: Default::default(),
             all_pages_pdfs: Vec::new(),
+            graph: None,
             auto_link_titles: Rc::new(RefCell::new(Default::default())),
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
@@ -1461,6 +1467,13 @@ impl AppView {
             TabKind::AllPages => {
                 self.page_editor = None;
                 self.refresh_all_pages_pdfs();
+            }
+            TabKind::Graph => {
+                self.page_editor = None;
+                // A restored/moved tab activates without open_graph having run.
+                if self.graph.is_none() {
+                    self.rebuild_graph();
+                }
             }
         }
         // Focus the AppView so the window's key dispatch reaches its global shortcuts
@@ -3144,6 +3157,31 @@ impl AppView {
             title: "All pages".into(),
         });
         self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Open (or focus) the graph view tab, rebuilding nodes and layout.
+    pub fn open_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.rebuild_graph();
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Graph))
+        {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        self.tabs.push(OpenTab {
+            kind: TabKind::Graph,
+            title: "Graph".into(),
+        });
+        self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
+    fn rebuild_graph(&mut self) {
+        let pages = self.db.list_pages().unwrap_or_default();
+        let boards = self.db.list_whiteboards().unwrap_or_default();
+        let links = self.db.all_page_links().unwrap_or_default();
+        self.graph = Some(crate::ui::graph::GraphState::build(&pages, &boards, &links));
     }
 
     pub fn open_whiteboard(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
@@ -5034,6 +5072,9 @@ impl AppView {
                     TabKind::AllPages => {
                         view.update(cx, |this, cx| this.open_all_pages(window, cx));
                     }
+                    TabKind::Graph => {
+                        view.update(cx, |this, cx| this.open_graph(window, cx));
+                    }
                     TabKind::Journal => {}
                 }
                 view.update(cx, |this, _| {
@@ -5169,7 +5210,7 @@ impl AppView {
             // A board reloads cheaply from the DB on the destination window, so
             // it carries no live entity (no unsaved in-memory edits in Phase 0).
             TabKind::Whiteboard(_) => TabSeed::default(),
-            TabKind::Journal | TabKind::AllPages => TabSeed::default(),
+            TabKind::Journal | TabKind::AllPages | TabKind::Graph => TabSeed::default(),
         }
     }
 
@@ -5287,6 +5328,7 @@ impl AppView {
             TabKind::Pdf(path) => self.open_pdf(path, window, cx),
             TabKind::Whiteboard(id) => self.open_whiteboard(id, window, cx),
             TabKind::AllPages => self.open_all_pages(window, cx),
+            TabKind::Graph => self.open_graph(window, cx),
             TabKind::Journal => {}
         }
         // After the open (whose tab switch wiped this window's store), adopt the
@@ -5497,7 +5539,9 @@ impl AppView {
                 }
                 ("Journal".to_string(), out)
             }
-            TabKind::Pdf(_) | TabKind::Whiteboard(_) | TabKind::AllPages => return,
+            TabKind::Pdf(_) | TabKind::Whiteboard(_) | TabKind::AllPages | TabKind::Graph => {
+                return;
+            }
         };
         // Native save dialog, then write the PDF (fast enough to run inline).
         let name: String = title
@@ -6508,6 +6552,7 @@ impl Render for AppView {
                                     TabKind::AllPages => {
                                         ui::all_pages::render(self, cx).into_any_element()
                                     }
+                                    TabKind::Graph => ui::graph::render(self, cx),
                                 }
                             })),
                     ),

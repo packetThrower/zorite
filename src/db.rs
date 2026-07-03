@@ -761,6 +761,15 @@ impl Db {
             .unwrap_or(false)
     }
 
+    /// Every `page_links` edge, for the graph view.
+    pub fn all_page_links(&self) -> rusqlite::Result<Vec<(i64, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT source_page_id, target_page_id FROM page_links")?;
+        stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect()
+    }
+
     /// Pages that link to `page_id`, each with the linking line as a
     /// snippet — the "Linked References" list.
     pub fn backlinks(&self, page_id: i64) -> rusqlite::Result<Vec<Backlink>> {
