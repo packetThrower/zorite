@@ -3,6 +3,7 @@
 //! crate docs; `syntax` (always compiled, dependency-free) holds the shared
 //! construct recognition.
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -517,6 +518,61 @@ impl MarkdownView {
     }
 }
 
+/// Content-keyed parse cache. The host's journal feed re-renders every
+/// visible day on any interaction, and re-running `to_mdast` for every
+/// non-editing day was the dominant per-frame cost (O(days × content)).
+/// Keyed by the exact source string (no hash collisions to reason about;
+/// the cap bounds memory to ~a few dozen notes of text), LRU-evicted, and
+/// thread-local — gpui renders every window on the one UI thread, so all
+/// windows share hits and there's no locking.
+const PARSE_CACHE_CAP: usize = 64;
+
+thread_local! {
+    #[allow(clippy::type_complexity)]
+    static PARSE_CACHE: RefCell<HashMap<String, (Arc<mdast::Node>, u64)>> =
+        RefCell::new(HashMap::new());
+    static PARSE_TICK: Cell<u64> = const { Cell::new(0) };
+}
+
+/// Parse `source` with the view's options (GFM + `$…$`/`$$…$$` math),
+/// memoized. `None` when the parser errors (not cached — the caller falls
+/// back to plain text).
+fn parse_cached(source: &str) -> Option<Arc<mdast::Node>> {
+    PARSE_CACHE.with(|cache| {
+        let mut map = cache.borrow_mut();
+        let tick = PARSE_TICK.with(|t| {
+            let v = t.get() + 1;
+            t.set(v);
+            v
+        });
+        if let Some((node, last_used)) = map.get_mut(source) {
+            *last_used = tick;
+            return Some(node.clone());
+        }
+        // Enable block math (`$$…$$` -> a Math node) and inline `$…$`
+        // (`math_text` -> an InlineMath node). markdown's `math_text` already
+        // follows the sensible rules (a `$` followed/preceded by a non-space,
+        // etc.), so prose like "it cost $5" stays literal.
+        let mut opts = markdown::ParseOptions::gfm();
+        opts.constructs.math_flow = true;
+        opts.constructs.math_text = true;
+        let node = Arc::new(markdown::to_mdast(source, &opts).ok()?);
+        if map.len() >= PARSE_CACHE_CAP {
+            // Evict the least-recently-used entry (the cap is small; a linear
+            // scan is cheaper than an ordered structure).
+            if let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, (_, last))| *last)
+                .map(|(k, _)| k.clone())
+            {
+                map.remove(&oldest);
+            }
+        }
+        map.insert(source.to_string(), (node.clone(), tick));
+        Some(node)
+    })
+}
+
 impl RenderOnce for MarkdownView {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
         let source = self.source;
@@ -552,14 +608,9 @@ impl RenderOnce for MarkdownView {
             // the taller phi), so reading and editing space text identically.
             .line_height(relative(ctx.style.line_height));
 
-        // Enable block math (`$$…$$` -> a Math node) and inline `$…$` (`math_text` -> an
-        // InlineMath node). markdown's `math_text` already follows the sensible rules (a `$`
-        // followed/preceded by a non-space, etc.), so prose like "it cost $5" stays literal.
-        let mut parse_opts = markdown::ParseOptions::gfm();
-        parse_opts.constructs.math_flow = true;
-        parse_opts.constructs.math_text = true;
-        match markdown::to_mdast(&source, &parse_opts) {
-            Ok(mdast::Node::Root(root)) => {
+        let parsed = parse_cached(&source);
+        match parsed.as_deref() {
+            Some(mdast::Node::Root(root)) => {
                 for node in &root.children {
                     collect_definitions(node, &mut ctx.definitions);
                 }
@@ -2189,6 +2240,31 @@ pub fn outdent_line(value: &str, cursor: usize, indent: &str) -> Option<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_cache_hits_and_evicts() {
+        // Same source → the same cached tree (pointer-equal Arc).
+        let a1 = parse_cached("# cache me\n\n- item").unwrap();
+        let a2 = parse_cached("# cache me\n\n- item").unwrap();
+        assert!(Arc::ptr_eq(&a1, &a2));
+        // Changed content is a different key — never a stale tree.
+        let b = parse_cached("# cache me\n\n- item edited").unwrap();
+        assert!(!Arc::ptr_eq(&a1, &b));
+        // Filling past the cap evicts the least-recently used, not the
+        // just-touched entry.
+        let keep = parse_cached("keep me").unwrap();
+        for i in 0..PARSE_CACHE_CAP {
+            let _ = parse_cached(&format!("filler {i}"));
+            let again = parse_cached("keep me").unwrap(); // stays hot
+            assert!(Arc::ptr_eq(&keep, &again));
+        }
+        // And math stays enabled through the cached options.
+        let math = parse_cached("$$\nx^2\n$$").unwrap();
+        let mdast::Node::Root(root) = &*math else {
+            panic!("root")
+        };
+        assert!(matches!(root.children.first(), Some(mdast::Node::Math(_))));
+    }
 
     #[test]
     fn alert_marker_and_strip() {
