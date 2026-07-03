@@ -9,6 +9,7 @@ pub mod journal;
 pub mod links;
 pub mod math;
 pub mod mermaid;
+pub mod month_cal;
 pub mod page_view;
 pub mod search;
 pub mod sidebar;

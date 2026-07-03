@@ -940,6 +940,16 @@ impl Db {
         .collect()
     }
 
+    /// The ISO date of every journal day with actual content — the calendar's
+    /// entry markers. Days auto-created empty (by a jump) don't count.
+    pub fn journal_dates(&self) -> rusqlite::Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT journal_date FROM pages \
+             WHERE is_journal = 1 AND journal_date IS NOT NULL AND trim(content) != ''",
+        )?;
+        stmt.query_map([], |r| r.get(0))?.collect()
+    }
+
     /// Every `page_links` edge, for the graph view.
     pub fn all_page_links(&self) -> rusqlite::Result<Vec<(i64, i64)>> {
         let mut stmt = self

@@ -27,7 +27,6 @@ use gpui::{
 use gpui_component::{
     Root, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants},
-    calendar::{Calendar, CalendarEvent, CalendarState},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
 };
@@ -497,7 +496,10 @@ pub struct AppView {
     pub search_input: Entity<InputState>,
     /// Jump-to-date calendar (opened from the sidebar calendar icon); picking
     /// a date opens that journal day.
-    pub calendar: Entity<CalendarState>,
+    /// The jump-to-date calendar's visible `(year, month)` and the set of
+    /// ISO dates that have journal entries (loaded when the overlay opens).
+    calendar_month: (i32, u8),
+    calendar_days: std::collections::HashSet<String>,
     show_calendar: bool,
     /// When collapsed, the sidebar shrinks to a thin icon rail (expand caret +
     /// the calendar/settings icons); the page list and search box hide.
@@ -645,19 +647,6 @@ impl AppView {
 
         // Jump-to-date: the sidebar calendar icon opens this calendar; picking
         // a date closes it and opens that journal day as a tab.
-        let calendar = cx.new(|cx| CalendarState::new(window, cx));
-        let calendar_sub = cx.subscribe_in(
-            &calendar,
-            window,
-            |this: &mut AppView, _state, ev: &CalendarEvent, window, cx| {
-                let CalendarEvent::Selected(date) = ev;
-                if let Some(day) = date.start() {
-                    this.show_calendar = false;
-                    this.open_journal_day(&day.to_string(), window, cx);
-                }
-            },
-        );
-
         // Live multi-window sync: share one save-signal across all windows.
         let doc_signal = cx.global::<GlobalDocSignal>().0.clone();
         let doc_sub = cx.subscribe_in(
@@ -740,7 +729,8 @@ impl AppView {
             whiteboards: Vec::new(),
             new_page_input,
             search_input,
-            calendar,
+            calendar_month: (2000, 1),
+            calendar_days: Default::default(),
             show_calendar: false,
             sidebar_collapsed: false,
             recent_pages: Vec::new(),
@@ -764,7 +754,7 @@ impl AppView {
             page_find: None,
             page_scroll: ScrollHandle::new(),
             md_block_scroll: ScrollHandle::new(),
-            _subs: vec![search_sub, calendar_sub, doc_sub, pdf_password_sub],
+            _subs: vec![search_sub, doc_sub, pdf_password_sub],
             focus_handle: cx.focus_handle(),
         };
 
@@ -1209,9 +1199,42 @@ impl AppView {
     }
 
     /// Toggle the jump-to-date calendar overlay (the sidebar calendar icon).
+    /// Opening resets to the current month and refreshes the entry markers.
     pub fn toggle_calendar(&mut self, cx: &mut Context<Self>) {
         self.show_calendar = !self.show_calendar;
+        if self.show_calendar {
+            let now = crate::dates::now_local();
+            self.calendar_month = (now.year(), u8::from(now.month()));
+            self.calendar_days = self
+                .db
+                .journal_dates()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+        }
         cx.notify();
+    }
+
+    pub fn calendar_month(&self) -> (i32, u8) {
+        self.calendar_month
+    }
+
+    pub fn calendar_has_entry(&self, iso: &str) -> bool {
+        self.calendar_days.contains(iso)
+    }
+
+    /// Step the calendar's visible month by `delta` months.
+    pub fn calendar_shift_month(&mut self, delta: i32, cx: &mut Context<Self>) {
+        let (y, m) = self.calendar_month;
+        let total = y * 12 + (m as i32 - 1) + delta;
+        self.calendar_month = (total.div_euclid(12), (total.rem_euclid(12) + 1) as u8);
+        cx.notify();
+    }
+
+    /// A calendar day was clicked: close the overlay and jump to that day.
+    pub fn calendar_pick(&mut self, date: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_calendar = false;
+        self.open_journal_day(date, window, cx);
     }
 
     /// Collapse the sidebar to a thin icon rail, or expand it back. Driven by
@@ -6368,7 +6391,7 @@ impl Render for AppView {
                                     .border_color(theme::border_subtle())
                                     .rounded(px(8.0))
                                     .shadow_lg()
-                                    .child(Calendar::new(&self.calendar)),
+                                    .child(ui::month_cal::render(self, cx)),
                             ),
                     ),
             )
