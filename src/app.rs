@@ -3177,11 +3177,37 @@ impl AppView {
         self.activate_tab(self.tabs.len() - 1, window, cx);
     }
 
-    fn rebuild_graph(&mut self) {
+    pub(crate) fn rebuild_graph(&mut self) {
+        let filters = self.graph.as_ref().map(|g| g.filters()).unwrap_or_default();
+        self.rebuild_graph_with(filters);
+    }
+
+    fn rebuild_graph_with(&mut self, filters: crate::ui::graph::GraphFilters) {
         let pages = self.db.list_pages().unwrap_or_default();
-        let boards = self.db.list_whiteboards().unwrap_or_default();
+        let boards = if filters.whiteboards {
+            self.db.list_whiteboards().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let journals = if filters.journals {
+            self.db.list_journal_pages().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let links = self.db.all_page_links().unwrap_or_default();
-        self.graph = Some(crate::ui::graph::GraphState::build(&pages, &boards, &links));
+        self.graph = Some(crate::ui::graph::GraphState::build(
+            &pages, &boards, &journals, &links, filters,
+        ));
+    }
+
+    /// Apply a panel filter change: rebuild the graph's nodes and layout.
+    pub fn set_graph_filters(
+        &mut self,
+        filters: crate::ui::graph::GraphFilters,
+        cx: &mut Context<Self>,
+    ) {
+        self.rebuild_graph_with(filters);
+        cx.notify();
     }
 
     pub fn open_whiteboard(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {

@@ -761,6 +761,27 @@ impl Db {
             .unwrap_or(false)
     }
 
+    /// Every journal-day page (id + title only), for the graph view's
+    /// Journals toggle.
+    pub fn list_journal_pages(&self) -> rusqlite::Result<Vec<Page>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, is_journal, journal_date FROM pages \
+             WHERE is_journal = 1 ORDER BY journal_date DESC",
+        )?;
+        stmt.query_map([], |row| {
+            Ok(Page {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                is_journal: row.get::<_, i64>(2)? != 0,
+                journal_date: row.get(3)?,
+                content: String::new(),
+                created_at: None,
+                updated_at: None,
+            })
+        })?
+        .collect()
+    }
+
     /// Every `page_links` edge, for the graph view.
     pub fn all_page_links(&self) -> rusqlite::Result<Vec<(i64, i64)>> {
         let mut stmt = self

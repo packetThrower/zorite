@@ -2,19 +2,20 @@
 //! named page and whiteboard as a node, every `page_links` edge as a line,
 //! laid out by a small force simulation on open. Drag or scroll to pan,
 //! pinch or ⌘/Ctrl+scroll to zoom, click a node to open it, hover to
-//! highlight its neighborhood. Journal days are excluded, same as the All
-//! pages browser.
+//! highlight its neighborhood. A floating panel holds the legend, node
+//! statistics, and filters (journal days default off, Logseq-style).
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{
-    Bounds, Context, Corners, InteractiveElement, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent, Pixels, Point,
-    ScrollDelta, ScrollWheelEvent, SharedString, Styled, TextRun, canvas, div, fill, point, px,
-    size,
+    Bounds, ClickEvent, Context, Corners, Hsla, InteractiveElement, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder, PinchEvent, Pixels,
+    Point, ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled,
+    TextRun, canvas, div, fill, point, px, size,
 };
+use gpui_component::switch::Switch;
 
 use crate::app::AppView;
 use crate::models::Page;
@@ -25,20 +26,60 @@ const LINE_PX: f32 = 40.0;
 /// A press that moves less than this is a click, not a pan.
 const CLICK_SLOP: f32 = 4.0;
 
+/// Which node sets are in the graph. Journal days default off — thousands of
+/// day nodes swamp the layout, same reasoning as the All pages browser.
+#[derive(Clone, Copy)]
+pub struct GraphFilters {
+    pub journals: bool,
+    pub orphans: bool,
+    pub whiteboards: bool,
+}
+
+impl Default for GraphFilters {
+    fn default() -> Self {
+        Self {
+            journals: false,
+            orphans: true,
+            whiteboards: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Page,
+    Board,
+    Journal,
+}
+
+impl Kind {
+    fn color(self) -> Hsla {
+        match self {
+            Self::Page => theme::text_tertiary(),
+            Self::Board => theme::accent(),
+            Self::Journal => theme::divider(),
+        }
+    }
+}
+
 struct Node {
     title: String,
-    is_board: bool,
+    kind: Kind,
     /// World position (the layout's coordinate space; zoom/pan map to screen).
     pos: [f32; 2],
     radius: f32,
 }
 
 /// The graph tab's model: nodes laid out once on open, plus the camera and
-/// interaction state. Rebuilt by [`AppView::open_graph`].
+/// interaction state. Rebuilt by [`AppView::open_graph`] and filter changes.
 pub struct GraphState {
     nodes: Vec<Node>,
     /// Undirected, deduped `page_links` edges as node indices.
     edges: Vec<(usize, usize)>,
+    filters: GraphFilters,
+    /// Orphan (degree-0) node counts: shown in the graph / dropped by the filter.
+    visible_orphans: usize,
+    hidden_orphans: usize,
     /// Camera: screen-px offset from the canvas center, and scale.
     pan: [f32; 2],
     zoom: f32,
@@ -50,31 +91,54 @@ pub struct GraphState {
 }
 
 impl GraphState {
-    pub fn build(pages: &[Page], boards: &[Page], links: &[(i64, i64)]) -> Self {
+    pub fn build(
+        pages: &[Page],
+        boards: &[Page],
+        journals: &[Page],
+        links: &[(i64, i64)],
+        filters: GraphFilters,
+    ) -> Self {
+        let mut cand: Vec<(i64, &str, Kind)> = Vec::new();
+        for (list, kind) in [
+            (pages, Kind::Page),
+            (boards, Kind::Board),
+            (journals, Kind::Journal),
+        ] {
+            cand.extend(list.iter().map(|p| (p.id, p.title.as_str(), kind)));
+        }
+        let ids: HashSet<i64> = cand.iter().map(|(id, ..)| *id).collect();
+        // Edges whose endpoints aren't candidate nodes (journal days while
+        // they're filtered out) drop here.
+        let mut id_edges: HashSet<(i64, i64)> = HashSet::new();
+        for &(s, t) in links {
+            if s != t && ids.contains(&s) && ids.contains(&t) {
+                id_edges.insert((s.min(t), s.max(t)));
+            }
+        }
+        let linked: HashSet<i64> = id_edges.iter().flat_map(|&(a, b)| [a, b]).collect();
+        let orphan_count = cand.iter().filter(|(id, ..)| !linked.contains(id)).count();
+        let (visible_orphans, hidden_orphans) = if filters.orphans {
+            (orphan_count, 0)
+        } else {
+            cand.retain(|(id, ..)| linked.contains(id));
+            (0, orphan_count)
+        };
+
         let mut nodes: Vec<Node> = Vec::new();
         let mut index: HashMap<i64, usize> = HashMap::new();
-        for (pages, is_board) in [(pages, false), (boards, true)] {
-            for p in pages.iter() {
-                index.insert(p.id, nodes.len());
-                nodes.push(Node {
-                    title: p.title.clone(),
-                    is_board,
-                    pos: [0.0, 0.0],
-                    radius: 0.0,
-                });
-            }
+        for (id, title, kind) in cand {
+            index.insert(id, nodes.len());
+            nodes.push(Node {
+                title: title.to_string(),
+                kind,
+                pos: [0.0, 0.0],
+                radius: 0.0,
+            });
         }
-        // Journal-day endpoints aren't nodes, so their edges drop out here.
-        let mut seen = HashSet::new();
-        let mut edges: Vec<(usize, usize)> = Vec::new();
-        for &(s, t) in links {
-            if let (Some(&a), Some(&b)) = (index.get(&s), index.get(&t))
-                && a != b
-                && seen.insert((a.min(b), a.max(b)))
-            {
-                edges.push((a.min(b), a.max(b)));
-            }
-        }
+        let edges: Vec<(usize, usize)> = id_edges
+            .into_iter()
+            .map(|(a, b)| (index[&a], index[&b]))
+            .collect();
         let mut degree = vec![0usize; nodes.len()];
         for &(a, b) in &edges {
             degree[a] += 1;
@@ -87,12 +151,19 @@ impl GraphState {
         Self {
             nodes,
             edges,
+            filters,
+            visible_orphans,
+            hidden_orphans,
             pan: [0.0, 0.0],
             zoom: 1.0,
             hover: None,
             drag: None,
             bounds: Rc::default(),
         }
+    }
+
+    pub fn filters(&self) -> GraphFilters {
+        self.filters
     }
 
     /// Canvas-local vector from the canvas center to a window-coords point.
@@ -193,17 +264,10 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
     };
 
     // Snapshot for the paint closure (the state itself stays on AppView).
-    let nodes: Vec<([f32; 2], f32, bool, SharedString)> = state
+    let nodes: Vec<([f32; 2], f32, Kind, SharedString)> = state
         .nodes
         .iter()
-        .map(|n| {
-            (
-                n.pos,
-                n.radius,
-                n.is_board,
-                SharedString::from(n.title.clone()),
-            )
-        })
+        .map(|n| (n.pos, n.radius, n.kind, SharedString::from(n.title.clone())))
         .collect();
     let edges = state.edges.clone();
     let (pan, zoom, hover) = (state.pan, state.zoom, state.hover);
@@ -217,7 +281,6 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
         .unwrap_or_default();
     let bounds_cell = state.bounds.clone();
     let (accent, accent_tint) = (theme::accent(), theme::accent_tint());
-    let (node_color, board_color) = (theme::text_tertiary(), theme::accent());
     let (edge_color, label_color) = (theme::divider(), theme::text_secondary());
     let empty = state.nodes.is_empty();
 
@@ -320,17 +383,15 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                         window.paint_path(path, color);
                     }
                 }
-                for (i, (pos, radius, is_board, _)) in nodes.iter().enumerate() {
+                for (i, (pos, radius, kind, _)) in nodes.iter().enumerate() {
                     let p = to_screen(*pos);
                     let r = px((radius * zoom).max(3.0));
                     let color = if hover == Some(i) {
                         accent
                     } else if neighbors.contains(&i) {
                         accent_tint
-                    } else if *is_board {
-                        board_color
                     } else {
-                        node_color
+                        kind.color()
                     };
                     let mut q = fill(
                         Bounds::new(point(p.x - r, p.y - r), size(r * 2.0, r * 2.0)),
@@ -380,6 +441,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
         .absolute()
         .size_full(),
     )
+    .child(panel(state, cx))
     .child(
         // A quiet hint; doubles as the empty-graph message.
         div()
@@ -395,4 +457,170 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
             }),
     )
     .into_any_element()
+}
+
+/// The floating control panel: legend + statistics up top, node filters and
+/// a reset action below.
+fn panel(state: &GraphState, cx: &mut Context<AppView>) -> impl IntoElement {
+    let f = state.filters;
+    let count = |k: Kind| state.nodes.iter().filter(|n| n.kind == k).count();
+    let (pages, boards, journals) = (count(Kind::Page), count(Kind::Board), count(Kind::Journal));
+    let orphans = if f.orphans {
+        state.visible_orphans.to_string()
+    } else {
+        format!("{} hidden", state.hidden_orphans)
+    };
+
+    let dot = |color: Hsla| {
+        div()
+            .w(px(8.0))
+            .h(px(8.0))
+            .rounded_full()
+            .bg(color)
+            .into_any_element()
+    };
+    let dash = div()
+        .w(px(10.0))
+        .h(px(2.0))
+        .bg(theme::divider())
+        .into_any_element();
+    let ring = div()
+        .w(px(8.0))
+        .h(px(8.0))
+        .rounded_full()
+        .border_1()
+        .border_color(theme::text_tertiary())
+        .into_any_element();
+
+    let toggle = |id: &'static str, on: bool, set: fn(&mut GraphFilters, bool)| {
+        let ent = cx.entity();
+        Switch::new(id)
+            .checked(on)
+            .on_click(move |on: &bool, _w, cx| {
+                let mut nf = f;
+                set(&mut nf, *on);
+                ent.update(cx, |a, cx| a.set_graph_filters(nf, cx));
+            })
+    };
+
+    let mut legend = div().flex().flex_col().gap(px(5.0)).child(legend_row(
+        dot(Kind::Page.color()),
+        "Pages",
+        pages.to_string(),
+    ));
+    if boards > 0 {
+        legend = legend.child(legend_row(
+            dot(Kind::Board.color()),
+            "Whiteboards",
+            boards.to_string(),
+        ));
+    }
+    if journals > 0 {
+        legend = legend.child(legend_row(
+            dot(Kind::Journal.color()),
+            "Journals",
+            journals.to_string(),
+        ));
+    }
+    legend = legend
+        .child(legend_row(dash, "Links", state.edges.len().to_string()))
+        .child(legend_row(ring, "Orphans", orphans));
+
+    div()
+        .id("graph-panel")
+        .occlude()
+        .absolute()
+        .top(px(12.0))
+        .left(px(12.0))
+        .w(px(220.0))
+        .rounded(px(10.0))
+        .bg(theme::elevated())
+        .border_1()
+        .border_color(theme::border_subtle())
+        .p(px(12.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme::text_primary())
+                        .child("Nodes"),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme::text_tertiary())
+                        .child(format!("{} shown", state.nodes.len())),
+                ),
+        )
+        .child(legend)
+        .child(div().h(px(1.0)).bg(theme::divider()))
+        .child(toggle_row(
+            "Journals",
+            toggle("graph-journals", f.journals, |f, v| f.journals = v),
+        ))
+        .child(toggle_row(
+            "Orphan pages",
+            toggle("graph-orphans", f.orphans, |f, v| f.orphans = v),
+        ))
+        .child(toggle_row(
+            "Whiteboards",
+            toggle("graph-boards", f.whiteboards, |f, v| f.whiteboards = v),
+        ))
+        .child(
+            div()
+                .id("graph-reset")
+                .text_size(px(12.0))
+                .text_color(theme::accent())
+                .cursor_pointer()
+                .hover(|s| s.text_color(theme::text_primary()))
+                .on_click(cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
+                    // Fresh layout + camera, same filters.
+                    this.rebuild_graph();
+                    cx.notify();
+                }))
+                .child("Reset graph"),
+        )
+}
+
+/// One legend line: a color mark, the kind, and its count.
+fn legend_row(mark: gpui::AnyElement, label: &'static str, count: String) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .text_size(px(12.0))
+        .text_color(theme::text_secondary())
+        .child(
+            div()
+                .w(px(10.0))
+                .flex()
+                .flex_row()
+                .justify_center()
+                .child(mark),
+        )
+        .child(div().flex_1().child(label))
+        .child(div().text_color(theme::text_tertiary()).child(count))
+}
+
+/// One filter line: the label left, its switch right.
+fn toggle_row(label: &'static str, switch: Switch) -> impl IntoElement {
+    div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .text_size(px(12.0))
+        .text_color(theme::text_secondary())
+        .child(label)
+        .child(switch)
 }
