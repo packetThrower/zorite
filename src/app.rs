@@ -4096,7 +4096,11 @@ impl AppView {
         let cursor = editor.read(cx).cursor().min(value.len());
         let prev = self.autopair_prev(target);
         // Each arm yields the rewritten text and where the caret should land.
-        let (new, caret) = match slash::autopair_action(&prev, &value, cursor) {
+        // The editor reports what the keystroke replaced — the certainty that
+        // separates "opener typed over a selection" from same-diff deletions.
+        let replaced = editor.update(cx, |st, _| st.take_replaced_selection());
+        let (new, caret) = match slash::autopair_action(&prev, &value, cursor, replaced.as_deref())
+        {
             Some(slash::AutoPair::Close(close)) => (
                 format!("{}{close}{}", &value[..cursor], &value[cursor..]),
                 cursor,

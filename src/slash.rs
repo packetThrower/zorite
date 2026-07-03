@@ -480,7 +480,12 @@ pub enum AutoPair {
 /// Recognizes a single bracket/quote typed at the caret (type-over or
 /// auto-close) and an opener typed over a selection (wrap). Returns `None` for
 /// anything else — deletes, pastes, ordinary typing, and no-op changes.
-pub fn autopair_action(prev: &str, new: &str, cursor: usize) -> Option<AutoPair> {
+pub fn autopair_action(
+    prev: &str,
+    new: &str,
+    cursor: usize,
+    replaced: Option<&str>,
+) -> Option<AutoPair> {
     if cursor == 0 || cursor > new.len() || new == prev {
         return None;
     }
@@ -497,9 +502,27 @@ pub fn autopair_action(prev: &str, new: &str, cursor: usize) -> Option<AutoPair>
         return None;
     }
     let inner = &prev[prefix.len()..prev.len() - suffix.len()];
+    // The editor's own report of what the keystroke replaced settles the
+    // wrap-vs-delete ambiguity a diff can't: typing `[` over a selected
+    // `[seven]` and backspacing inside `[[]]` produce identical texts.
+    if let Some(sel) = replaced.filter(|s| !s.is_empty()) {
+        if sel == inner
+            && let Some(close) = open_to_close(ch)
+        {
+            return Some(AutoPair::Wrap {
+                close,
+                inner: sel.to_string(),
+            });
+        }
+        // A selection was replaced by a non-opener (or the diff disagrees):
+        // it's a plain replacement, never a pair edit.
+        if !inner.is_empty() {
+            return None;
+        }
+    }
     if !inner.is_empty() {
-        // Guard against a deletion that merely *looks* like an opener typed over a
-        // selection. Backspacing inside a doubled pair (`[[|]]` -> `[|]]`, caret 1)
+        // No editor report (e.g. an external set_text): keep the conservative
+        // guard. Backspacing inside a doubled pair (`[[|]]` -> `[|]]`, caret 1)
         // yields the same before/after shape as typing `[` over a selected `[[` — which
         // would "wrap" it straight back into `[[[]]]`. The tell: a real wrap types a
         // *new* opener, so `prev` won't already contain everything up to the caret; a
@@ -772,26 +795,58 @@ mod tests {
     }
 
     #[test]
+    fn wrap_selection_starting_with_the_typed_opener() {
+        // Select `[seven]`, type `[`: the diff is identical to a deletion, so
+        // only the editor's replaced-selection report makes this wrap.
+        assert_eq!(
+            autopair_action("[seven] x", "[ x", 1, Some("[seven]")),
+            Some(AutoPair::Wrap {
+                close: ']',
+                inner: "[seven]".to_string()
+            })
+        );
+        // Without the report, the conservative guard still declines.
+        assert_eq!(autopair_action("[seven] x", "[ x", 1, None), None);
+        // A non-opener over a selection is a plain replacement.
+        assert_eq!(autopair_action("abc x", "z x", 1, Some("abc")), None);
+    }
+
+    #[test]
     fn autopair_closes_brackets_at_end() {
-        assert_eq!(autopair_action("", "(", 1), Some(AutoPair::Close(')')));
-        assert_eq!(autopair_action("", "[", 1), Some(AutoPair::Close(']')));
-        assert_eq!(autopair_action("", "{", 1), Some(AutoPair::Close('}')));
-        assert_eq!(autopair_action("a ", "a (", 3), Some(AutoPair::Close(')')));
+        assert_eq!(
+            autopair_action("", "(", 1, None),
+            Some(AutoPair::Close(')'))
+        );
+        assert_eq!(
+            autopair_action("", "[", 1, None),
+            Some(AutoPair::Close(']'))
+        );
+        assert_eq!(
+            autopair_action("", "{", 1, None),
+            Some(AutoPair::Close('}'))
+        );
+        assert_eq!(
+            autopair_action("a ", "a (", 3, None),
+            Some(AutoPair::Close(')'))
+        );
     }
 
     #[test]
     fn autopair_skips_bracket_in_front_of_word() {
         // `(` typed right before `word` shouldn't jam a `)` into it.
-        assert_eq!(autopair_action("word", "(word", 1), None);
+        assert_eq!(autopair_action("word", "(word", 1, None), None);
     }
 
     #[test]
     fn autopair_types_over_matching_closer() {
         // At `(|)` typing `)` steps over the existing one instead of adding.
-        assert_eq!(autopair_action("()", "())", 2), Some(AutoPair::TypeOver(1)));
+        assert_eq!(
+            autopair_action("()", "())", 2, None),
+            Some(AutoPair::TypeOver(1))
+        );
         // Walking out of `[[x|]]` by typing `]` (caret now sits after it, at 4).
         assert_eq!(
-            autopair_action("[[x]]", "[[x]]]", 4),
+            autopair_action("[[x]]", "[[x]]]", 4, None),
             Some(AutoPair::TypeOver(1))
         );
     }
@@ -799,44 +854,47 @@ mod tests {
     #[test]
     fn autopair_quote_is_contraction_safe() {
         // `'` after a word char (don|t) is an apostrophe, not an open quote.
-        assert_eq!(autopair_action("don", "don'", 4), None);
+        assert_eq!(autopair_action("don", "don'", 4, None), None);
         // `'` after a space opens a quote pair.
         assert_eq!(
-            autopair_action("say ", "say '", 5),
+            autopair_action("say ", "say '", 5, None),
             Some(AutoPair::Close('\''))
         );
-        assert_eq!(autopair_action("", "\"", 1), Some(AutoPair::Close('"')));
+        assert_eq!(
+            autopair_action("", "\"", 1, None),
+            Some(AutoPair::Close('"'))
+        );
     }
 
     #[test]
     fn autopair_angle_only_after_word() {
         // `Vec<` is generic-like → pair; prose `a < b` is not.
         assert_eq!(
-            autopair_action("Vec", "Vec<", 4),
+            autopair_action("Vec", "Vec<", 4, None),
             Some(AutoPair::Close('>'))
         );
-        assert_eq!(autopair_action("a ", "a <", 3), None);
+        assert_eq!(autopair_action("a ", "a <", 3, None), None);
     }
 
     #[test]
     fn autopair_ignores_non_insertions() {
         // Deletion (text got shorter).
-        assert_eq!(autopair_action("abc", "ab", 2), None);
+        assert_eq!(autopair_action("abc", "ab", 2, None), None);
         // Cursor moved with no edit.
-        assert_eq!(autopair_action("[x]", "[x]", 1), None);
+        assert_eq!(autopair_action("[x]", "[x]", 1, None), None);
         // Caret at start.
-        assert_eq!(autopair_action("x", "[x", 0), None);
+        assert_eq!(autopair_action("x", "[x", 0, None), None);
         // A multi-char paste ending in a bracket isn't a single keystroke.
-        assert_eq!(autopair_action("", "ab(", 3), None);
+        assert_eq!(autopair_action("", "ab(", 3, None), None);
         // No-op change (caret-only) doesn't wrap the char before the caret.
-        assert_eq!(autopair_action("()", "()", 1), None);
+        assert_eq!(autopair_action("()", "()", 1, None), None);
     }
 
     #[test]
     fn autopair_wraps_a_selection() {
         // Select "foo" (offsets 4..7) in "say foo" and type "(" -> "say (".
         assert_eq!(
-            autopair_action("say foo", "say (", 5),
+            autopair_action("say foo", "say (", 5, None),
             Some(AutoPair::Wrap {
                 close: ')',
                 inner: "foo".to_string(),
@@ -844,7 +902,7 @@ mod tests {
         );
         // Selecting everything and typing a quote wraps too.
         assert_eq!(
-            autopair_action("foo", "\"", 1),
+            autopair_action("foo", "\"", 1, None),
             Some(AutoPair::Wrap {
                 close: '"',
                 inner: "foo".to_string(),
@@ -854,7 +912,7 @@ mod tests {
 
     #[test]
     fn autopair_non_bracket_over_selection_does_not_wrap() {
-        assert_eq!(autopair_action("foo", "x", 1), None);
+        assert_eq!(autopair_action("foo", "x", 1, None), None);
     }
 
     #[test]
@@ -862,9 +920,9 @@ mod tests {
         // Regression: backspacing inside a doubled pair (`[[|]]` -> `[|]]`, caret 1) used
         // to be misread as typing `[` over a selected `[[`, wrapping it into `[[[]]]`.
         // It must report no wrap so the backspace path runs instead.
-        assert_eq!(autopair_action("[[]]", "[]]", 1), None);
-        assert_eq!(autopair_action("(())", "())", 1), None);
-        assert_eq!(autopair_action("{{}}", "{}}", 1), None);
+        assert_eq!(autopair_action("[[]]", "[]]", 1, None), None);
+        assert_eq!(autopair_action("(())", "())", 1, None), None);
+        assert_eq!(autopair_action("{{}}", "{}}", 1, None), None);
         // ...and the backspace path then deletes the now-adjacent closer (`[[|]]` ->
         // `[|]`), so the pair collapses cleanly instead of growing.
         assert_eq!(autopair_backspace("[[]]", "[]]", 1), Some(1));

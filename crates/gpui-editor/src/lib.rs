@@ -552,6 +552,11 @@ pub struct EditorState {
     code_highlight: Option<CodeHighlightFn>,
     /// Host auto-replace hook, see [`Self::set_auto_replace`].
     auto_replace: Option<AutoReplaceFn>,
+    /// What the most recent keystroke edit replaced (the selected text), for
+    /// the host's auto-pair logic — a text diff alone can't distinguish
+    /// "typed `[` over a selection starting with `[`" from "backspaced inside
+    /// a doubled pair". Consumed via [`Self::take_replaced_selection`].
+    last_replaced: Option<String>,
     /// The em (px/font-size) the `block_math` provider rasterizes at — set via
     /// [`Self::set_block_math_em`]. Inline `$…$` formulas reuse those rasters scaled by
     /// `text_em / this`, so they sit at text size. `None` disables inline math rendering.
@@ -645,6 +650,7 @@ impl EditorState {
             block_math_em: None,
             code_highlight: None,
             auto_replace: None,
+            last_replaced: None,
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
@@ -811,6 +817,13 @@ impl EditorState {
         f: impl Fn(&str, &str) -> Vec<(Range<usize>, HighlightStyle)> + 'static,
     ) {
         self.code_highlight = Some(Box::new(f));
+    }
+
+    /// The text the most recent keystroke edit replaced (its selection), if
+    /// any — consumed (one read per edit). Lets a host's auto-pair logic tell
+    /// "opener typed over a selection" from deletions with identical diffs.
+    pub fn take_replaced_selection(&mut self) -> Option<String> {
+        self.last_replaced.take()
     }
 
     /// Set the word-completion auto-replace hook (see [`AutoReplaceFn`]).
@@ -3280,6 +3293,10 @@ impl EntityInputHandler for EditorState {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        // Report what this edit replaced (see `last_replaced`) — the fact a
+        // diff can't reconstruct when the selection starts with the typed char.
+        self.last_replaced =
+            (range.start < range.end).then(|| self.content[range.clone()].to_string());
         self.record_edit(&range, new_text);
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
