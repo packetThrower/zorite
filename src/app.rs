@@ -3168,6 +3168,58 @@ impl AppView {
         self.activate_tab(self.tabs.len() - 1, window, cx);
     }
 
+    /// The images-GC scan half: files in the managed `images/` store that no
+    /// page, whiteboard, or whiteboard template references, as `(name, size)`
+    /// pairs. Files touched within the last hour are kept — a just-imported
+    /// image may not be autosaved into any content yet. Nothing is deleted;
+    /// Settings shows this list in a confirmation dialog first.
+    pub fn orphan_images(&self) -> Vec<(String, u64)> {
+        let dir = crate::paths::images_dir();
+        let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let Ok(meta) = entry.metadata() else { continue };
+            if name.starts_with('.') || !meta.is_file() {
+                continue;
+            }
+            if meta.modified().is_ok_and(|m| m > cutoff) {
+                continue;
+            }
+            // On a DB error, treat the file as referenced (never list it).
+            if self.db.content_references(&name).unwrap_or(true) {
+                continue;
+            }
+            out.push((name, meta.len()));
+        }
+        out.sort_by_key(|(n, _)| n.to_lowercase());
+        out
+    }
+
+    /// The images-GC delete half: move previously-scanned orphans to the
+    /// system trash (recoverable), re-checking each reference first (content
+    /// can change while the confirmation dialog is open). Returns
+    /// `(files trashed, bytes freed)`.
+    pub fn remove_orphan_images(&self, files: &[(String, u64)]) -> (usize, u64) {
+        let dir = crate::paths::images_dir();
+        let (mut removed, mut freed) = (0usize, 0u64);
+        for (name, size) in files {
+            if self.db.content_references(name).unwrap_or(true) {
+                continue;
+            }
+            // On a trash failure the file is left in place — never fall back
+            // to a permanent delete.
+            match trash::delete(dir.join(name)) {
+                Ok(()) => {
+                    removed += 1;
+                    freed += size;
+                }
+                Err(e) => log::error!("images GC: trash {name}: {e}"),
+            }
+        }
+        (removed, freed)
+    }
+
     /// Open (or focus) the graph view tab, rebuilding nodes and layout.
     pub fn open_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.graph_search.is_none() {

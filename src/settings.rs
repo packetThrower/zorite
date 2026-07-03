@@ -116,6 +116,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
     ),
     (
         Tab::General,
+        "Unused images",
+        "cleanup delete orphan gc attachments storage space free",
+    ),
+    (
+        Tab::General,
         "Date format",
         "iso us european calendar day month year /date",
     ),
@@ -219,6 +224,9 @@ pub struct SettingsView {
     filter: String,
     /// The selected left-nav category.
     tab: Tab,
+    /// Last images-GC outcome ("Removed 12 files (3.4 MB)"), shown under the
+    /// Unused images button.
+    image_gc_result: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -413,6 +421,7 @@ impl SettingsView {
             filter_input,
             filter: String::new(),
             tab: Tab::Appearance,
+            image_gc_result: None,
             _subs: subs,
         }
     }
@@ -550,6 +559,74 @@ impl SettingsView {
             });
         })
         .detach();
+    }
+
+    /// Scan for unused images and confirm before deleting — the list of
+    /// doomed files is shown, since this is destructive and undo-less.
+    fn confirm_image_gc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
+        let orphans = app.read(cx).orphan_images();
+        if orphans.is_empty() {
+            self.image_gc_result = Some("No unused images found.".to_string());
+            cx.notify();
+            return;
+        }
+        let total: u64 = orphans.iter().map(|(_, s)| s).sum();
+        const SHOWN: usize = 15;
+        let mut listing: Vec<String> = orphans
+            .iter()
+            .take(SHOWN)
+            .map(|(n, s)| format!("•  {n}  ({})", fmt_size(*s)))
+            .collect();
+        if orphans.len() > SHOWN {
+            listing.push(format!("…and {} more", orphans.len() - SHOWN));
+        }
+        let body = format!(
+            "{} file{} ({}) in the images folder {} referenced by any note, \
+             whiteboard, or template. They'll be moved to the system trash.\n\n{}",
+            orphans.len(),
+            if orphans.len() == 1 { "" } else { "s" },
+            fmt_size(total),
+            if orphans.len() == 1 {
+                "isn't"
+            } else {
+                "aren't"
+            },
+            listing.join("\n"),
+        );
+        let weak_app = self.app.clone();
+        let this = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let orphans = orphans.clone();
+            let weak_app = weak_app.clone();
+            let this = this.clone();
+            dialog
+                .title("Move unused images to the trash?")
+                .description(SharedString::from(body.clone()))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Move to Trash")
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _window, cx| {
+                    let Some(app) = weak_app.upgrade() else {
+                        return true;
+                    };
+                    let (removed, freed) = app.read(cx).remove_orphan_images(&orphans);
+                    let _ = this.update(cx, |s, cx| {
+                        s.image_gc_result = Some(format!(
+                            "Moved {removed} file{} ({}) to the trash.",
+                            if removed == 1 { "" } else { "s" },
+                            fmt_size(freed),
+                        ));
+                        cx.notify();
+                    });
+                    true
+                })
+        });
     }
 
     /// Confirm a relocation to `target`, then record it and quit so the change
@@ -970,6 +1047,25 @@ impl Render for SettingsView {
             .child(actions)
             .child(list);
 
+        // Unused-images card body (General): the cleanup action + its last
+        // outcome.
+        let image_gc_control = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(div().flex().flex_row().child(text_button(
+                "image-gc",
+                "Clean up now",
+                cx,
+                |this, window, cx| this.confirm_image_gc(window, cx),
+            )))
+            .children(self.image_gc_result.clone().map(|msg| {
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_tertiary())
+                    .child(msg)
+            }));
+
         // Data-location card body (General): the current path, then change /
         // reveal / reset actions.
         let data_path = crate::paths::data_dir().display().to_string();
@@ -1145,6 +1241,13 @@ impl Render for SettingsView {
                                          attachments. Changing it moves your data to the new \
                                          folder, then reopens Zorite.",
                                     location_control,
+                                ))
+                                .child(self.section_card(
+                                    "Unused images",
+                                    "Delete images in the managed store that no note, \
+                                         whiteboard, or template references. Files added in \
+                                         the last hour are kept.",
+                                    image_gc_control,
                                 ))
                                 .child(self.section_card(
                                     "Date format",
@@ -1500,6 +1603,15 @@ fn kbd(key: &str) -> impl IntoElement {
         .text_size(px(12.0))
         .text_color(theme::text_primary())
         .child(key.to_string())
+}
+
+/// Human size for the images-GC listing: KB under a megabyte, else MB.
+fn fmt_size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{:.0} KB", (bytes as f64 / 1024.0).max(1.0))
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }
 
 fn text_button(

@@ -761,6 +761,20 @@ impl Db {
             .unwrap_or(false)
     }
 
+    /// Whether `needle` appears in any page's content (all kinds — markdown
+    /// pages and whiteboard scenes) or any whiteboard template — the
+    /// reference check for the images GC. A plain substring match:
+    /// conservative, so it may keep garbage but never drops a referenced
+    /// file.
+    pub fn content_references(&self, needle: &str) -> rusqlite::Result<bool> {
+        self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pages WHERE instr(content, ?1) > 0) \
+             OR EXISTS(SELECT 1 FROM whiteboard_templates WHERE instr(content, ?1) > 0)",
+            params![needle],
+            |r| r.get(0),
+        )
+    }
+
     /// Every journal-day page (id + title only), for the graph view's
     /// Journals toggle.
     pub fn list_journal_pages(&self) -> rusqlite::Result<Vec<Page>> {
@@ -1082,6 +1096,20 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n2, 1, "trigram is case-insensitive");
+    }
+
+    #[test]
+    fn content_references_scans_pages_and_templates() {
+        let db = Db::open_in_memory().unwrap();
+        let page = db.get_or_create_page("Notes").unwrap();
+        db.set_page_content(page.id, "text ![](images/photo-1.png) more")
+            .unwrap();
+        db.create_template("Grid", r#"[{"src":"images/board-bg.webp"}]"#)
+            .unwrap();
+        // Markdown reference, whiteboard-template reference, and a miss.
+        assert!(db.content_references("photo-1.png").unwrap());
+        assert!(db.content_references("board-bg.webp").unwrap());
+        assert!(!db.content_references("unused.png").unwrap());
     }
 
     #[test]

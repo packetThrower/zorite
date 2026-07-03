@@ -41,7 +41,8 @@ work is collected under [Completed](#completed) at the bottom.
   dependency-free module (unused markdown paths are dead-code-eliminated for
   consumers that never call `set_markdown_style`). "Text editor first" is
   documented in the crate README instead. Parity rules live in AGENTS.md.
-- [ ] Images: **orphan GC** (delete `images/` files no page references) + optional content-addressed names (dedupe identical pastes)
+- [x] Images: **orphan GC** — Settings → General → "Unused images" deletes `images/` files no page, whiteboard, or template references (substring scan of all content; files under an hour old kept for the autosave race)
+- [ ] Images: optional content-addressed names (dedupe identical pastes)
 - [ ] Images: **AVIF** isn't decodable by gpui (jpg/png/webp/gif/bmp/tiff/svg work) — convert on import, or surface a clearer message
 
 ## Notes & navigation
