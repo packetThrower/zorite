@@ -84,6 +84,7 @@ export default defineConfig({
 						{ label: 'Whiteboards', slug: 'usage/whiteboards' },
 						{ label: 'PDF & images', slug: 'usage/pdf' },
 						{ label: 'Search', slug: 'usage/search' },
+						{ label: 'Password & encryption', slug: 'usage/security' },
 						{ label: 'Import from Logseq', slug: 'usage/import' },
 						{ label: 'Keyboard shortcuts', slug: 'usage/shortcuts' },
 					],

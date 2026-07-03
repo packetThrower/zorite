@@ -88,6 +88,10 @@ Developed in close collaboration with Claude (Anthropic).
   content, with results that also include the PDF and image *files* and the
   whiteboards referenced in your notes. Filter by a `pdf:` / `img:` / `wb:` /
   `page:` prefix or a results-pane chip (each with a live count).
+- **Password & encryption** — optionally encrypt the whole database with a
+  password (SQLCipher, AES-256): an unlock screen at launch, **Remember on this
+  device** via the OS keychain, idle **auto-lock**, and a Lock now action. The
+  password itself is never stored; without it the file on disk is unreadable.
 - **Tabs & multiple windows** — open pages, PDFs, and boards in tabs (the journal
   is the pinned first tab). **Drag a tab** to reorder it, drop it on another
   window to move it there, or release it on empty space to **tear it off into a
