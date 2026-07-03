@@ -53,6 +53,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         }
         let overlay = overlay.context_menu(|menu, _window, _cx| {
             menu.menu("Open in new window", Box::new(OpenInNewWindow))
+                .menu("Export as PDF…", Box::new(crate::actions::ExportPdf))
         });
         let mut t = Tab::new()
             .label(display)

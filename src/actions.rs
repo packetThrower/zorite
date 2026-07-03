@@ -25,6 +25,10 @@ actions!(
         DeletePage,
         OpenInNewTab,
         OpenInNewWindow,
+        // Export a note to PDF (export.rs): the right-clicked tab / sidebar
+        // page, and the active tab (File menu / secondary-p).
+        ExportPdf,
+        ExportActivePdf,
         RenamePage,
         // Sidebar right-click → pin/unpin a page to the "Favorites" group.
         ToggleFavorite,
@@ -107,6 +111,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-t", NewPage, None), // New Tab == new page
         KeyBinding::new("secondary-n", NewWindow, None),
         KeyBinding::new("secondary-w", CloseTab, None),
+        KeyBinding::new("secondary-p", ExportActivePdf, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
@@ -153,6 +158,7 @@ fn build_app_menus() -> Vec<Menu> {
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::separator(),
                 MenuItem::action("Import from Logseq…", ImportLogseq),
+                MenuItem::action("Export as PDF…", ExportActivePdf),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", CloseTab),
             ],

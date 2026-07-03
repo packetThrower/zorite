@@ -14,6 +14,7 @@ mod actions;
 mod app;
 mod dates;
 mod db;
+mod export;
 mod hierarchy;
 mod images;
 mod import;

@@ -1202,6 +1202,7 @@ impl Render for SettingsView {
                                         "Fit oversized images to view",
                                         vec![keys::MOD, keys::SHIFT, "I"],
                                     ),
+                                    ("Export active tab as PDF", vec![keys::MOD, "P"]),
                                     ("Open settings", vec![keys::MOD, ","]),
                                     ("Quit", vec![keys::MOD, "Q"]),
                                 ];

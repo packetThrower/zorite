@@ -15,7 +15,7 @@ use gpui_component::{
 };
 
 use crate::actions::{
-    DeletePage, NewPage, OpenInNewTab, OpenInNewWindow, RenamePage, ToggleFavorite,
+    DeletePage, ExportPdf, NewPage, OpenInNewTab, OpenInNewWindow, RenamePage, ToggleFavorite,
 };
 use crate::app::AppView;
 use crate::hierarchy::{self, PageNode};
@@ -626,6 +626,8 @@ fn with_page_menu(
             .separator()
             .menu("Open in new tab", Box::new(OpenInNewTab))
             .menu("Open in new window", Box::new(OpenInNewWindow))
+            .separator()
+            .menu("Export as PDF…", Box::new(ExportPdf))
             .separator()
             .menu("Rename page", Box::new(RenamePage))
             .menu("Delete page", Box::new(DeletePage))

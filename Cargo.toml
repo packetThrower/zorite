@@ -42,6 +42,14 @@ gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee3
 [dependencies]
 # Our own markdown renderer (clickable wiki-links), a workspace crate.
 gpui-markdown = { path = "crates/gpui-markdown" }
+# PDF export (src/export.rs): `markdown` parses (same crate gpui-markdown uses),
+# oxidize-pdf writes — pure Rust; with default features off it adds only a
+# handful of small crates (cipher primitives) to the tree.
+markdown = "1"
+oxidize-pdf = { version = "3", default-features = false, features = ["compression", "external-images"] }
+# Rasterizes mermaid/user SVGs for PDF export — the same resvg gpui's own SVG
+# renderer uses (one copy in the tree; keep the version in step with gpui's).
+resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts"] }
 
 # Our structural math editor + LaTeX renderer (RaTeX port), a workspace crate.
 # `editor` is on by default, but request it explicitly: zorite hosts the interactive

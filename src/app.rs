@@ -34,9 +34,10 @@ use gpui_component::{
 use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, DeletePage, FindInPage, FitImages, GlobalSearch, ImportLogseq, InsertTab, NewPage,
-    NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage,
-    PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    CloseTab, DeletePage, ExportActivePdf, ExportPdf, FindInPage, FitImages, GlobalSearch,
+    ImportLogseq, InsertTab, NewPage, NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow,
+    OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
+    SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -5255,6 +5256,100 @@ impl AppView {
         });
     }
 
+    /// `ExportPdf` handler (tab right-click): render the tab's markdown to a
+    /// print-styled HTML file and open it in the browser — its print dialog's
+    /// "Save as PDF" does the actual PDF (see `export.rs`). The Journal tab
+    /// exports its loaded feed days under date headings; PDF / whiteboard
+    /// tabs have nothing to print.
+    fn on_export_pdf(&mut self, _: &ExportPdf, window: &mut Window, cx: &mut Context<Self>) {
+        // Tab right-click sets context_target; the sidebar menu sets
+        // context_page. (The active-tab path is its own action so a dismissed
+        // menu's leftover context can't hijack a later secondary-p.)
+        let target = self
+            .context_target
+            .take()
+            .or_else(|| self.context_page.take().map(|(id, _)| TabKind::Page(id)));
+        let Some(target) = target else {
+            return;
+        };
+        self.export_tab(target, window, cx);
+    }
+
+    /// `ExportActivePdf` handler (File menu / secondary-p): export the active tab.
+    fn on_export_active_pdf(
+        &mut self,
+        _: &ExportActivePdf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let target = self.tabs[self.active].kind.clone();
+        self.export_tab(target, window, cx);
+    }
+
+    /// Render `target`'s markdown to a PDF behind a native save dialog (see
+    /// `export.rs`). The Journal exports its loaded feed days under date
+    /// headings; PDF / whiteboard tabs have nothing to print.
+    fn export_tab(&mut self, target: TabKind, window: &mut Window, cx: &mut Context<Self>) {
+        let (title, source) = match &target {
+            TabKind::Page(id) => match self.db.get_page(*id) {
+                Ok(Some(page)) => (page.title, page.content),
+                _ => return,
+            },
+            TabKind::Journal => {
+                let mut out = String::new();
+                for i in 0..self.loaded_days.max(1) {
+                    let date = date_for_offset(i);
+                    let content = match self.day_editors.get(&date) {
+                        Some(de) => de.state.read(cx).value().to_string(),
+                        None => self
+                            .db
+                            .get_journal_by_date(&date)
+                            .ok()
+                            .flatten()
+                            .map(|p| p.content)
+                            .unwrap_or_default(),
+                    };
+                    if content.trim().is_empty() {
+                        continue;
+                    }
+                    out.push_str(&format!(
+                        "# {}\n\n{}\n\n",
+                        date_label(i),
+                        content.trim_end()
+                    ));
+                }
+                ("Journal".to_string(), out)
+            }
+            TabKind::Pdf(_) | TabKind::Whiteboard(_) => return,
+        };
+        // Native save dialog, then write the PDF (fast enough to run inline).
+        let name: String = title
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == ' ' {
+                    c
+                } else {
+                    '_'
+                }
+            })
+            .collect();
+        let rx = cx.prompt_for_new_path(
+            &crate::paths::desktop_dir(),
+            Some(&format!("{}.pdf", name.trim())),
+        );
+        cx.spawn_in(window, async move |_this, _cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            if let Err(e) =
+                crate::export::export_pdf(&title, &source, &crate::paths::data_dir(), &path)
+            {
+                log::error!("export {title}: {e}");
+            }
+        })
+        .detach();
+    }
+
     /// Delete a named page and refresh the UI. Journals are never deleted
     /// (the DB guards this too). Any tabs showing the page are closed.
     fn delete_page(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
@@ -6080,6 +6175,8 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_delete_page))
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_open_in_new_window))
+            .on_action(cx.listener(Self::on_export_pdf))
+            .on_action(cx.listener(Self::on_export_active_pdf))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_toggle_favorite))
             .on_action(cx.listener(Self::on_new_page))

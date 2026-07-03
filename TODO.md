@@ -56,7 +56,6 @@ work is collected under [Completed](#completed) at the bottom.
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
-- [ ] **Print / PDF export** — generate a PDF from a note (`oxidize-pdf` can generate; or a typeset path like typst/`printpdf`). Design: [docs/printing.md](docs/printing.md) (HTML→browser first; PDF path is the crate-worthy follow-up)
 - [ ] PDF: **fit-width / fit-page** zoom modes (zoom is free-scale only today)
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
@@ -69,6 +68,9 @@ work is collected under [Completed](#completed) at the bottom.
 - [ ] **Split the reusable crates (`gpui-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: both pin `gpui = { git = ".../zed" }` with no rev and rely on the *workspace's single lockfile* to unify everything to one gpui; in separate repos each gets its own lockfile, and a gpui-rev mismatch puts two gpui versions in one build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
 
 ## Completed
+
+### Import & export (0.5.0)
+- [x] **PDF export** — tab / sidebar right-click "Export as PDF…", File menu, and ⌘P for the active tab; a native save dialog, then `src/export.rs` renders the note's mdast straight to PDF via `oxidize-pdf` (pure Rust; ~10 small new crates with default features off). We own the layout: wrapped styled runs (bold/italic/code) with real font metrics, headings/lists/tasks/quotes/tables/code/footnotes/dividers, page breaks. Render-view fidelity: `$$` math rasterizes through RaTeX, mermaid through mermaid-rs + resvg (gpui's own SVG rasterizer), images of any decodable format via the `image` crate; control comments (`<!-- math:left -->`) never print. Journal tab exports its loaded days under date headings. Known v1 gaps (documented in `export.rs`): inline `$…$` stays as source unless it's a whole paragraph, emoji/CJK degrade under the standard PDF fonts, remote images skipped, quote bars don't span page breaks
 
 ### Editor & rendering (v0.4.1)
 - [x] **Links in WYSIWYG** — wiki-links (`[[page]]`), tags (`#tag`), inline URLs (`[text](url)`), and PDF references (`[[file.pdf]]`) are now clickable in the WYSIWYG view, matching the reader. Recognition via `markdown_syntax::links()` + `LinkHit` enum (wiki / URL / email); on-click handlers (`EditorEvent::OpenLink` / `OpenWikiLink`) route to navigation or PDF open. Visual affordance: **hover hand cursor** over clickable regions (draw link-grip hitboxes during prepaint, set cursor on paint). See commits 35a95ad (link navigation + cursor), 4c35a09 (caret/image fixes)
