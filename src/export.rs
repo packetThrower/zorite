@@ -137,13 +137,12 @@ impl Pdf {
                 // A paragraph that IS one formula renders as display math —
                 // the `<!-- math:left -->` marker + `$$` layout parses as a
                 // lone InlineMath this way, not as a Math block.
-                if let [mdast::Node::InlineMath(m)] = p.children.as_slice() {
-                    if let Some(png) =
+                if let [mdast::Node::InlineMath(m)] = p.children.as_slice()
+                    && let Some(png) =
                         ratex_gpui::render::render_latex_to_png(&m.value, MATH_PT as f32, MATH_DPR)
-                    {
-                        self.png(png, MATH_DPR as f64, indent);
-                        return;
-                    }
+                {
+                    self.png(png, MATH_DPR as f64, indent);
+                    return;
                 }
                 // Standalone images render as images; everything else flows.
                 let mut runs = Vec::new();

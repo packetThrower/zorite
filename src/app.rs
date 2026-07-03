@@ -437,6 +437,9 @@ pub struct AppView {
     // `cx`) so it can read a ready formula during paint; `ensure_math_loaded` drives the
     // off-thread render. See `math::MathStore`.
     math_store: Rc<RefCell<crate::math::MathStore>>,
+    // Highlighted code blocks, cached by (lang, content); both views' code
+    // highlighter callbacks read it. See `highlight::HighlightStore`.
+    highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
@@ -687,6 +690,7 @@ impl AppView {
             rotated_images: std::collections::HashMap::new(),
             mermaid_store: Rc::new(RefCell::new(crate::mermaid::MermaidStore::default())),
             math_store: Rc::new(RefCell::new(crate::math::MathStore::default())),
+            highlight_store: Rc::new(RefCell::new(Default::default())),
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             math_edit: None,
@@ -832,6 +836,7 @@ impl AppView {
             self.image_store(),
             self.mermaid_store(),
             self.math_store(),
+            self.highlight_store.clone(),
             window,
             cx,
         );
@@ -1649,6 +1654,7 @@ impl AppView {
             self.image_store(),
             self.mermaid_store(),
             self.math_store(),
+            self.highlight_store.clone(),
             window,
             cx,
         );
@@ -2365,6 +2371,14 @@ impl AppView {
     }
 
     /// The typeset-formula cache, shared into the markdown math renderer.
+    /// The fenced-code highlighter callback for the reader (`on_highlight`).
+    pub fn highlighter_fn(&self) -> gpui_markdown::CodeHighlighter {
+        let store = self.highlight_store.clone();
+        std::rc::Rc::new(move |lang, code| {
+            store.borrow_mut().highlight(lang, code).as_ref().clone()
+        })
+    }
+
     pub fn math_store(&self) -> Rc<RefCell<crate::math::MathStore>> {
         self.math_store.clone()
     }
@@ -4346,6 +4360,14 @@ impl AppView {
                 theme::Mode::Auto => self.system_dark,
             };
         let palette = if is_dark { skin.dark } else { skin.light };
+        // Code-highlight styles follow gpui-component's light/dark highlight
+        // theme; adopting it drops the cache when it actually changed.
+        {
+            use gpui_component::ActiveTheme as _;
+            self.highlight_store
+                .borrow_mut()
+                .set_theme(cx.theme().highlight_theme.clone());
+        }
         // Font precedence: the user's explicit Font setting wins over the
         // theme's `font`, which wins over the platform default.
         let font = if self.ui_font.is_empty() {
@@ -6567,6 +6589,7 @@ fn make_editor(
     image_store: Rc<RefCell<crate::images::ImageStore>>,
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     math_store: Rc<RefCell<crate::math::MathStore>>,
+    highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
@@ -6604,6 +6627,15 @@ fn make_editor(
         // fixed 2× DPR, so the editor must NOT size it from texture pixels ÷ window
         // scale factor — that only cancels on a 2× display and drew formulas twice
         // as large on Linux/X11 at 1×.
+        // Fenced code with a language tag colors its tokens (W1's sibling for
+        // code) through the shared highlight cache.
+        editor.set_code_highlighter(move |lang, code| {
+            highlight_store
+                .borrow_mut()
+                .highlight(lang, code)
+                .as_ref()
+                .clone()
+        });
         editor.set_block_math_provider(move |source| {
             math_store.borrow().get(&gpui::SharedString::from(source))
         });

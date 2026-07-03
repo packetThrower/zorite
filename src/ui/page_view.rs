@@ -182,6 +182,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
                 cx,
             ))
             .on_mermaid(crate::ui::mermaid::renderer(app, cx))
+            .on_highlight(app.highlighter_fn())
             .on_math(crate::ui::math::renderer(app, cx))
             .on_inline_math(crate::ui::math::inline_renderer(app))
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {

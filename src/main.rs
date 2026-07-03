@@ -16,6 +16,7 @@ mod dates;
 mod db;
 mod export;
 mod hierarchy;
+mod highlight;
 mod images;
 mod import;
 mod math;

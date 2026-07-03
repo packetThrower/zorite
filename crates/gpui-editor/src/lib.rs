@@ -36,12 +36,12 @@ use std::sync::Arc;
 use gpui::{
     App, AvailableSpace, BorderStyle, Bounds, ClipboardItem, Context, Corners, CursorStyle, Edges,
     Element, ElementId, ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle,
-    Focusable, Font, FontWeight, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId,
-    InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, PathBuilder, Pixels, Point, Render,
-    RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement, Style, Styled, TextRun,
-    UTF16Selection, Window, WrappedLine, actions, div, fill, hsla, point, px, relative, rgb, rgba,
-    size,
+    Focusable, Font, FontWeight, GlobalElementId, HighlightStyle, Hitbox, HitboxBehavior, Hsla,
+    InspectorElementId, InteractiveElement, IntoElement, KeyBinding, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad, ParentElement, PathBuilder, Pixels,
+    Point, Render, RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement, Style,
+    Styled, TextRun, UTF16Selection, Window, WrappedLine, actions, div, fill, hsla, point, px,
+    relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -366,6 +366,13 @@ type BlockMermaidFn = Box<dyn Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)>>;
 /// via [`EditorState::set_block_math_provider`]; pre-render with [`math_sources`].
 type BlockMathFn = Box<dyn Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)>>;
 
+/// Colors a fenced code block's tokens in WYSIWYG: `(language tag, block
+/// text) → sorted, non-overlapping styled ranges` (byte offsets into the
+/// block). Host-supplied (e.g. a tree-sitter highlighter) so the crate stays
+/// engine-free; absent it, code renders in `SyntaxStyle::code`. Set via
+/// [`EditorState::set_code_highlighter`].
+type CodeHighlightFn = Box<dyn Fn(&str, &str) -> Vec<(Range<usize>, HighlightStyle)>>;
+
 /// The diagram sources of every ` ```mermaid ` block in `content`, so a host can
 /// pre-render them (the editor's mermaid provider then finds the ready bitmap).
 pub fn mermaid_sources(content: &str) -> Vec<SharedString> {
@@ -516,6 +523,8 @@ pub struct EditorState {
     /// Resolves a `$$…$$` block's LaTeX to a typeset equation; set by the host via
     /// [`Self::set_block_math_provider`].
     block_math: Option<BlockMathFn>,
+    /// Fenced-code syntax highlighter, see [`CodeHighlightFn`].
+    code_highlight: Option<CodeHighlightFn>,
     /// The em (px/font-size) the `block_math` provider rasterizes at — set via
     /// [`Self::set_block_math_em`]. Inline `$…$` formulas reuse those rasters scaled by
     /// `text_em / this`, so they sit at text size. `None` disables inline math rendering.
@@ -607,6 +616,7 @@ impl EditorState {
             block_mermaid: None,
             block_math: None,
             block_math_em: None,
+            code_highlight: None,
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
@@ -765,6 +775,14 @@ impl EditorState {
     /// inline sources too (see [`inline_math_sources`]).
     pub fn set_block_math_em(&mut self, em: f32) {
         self.block_math_em = (em > 0.).then_some(em);
+    }
+
+    /// Set the fenced-code syntax highlighter (see [`CodeHighlightFn`]).
+    pub fn set_code_highlighter(
+        &mut self,
+        f: impl Fn(&str, &str) -> Vec<(Range<usize>, HighlightStyle)> + 'static,
+    ) {
+        self.code_highlight = Some(Box::new(f));
     }
 
     /// Begin an in-line structural edit of the `$$…$$` block at `range`: reserve a gap at
@@ -4068,6 +4086,7 @@ fn shape_document(
     block_chip: Option<&BlockChipFn>,
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
+    code_highlight: Option<&CodeHighlightFn>,
     // The em the `block_math` provider rasterizes at, so inline `$…$` formulas can reuse those
     // rasters scaled to text size. `None` disables inline math.
     block_math_em: Option<f32>,
@@ -4190,6 +4209,50 @@ fn shape_document(
     // the running max line width.
     let mut code_block: Vec<usize> = Vec::new();
     let mut code_w = px(0.);
+    // Token colors per code line (line index → in-line ranges), from the host
+    // highlighter: each fenced block with a language tag is highlighted whole
+    // (tree-sitter-style engines need full-block context), then split per line.
+    let line_highlights: std::collections::HashMap<usize, Vec<(Range<usize>, HighlightStyle)>> =
+        match (code_highlight, md) {
+            (Some(hl), Some(_)) => {
+                let mut map = std::collections::HashMap::new();
+                let mut i = 0;
+                while i < lines.len() {
+                    let Some(lang) = lines[i].trim_start().strip_prefix("```") else {
+                        i += 1;
+                        continue;
+                    };
+                    let lang = lang.trim();
+                    let mut j = i + 1;
+                    while j < lines.len() && !lines[j].trim_start().starts_with("```") {
+                        j += 1;
+                    }
+                    // Mermaid blocks render as diagrams, not code.
+                    if !lang.is_empty() && lang != "mermaid" && j > i + 1 {
+                        let block = lines[i + 1..j].join("\n");
+                        let ranges = hl(lang, &block);
+                        let mut start = 0;
+                        for (k, l) in lines[i + 1..j].iter().enumerate() {
+                            let end = start + l.len();
+                            let in_line: Vec<(Range<usize>, HighlightStyle)> = ranges
+                                .iter()
+                                .filter_map(|(r, style)| {
+                                    let (a, b) = (r.start.max(start), r.end.min(end));
+                                    (a < b).then_some((a - start..b - start, *style))
+                                })
+                                .collect();
+                            if !in_line.is_empty() {
+                                map.insert(i + 1 + k, in_line);
+                            }
+                            start = end + 1;
+                        }
+                    }
+                    i = j + 1;
+                }
+                map
+            }
+            _ => std::collections::HashMap::new(),
+        };
     let mut line_start = 0;
     let mut in_fence = false;
     // Active GitHub alert run (`> [!NOTE]` …): set by a marker line, carried
@@ -4598,9 +4661,11 @@ fn shape_document(
             // Thematic break: the divider is painted from the mark; no body text.
             (String::new(), Vec::new(), None, None)
         } else if let Some(st) = md.filter(|_| is_code) {
-            // One monospace run for the whole line; ``` delimiters dimmed.
-            let run = TextRun {
-                len: line.len(),
+            // Monospace runs; ``` delimiters dimmed. A highlighted line (from
+            // the host's code highlighter) splits into token-colored runs with
+            // the base code color filling the gaps.
+            let base_run = |len: usize| TextRun {
+                len,
                 font: st.mono.clone(),
                 color: if is_fence { st.marker } else { st.code },
                 background_color: None,
@@ -4609,8 +4674,34 @@ fn shape_document(
             };
             let runs = if line.is_empty() {
                 Vec::new()
+            } else if let Some(tokens) = line_highlights.get(&idx).filter(|_| !is_fence) {
+                let mut runs = Vec::new();
+                let mut pos = 0;
+                for (r, h) in tokens {
+                    if r.start > pos {
+                        runs.push(base_run(r.start - pos));
+                    }
+                    let font = Font {
+                        weight: h.font_weight.unwrap_or(st.mono.weight),
+                        style: h.font_style.unwrap_or(st.mono.style),
+                        ..st.mono.clone()
+                    };
+                    runs.push(TextRun {
+                        len: r.end - r.start,
+                        font,
+                        color: h.color.unwrap_or(st.code),
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    });
+                    pos = r.end;
+                }
+                if pos < line.len() {
+                    runs.push(base_run(line.len() - pos));
+                }
+                runs
             } else {
-                vec![run]
+                vec![base_run(line.len())]
             };
             // First visible code line of the block rounds the box's top corners.
             let top = code_block.is_empty();
@@ -5330,6 +5421,7 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
+                    editor.code_highlight.as_ref(),
                     editor.block_math_em,
                     editor.editing_block.as_ref().map(|eb| {
                         let sr = editor.row_col(eb.range.start).0;
@@ -5444,6 +5536,7 @@ impl Element for EditorElement {
                     editor.block_chip.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
+                    editor.code_highlight.as_ref(),
                     editor.block_math_em,
                     editor.editing_block.as_ref().map(|eb| {
                         let sr = editor.row_col(eb.range.start).0;

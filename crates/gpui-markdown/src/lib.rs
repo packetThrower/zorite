@@ -408,6 +408,12 @@ pub type ImageRenderer = Rc<dyn Fn(ImageInfo) -> AnyElement>;
 /// [`MarkdownView::on_mermaid`].
 pub type MermaidRenderer = Rc<dyn Fn(SharedString) -> AnyElement>;
 
+/// Colors a fenced code block's tokens: `(language tag, code) → sorted,
+/// non-overlapping styled ranges` (byte offsets into the code). Supplied by
+/// the host (e.g. a tree-sitter highlighter) so the crate stays engine-free;
+/// absent it, code renders in the single `code_color`.
+pub type CodeHighlighter = Rc<dyn Fn(&str, &str) -> Vec<(Range<usize>, HighlightStyle)>>;
+
 /// Renders a `$$…$$` math block as a typeset image, given the block's LaTeX. Like
 /// [`MermaidRenderer`], the host owns the (cached, off-thread) render — this crate just
 /// detects the block and hands over the source. Set via [`MarkdownView::on_math`].
@@ -439,6 +445,7 @@ pub struct MarkdownView {
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
     on_mermaid: Option<MermaidRenderer>,
+    on_highlight: Option<CodeHighlighter>,
     on_math: Option<MathRenderer>,
     on_inline_math: Option<InlineMathRenderer>,
     /// In-page search query (non-empty when `Some`) + the active match index.
@@ -464,6 +471,7 @@ impl MarkdownView {
             on_wiki_link: None,
             on_image: None,
             on_mermaid: None,
+            on_highlight: None,
             on_math: None,
             on_inline_math: None,
             query: None,
@@ -495,6 +503,12 @@ impl MarkdownView {
     /// block renders as a plain code block.
     pub fn on_mermaid(mut self, handler: MermaidRenderer) -> Self {
         self.on_mermaid = Some(handler);
+        self
+    }
+
+    /// Set the fenced-code syntax highlighter (see [`CodeHighlighter`]).
+    pub fn on_highlight(mut self, handler: CodeHighlighter) -> Self {
+        self.on_highlight = Some(handler);
         self
     }
 
@@ -561,6 +575,7 @@ impl RenderOnce for MarkdownView {
             on_wiki_link: self.on_wiki_link,
             on_image: self.on_image,
             on_mermaid: self.on_mermaid,
+            on_highlight: self.on_highlight,
             on_math: self.on_math,
             on_inline_math: self.on_inline_math,
             id_base: self.id_base,
@@ -632,6 +647,7 @@ struct Ctx {
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
     on_mermaid: Option<MermaidRenderer>,
+    on_highlight: Option<CodeHighlighter>,
     on_math: Option<MathRenderer>,
     on_inline_math: Option<InlineMathRenderer>,
     id_base: SharedString,
@@ -730,6 +746,15 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
             }
             let bg = ctx.style.code_bg;
             let color = ctx.style.code_color;
+            // With a host highlighter and a language tag, color the tokens
+            // (the ranges come back sorted + non-overlapping, as
+            // `with_highlights` requires).
+            let text = match (&ctx.on_highlight, c.lang.as_deref()) {
+                (Some(hl), Some(lang)) if !lang.is_empty() => {
+                    StyledText::new(c.value.clone()).with_highlights(hl(lang, &c.value))
+                }
+                _ => StyledText::new(c.value.clone()),
+            };
             Some(
                 div()
                     .w_full()
@@ -739,7 +764,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx) -> Option<AnyElement> {
                     .py(px(8.0))
                     .font_family(ctx.style.mono_font.clone())
                     .text_color(color)
-                    .child(StyledText::new(c.value.clone()))
+                    .child(text)
                     .into_any_element(),
             )
         }
