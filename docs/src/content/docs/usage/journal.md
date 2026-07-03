@@ -39,9 +39,16 @@ page with its own backlinks.
 ## Namespaces and sub-pages
 
 Name a page with `::` to nest it. A page called `Projects::Tasks` lives under
-`Projects`: the sidebar shows the namespace tree, and each page lists its
-sub-pages. Namespaces are just naming — there are no folders to move things
-between.
+`Projects`: the sidebar shows the namespace tree, each page lists its
+sub-pages, and a child page shows a clickable **breadcrumb** back to its
+ancestors above the title. Namespaces are just naming — there are no folders
+to move things between.
+
+Renaming a namespace **cascades**: rename `Projects` and every `Projects::*`
+page is retitled with it, `[[links]]` included (if a child would collide with
+an existing title, nothing moves). Right-click a page in the sidebar for
+**New sub-page**, which starts the New-page dialog pre-filled with
+`Parent::`.
 
 ## Aliases
 
@@ -52,10 +59,10 @@ for abbreviations, plurals, and renamings you don't want to chase down.
 ## The `/` command palette
 
 Type `/` anywhere in an editable note to open a compact menu. Pick a **Markdown**
-construct — headings, lists, to-dos, quotes, code blocks, **tables**, dividers,
-or inline formatting — or a **Template**, or insert the current date or time with
-`/date` and `/time`. Typing filters across everything; click an item or press
-Enter to insert it.
+construct — headings, lists, to-dos, quotes, code blocks, **tables**, **math**,
+**alerts**, footnotes, dividers, or inline formatting — or a **Template**, or
+insert the current date or time with `/date` and `/time`. Typing filters across
+everything; click an item or press Enter to insert it.
 
 ## Editing tables, lists, and text
 
@@ -68,7 +75,9 @@ Everything you insert stays editable in place:
   **Delete table**.
 - **Lists and to-dos continue themselves** — press `Enter` and the `-`, `1.`, or
   `- [ ]` marker carries to the next line; press it again on an empty item to end
-  the list. Click a to-do's checkbox to toggle it.
+  the list. Click a to-do's checkbox to toggle it. Numbered lists display
+  **Word-style markers by depth** (`1.` → `a.` → `i.`), always counted from 1 —
+  indenting with `Tab` starts the nested list over, whatever the raw digits say.
 - **Inline formatting** — select text and press `⌘B` / `⌘I` / `⌘E` (`Ctrl` on
   Windows and Linux) to wrap it in bold, italic, or inline code.
 
@@ -102,19 +111,26 @@ Type `/meeting` in any day or page to insert it. Placeholders expand on insert:
 
 Completion menus appear as you type:
 
-- `[[` suggests pages — and offers to **create** one if no match exists.
+- `[[` suggests pages **and whiteboards** — and offers to **create** one if no
+  match exists.
 - `#` suggests tags.
 - `{{` suggests template placeholders.
 
 Brackets and quotes **auto-pair**, and the pairing is prose-aware, so an
 apostrophe in `don't` is left alone rather than turned into a pair.
 
+There's also an opt-in **auto-link** (Settings → Markdown): type an existing
+page's title and it wraps itself as `[[Title]]` on the next boundary keystroke.
+One undo step reverts a wrap you didn't want.
+
 ## Markdown & diagrams
 
 The rendered view is CommonMark + GFM: headings, **bold** / *italic* / `code`,
-lists, quotes, tables, ~~strikethrough~~, and `<mark>` highlights. **Mermaid
-diagrams** (flowchart, sequence, class) render pure-Rust, themed to your skin;
-click one to expand it.
+lists, quotes, tables, ~~strikethrough~~, and `<mark>` highlights. **GitHub
+alerts** (`> [!NOTE]` through `[!CAUTION]`) render with icons and themeable
+colors, and fenced code blocks get **syntax highlighting** for the common
+languages. **Mermaid diagrams** (flowchart, sequence, class) render pure-Rust,
+themed to your skin; click one to expand it.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-mermaid-light.png" />
@@ -137,5 +153,7 @@ independent, and edits **sync live** across all of them.
 ## Sidebar
 
 The sidebar collapses to a slim icon rail. It carries a **Favorites** group
-(right-click a page → **Add to favorites**), a calendar that jumps to any date,
-collapsible sections, and a recently-viewed page tree with namespace nesting.
+(right-click a page → **Add to favorites**), a calendar that jumps to any date
+(days with entries are **dotted**), an [All pages browser](/zorite/usage/navigate/)
+with a graph view, collapsible sections, and a recently-viewed page tree with
+namespace nesting.

@@ -63,8 +63,16 @@ Developed in close collaboration with Claude (Anthropic).
 - **`[[wiki-links]]`, `#tags`, and backlinks** — clickable in the rendered view,
   they navigate to (and auto-create) pages and power a "Linked References" panel.
   Name a page `Projects::Tasks` to nest it with `::`; the sidebar shows the
-  namespace tree and each page lists its sub-pages. A subdued `alias::` field
-  takes alternate names, so `[[hen]]` can resolve to your `chicken` page.
+  namespace tree, each page lists its sub-pages, and a child page carries a
+  clickable **breadcrumb** back up. Renaming a namespace **cascades** — children
+  and their `[[links]]` follow — and right-click → **New sub-page** starts a
+  page under it. A subdued `alias::` field takes alternate names, so `[[hen]]`
+  can resolve to your `chicken` page.
+- **All pages & a graph view** — an **All pages** browser (A–Z strip, kind
+  filters, created/updated columns) indexes every page, whiteboard, and PDF;
+  from it, a Logseq-style **graph view** lays out your pages and links as an
+  interactive map (drag, zoom, search, journal/orphan filters). The sidebar
+  calendar **dots the days that have entries**.
 - **Whiteboards** — a freeform infinite canvas alongside the text journal: a
   freehand pen, shapes (rectangle, ellipse, line, arrow, diamond, triangle,
   rounded-rectangle, star, hexagon), on-canvas text, dropped/pasted images, and
@@ -76,9 +84,10 @@ Developed in close collaboration with Claude (Anthropic).
   to-dos, quotes, code blocks, **tables**, **math**, dividers, inline formatting) or
   a **Template**, or insert the current date/time with `/date` / `/time`. Typing
   filters across everything; click an item or press Enter to insert it.
-- **As-you-type completion** — `[[` suggests pages (and offers to create one),
-  `#` suggests tags, `{{` suggests template placeholders; brackets and quotes
-  auto-pair (prose-aware, so `don't` is left alone).
+- **As-you-type completion** — `[[` suggests pages and whiteboards (and offers
+  to create one), `#` suggests tags, `{{` suggests template placeholders;
+  brackets and quotes auto-pair (prose-aware, so `don't` is left alone). An
+  opt-in **auto-link** setting wraps existing page titles as you type them.
 - **Edit in place** — tables behave like a small spreadsheet (arrow keys move
   cell-to-cell keeping your column, Enter drops to the next row; hover or
   right-click for row/column handles, alignment, and delete); lists and to-dos
@@ -98,7 +107,8 @@ Developed in close collaboration with Claude (Anthropic).
   new window**. Every window is independent and edits **sync live** across all of
   them.
 - **Inline images** — `![](path-or-url)` images render for real (now including
-  **HEIC/HEIF and AVIF** — iPhone photos); **paste** or **drag-and-drop** a file
+  **HEIC/HEIF and AVIF** — iPhone photos); identical imports are **deduped**, and
+  Settings can sweep **unused images** to the trash; **paste** or **drag-and-drop** a file
   to add one (copied into the data dir's `images/`), and drag the corner handle to
   resize (saved as `{width=N}`).
 - **PDF viewer** — link a PDF with `[[file.pdf]]` / `![](file.pdf)` or drop one

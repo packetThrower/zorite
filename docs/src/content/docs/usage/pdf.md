@@ -52,8 +52,20 @@ crate.
 
 `![](path-or-url)` images render for real in your notes. To add one, **paste**
 or **drag-and-drop** a file — it's copied into the data directory's `images/`
-folder, so the note doesn't depend on where the original lived.
+folder, so the note doesn't depend on where the original lived. Importing the
+same image twice (paste or drag, any page) reuses the existing copy instead of
+duplicating it, and **Settings → General → Unused images** sweeps files nothing
+references anymore into the system trash (with a confirmation listing them
+first).
 
 Drag the corner handle to **resize** an image; the new size is saved back into
 the Markdown as `{width=N}`, so it stays the size you set the next time the note
 renders.
+
+## Export a note to PDF
+
+Right-click a tab or a sidebar page and pick **Export as PDF…** (or press
+`⌘P` / `Ctrl+P` on the active note). The export renders like the reading view
+— wrapped styled text, tables, inline images, alerts, typeset math, and
+mermaid diagrams — written by a pure-Rust PDF writer, no browser or print
+dialog involved.

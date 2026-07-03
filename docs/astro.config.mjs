@@ -80,6 +80,7 @@ export default defineConfig({
 					label: 'Usage',
 					items: [
 						{ label: 'Journal & pages', slug: 'usage/journal' },
+						{ label: 'All pages & the graph', slug: 'usage/navigate' },
 						{ label: 'Math & equations', slug: 'usage/math' },
 						{ label: 'Whiteboards', slug: 'usage/whiteboards' },
 						{ label: 'PDF & images', slug: 'usage/pdf' },
