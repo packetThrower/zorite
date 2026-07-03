@@ -130,6 +130,55 @@ pub fn heading_scale(depth: u8) -> f32 {
     }
 }
 
+/// The marker for ordered item `n` (1-based) at nesting `depth`, Word-style:
+/// `1.` -> `a.` -> `i.`, cycling for deeper levels. Both views paint ordered
+/// lists with this scheme (a deliberate divergence from CommonMark's
+/// digits-everywhere), so nesting is readable at a glance.
+pub fn ordered_marker(depth: usize, n: u32) -> String {
+    match depth % 3 {
+        0 => format!("{n}."),
+        1 => format!("{}.", letters(n)),
+        _ => format!("{}.", roman(n)),
+    }
+}
+
+/// 1 → `a`, 26 → `z`, 27 → `aa` (bijective base 26).
+fn letters(mut n: u32) -> String {
+    let mut s = String::new();
+    while n > 0 {
+        n -= 1;
+        s.insert(0, (b'a' + (n % 26) as u8) as char);
+        n /= 26;
+    }
+    s
+}
+
+/// Lowercase roman numerals (`0` has none; empty string).
+fn roman(mut n: u32) -> String {
+    let mut s = String::new();
+    for (v, r) in [
+        (1000, "m"),
+        (900, "cm"),
+        (500, "d"),
+        (400, "cd"),
+        (100, "c"),
+        (90, "xc"),
+        (50, "l"),
+        (40, "xl"),
+        (10, "x"),
+        (9, "ix"),
+        (5, "v"),
+        (4, "iv"),
+        (1, "i"),
+    ] {
+        while n >= v {
+            s.push_str(r);
+            n -= v;
+        }
+    }
+    s
+}
+
 // --- Linkables ---
 
 /// What a click on a link-like construct targets. `Page` opens a page by
@@ -334,6 +383,16 @@ mod tests {
         // byte-wise walk (it once str-sliced at a continuation byte).
         let hits = links("shrug ¯\\_(ツ)_/¯ then https://a.io done");
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn ordered_markers_cycle_word_style() {
+        assert_eq!(ordered_marker(0, 2), "2.");
+        assert_eq!(ordered_marker(1, 1), "a.");
+        assert_eq!(ordered_marker(1, 27), "aa.");
+        assert_eq!(ordered_marker(2, 4), "iv.");
+        assert_eq!(ordered_marker(2, 9), "ix.");
+        assert_eq!(ordered_marker(3, 2), "2."); // cycle restarts
     }
 
     #[test]

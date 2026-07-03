@@ -987,8 +987,6 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
     } else {
         px(2.0)
     });
-    let start = list.start.unwrap_or(1) as usize;
-
     for (i, item) in list.children.iter().enumerate() {
         let mdast::Node::ListItem(li) = item else {
             continue;
@@ -998,7 +996,9 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
         let marker = if let Some(done) = li.checked {
             (if done { "☑" } else { "☐" }).to_string()
         } else if list.ordered {
-            format!("{}.", start + i)
+            // Word-style depth markers, counted from 1 — the WYSIWYG editor
+            // numbers the same way, and source digits are display-irrelevant.
+            crate::syntax::ordered_marker(depth, i as u32 + 1)
         } else {
             "•".to_string()
         };

@@ -227,6 +227,7 @@ fn construct_at(spans: &[Span], c: usize) -> Range<usize> {
 /// maps caret/selection columns through the returned map (see `display_col`).
 /// Spans don't overlap and cover the line in order, so each non-marker segment
 /// contributes one run of its byte length.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn hidden_runs(
     line: &str,
     base_font: &Font,
@@ -234,6 +235,10 @@ pub(crate) fn hidden_runs(
     diagnostics: &[Diagnostic],
     caret_col: Option<usize>,
     reveal_prefix: usize,
+    // Bytes whose marker spans stay hidden even inside the caret's construct
+    // — the line-level prefix while its gutter mark (bullet/number/box) is
+    // painted, else the glyph and the raw marker would BOTH show.
+    hide_prefix: usize,
     md: &SyntaxStyle,
 ) -> (String, Vec<TextRun>, Vec<usize>) {
     let mut spans = scan(line, md);
@@ -258,7 +263,8 @@ pub(crate) fn hidden_runs(
         // anywhere on the line).
         let in_construct = reveal.start <= span.range.start && span.range.end <= reveal.end;
         let in_prefix = span.range.end <= reveal_prefix;
-        let hidden = span.style.hide && !in_construct && !in_prefix;
+        let force = span.range.end <= hide_prefix;
+        let hidden = span.style.hide && (force || (!in_construct && !in_prefix));
         if !hidden {
             segs.push((span.range.clone(), Some(&span.style)));
         }
@@ -814,6 +820,58 @@ pub(crate) fn list_prefix(line: &str) -> Option<(usize, usize, bool, u32)> {
         return Some((i + 2, indent, true, num));
     }
     None
+}
+
+/// `(position, nesting level)` of every ordered list item, both 0-based-
+/// level / 1-based-position. Word-style, NOT CommonMark: every list counts
+/// from 1 (source digits are display-irrelevant), a nested list is its own
+/// list, and any break — a blank line or prose — ends the open lists, so the
+/// next list starts over. The level is STRUCTURAL (how many lists are open
+/// above), not an indent-width guess, so it survives any spaces-per-level
+/// setting. Non-items are (0, 0).
+pub(crate) fn ordered_numbers(lines: &[&str]) -> Vec<(u32, usize)> {
+    let mut out = vec![(0u32, 0usize); lines.len()];
+    // One entry per open list level: (indent, is_ordered, next number).
+    let mut stack: Vec<(usize, bool, u32)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        let Some((_, indent, ordered, _)) = list_prefix(line) else {
+            // Indented text hangs under the innermost item; anything else —
+            // including a blank line — ends the open lists.
+            let ws = line
+                .bytes()
+                .take_while(|b| matches!(b, b' ' | b'\t'))
+                .count();
+            let hanging =
+                !line.trim().is_empty() && stack.last().is_some_and(|&(ind, ..)| ws > ind);
+            if !hanging {
+                stack.clear();
+            }
+            continue;
+        };
+        while stack.last().is_some_and(|&(ind, ..)| ind > indent) {
+            stack.pop();
+        }
+        let depth = stack.len();
+        match stack.last_mut() {
+            Some((ind, ord, next)) if *ind == indent => {
+                if *ord != ordered {
+                    // A different marker type at the same indent starts a
+                    // new list.
+                    *ord = ordered;
+                    *next = 1;
+                }
+                if ordered {
+                    out[i] = (*next, depth - 1);
+                    *next += 1;
+                }
+            }
+            _ => {
+                stack.push((indent, ordered, 2));
+                out[i] = (1, depth);
+            }
+        }
+    }
+    out
 }
 
 /// If `line` is a GFM task item — a list item whose body starts with `[ ]`,
@@ -1674,7 +1732,7 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, ..) = hidden_runs("- ### Notes", &font, c, &[], None, 0, &st);
+        let (disp, ..) = hidden_runs("- ### Notes", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "Notes");
     }
 
@@ -1737,20 +1795,20 @@ mod tests {
         let st = test_style();
 
         // "**bold**" → "bold"; display 0 maps to source 2, end (4) to 8.
-        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], None, 0, &st);
+        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "bold");
         assert_eq!(map.len(), disp.len() + 1);
         assert_eq!(map[0], 2);
         assert_eq!(map[4], 8);
 
         // "## Hi" → "Hi"; the `## ` prefix is gone, display 0 maps to source 3.
-        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], None, 0, &st);
+        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "Hi");
         assert_eq!(map[0], 3);
         assert_eq!(map[2], 5);
 
         // No markers → unchanged, identity map.
-        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, 0, &st);
+        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "plain text");
         assert_eq!(map, (0..=10).collect::<Vec<_>>());
     }
@@ -1765,11 +1823,11 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, ..) = hidden_runs("![](images/a.png)", &font, c, &[], None, 0, &st);
+        let (disp, ..) = hidden_runs("![](images/a.png)", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "");
 
         // A named alt still shows it, same as a plain link.
-        let (disp, ..) = hidden_runs("![alt](images/a.png)", &font, c, &[], None, 0, &st);
+        let (disp, ..) = hidden_runs("![alt](images/a.png)", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "alt");
     }
 
@@ -1788,6 +1846,7 @@ mod tests {
             &[Diagnostic { range: 2..6 }],
             None,
             0,
+            0,
             &st,
         );
         assert_eq!(disp, "bold");
@@ -1801,6 +1860,7 @@ mod tests {
             c,
             &[Diagnostic { range: 6..10 }],
             None,
+            0,
             0,
             &st,
         );
@@ -1821,16 +1881,16 @@ mod tests {
 
         let line = "**bold** *it*";
         // Caret in "bold" reveals the bold markers; the italic stays hidden.
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), 0, &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), 0, 0, &st);
         assert_eq!(disp, "**bold** it");
         // Caret in "it" reveals the italic; the bold hides.
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), 0, &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), 0, 0, &st);
         assert_eq!(disp, "bold *it*");
         // Caret in plain text reveals nothing.
-        let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), 0, &st);
+        let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), 0, 0, &st);
         assert_eq!(disp, "a b");
         // No caret on the line → fully hidden (W6).
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], None, 0, &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "bold it");
     }
 
@@ -1856,14 +1916,47 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, _, map) = hidden_runs("> a **b**", &font, c, &[], None, 0, &st);
+        let (disp, _, map) = hidden_runs("> a **b**", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "a b"); // "> " + "**" hidden
         assert_eq!(map[0], 2); // display 0 ('a') ← source 2
 
         // With the prefix revealed (caret on the line) the `> ` shows even when
         // the caret isn't in it; inline markers still hide unless under the caret.
-        let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, &st);
+        let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, 0, &st);
         assert_eq!(disp, "> a b");
+    }
+
+    #[test]
+    fn ordered_numbers_word_style() {
+        // A nested list counts on its own from 1 (whatever the digits say)
+        // one level deeper, and the outer list resumes after it. The level
+        // is structural — ANY deeper indent nests, whatever the tab setting.
+        assert_eq!(
+            ordered_numbers(&["1. a", "2. b", "  3. c", "  9. d", "6. e"]),
+            vec![(1, 0), (2, 0), (1, 1), (2, 1), (3, 0)]
+        );
+        // Source digits are display-irrelevant; every list starts at 1.
+        assert_eq!(ordered_numbers(&["5. a", "9. b"]), vec![(1, 0), (2, 0)]);
+        // A bullet at the same indent ends the ordered run (bullets still
+        // occupy a level for anything nested under them).
+        assert_eq!(
+            ordered_numbers(&["1. a", "- b", "7. c"]),
+            vec![(1, 0), (0, 0), (1, 0)]
+        );
+        // Any break — blank line or prose — starts numbering over.
+        assert_eq!(
+            ordered_numbers(&["1. a", "", "2. b"]),
+            vec![(1, 0), (0, 0), (1, 0)]
+        );
+        assert_eq!(
+            ordered_numbers(&["1. a", "prose", "7. b"]),
+            vec![(1, 0), (0, 0), (1, 0)]
+        );
+        // A hanging indent (wrapped text under an item) keeps the list open.
+        assert_eq!(
+            ordered_numbers(&["1. a", "   wrapped", "7. b"]),
+            vec![(1, 0), (0, 0), (2, 0)]
+        );
     }
 
     #[test]
@@ -1883,7 +1976,7 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, _, map) = hidden_runs("  - hi", &font, c, &[], None, 0, &st);
+        let (disp, _, map) = hidden_runs("  - hi", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "hi");
         assert_eq!(map[0], 4); // display 0 ('h') ← source 4
     }
@@ -1901,7 +1994,7 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, _, map) = hidden_runs("- [x] go", &font, c, &[], None, 0, &st);
+        let (disp, _, map) = hidden_runs("- [x] go", &font, c, &[], None, 0, 0, &st);
         assert_eq!(disp, "go");
         assert_eq!(map[0], 6); // display 0 ('g') ← source 6
     }

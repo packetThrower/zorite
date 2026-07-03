@@ -1532,21 +1532,34 @@ impl EditorState {
             .find('\n')
             .map_or(self.content.len(), |i| line_start + i);
         let line = &self.content[line_start..line_end];
-        let is_item = markdown_syntax::list_prefix(line).is_some()
-            || markdown_syntax::blockquote_prefix(line).is_some();
+        let item = markdown_syntax::list_prefix(line);
+        let is_item = item.is_some() || markdown_syntax::blockquote_prefix(line).is_some();
         let indent = " ".repeat(self.tab_indent);
         if !is_item {
             self.replace_text_in_range(None, &indent, window, cx);
             return;
         }
-        let range = line_start..line_start;
-        self.record_edit(&range, &indent);
-        self.content.insert_str(line_start, &indent);
-        let caret = cursor + indent.len();
+        // Indenting an ordered item starts a NESTED list, so its number
+        // becomes the new list's start: rewrite it to 1. (Both views
+        // renumber the items after it, so only the start digit matters.)
+        let (range, new_text) = match item {
+            Some((_, ws, true, _)) => {
+                let de = ws + line[ws..].bytes().take_while(u8::is_ascii_digit).count();
+                (
+                    line_start..line_start + de,
+                    format!("{indent}{}1", &line[..ws]),
+                )
+            }
+            _ => (line_start..line_start, indent),
+        };
+        self.record_edit(&range, &new_text);
+        let delta = new_text.len() as isize - (range.end - range.start) as isize;
+        self.content.replace_range(range.clone(), &new_text);
+        let caret = (cursor as isize + delta).max(line_start as isize) as usize;
         self.selected_range = caret..caret;
         self.selection_reversed = false;
         self.goal_x = None;
-        self.remap_diagnostics(&range, indent.len());
+        self.remap_diagnostics(&range, new_text.len());
         cx.emit(EditorEvent::Changed);
         cx.notify();
     }
@@ -3919,6 +3932,9 @@ enum LineMark {
         text_inset: Pixels,
         ordered: bool,
         num: u32,
+        /// Structural nesting level (0 = top), for the Word-style marker
+        /// scheme (`1.` -> `a.` -> `i.`).
+        level: usize,
         color: Hsla,
     },
     /// GFM task item: a painted ☐/☑ box at `bullet_x`, muted; the body sits at
@@ -4211,6 +4227,9 @@ fn shape_document(
     let mut marks: Vec<Option<LineMark>> = Vec::new();
     let mut inline_maths: Vec<Vec<InlineMath>> = Vec::new();
     let lines: Vec<&str> = content.split('\n').collect();
+    // Ordered items paint their computed CommonMark position, not their
+    // literal source digits (the reader renumbers the same way).
+    let ordered_nums = markdown_syntax::ordered_numbers(&lines);
     // Fenced-code-block regions; a block's ``` fence lines collapse (W6) unless
     // the caret is inside that block (then they show, so they stay editable).
     let code_regions = md
@@ -4709,18 +4728,32 @@ fn shape_document(
                         color: st.quote,
                     },
                 ))
-            } else if let Some((plen, indent, ordered, num)) = markdown_syntax::list_prefix(line) {
+            } else if let Some((plen, indent, ordered, _)) = markdown_syntax::list_prefix(line) {
                 let depth = indent as f32 / tab_indent.max(1) as f32;
+                let (num, level) = ordered_nums[idx];
                 let glyph = if ordered {
-                    format!("{num}.")
+                    // Word-style depth markers (1. -> a. -> i.), shared with
+                    // the reader. The level is structural (from the
+                    // renumbering pass), not an indent-width guess.
+                    gpui_markdown::syntax::ordered_marker(level, num)
                 } else {
                     "\u{2022}".to_string()
                 };
                 let glyph_w = measure_width(window, &glyph, base_font, base_font_size);
-                let level = glyph_w.max(px(7.))
+                // The per-level step comes from a REPRESENTATIVE marker, not
+                // this line's own glyph: sub-pixel width differences between
+                // sibling numbers ("3." vs "4.") would nudge bullet_x apart
+                // and the nesting guides would mistake siblings for ancestors
+                // (drawing a guide through the numbers).
+                let marker_w = if ordered {
+                    measure_width(window, "9.", base_font, base_font_size)
+                } else {
+                    glyph_w
+                };
+                let step = marker_w.max(px(7.))
                     + px(LIST_TEXT_GAP)
                     + px(LIST_LEVEL_PER_SPACE) * tab_indent as f32;
-                let bullet_x = level * depth;
+                let bullet_x = step * depth;
                 let text_inset = bullet_x + glyph_w + px(LIST_TEXT_GAP);
                 Some((
                     plen,
@@ -4729,6 +4762,7 @@ fn shape_document(
                         text_inset,
                         ordered,
                         num,
+                        level,
                         color: st.quote,
                     },
                 ))
@@ -4748,14 +4782,27 @@ fn shape_document(
             && !full_source
             && md.is_some()
             && markdown_syntax::thematic_break(line);
+        // The caret sitting in the BODY keeps the list/quote mark — the line
+        // used to reveal whole (raw prefix at raw indent), so every edit
+        // jumped the text left. Only a caret inside the hidden prefix (left
+        // arrow past the body start) reveals the raw marker for editing.
+        let caret_in_prefix = gutter
+            .as_ref()
+            .zip(caret_col)
+            .is_some_and(|(&(plen, _), col)| col < plen);
         let mark = if is_rule {
             md.map(|st| LineMark::Rule(st.rule))
         } else {
             gutter
-                .filter(|_| !caret_here && !full_source)
+                .filter(|_| !caret_in_prefix && !full_source)
                 .map(|(_, m)| m)
         };
-        let reveal_prefix = gutter.filter(|_| caret_here).map_or(0, |(plen, _)| plen);
+        let reveal_prefix = gutter
+            .filter(|_| caret_in_prefix)
+            .map_or(0, |(plen, _)| plen);
+        let hide_prefix = gutter
+            .filter(|_| !caret_in_prefix)
+            .map_or(0, |(plen, _)| plen);
         // Footnote definitions (`[^1]: …`) and raw-HTML lines render muted, the way
         // the reading view shows them — a whole-line color, no hidden markers.
         let muted_line = md
@@ -4845,6 +4892,7 @@ fn shape_document(
                 &line_diags,
                 caret_col,
                 reveal_prefix,
+                hide_prefix,
                 st,
             );
             // Inline `$…$` math: swap each ready formula's glyphs for a spacer to paint over.
@@ -6311,12 +6359,13 @@ impl Element for EditorElement {
                 bullet_x,
                 ordered,
                 num,
+                level,
                 color,
                 ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
                 let glyph: SharedString = if ordered {
-                    format!("{num}.").into()
+                    gpui_markdown::syntax::ordered_marker(level, num).into()
                 } else {
                     "•".into()
                 };
