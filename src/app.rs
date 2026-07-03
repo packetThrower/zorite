@@ -4248,11 +4248,49 @@ impl AppView {
                     _ => None,
                 })
         };
+        // Copied FILES (Finder ⌘C) come through as ExternalPaths entries.
+        let clip_files = |cx: &mut Context<Self>| {
+            cx.read_from_clipboard()?
+                .entries()
+                .iter()
+                .find_map(|e| match e {
+                    ClipboardEntry::ExternalPaths(p) if !p.paths().is_empty() => {
+                        Some(p.paths().to_vec())
+                    }
+                    _ => None,
+                })
+        };
         // On a whiteboard, paste a clipboard image at the viewport center. (Copied
         // whiteboard *elements* are pasted in the crate's ⌘V handler via `on_paste`,
         // which only consumes the key when the clipboard actually holds elements —
         // otherwise it falls through here.)
         if let TabKind::Whiteboard(board_id) = self.tabs[self.active].kind {
+            if let Some(paths) = clip_files(cx) {
+                for (i, path) in paths
+                    .iter()
+                    .filter(|p| crate::images::is_supported(p))
+                    .enumerate()
+                {
+                    match crate::images::import_file(path) {
+                        Ok(rel) => {
+                            if let Some(view) = self.whiteboard_views.get(&board_id).cloned() {
+                                let c = view.read(cx).viewport_center();
+                                // Stagger multiple files so they don't stack.
+                                let off = i as f32 * 24.0;
+                                self.add_image_to_board(
+                                    board_id,
+                                    rel.into(),
+                                    c[0] + off,
+                                    c[1] + off,
+                                    cx,
+                                );
+                            }
+                        }
+                        Err(e) => log::error!("paste file {}: {e}", path.display()),
+                    }
+                }
+                return;
+            }
             let Some((bytes, ext)) = clip_image(cx) else {
                 cx.propagate();
                 return;
@@ -4273,6 +4311,11 @@ impl AppView {
             cx.propagate();
             return;
         };
+        // Copied files paste like a drop, at the caret.
+        if let Some(paths) = clip_files(cx) {
+            self.insert_dropped_files(target, &paths, true, window, cx);
+            return;
+        }
         let Some((bytes, ext)) = clip_image(cx) else {
             cx.propagate();
             return;
@@ -4290,6 +4333,7 @@ impl AppView {
         &mut self,
         target: SlashTarget,
         paths: &[std::path::PathBuf],
+        at_cursor: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -4302,7 +4346,7 @@ impl AppView {
                 continue;
             };
             match imported {
-                Ok(rel) => self.insert_image_markdown(&target, &rel, false, window, cx),
+                Ok(rel) => self.insert_image_markdown(&target, &rel, at_cursor, window, cx),
                 Err(e) => log::error!("import dropped file {}: {e}", path.display()),
             }
         }

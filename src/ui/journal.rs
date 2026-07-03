@@ -99,6 +99,7 @@ fn day_section(
                 this.insert_dropped_files(
                     SlashTarget::Day(drop_date.clone()),
                     paths.paths(),
+                    false,
                     window,
                     cx,
                 );

@@ -1601,8 +1601,19 @@ impl EditorState {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
-            self.replace_text_in_range(None, &text, window, cx);
+        let item = cx.read_from_clipboard();
+        // A copied FILE also carries its path as text; inserting that string
+        // is never what a paste meant. Treat file and image clipboards as
+        // not-ours: fall through so a host binding on the same keys
+        // (zorite's image/file paste) can run.
+        let has_files = item.as_ref().is_some_and(|i| {
+            i.entries()
+                .iter()
+                .any(|e| matches!(e, gpui::ClipboardEntry::ExternalPaths(_)))
+        });
+        match item.and_then(|i| i.text()).filter(|_| !has_files) {
+            Some(text) => self.replace_text_in_range(None, &text, window, cx),
+            None => cx.propagate(),
         }
     }
 

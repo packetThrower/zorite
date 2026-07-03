@@ -51,6 +51,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         this.insert_dropped_files(
                             SlashTarget::Page(page_id),
                             paths.paths(),
+                            false,
                             window,
                             cx,
                         );
