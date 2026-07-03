@@ -82,7 +82,10 @@ change must stay cross-platform.
   reformat or "improve" adjacent code. It's a `-D warnings` repo — leave no orphaned
   `dead_code`/`unused` behind your edit.
 - **Crates stay host-agnostic.** `crates/*` depend on `gpui` only — not `gpui-component`,
-  not the app — and run on all three platforms with no native libraries. Keep the
+  not the app — and run on all three platforms with no native libraries. One
+  sanctioned sibling dependency: `gpui-editor` → `gpui-markdown`, for the shared
+  construct **recognition** in `gpui_markdown::syntax` (alert kinds, table
+  styles, heading scales) — never for rendering. Keep the
   editor/rendering cores GUI-free where a crate already splits them (e.g. ratex-gpui's
   `editor::{model,cursor,geometry,input,latex}` are GUI-free; only `view` is gpui glue).
 - **The app owns rendering.** Renderers in the crates are host-agnostic; the app supplies

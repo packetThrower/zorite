@@ -13,6 +13,12 @@ gpui = { workspace = true }
 # moves as a single unit (matches gpui's own input example).
 unicode-segmentation = "1"
 
+# Shared markdown-construct recognition (`gpui_markdown::syntax`): alert kinds,
+# table styles, heading scales — so WYSIWYG and the reader can never drift
+# apart on what a construct IS. The one sanctioned sibling-crate dependency
+# (see AGENTS.md); rendering stays entirely this crate's own.
+gpui-markdown = { path = "../gpui-markdown" }
+
 # The standalone demo needs a platform backend to open a real window (the `gpui`
 # crate alone has no app entry point in this setup — it's split into
 # `gpui_platform`, same as the host app). Shared workspace spec, one graph.

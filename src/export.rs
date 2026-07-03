@@ -662,50 +662,20 @@ fn flatten(nodes: &[mdast::Node], style: Style, out: &mut Vec<(String, Style)>) 
     }
 }
 
-/// GitHub alert detection on a blockquote (the reader's rules): the kind's
-/// label + color and the children with the marker stripped.
+/// GitHub alert detection — recognition shared with both views
+/// (`gpui_markdown::alert_children`); only the print palette (GitHub light,
+/// since print is light) is this renderer's own.
 fn alert_of(b: &mdast::Blockquote) -> Option<(&'static str, Color, Vec<mdast::Node>)> {
-    const KINDS: [(&str, &str, (f64, f64, f64)); 5] = [
-        ("[!NOTE]", "Note", (0.04, 0.41, 0.85)),
-        ("[!TIP]", "Tip", (0.10, 0.50, 0.22)),
-        ("[!IMPORTANT]", "Important", (0.51, 0.31, 0.87)),
-        ("[!WARNING]", "Warning", (0.60, 0.40, 0.00)),
-        ("[!CAUTION]", "Caution", (0.81, 0.13, 0.18)),
-    ];
-    let mdast::Node::Paragraph(p) = b.children.first()? else {
-        return None;
+    use gpui_markdown::syntax::AlertKind;
+    let (kind, children) = gpui_markdown::alert_children(b)?;
+    let (r, g, bl) = match kind {
+        AlertKind::Note => (0.04, 0.41, 0.85),
+        AlertKind::Tip => (0.10, 0.50, 0.22),
+        AlertKind::Important => (0.51, 0.31, 0.87),
+        AlertKind::Warning => (0.60, 0.40, 0.00),
+        AlertKind::Caution => (0.81, 0.13, 0.18),
     };
-    let mdast::Node::Text(t) = p.children.first()? else {
-        return None;
-    };
-    for (marker, label, (r, g, bl)) in KINDS {
-        let Some(rest) = t.value.strip_prefix(marker) else {
-            continue;
-        };
-        let strip = if rest.is_empty() {
-            marker.len()
-        } else if rest.starts_with('\n') || rest.starts_with(' ') {
-            marker.len() + 1
-        } else {
-            continue;
-        };
-        let mut children = b.children.clone();
-        if let Some(mdast::Node::Paragraph(p)) = children.first_mut() {
-            if strip >= t.value.len() {
-                p.children.remove(0);
-                if matches!(p.children.first(), Some(mdast::Node::Break(_))) {
-                    p.children.remove(0);
-                }
-                if p.children.is_empty() {
-                    children.remove(0);
-                }
-            } else if let Some(mdast::Node::Text(t)) = p.children.first_mut() {
-                t.value.drain(..strip);
-            }
-        }
-        return Some((label, Color::rgb(r, g, bl), children));
-    }
-    None
+    Some((kind.label(), Color::rgb(r, g, bl), children))
 }
 
 impl Pdf {
@@ -764,16 +734,7 @@ fn mermaid_png(source: &str) -> Option<Vec<u8>> {
     svg_to_png(svg.as_bytes(), SVG_SCALE).map(|(png, _, _)| png)
 }
 
-fn heading_scale(depth: u8) -> f32 {
-    match depth {
-        1 => 1.8,
-        2 => 1.5,
-        3 => 1.3,
-        4 => 1.15,
-        5 => 1.05,
-        _ => 1.0,
-    }
-}
+use gpui_markdown::syntax::heading_scale;
 
 #[cfg(test)]
 mod tests {

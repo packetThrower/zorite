@@ -796,15 +796,10 @@ pub(crate) fn html_block(line: &str) -> bool {
 /// each with an optional trailing space — if `line` is a blockquote. `None`
 /// otherwise. The editor hides this marker (reveal-on-caret) and renders the line
 /// with a muted color + a left border.
-/// GitHub alert kinds (`> [!NOTE]` …).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub(crate) enum AlertKind {
-    Note,
-    Tip,
-    Important,
-    Warning,
-    Caution,
-}
+// Alert recognition is shared with the reader (`gpui_markdown::syntax`) —
+// what a marker IS lives in one place; this crate only decides how to paint
+// it (hide the prefix, label + colored bar, reveal on caret).
+pub(crate) use gpui_markdown::syntax::{AlertKind, alert_prefix};
 
 /// Per-kind SVG asset paths for the alert title icons.
 #[derive(Clone)]
@@ -842,52 +837,10 @@ impl SyntaxStyle {
     }
 }
 
-impl AlertKind {
-    /// The label painted in place of the hidden marker ("Note", "Tip", …).
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            AlertKind::Note => "Note",
-            AlertKind::Tip => "Tip",
-            AlertKind::Important => "Important",
-            AlertKind::Warning => "Warning",
-            AlertKind::Caution => "Caution",
-        }
-    }
-}
-
 /// The alert kind if `body` — a blockquote line's text after its `>` prefix —
-/// starts with an alert marker (uppercase, per GitHub). GitHub wants the
-/// marker alone on its line; text after it (`> [!NOTE] like so`) is accepted
-/// too, the way people naturally type it.
+/// starts with an alert marker (see [`gpui_markdown::syntax::alert_prefix`]).
 pub(crate) fn alert_kind(body: &str) -> Option<AlertKind> {
     alert_prefix(body).map(|(kind, _)| kind)
-}
-
-/// [`alert_kind`] plus the marker's byte length within `body`: leading spaces,
-/// the `[!NOTE]`-style marker, and one following separator space. The editor
-/// hides this prefix and paints the kind's label in its place (like a list
-/// bullet), revealing the raw source on caret.
-pub(crate) fn alert_prefix(body: &str) -> Option<(AlertKind, usize)> {
-    const MARKERS: [(AlertKind, &str); 5] = [
-        (AlertKind::Note, "[!NOTE]"),
-        (AlertKind::Tip, "[!TIP]"),
-        (AlertKind::Important, "[!IMPORTANT]"),
-        (AlertKind::Warning, "[!WARNING]"),
-        (AlertKind::Caution, "[!CAUTION]"),
-    ];
-    let trimmed = body.trim_start();
-    let ws = body.len() - trimmed.len();
-    for (kind, m) in MARKERS {
-        if let Some(rest) = trimmed.strip_prefix(m) {
-            if rest.is_empty() {
-                return Some((kind, ws + m.len()));
-            }
-            if rest.starts_with(' ') {
-                return Some((kind, ws + m.len() + 1));
-            }
-        }
-    }
-    None
 }
 
 pub(crate) fn blockquote_prefix(line: &str) -> Option<usize> {

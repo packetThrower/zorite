@@ -36,6 +36,9 @@ use gpui::{
 };
 use markdown::mdast;
 
+pub mod syntax;
+use syntax::{AlertKind, TableStyle, alert_marker, heading_scale, table_style_marker};
+
 /// Visual configuration for the renderer. The host fills this from its
 /// own theme; defaults are a neutral dark palette.
 #[derive(Clone)]
@@ -137,27 +140,13 @@ impl Default for AlertColors {
     }
 }
 
-/// The five GitHub alert kinds, from a `[!NOTE]`-style marker.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum AlertKind {
-    Note,
-    Tip,
-    Important,
-    Warning,
-    Caution,
+/// View-side styling for the shared [`syntax::AlertKind`].
+trait AlertKindExt {
+    fn color(self, c: &AlertColors) -> Hsla;
+    fn icon(self, i: &AlertIcons) -> SharedString;
 }
 
-impl AlertKind {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Note => "Note",
-            Self::Tip => "Tip",
-            Self::Important => "Important",
-            Self::Warning => "Warning",
-            Self::Caution => "Caution",
-        }
-    }
-
+impl AlertKindExt for AlertKind {
     fn color(self, c: &AlertColors) -> Hsla {
         match self {
             Self::Note => c.note,
@@ -179,36 +168,12 @@ impl AlertKind {
     }
 }
 
-/// Match a GitHub alert marker at the start of a blockquote's first text.
-/// GitHub requires the marker alone on its first line (`> [!NOTE]`,
-/// uppercase); we also accept text on the marker line (`> [!NOTE] like so`) —
-/// the way people naturally type it — as the body. Returns the kind and how
-/// many bytes to strip (the marker plus its newline/space separator).
-fn alert_marker(value: &str) -> Option<(AlertKind, usize)> {
-    const MARKERS: [(AlertKind, &str); 5] = [
-        (AlertKind::Note, "[!NOTE]"),
-        (AlertKind::Tip, "[!TIP]"),
-        (AlertKind::Important, "[!IMPORTANT]"),
-        (AlertKind::Warning, "[!WARNING]"),
-        (AlertKind::Caution, "[!CAUTION]"),
-    ];
-    for (kind, m) in MARKERS {
-        if let Some(rest) = value.strip_prefix(m) {
-            if rest.is_empty() {
-                return Some((kind, m.len()));
-            }
-            if rest.starts_with('\n') || rest.starts_with(' ') {
-                return Some((kind, m.len() + 1));
-            }
-        }
-    }
-    None
-}
-
 /// If blockquote `b` is a GitHub alert, return its kind and a copy of its
 /// children with the marker stripped (the first text's source offset advances
 /// by the stripped length, so the rendered→source click map stays aligned).
-fn alert_children(b: &mdast::Blockquote) -> Option<(AlertKind, Vec<mdast::Node>)> {
+/// Public so other renderers of the same construct (e.g. a PDF exporter)
+/// share the exact recognition.
+pub fn alert_children(b: &mdast::Blockquote) -> Option<(AlertKind, Vec<mdast::Node>)> {
     let Some(mdast::Node::Paragraph(p)) = b.children.first() else {
         return None;
     };
@@ -681,18 +646,6 @@ struct Ctx {
 
 // --- Block rendering ---
 
-/// Font-size multiplier for a heading of the given depth (h1 largest, h6 = body).
-fn heading_scale(depth: u8) -> f32 {
-    match depth {
-        1 => 1.8,
-        2 => 1.5,
-        3 => 1.3,
-        4 => 1.15,
-        5 => 1.05,
-        _ => 1.0,
-    }
-}
-
 fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Option<AnyElement> {
     match node {
         mdast::Node::Paragraph(p) => {
@@ -770,6 +723,9 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
             // the column; a longer line wraps inside.
             let mut mono = window.text_style().font();
             mono.family = ctx.style.mono_font.clone();
+            // Measure at bold: highlighted keywords render bold, and a
+            // regular-weight measurement under-sizes the card into wrapping.
+            mono.weight = FontWeight::BOLD;
             let widest = c
                 .value
                 .lines()
@@ -795,7 +751,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                 .fold(px(0.0), Pixels::max);
             Some(
                 div()
-                    .w(widest + px(24.0))
+                    .w(widest + px(26.0))
                     .max_w_full()
                     .rounded(px(6.0))
                     .bg(bg)
@@ -918,6 +874,9 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
             )
         }
         // Raw HTML block: show the literal source (muted), never executed.
+        // Comments never render — they carry control markers (math alignment,
+        // table styles) and are invisible in every view.
+        mdast::Node::Html(h) if h.value.trim_start().starts_with("<!--") => None,
         mdast::Node::Html(h) => Some(
             div()
                 .text_color(ctx.style.muted_color)
@@ -1047,11 +1006,6 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
     } else {
         px(2.0)
     });
-    // A faint vertical guide down each nested level (Logseq-style) makes deep
-    // outlines easy to track; the indent padding sits to its right.
-    if nested {
-        col = col.border_l_1().border_color(ctx.style.guide_color);
-    }
     let start = list.start.unwrap_or(1) as usize;
 
     for (i, item) in list.children.iter().enumerate() {
@@ -1118,13 +1072,31 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
                 },
             );
         }
+        // An item with a nested list hangs a faint vertical guide from its
+        // bullet down the sub-items (Logseq-style) — under the bullet itself,
+        // not at the nested block's edge.
+        let has_sub = li
+            .children
+            .iter()
+            .any(|c| matches!(c, mdast::Node::List(_)));
+        let marker_col = if has_sub {
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .flex_shrink_0()
+                .child(marker_el)
+                .child(div().w(px(1.0)).flex_1().bg(ctx.style.guide_color))
+                .into_any_element()
+        } else {
+            marker_el.into_any_element()
+        };
         col = col.child(
             div()
                 .flex()
                 .flex_row()
                 .gap(px(8.0))
-                .items_start()
-                .child(marker_el)
+                .child(marker_col)
                 .child(div().flex_1().min_w_0().child(content)),
         );
     }
@@ -1600,32 +1572,6 @@ fn collect_definitions(node: &mdast::Node, out: &mut HashMap<String, String>) {
 /// Per-table visual style, from a `<!-- table:STYLE -->` marker comment on the
 /// line above the table (mirrors the editor; the style names are the shared
 /// contract). `Grid` is the default (no marker).
-#[derive(Clone, Copy, Default, PartialEq, Debug)]
-enum TableStyle {
-    #[default]
-    Grid,
-    Striped,
-    Header,
-    Minimal,
-}
-
-/// Parse a `<!-- table:STYLE -->` HTML comment's value into a [`TableStyle`].
-/// `None` if it isn't a recognized table-style marker.
-fn table_style_marker(html: &str) -> Option<TableStyle> {
-    let inner = html
-        .trim()
-        .strip_prefix("<!--")?
-        .strip_suffix("-->")?
-        .trim();
-    match inner.strip_prefix("table:")?.trim() {
-        "grid" => Some(TableStyle::Grid),
-        "striped" => Some(TableStyle::Striped),
-        "header" => Some(TableStyle::Header),
-        "minimal" => Some(TableStyle::Minimal),
-        _ => None,
-    }
-}
-
 fn render_table(
     table: &mdast::Table,
     ctx: &mut Ctx,
@@ -1742,7 +1688,10 @@ fn render_table(
                 .w(widths.get(ci).copied().unwrap_or(px(48.0)))
                 .flex_shrink_0()
                 .px(px(10.0))
-                .py(px(6.0));
+                // WYSIWYG's row height (text x 1.45 + 12); wrapped cells grow.
+                .min_h(px(f32::from(ctx.style.text_size) * 1.45 + 12.0))
+                .flex()
+                .items_center();
             if vlines && ci + 1 < r.children.len() {
                 cell_el = cell_el.border_r_1().border_color(border);
             }
@@ -1765,6 +1714,9 @@ fn render_table(
     ctx.counter += 1;
     div()
         .id(("md-table", ctx.counter))
+        // WYSIWYG indents tables into a 22px gutter (its row handles live
+        // there); mirror it so the grid sits at the same x in both views.
+        .ml(px(22.0))
         .max_w_full()
         .overflow_x_scroll()
         .child(grid)

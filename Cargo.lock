@@ -2749,6 +2749,7 @@ name = "gpui-editor"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "gpui-markdown",
  "gpui_platform",
  "os-spellcheck",
  "unicode-segmentation",
