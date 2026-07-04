@@ -339,6 +339,14 @@ pub enum EditorEvent {
         source: SharedString,
         position: Point<Pixels>,
     },
+    /// A property panel was clicked: the byte `range` of the whole `key:: value`
+    /// block and its `source`, so the host can seat an in-place property editor
+    /// (via `set_editing_block`) and replace the block's text on commit — the
+    /// same seat/commit pattern as [`EditorEvent::EditMath`] for a `$$` block.
+    EditProperties {
+        range: Range<usize>,
+        source: SharedString,
+    },
 }
 
 /// A table column's text alignment, for the host-driven alignment toolbar
@@ -1895,6 +1903,31 @@ impl EditorState {
                 }
             }
             return;
+        }
+        // Left-click elsewhere on a property panel opens the in-place editor for
+        // its whole block — the panel edits its properties, not the raw markdown.
+        if event.click_count == 1
+            && !event.modifiers.shift
+            && !event.modifiers.control
+            && self
+                .prop_row_rects
+                .iter()
+                .any(|b| b.contains(&event.position))
+        {
+            let offset = self.index_for_mouse_position(event.position);
+            let (row, _) = self.row_col(offset);
+            if let Some(region) = markdown_syntax::property_regions(&self.content)
+                .into_iter()
+                .find(|r| r.contains(&row))
+            {
+                let start = self.line_starts()[region.start];
+                let end = self.line_end(region.end - 1);
+                cx.emit(EditorEvent::EditProperties {
+                    range: start..end,
+                    source: self.content[start..end].to_string().into(),
+                });
+                return;
+            }
         }
         // Left-click a link navigates, like the reading view: a `[[wiki]]` /
         // `#tag` opens that page, a `[text](url)` opens the url — consistent

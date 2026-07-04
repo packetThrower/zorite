@@ -12,6 +12,7 @@ pub mod math;
 pub mod mermaid;
 pub mod month_cal;
 pub mod page_view;
+pub mod property_editor;
 pub mod search;
 pub mod sidebar;
 pub mod slash_menu;

@@ -340,6 +340,16 @@ fn to_editor_align(a: ratex_gpui::MathAlign) -> gpui_editor::MathAlign {
     }
 }
 
+/// An in-progress in-place property edit: the seated form, the note editor it
+/// overlays, and where to persist — mirrors [`MathEdit`] for the `$$` block.
+struct PropEdit {
+    editor: Entity<crate::ui::property_editor::PropertyEditor>,
+    source: Entity<EditorState>,
+    target: SlashTarget,
+    /// Commits the edit when the form loses focus (click-away). Kept alive here.
+    _blur_sub: gpui::Subscription,
+}
+
 struct MathEdit {
     editor: Entity<ratex_gpui::MathEditor>,
     source: Entity<EditorState>,
@@ -476,6 +486,7 @@ pub struct AppView {
     lightbox_focus: FocusHandle,
     // An open structural-math edit (a double-clicked `$$` block), or `None`.
     math_edit: Option<MathEdit>,
+    prop_edit: Option<PropEdit>,
     // Right-click context menu on a rendered formula (Copy LaTeX / Export SVG / Export PNG).
     ctx_menu: Option<CtxMenu>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
@@ -755,6 +766,7 @@ impl AppView {
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             math_edit: None,
+            prop_edit: None,
             ctx_menu: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
@@ -978,6 +990,16 @@ impl AppView {
                 EditorEvent::MathMenu { source, position } => {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
+                }
+                EditorEvent::EditProperties { range, source } => {
+                    this.open_prop_edit(
+                        st.clone(),
+                        SlashTarget::Day(key.clone()),
+                        range.clone(),
+                        source.clone(),
+                        window,
+                        cx,
+                    );
                 }
             },
         );
@@ -1848,6 +1870,16 @@ impl AppView {
                 EditorEvent::MathMenu { source, position } => {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
+                }
+                EditorEvent::EditProperties { range, source } => {
+                    this.open_prop_edit(
+                        st.clone(),
+                        SlashTarget::Page(pid),
+                        range.clone(),
+                        source.clone(),
+                        window,
+                        cx,
+                    );
                 }
             },
         );
@@ -2962,6 +2994,80 @@ impl AppView {
         }
         cx.notify();
         Some((edit.source, new_range))
+    }
+
+    /// Seat the in-place property editor over a `key:: value` block (reusing the
+    /// math block's reserved-gap machinery) and commit on blur.
+    fn open_prop_edit(
+        &mut self,
+        source: Entity<EditorState>,
+        target: SlashTarget,
+        range: std::ops::Range<usize>,
+        block: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Clicking another panel commits the one being edited first.
+        if self.prop_edit.is_some() {
+            self.commit_prop_edit(cx);
+        }
+        let editor =
+            cx.new(|cx| crate::ui::property_editor::PropertyEditor::new(&block, window, cx));
+        let focus = editor.read(cx).focus_handle(cx);
+        // Reserve a gap tall enough for the rows + the add-property button.
+        let n = block
+            .lines()
+            .filter(|l| gpui_markdown::syntax::property(l).is_some())
+            .count()
+            .max(1);
+        let height = px(n as f32 * 34.0 + 44.0);
+        source.update(cx, |e, cx| {
+            e.set_editing_block(range, editor.clone().into(), height, cx)
+        });
+        editor.update(cx, |ed, cx| ed.focus_first(window, cx));
+        // Commit when the form loses focus (guarded on identity, like math).
+        let weak = cx.entity().downgrade();
+        let editor_id = editor.entity_id();
+        let blur_sub = window.on_focus_out(&focus, cx, move |_ev, _window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                if this
+                    .prop_edit
+                    .as_ref()
+                    .is_some_and(|p| p.editor.entity_id() == editor_id)
+                {
+                    this.commit_prop_edit(cx);
+                }
+            })
+            .ok();
+        });
+        self.prop_edit = Some(PropEdit {
+            editor,
+            source,
+            target,
+            _blur_sub: blur_sub,
+        });
+        cx.notify();
+    }
+
+    /// Serialize the property form back to `key:: value` lines, splice it over
+    /// the block, and persist.
+    fn commit_prop_edit(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.prop_edit.take() else {
+            return;
+        };
+        let new_block = edit.editor.read(cx).to_source(cx);
+        let Some(range) = edit.source.update(cx, |e, cx| e.end_editing_block(cx)) else {
+            cx.notify();
+            return;
+        };
+        edit.source
+            .update(cx, |e, cx| e.replace_range(range, &new_block, cx));
+        let new = edit.source.read(cx).text().to_string();
+        match &edit.target {
+            SlashTarget::Day(key) => self.save_journal(key, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        cx.notify();
     }
 
     /// The caret arrowed past a formula's edge: commit the edit, then seat the text caret beside
