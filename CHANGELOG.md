@@ -9,6 +9,27 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-03
+
+Two fixes, one urgent: Windows users could be locked out of an encrypted
+database.
+
+### Fixed
+
+- **Windows: unlocking, Lock now, and auto-lock closed the app** — entering
+  a correct password (without "Remember on this device"), pressing Lock
+  now, or hitting the idle auto-lock exited Zorite entirely. The window
+  handoff let the open-window count touch zero, which ends the app on
+  Windows (macOS tolerates it, which hid the bug). The successor window now
+  always opens before the old one closes. Your data was never at risk —
+  the app just exited before showing it.
+- **Selecting across a list no longer breaks its rendering** — rows kept
+  their numbering (`a.`, `i.`) and indentation instead of snapping to raw
+  source mid-drag; the body still reveals inline markers so the highlighted
+  text is exactly what's copied. Copies now include the first item's list
+  marker, and ordered items copy with the numbering the screen showed
+  (still plain-markdown digits, so pastes rebuild real lists anywhere).
+
 ## [0.5.0] - 2026-07-03
 
 The biggest Zorite release yet: encrypt your notes with a password, see them
