@@ -3,12 +3,15 @@
 //! editor uses) when the caret enters a property panel; on blur the host reads
 //! [`PropertyEditor::to_source`] and writes the `key:: value` lines back.
 //!
-//! v1: a plain text field per key and value, with add/remove rows. A key
-//! dropdown (fed by `Db::property_index`) and value pill-chips come next.
+//! v2: a text field per key and value (add/remove rows). Focusing a key field
+//! drops an autocomplete of property keys already used across the vault (from
+//! `Db::property_index`) below it — free text still allowed, so new keys can be
+//! typed. Value pill-chips come next.
 
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    ParentElement, Render, StatefulInteractiveElement, Styled, Window, div, px,
+    MouseButton, MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
+    Styled, Window, deferred, div, px,
 };
 use gpui_component::input::{Input, InputState};
 
@@ -16,6 +19,8 @@ use crate::theme;
 
 pub struct PropertyEditor {
     rows: Vec<Row>,
+    /// Property keys already used across the vault — the autocomplete source.
+    keys: Vec<SharedString>,
     focus: FocusHandle,
 }
 
@@ -25,14 +30,20 @@ struct Row {
 }
 
 impl PropertyEditor {
-    /// Build fields from the raw property block (`key:: value` lines).
-    pub fn new(source: &str, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// Build fields from the raw property block (`key:: value` lines); `keys`
+    /// seeds the key autocomplete.
+    pub fn new(
+        source: &str,
+        keys: Vec<SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let rows = parse(source)
             .into_iter()
             .map(|(k, v)| Row::new(&k, &v, window, cx))
             .collect();
         let focus = cx.focus_handle();
-        Self { rows, focus }
+        Self { rows, keys, focus }
     }
 
     /// Focus the first value field (or the container when empty) so a
@@ -74,6 +85,82 @@ impl PropertyEditor {
             cx.notify();
         }
     }
+
+    /// Pick a key from the autocomplete: fill the field, then move focus to the
+    /// value (which closes the dropdown).
+    fn pick_key(
+        &mut self,
+        i: usize,
+        key: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(row) = self.rows.get(i) {
+            row.key.update(cx, |s, cx| s.set_value(key, window, cx));
+            row.value.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    /// The autocomplete panel for row `i`'s key field — the vault's keys filtered
+    /// by what's typed, dropped directly below the field. Shows every key when
+    /// the field already holds an exact key (so a pre-filled row can still switch)
+    /// or is empty; filters as a partial is typed.
+    fn key_autocomplete(&self, i: usize, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+        let typed = self.rows.get(i)?.key.read(cx).value().to_lowercase();
+        let exact = self.keys.iter().any(|k| k.to_lowercase() == typed);
+        let matches: Vec<SharedString> = if typed.is_empty() || exact {
+            self.keys.clone()
+        } else {
+            self.keys
+                .iter()
+                .filter(|k| k.to_lowercase().contains(&typed))
+                .cloned()
+                .collect()
+        };
+        if matches.is_empty() {
+            return None;
+        }
+        let items: Vec<_> = matches
+            .into_iter()
+            .enumerate()
+            .map(|(n, k)| {
+                let key = k.clone();
+                div()
+                    .id(("prop-key-opt", i * 1000 + n))
+                    .px(px(10.0))
+                    .py(px(4.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(theme::accent_tint()))
+                    .child(k)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                            this.pick_key(i, key.clone(), window, cx);
+                        }),
+                    )
+                    .into_any_element()
+            })
+            .collect();
+        // Deferred so it paints above the rows below it; absolute + top_full drops
+        // it directly under the (relative) key field.
+        Some(deferred(
+            div()
+                .absolute()
+                .top_full()
+                .left_0()
+                .mt(px(2.0))
+                .w(px(220.0))
+                .occlude()
+                .bg(theme::elevated())
+                .border_1()
+                .border_color(theme::divider())
+                .rounded(px(6.0))
+                .text_color(theme::text_primary())
+                .text_size(px(13.0))
+                .children(items),
+        ))
+    }
 }
 
 impl Row {
@@ -99,17 +186,26 @@ impl Focusable for PropertyEditor {
 }
 
 impl Render for PropertyEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows: Vec<_> = self
-            .rows
-            .iter()
-            .enumerate()
-            .map(|(i, r)| {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows: Vec<_> = (0..self.rows.len())
+            .map(|i| {
+                let r = &self.rows[i];
+                // The key autocomplete shows while this key field holds focus.
+                let key_focused = r.key.read(cx).focus_handle(cx).is_focused(window);
+                let dropdown = key_focused.then(|| self.key_autocomplete(i, cx)).flatten();
+                let r = &self.rows[i];
                 div()
                     .flex()
                     .items_center()
                     .gap(px(6.0))
-                    .child(div().w(px(140.0)).flex_shrink_0().child(Input::new(&r.key)))
+                    .child(
+                        div()
+                            .relative()
+                            .w(px(150.0))
+                            .flex_shrink_0()
+                            .child(Input::new(&r.key))
+                            .children(dropdown),
+                    )
                     .child(div().flex_1().child(Input::new(&r.value)))
                     .child(
                         div()

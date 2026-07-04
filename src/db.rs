@@ -926,9 +926,6 @@ impl Db {
     /// distinct values seen for it (keys and values both sorted). Fenced code is
     /// skipped so a `Type::method()` line isn't counted. Powers the property
     /// editor's key dropdown + value suggestions (and a future Properties page).
-    // ponytail: no consumer yet — the property editor (next stage) is the caller;
-    // the unit test exercises it in the meantime. Drop the allow when wired.
-    #[allow(dead_code)]
     pub fn property_index(&self) -> rusqlite::Result<Vec<(String, Vec<String>)>> {
         let mut stmt = self.conn.prepare("SELECT content FROM pages")?;
         let contents: Vec<String> = stmt

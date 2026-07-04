@@ -3011,8 +3011,16 @@ impl AppView {
         if self.prop_edit.is_some() {
             self.commit_prop_edit(cx);
         }
+        // Existing property keys across the vault feed the key dropdown.
+        let keys: Vec<SharedString> = self
+            .db
+            .property_index()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, _)| k.into())
+            .collect();
         let editor =
-            cx.new(|cx| crate::ui::property_editor::PropertyEditor::new(&block, window, cx));
+            cx.new(|cx| crate::ui::property_editor::PropertyEditor::new(&block, keys, window, cx));
         let focus = editor.read(cx).focus_handle(cx);
         // Reserve a gap tall enough for the rows + the add-property button.
         let n = block
