@@ -1619,9 +1619,44 @@ impl EditorState {
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
+            let range = self.copy_range();
+            // Ordered markers copy at their DISPLAYED positions (still digit
+            // markdown), so a paste counts the way the screen did.
+            let text = if self.markdown_style.is_some() {
+                markdown_syntax::renumber_copy(&self.content, range)
+            } else {
+                self.content[range].to_string()
+            };
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// What a copy takes: the selection — extended back over the first
+    /// line's hidden list/task/quote prefix when the selection is multi-line
+    /// and starts exactly at that line's body start. With markers painted
+    /// (not text), "select the whole list" visually anchors AFTER the first
+    /// `1. `, so a verbatim copy dropped the first marker while every other
+    /// line kept its own. Raw mode (no markdown style) copies verbatim.
+    fn copy_range(&self) -> std::ops::Range<usize> {
+        let (start, end) = (
+            self.selected_range.start.min(self.selected_range.end),
+            self.selected_range.start.max(self.selected_range.end),
+        );
+        if self.markdown_style.is_none() || !self.content[start..end].contains('\n') {
+            return start..end;
+        }
+        let line_start = self.content[..start].rfind('\n').map_or(0, |i| i + 1);
+        let line_end = self.content[line_start..]
+            .find('\n')
+            .map_or(self.content.len(), |i| line_start + i);
+        let line = &self.content[line_start..line_end];
+        let prefix_len = markdown_syntax::task_prefix(line)
+            .map(|(l, ..)| l)
+            .or_else(|| markdown_syntax::list_prefix(line).map(|(l, ..)| l))
+            .or_else(|| markdown_syntax::blockquote_prefix(line));
+        match prefix_len {
+            Some(plen) if start == line_start + plen => line_start..end,
+            _ => start..end,
         }
     }
 
@@ -4657,8 +4692,8 @@ fn shape_document(
         // caret parked beside it (Word-style; see the widget gate above).
         let chip_line =
             md.is_some() && img_row.is_some() && !matches!(widget, Some(Block::Image(_)));
-        let full_source = (!sel_empty && selection.0 <= line_end && selection.1 >= line_start)
-            || (caret_col.is_some() && chip_line);
+        let sel_touches = !sel_empty && selection.0 <= line_end && selection.1 >= line_start;
+        let full_source = sel_touches || (caret_col.is_some() && chip_line);
         // This line's diagnostics, clipped + shifted to line-local byte offsets —
         // used as spell-check squiggles whether the line shows source or hides its
         // markers.
@@ -4801,6 +4836,12 @@ fn shape_document(
             .as_ref()
             .zip(caret_col)
             .is_some_and(|(&(plen, _), col)| col < plen);
+        // A selection across a gutter line keeps the mark too: the whole-line
+        // raw reveal made list rows renumber (source digits) and jump to raw
+        // indent mid-select. The BODY still reveals its inline markers (see
+        // `reveal_inline` below) so what's highlighted is what's copied.
+        let full_source = full_source && gutter.is_none();
+        let reveal_inline = sel_touches && gutter.is_some();
         let mark = if is_rule {
             md.map(|st| LineMark::Rule(st.rule))
         } else {
@@ -4904,6 +4945,7 @@ fn shape_document(
                 caret_col,
                 reveal_prefix,
                 hide_prefix,
+                reveal_inline,
                 st,
             );
             // Inline `$…$` math: swap each ready formula's glyphs for a spacer to paint over.
