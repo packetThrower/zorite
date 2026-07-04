@@ -5270,6 +5270,40 @@ fn build_prop_panel(
 const PILL_PAD_X: f32 = 6.;
 const PILL_GAP: f32 = 4.;
 
+/// Window-space bounds of each clickable pill in a property panel at `origin` —
+/// the same x-advance `paint_prop_panel` uses. Prepaint inserts a pointer-cursor
+/// hitbox per bound; paint records the matching click target.
+fn prop_pill_bounds(
+    p: &PropPanel,
+    origin: Point<Pixels>,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> Vec<Bounds<Pixels>> {
+    let line_h = font_size * LINE_HEIGHT_RATIO;
+    let pad = px(10.);
+    let mut out = Vec::new();
+    for (ri, (_key, segs)) in p.rows.iter().enumerate() {
+        let row_top = origin.y + p.row_h * ri as f32;
+        let mut x = origin.x + p.key_w + pad;
+        for seg in segs {
+            match seg {
+                PanelSeg::Plain(t) => x += measure_width(window, t, font, font_size),
+                PanelSeg::Pill { text, .. } => {
+                    let tw = measure_width(window, text, font, font_size);
+                    let ph = line_h + px(2.);
+                    out.push(Bounds::new(
+                        point(x, row_top + (p.row_h - ph) / 2.),
+                        size(tw + px(PILL_PAD_X * 2.), ph),
+                    ));
+                    x += tw + px(PILL_PAD_X * 2. + PILL_GAP);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Paint a property panel (`Block::Properties`): no grid lines — a muted key
 /// column and the value rendered as plain text + colored pills (tags/wiki-links)
 /// on each clean row. The row under the pointer gets a rounded hover border, and
@@ -5868,6 +5902,9 @@ struct PrepaintState {
     /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
     /// `[text](url)`), so hovering a clickable link shows a hand.
     link_grips: Vec<Hitbox>,
+    /// Pointer-cursor hitboxes over clickable property-panel pills, so hovering
+    /// a pill shows a hand (like `link_grips`).
+    prop_pill_grips: Vec<Hitbox>,
     /// Icon asset paths for alert marker lines, cloned from the style so the
     /// paint can draw them next to the labels.
     alert_icons: Option<markdown_syntax::AlertIcons>,
@@ -6234,6 +6271,19 @@ impl Element for EditorElement {
             }
         }
 
+        // Pointer cursor over property-panel pills: a panel is a widget on its
+        // region's first line, so measure each pill (the same x-advance paint
+        // uses) and insert a hitbox — the cursor is set during paint.
+        let mut prop_pill_grips = Vec::new();
+        for (i, w) in widgets.iter().enumerate() {
+            if let Some(Block::Properties(p)) = w.as_ref() {
+                let origin = point(bounds.origin.x, bounds.origin.y + line_tops[i]);
+                for b in prop_pill_bounds(p, origin, &font, font_size, window) {
+                    prop_pill_grips.push(window.insert_hitbox(b, HitboxBehavior::Normal));
+                }
+            }
+        }
+
         // Per-table add-row / add-column "+" affordances (issue #16), revealed on
         // hover. Each table contributes a hover zone (the grid + a thin margin) plus
         // a "+" strip below (adds a row) and to the right (adds a column); bounds
@@ -6543,6 +6593,7 @@ impl Element for EditorElement {
             checkbox_grips,
             chip_grips,
             link_grips,
+            prop_pill_grips,
             alert_icons: editor
                 .markdown_style
                 .as_ref()
@@ -7043,6 +7094,9 @@ impl Element for EditorElement {
         // Hovering an inline link shows a hand, like the reading view (the
         // hitboxes come from prepaint; cursor styles must be set during paint).
         for hb in &prepaint.link_grips {
+            window.set_cursor_style(CursorStyle::PointingHand, hb);
+        }
+        for hb in &prepaint.prop_pill_grips {
             window.set_cursor_style(CursorStyle::PointingHand, hb);
         }
         self.editor.update(cx, |editor, _| {
