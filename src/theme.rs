@@ -176,6 +176,9 @@ pub fn text_secondary() -> Hsla {
 pub fn text_tertiary() -> Hsla {
     get().text_tertiary
 }
+pub fn tag() -> Hsla {
+    get().tag
+}
 
 /// Styling for the markdown reading view (the `gpui-markdown` crate),
 /// mapped from the active palette.
@@ -192,7 +195,7 @@ const ALERT_ICON_CAUTION: &str = "icons/octagon-alert.svg";
 /// map of well-known keys (case-insensitive), with a generic text-field icon as
 /// the fallback so every property gets one (Obsidian-style). Paths are lucide
 /// assets bundled under `assets/icons/lucide`.
-fn property_icon(key: &str) -> Option<gpui::SharedString> {
+pub(crate) fn property_icon(key: &str) -> Option<gpui::SharedString> {
     let name = match key.trim().to_ascii_lowercase().as_str() {
         "alias" | "aliases" => "arrow-up-right",
         "tag" | "tags" => "tag",

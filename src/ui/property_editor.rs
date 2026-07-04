@@ -3,15 +3,17 @@
 //! editor uses) when the caret enters a property panel; on blur the host reads
 //! [`PropertyEditor::to_source`] and writes the `key:: value` lines back.
 //!
-//! v2: a text field per key and value (add/remove rows). Focusing a key field
-//! drops an autocomplete of property keys already used across the vault (from
-//! `Db::property_index`) below it — free text still allowed, so new keys can be
-//! typed. Value pill-chips come next.
+//! The form mirrors the rendered panel: each row shows the key's icon + a muted
+//! key and the value as pills, exactly like the read view — and a cell becomes
+//! an editable field only while it holds focus (click a cell to edit it). A
+//! focused key field also drops an autocomplete of keys already used across the
+//! vault (from `Db::property_index`); free text is allowed, so new keys can be
+//! typed.
 
 use gpui::{
     App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Window, deferred, div, px,
+    Styled, Window, deferred, div, px, svg,
 };
 use gpui_component::input::{Input, InputState};
 
@@ -86,6 +88,20 @@ impl PropertyEditor {
         }
     }
 
+    fn focus_key(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = self.rows.get(i) {
+            row.key.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
+    }
+
+    fn focus_value(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(row) = self.rows.get(i) {
+            row.value.update(cx, |s, cx| s.focus(window, cx));
+        }
+        cx.notify();
+    }
+
     /// Pick a key from the autocomplete: fill the field, then move focus to the
     /// value (which closes the dropdown).
     fn pick_key(
@@ -102,11 +118,9 @@ impl PropertyEditor {
         cx.notify();
     }
 
-    /// The autocomplete panel for row `i`'s key field — the vault's keys filtered
-    /// by what's typed, dropped directly below the field. Shows every key when
-    /// the field already holds an exact key (so a pre-filled row can still switch)
-    /// or is empty; filters as a partial is typed.
-    fn key_autocomplete(&self, i: usize, cx: &mut Context<Self>) -> Option<impl IntoElement> {
+    /// The autocomplete panel for row `i`'s key field (vault keys, filtered by
+    /// what's typed), dropped directly below the field.
+    fn key_autocomplete(&self, i: usize, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let typed = self.rows.get(i)?.key.read(cx).value().to_lowercase();
         let exact = self.keys.iter().any(|k| k.to_lowercase() == typed);
         let matches: Vec<SharedString> = if typed.is_empty() || exact {
@@ -142,24 +156,25 @@ impl PropertyEditor {
                     .into_any_element()
             })
             .collect();
-        // Deferred so it paints above the rows below it; absolute + top_full drops
-        // it directly under the (relative) key field.
-        Some(deferred(
-            div()
-                .absolute()
-                .top_full()
-                .left_0()
-                .mt(px(2.0))
-                .w(px(220.0))
-                .occlude()
-                .bg(theme::elevated())
-                .border_1()
-                .border_color(theme::divider())
-                .rounded(px(6.0))
-                .text_color(theme::text_primary())
-                .text_size(px(13.0))
-                .children(items),
-        ))
+        Some(
+            deferred(
+                div()
+                    .absolute()
+                    .top_full()
+                    .left_0()
+                    .mt(px(2.0))
+                    .w(px(220.0))
+                    .occlude()
+                    .bg(theme::elevated())
+                    .border_1()
+                    .border_color(theme::divider())
+                    .rounded(px(6.0))
+                    .text_color(theme::text_primary())
+                    .text_size(px(13.0))
+                    .children(items),
+            )
+            .into_any_element(),
+        )
     }
 }
 
@@ -190,10 +205,59 @@ impl Render for PropertyEditor {
         let rows: Vec<_> = (0..self.rows.len())
             .map(|i| {
                 let r = &self.rows[i];
-                // The key autocomplete shows while this key field holds focus.
                 let key_focused = r.key.read(cx).focus_handle(cx).is_focused(window);
+                let value_focused = r.value.read(cx).focus_handle(cx).is_focused(window);
+                let key_val = r.key.read(cx).value();
+                let value_val = r.value.read(cx).value();
+                let icon = theme::property_icon(&key_val);
                 let dropdown = key_focused.then(|| self.key_autocomplete(i, cx)).flatten();
-                let r = &self.rows[i];
+
+                // The inputs are ALWAYS rendered (so focusing them from a click
+                // works); when a cell isn't focused, a panel-styled overlay (muted
+                // key / value pills) covers its input and, on click, focuses it.
+                let key_overlay = (!key_focused).then(|| {
+                    let label = if key_val.is_empty() {
+                        SharedString::from("key")
+                    } else {
+                        key_val
+                    };
+                    div()
+                        .id(("prop-key-ov", i))
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .px(px(2.0))
+                        .bg(theme::elevated())
+                        .text_color(theme::text_tertiary())
+                        .cursor_pointer()
+                        .child(label)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                this.focus_key(i, window, cx);
+                            }),
+                        )
+                });
+                let value_overlay = (!value_focused).then(|| {
+                    div()
+                        .id(("prop-val-ov", i))
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .px(px(2.0))
+                        .bg(theme::elevated())
+                        .cursor_pointer()
+                        .child(value_display(&value_val))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                                this.focus_value(i, window, cx);
+                            }),
+                        )
+                });
+
                 div()
                     .flex()
                     .items_center()
@@ -203,10 +267,33 @@ impl Render for PropertyEditor {
                             .relative()
                             .w(px(150.0))
                             .flex_shrink_0()
-                            .child(Input::new(&r.key))
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .children(icon.map(|p| {
+                                svg()
+                                    .path(p)
+                                    .w(px(16.0))
+                                    .h(px(16.0))
+                                    .text_color(theme::text_tertiary())
+                                    .flex_shrink_0()
+                            }))
+                            .child(
+                                div()
+                                    .relative()
+                                    .flex_1()
+                                    .child(Input::new(&self.rows[i].key).appearance(false))
+                                    .children(key_overlay),
+                            )
                             .children(dropdown),
                     )
-                    .child(div().flex_1().child(Input::new(&r.value)))
+                    .child(
+                        div()
+                            .relative()
+                            .flex_1()
+                            .child(Input::new(&self.rows[i].value).appearance(false))
+                            .children(value_overlay),
+                    )
                     .child(
                         div()
                             .id(("prop-remove", i))
@@ -227,12 +314,7 @@ impl Render for PropertyEditor {
             .track_focus(&self.focus)
             .flex()
             .flex_col()
-            .gap(px(4.0))
-            .p(px(6.0))
-            .rounded(px(8.0))
-            .bg(theme::elevated())
-            .border_1()
-            .border_color(theme::divider())
+            .gap(px(2.0))
             .children(rows)
             .child(
                 div()
@@ -250,6 +332,40 @@ impl Render for PropertyEditor {
                     })),
             )
     }
+}
+
+/// The value rendered like the panel: plain runs, tags/wiki-links as pills.
+fn value_display(value: &str) -> impl IntoElement {
+    let mut row = div().flex().flex_wrap().items_center().gap(px(5.0));
+    for seg in gpui_markdown::syntax::property_value_segments(value) {
+        match seg {
+            gpui_markdown::syntax::PropSeg::Text(t) => {
+                let t = t.trim();
+                if !t.is_empty() {
+                    row = row.child(div().text_color(theme::text_primary()).child(t.to_string()));
+                }
+            }
+            gpui_markdown::syntax::PropSeg::Pill { label, is_tag, .. } => {
+                let color = if is_tag {
+                    theme::tag()
+                } else {
+                    theme::accent()
+                };
+                let mut bg = color;
+                bg.a = 0.16;
+                row = row.child(
+                    div()
+                        .px(px(7.0))
+                        .py(px(1.0))
+                        .rounded(px(6.0))
+                        .bg(bg)
+                        .text_color(color)
+                        .child(label),
+                );
+            }
+        }
+    }
+    row
 }
 
 /// Split a property block into `(key, value)` pairs, ignoring lines that aren't
