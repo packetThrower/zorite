@@ -584,6 +584,16 @@ pub struct EditorState {
     /// An inline `$…$` formula under structural edit: its byte range + the host's editor view,
     /// overlaid at the formula's spot. `None` = none.
     editing_inline: Option<EditingInline>,
+    /// Painted bounds + target of each property-panel pill (from the last paint),
+    /// so a left-click opens it (`OpenWikiLink` / `OpenLink`).
+    prop_pill_rects: Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)>,
+    /// Painted bounds of each property-panel row (from the last paint), so
+    /// `on_mouse_move` repaints when the hovered row changes (the panel's hover
+    /// border reads the live pointer during paint).
+    prop_row_rects: Vec<Bounds<Pixels>>,
+    /// The property row the pointer was last over — drives `on_mouse_move`'s
+    /// repaint-on-change (like the table hover).
+    prop_hover_row: Option<usize>,
 }
 
 /// A math block under in-line structural edit: the byte range to overwrite on commit, and
@@ -658,6 +668,9 @@ impl EditorState {
             editing_block: None,
             inline_math_rects: Vec::new(),
             editing_inline: None,
+            prop_pill_rects: Vec::new(),
+            prop_row_rects: Vec::new(),
+            prop_hover_row: None,
         }
     }
 
@@ -1862,6 +1875,27 @@ impl EditorState {
             });
             return;
         }
+        // Left-click a property-panel pill opens its target — the pill is painted
+        // over a collapsed source line, so hit-test the painted bounds directly
+        // (not the raw text like `link_at` below).
+        if event.click_count == 1
+            && !event.modifiers.shift
+            && !event.modifiers.control
+            && let Some((_, hit)) = self
+                .prop_pill_rects
+                .iter()
+                .find(|(b, _)| b.contains(&event.position))
+        {
+            match hit {
+                gpui_markdown::syntax::LinkHit::Page(t) => {
+                    cx.emit(EditorEvent::OpenWikiLink(t.clone().into()))
+                }
+                gpui_markdown::syntax::LinkHit::Url(u) => {
+                    cx.emit(EditorEvent::OpenLink(u.clone().into()))
+                }
+            }
+            return;
+        }
         // Left-click a link navigates, like the reading view: a `[[wiki]]` /
         // `#tag` opens that page, a `[text](url)` opens the url — consistent
         // with chips and inline math above. Only a plain single click: a
@@ -2062,6 +2096,16 @@ impl EditorState {
         if region != self.table_hover_region || cell != self.table_hover_cell {
             self.table_hover_region = region;
             self.table_hover_cell = cell;
+            cx.notify();
+        }
+        // Repaint the property-panel hover border when the pointer moves between
+        // rows (the border itself reads the live pointer during paint).
+        let prow = self
+            .prop_row_rects
+            .iter()
+            .position(|b| b.contains(&event.position));
+        if prow != self.prop_hover_row {
+            self.prop_hover_row = prow;
             cx.notify();
         }
     }
@@ -3899,6 +3943,43 @@ enum Block {
         border: Hsla,
         height: Pixels,
     },
+    /// A run of `key:: value` properties as a two-column panel (the reader's
+    /// `render_property_table` twin). Painted on the region's first line; the
+    /// rest of the region's lines collapse. The caret entering the region
+    /// reveals the raw source (like a math block).
+    Properties(PropPanel),
+}
+
+/// A rendered piece of a property value in the panel: plain text, or a colored
+/// pill (tag / wiki-link / URL).
+#[derive(Clone)]
+enum PanelSeg {
+    Plain(SharedString),
+    Pill {
+        text: SharedString,
+        color: Hsla,
+        target: gpui_markdown::syntax::LinkHit,
+    },
+}
+
+/// Layout for a WYSIWYG property panel: the measured rows (key + value
+/// segments), the column widths + per-row height, and the key/value colors. No
+/// grid lines — rows read clean (Obsidian-style); the value's tags and
+/// wiki-links render as pills.
+#[derive(Clone)]
+struct PropPanel {
+    /// `(key, value segments)` per property line, in source order.
+    rows: Vec<(SharedString, Vec<PanelSeg>)>,
+    key_w: Pixels,
+    /// Panel width (shared by every row) so hover borders align.
+    width: Pixels,
+    row_h: Pixels,
+    height: Pixels,
+    key_color: Hsla,
+    value_color: Hsla,
+    /// The rounded border drawn around the row under the pointer (Obsidian-style
+    /// whole-row hover).
+    hover_border: Hsla,
 }
 
 impl Block {
@@ -3906,6 +3987,7 @@ impl Block {
         match self {
             Block::Image(i) => i.height,
             Block::Chip { height, .. } => *height,
+            Block::Properties(p) => p.height,
         }
     }
 }
@@ -4344,6 +4426,31 @@ fn shape_document(
             .collect(),
         None => Vec::new(),
     };
+    // `key:: value` property runs → two-column panels (reader parity). Like a
+    // math block, the panel paints on the region's first line and the rest of
+    // its lines collapse; the caret entering the region is filtered out here so
+    // the raw source shows for editing.
+    let props: Vec<(Range<usize>, PropPanel)> = match md {
+        Some(st) => markdown_syntax::property_regions(content)
+            .into_iter()
+            .filter(|r| caret_row.is_none_or(|cr| !r.contains(&cr)))
+            .map(|r| {
+                let panel = build_prop_panel(
+                    &lines,
+                    &r,
+                    window,
+                    base_font,
+                    base_font_size,
+                    st.marker,
+                    base_color,
+                    st.tag,
+                    st.link,
+                );
+                (r, panel)
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     // `<!-- math:ALIGN -->` marker lines to hide (revealed only when the caret lands on them),
     // like table style markers.
     let math_marker_lines: Vec<usize> = if md.is_some() {
@@ -4498,6 +4605,38 @@ fn shape_document(
         if let Some((range, bi)) = math.iter().find(|(r, _)| r.contains(&idx)) {
             let (h, widget) = if idx == range.start {
                 (bi.height, Some(Block::Image(bi.clone())))
+            } else {
+                (px(0.), None)
+            };
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(widget);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
+            alert_run = None;
+            continue;
+        }
+
+        // A property panel renders on the region's first line; the rest collapse.
+        // (Like math, the region is filtered out above when the caret is inside,
+        // so the raw `key:: value` lines show for editing.)
+        if let Some((range, panel)) = props.iter().find(|(r, _)| r.contains(&idx)) {
+            let (h, widget) = if idx == range.start {
+                (panel.height, Some(Block::Properties(panel.clone())))
             } else {
                 (px(0.), None)
             };
@@ -5060,6 +5199,187 @@ fn shape_document(
         marks,
         inline_maths,
     )
+}
+
+/// Measure a property region's rows into a [`PropPanel`] with content-fit
+/// columns (like the editor's tables). Values are segmented into plain runs +
+/// link pills so the panel matches the reader.
+#[allow(clippy::too_many_arguments)]
+fn build_prop_panel(
+    lines: &[&str],
+    range: &Range<usize>,
+    window: &mut Window,
+    font: &Font,
+    font_size: Pixels,
+    key_color: Hsla,
+    value_color: Hsla,
+    tag_color: Hsla,
+    link_color: Hsla,
+) -> PropPanel {
+    let mut rows = Vec::new();
+    let mut key_w = px(0.);
+    let mut val_w = px(0.);
+    for &line in &lines[range.start..range.end] {
+        let Some((k, v)) = gpui_markdown::syntax::property(line) else {
+            continue;
+        };
+        key_w = key_w.max(measure_width(window, k, font, font_size));
+        let mut w = px(0.);
+        let segs = gpui_markdown::syntax::property_value_segments(v)
+            .into_iter()
+            .map(|seg| match seg {
+                gpui_markdown::syntax::PropSeg::Text(t) => {
+                    w += measure_width(window, &t, font, font_size);
+                    PanelSeg::Plain(t.into())
+                }
+                gpui_markdown::syntax::PropSeg::Pill {
+                    label,
+                    is_tag,
+                    target,
+                } => {
+                    w += measure_width(window, &label, font, font_size)
+                        + px(PILL_PAD_X * 2. + PILL_GAP);
+                    PanelSeg::Pill {
+                        text: label.into(),
+                        color: if is_tag { tag_color } else { link_color },
+                        target,
+                    }
+                }
+            })
+            .collect();
+        val_w = val_w.max(w);
+        rows.push((SharedString::from(k.to_string()), segs));
+    }
+    let key_w = key_w + px(20.);
+    let width = key_w + val_w + px(10.);
+    let row_h = font_size * LINE_HEIGHT_RATIO + px(8.);
+    let height = row_h * rows.len() as f32;
+    PropPanel {
+        rows,
+        key_w,
+        width,
+        row_h,
+        height,
+        key_color,
+        value_color,
+        hover_border: key_color,
+    }
+}
+
+/// Horizontal padding inside a value pill, and the gap after it.
+const PILL_PAD_X: f32 = 6.;
+const PILL_GAP: f32 = 4.;
+
+/// Paint a property panel (`Block::Properties`): no grid lines — a muted key
+/// column and the value rendered as plain text + colored pills (tags/wiki-links)
+/// on each clean row. The row under the pointer gets a rounded hover border, and
+/// each pill's bounds + target are recorded (`pill_rects`) so a click can open
+/// it; every row's bounds go to `row_rects` for hover change-detection.
+#[allow(clippy::too_many_arguments)]
+fn paint_prop_panel(
+    p: &PropPanel,
+    origin: Point<Pixels>,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+    pill_rects: &mut Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)>,
+    row_rects: &mut Vec<Bounds<Pixels>>,
+) {
+    let line_h = font_size * LINE_HEIGHT_RATIO;
+    let pad = px(10.);
+    let mouse = window.mouse_position();
+    for (ri, (key, segs)) in p.rows.iter().enumerate() {
+        let row_top = origin.y + p.row_h * ri as f32;
+        let row_bounds = Bounds::new(point(origin.x, row_top), size(p.width, p.row_h));
+        row_rects.push(row_bounds);
+        // Whole-row hover border (Obsidian-style).
+        if row_bounds.contains(&mouse) {
+            window.paint_quad(PaintQuad {
+                bounds: row_bounds,
+                corner_radii: Corners::all(px(6.)),
+                background: gpui::transparent_black().into(),
+                border_widths: Edges::all(px(1.)),
+                border_color: p.hover_border,
+                border_style: BorderStyle::Solid,
+            });
+        }
+        let ty = row_top + (p.row_h - line_h) / 2.;
+        // Key (muted).
+        let krun = TextRun {
+            len: key.len(),
+            font: font.clone(),
+            color: p.key_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let ks = window
+            .text_system()
+            .shape_line(key.clone(), font_size, &[krun], None);
+        let _ = ks.paint(
+            point(origin.x + pad, ty),
+            line_h,
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        // Value: plain runs painted inline, links as rounded (clickable) pills.
+        let mut x = origin.x + p.key_w + pad;
+        for seg in segs {
+            let (text, color, target) = match seg {
+                PanelSeg::Plain(t) => (t, p.value_color, None),
+                PanelSeg::Pill {
+                    text,
+                    color,
+                    target,
+                } => (text, *color, Some(target)),
+            };
+            let run = TextRun {
+                len: text.len(),
+                font: font.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window
+                .text_system()
+                .shape_line(text.clone(), font_size, &[run], None);
+            let tw = shaped.width();
+            if let Some(target) = target {
+                let mut bg = color;
+                bg.a = 0.16;
+                let ph = line_h + px(2.);
+                let pb = Bounds::new(
+                    point(x, row_top + (p.row_h - ph) / 2.),
+                    size(tw + px(PILL_PAD_X * 2.), ph),
+                );
+                window.paint_quad(fill(pb, bg).corner_radii(Corners::all(px(6.))));
+                let _ = shaped.paint(
+                    point(x + px(PILL_PAD_X), ty),
+                    line_h,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                pill_rects.push((pb, target.clone()));
+                x += tw + px(PILL_PAD_X * 2. + PILL_GAP);
+            } else {
+                let _ = shaped.paint(
+                    point(x, ty),
+                    line_h,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                x += tw;
+            }
+        }
+    }
 }
 
 /// Paint a file chip — a rounded, bordered button with a flat document icon +
@@ -6276,6 +6596,10 @@ impl Element for EditorElement {
         // Window-space bounds of each inline `$…$` formula + its absolute range and LaTeX, for
         // the next frame's click-to-edit hit-testing + seating the structural editor.
         let mut inline_math_rects: Vec<(Range<usize>, SharedString, Bounds<Pixels>)> = Vec::new();
+        // Property-panel pill bounds + targets (click-to-open) and row bounds
+        // (hover change-detection), committed for the next frame's handlers.
+        let mut prop_pill_rects: Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)> = Vec::new();
+        let mut prop_row_rects: Vec<Bounds<Pixels>> = Vec::new();
         // The span being structurally edited (if any): skip painting its raster — the seated
         // editor overlays its spot.
         let editing_inline = self
@@ -6582,6 +6906,19 @@ impl Element for EditorElement {
                 {
                     window.set_cursor_style(CursorStyle::PointingHand, hb);
                 }
+            } else if let Some(Block::Properties(p)) =
+                prepaint.widgets.get(i).and_then(Option::as_ref)
+            {
+                paint_prop_panel(
+                    p,
+                    origin,
+                    &font,
+                    font_size,
+                    window,
+                    cx,
+                    &mut prop_pill_rects,
+                    &mut prop_row_rects,
+                );
             } else {
                 // Code blocks + gutter marks inset their text (kept in sync with
                 // `EditorState::line_inset` / the fresh prepaint inset).
@@ -6719,6 +7056,8 @@ impl Element for EditorElement {
             editor.table_rows = table_rows;
             editor.image_rects = image_rects;
             editor.inline_math_rects = inline_math_rects;
+            editor.prop_pill_rects = prop_pill_rects;
+            editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
             editor.table_row_add_rects = table_row_add_rects;
             editor.table_col_add_rects = table_col_add_rects;

@@ -185,7 +185,7 @@ fn roman(mut n: u32) -> String {
 /// title (a `[[wiki-link]]` or a `#tag` — Logseq semantics); `Url` is an
 /// inline or bare URL (hosts open http(s) externally, resolve files
 /// themselves).
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum LinkHit {
     Page(String),
     Url(String),
@@ -333,6 +333,80 @@ pub fn link_at(line: &str, col: usize) -> Option<LinkHit> {
         .map(|(_, hit)| hit)
 }
 
+/// Split a `key:: value` property line into `(key, value)`. The key must look
+/// like an identifier (starts with a letter; letters/digits/`-_.` after) so
+/// prose containing `::` — Zorite `[[wiki]]` links, `C++::method` — isn't
+/// mistaken for a property. Leading indentation is ignored; the value is
+/// trimmed. One grammar for the reader, the editor, and the importers.
+pub fn property(line: &str) -> Option<(&str, &str)> {
+    let rest = line.trim_start();
+    let idx = rest.find("::")?;
+    let key = &rest[..idx];
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        || !key.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+    {
+        return None;
+    }
+    Some((key, rest[idx + 2..].trim()))
+}
+
+/// A rendered piece of a property value: literal text, or a link "pill" (a
+/// wiki-link, `#tag`, or URL shown as a rounded chip). Both panels render values
+/// through this so they pill-ify identically.
+pub enum PropSeg {
+    Text(String),
+    Pill {
+        /// The chip's display text: a wiki-link's label, a tag without its `#`,
+        /// or a link's text.
+        label: String,
+        target: LinkHit,
+        /// A `#tag` (vs a wiki-link / URL) — panels tint tags differently.
+        is_tag: bool,
+    },
+}
+
+/// Split a property value into display segments — plain runs and link pills
+/// (wiki-links show their label, tags drop the `#`, `[text](url)` shows its
+/// text, bare URLs show themselves). Built on [`links`], so the pill spans match
+/// the reader's and editor's click hit-tests.
+pub fn property_value_segments(value: &str) -> Vec<PropSeg> {
+    let mut out = Vec::new();
+    let mut pos = 0;
+    for (range, hit) in links(value) {
+        if range.start > pos {
+            out.push(PropSeg::Text(value[pos..range.start].to_string()));
+        }
+        let raw = &value[range.clone()];
+        let (label, is_tag) =
+            if let Some(inner) = raw.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
+                (wiki_target_display(inner).1.to_string(), false)
+            } else if let Some(tag) = raw.strip_prefix('#') {
+                (tag.to_string(), true)
+            } else if let Some(rest) = raw.strip_prefix('[') {
+                // `[text](url)` — show the text.
+                (
+                    rest.split_once(']').map_or(raw, |(t, _)| t).to_string(),
+                    false,
+                )
+            } else {
+                (raw.to_string(), false) // bare URL
+            };
+        out.push(PropSeg::Pill {
+            label,
+            target: hit,
+            is_tag,
+        });
+        pos = range.end;
+    }
+    if pos < value.len() {
+        out.push(PropSeg::Text(value[pos..].to_string()));
+    }
+    out
+}
+
 fn find1(b: &[u8], from: usize, end: usize, c: u8) -> Option<usize> {
     (from..end).find(|&i| b[i] == c)
 }
@@ -363,6 +437,35 @@ mod tests {
             Some((AlertKind::Tip, 9))
         ));
         assert_eq!(AlertKind::Caution.label(), "Caution");
+    }
+
+    #[test]
+    fn property_recognition() {
+        assert_eq!(
+            property("attendees:: Bob, Sue"),
+            Some(("attendees", "Bob, Sue"))
+        );
+        assert_eq!(property("  time::3:00pm"), Some(("time", "3:00pm")));
+        assert_eq!(property("owner:: [[Sue]]"), Some(("owner", "[[Sue]]")));
+        // Not properties: prose with `::`, wiki links, empty/bad keys.
+        assert_eq!(property("See [[Page::sub]] here"), None);
+        assert_eq!(property("just prose"), None);
+        assert_eq!(property(":: value"), None);
+        assert_eq!(property("1key:: v"), None);
+    }
+
+    #[test]
+    fn property_value_segments_pill_and_plain() {
+        let segs = property_value_segments("[[Bob]], [[Sue|Susan]] and #work done");
+        // Bob pill, ", " text, Susan pill, " and " text, work tag, " done" text.
+        assert!(matches!(&segs[0], PropSeg::Pill { label, is_tag: false, .. } if label == "Bob"));
+        assert!(matches!(&segs[1], PropSeg::Text(t) if t == ", "));
+        assert!(matches!(&segs[2], PropSeg::Pill { label, .. } if label == "Susan"));
+        assert!(matches!(&segs[4], PropSeg::Pill { label, is_tag: true, .. } if label == "work"));
+        // A plain value is a single text segment.
+        assert!(
+            matches!(property_value_segments("active").as_slice(), [PropSeg::Text(t)] if t == "active")
+        );
     }
 
     #[test]

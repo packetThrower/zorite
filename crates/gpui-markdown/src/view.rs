@@ -579,6 +579,7 @@ impl RenderOnce for MarkdownView {
         let block_scroll = self.block_scroll;
         let root_id: SharedString = format!("{}-md-root", self.id_base).into();
         let mut ctx = Ctx {
+            source: source.clone(),
             style: self.style,
             on_wiki_link: self.on_wiki_link,
             on_image: self.on_image,
@@ -650,6 +651,9 @@ impl RenderOnce for MarkdownView {
 }
 
 struct Ctx {
+    /// The full markdown source — property blocks slice it by node position to
+    /// recover each `key:: value` line and its precise click-to-source offset.
+    source: SharedString,
     style: MarkdownStyle,
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
@@ -681,6 +685,11 @@ struct Ctx {
 fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Option<AnyElement> {
     match node {
         mdast::Node::Paragraph(p) => {
+            // A block of `key:: value` lines renders as a property panel.
+            if let Some(rows) = property_rows(p, &ctx.source.clone()) {
+                ctx.counter += 1;
+                return Some(render_property_table(rows, ctx, ctx.counter));
+            }
             // A paragraph that *starts* with `![alt](src)` (optionally
             // `{width=N}`) renders as a real image via the host. Any text that
             // follows on the same line (a caption typed right under it) renders
@@ -1593,6 +1602,123 @@ fn collect_definitions(node: &mdast::Node, out: &mut HashMap<String, String>) {
 /// Per-table visual style, from a `<!-- table:STYLE -->` marker comment on the
 /// line above the table (mirrors the editor; the style names are the shared
 /// contract). `Grid` is the default (no marker).
+/// If every line of paragraph `p` is a `key:: value` property, return the rows
+/// as `(key, value, value_offset)` — `value_offset` is the source byte offset
+/// where the value text begins, so a click on it maps back precisely. `None`
+/// (mixed or ordinary prose) falls through to normal paragraph rendering.
+fn property_rows(p: &mdast::Paragraph, source: &str) -> Option<Vec<(String, String, usize)>> {
+    let pos = p.position.as_ref()?;
+    let raw = source.get(pos.start.offset..pos.end.offset)?;
+    let mut rows = Vec::new();
+    let mut line_start = pos.start.offset;
+    for line in raw.split_inclusive('\n') {
+        let (key, value) = crate::syntax::property(line)?;
+        // Offset of the (trimmed) value within the source, past `key::` + any
+        // leading whitespace, so click-to-edit lands on the value.
+        let idx = line.find("::").unwrap_or(0) + 2;
+        let lead = line[idx..].len() - line[idx..].trim_start().len();
+        rows.push((key.to_string(), value.to_string(), line_start + idx + lead));
+        line_start += line.len();
+    }
+    (!rows.is_empty()).then_some(rows)
+}
+
+/// Renders a run of `key:: value` properties as a two-column panel: a muted key
+/// column and the value rendered inline (wiki-links/tags stay live), each row
+/// highlighting on hover.
+fn render_property_table(
+    rows: Vec<(String, String, usize)>,
+    ctx: &mut Ctx,
+    id: usize,
+) -> AnyElement {
+    let key_col = ctx.style.muted_color;
+    let tag_c = ctx.style.tag_color;
+    let link_c = ctx.style.link_color;
+    let hover_border = ctx.style.muted_color;
+    let mut panel = div()
+        .id(SharedString::from(format!("{}-props-{id}", ctx.id_base)))
+        .flex()
+        .flex_col();
+    for (key, value, _v_off) in rows.into_iter() {
+        // Value: plain runs, plus tags/wiki-links as clickable pills.
+        let mut val = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(5.0))
+            .flex_1()
+            .px(px(8.0))
+            .py(px(3.0));
+        for seg in crate::syntax::property_value_segments(&value) {
+            match seg {
+                crate::syntax::PropSeg::Text(t) => {
+                    if !t.trim().is_empty() {
+                        val = val.child(SharedString::from(t.trim().to_string()));
+                    }
+                }
+                crate::syntax::PropSeg::Pill {
+                    label,
+                    target,
+                    is_tag,
+                } => {
+                    let color = if is_tag { tag_c } else { link_c };
+                    let mut bg = color;
+                    bg.a = 0.16;
+                    let on_wiki = ctx.on_wiki_link.clone();
+                    val = val.child(
+                        div()
+                            .px(px(7.0))
+                            .py(px(1.0))
+                            .rounded(px(6.0))
+                            .bg(bg)
+                            .text_color(color)
+                            .cursor_pointer()
+                            .child(SharedString::from(label))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |_: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    match &target {
+                                        crate::syntax::LinkHit::Page(t) => {
+                                            if let Some(h) = &on_wiki {
+                                                h(t.clone().into(), window, cx);
+                                            }
+                                        }
+                                        crate::syntax::LinkHit::Url(u) => cx.open_url(u),
+                                    }
+                                },
+                            ),
+                    );
+                }
+            }
+        }
+        // A clean row (no grid lines); the whole row shows a rounded border on
+        // hover (Obsidian-style). A reserved transparent border keeps the layout
+        // from shifting when it appears.
+        panel = panel.child(
+            div()
+                .flex()
+                .items_center()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .hover(|s| s.border_color(hover_border))
+                .child(
+                    div()
+                        .w(px(140.0))
+                        .flex_shrink_0()
+                        .px(px(8.0))
+                        .py(px(3.0))
+                        .text_color(key_col)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child(SharedString::from(key)),
+                )
+                .child(val),
+        );
+    }
+    panel.into_any_element()
+}
+
 fn render_table(
     table: &mdast::Table,
     ctx: &mut Ctx,
@@ -2240,6 +2366,34 @@ pub fn outdent_line(value: &str, cursor: usize, indent: &str) -> Option<(String,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn property_block_detected_with_value_offsets() {
+        let src = "attendees:: Bob\ntime:: 3pm";
+        let mdast::Node::Root(r) = parse_cached(src).unwrap().as_ref().clone() else {
+            panic!("root");
+        };
+        let mdast::Node::Paragraph(p) = &r.children[0] else {
+            panic!("paragraph");
+        };
+        let rows = property_rows(p, src).expect("all lines are properties");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "attendees");
+        assert_eq!(rows[0].1, "Bob");
+        // Value offset points at the value text in the source, not the key.
+        assert_eq!(&src[rows[0].2..rows[0].2 + 3], "Bob");
+        assert_eq!(&src[rows[1].2..rows[1].2 + 3], "3pm");
+
+        // A paragraph with a non-property line is not a property block.
+        let mdast::Node::Root(r2) = parse_cached("k:: v\njust prose").unwrap().as_ref().clone()
+        else {
+            panic!("root");
+        };
+        let mdast::Node::Paragraph(p2) = &r2.children[0] else {
+            panic!("paragraph");
+        };
+        assert!(property_rows(p2, "k:: v\njust prose").is_none());
+    }
 
     #[test]
     fn parse_cache_hits_and_evicts() {

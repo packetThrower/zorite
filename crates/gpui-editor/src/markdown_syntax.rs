@@ -1428,6 +1428,40 @@ pub(crate) fn is_table_row(line: &str) -> bool {
     line.trim_start().starts_with('|')
 }
 
+/// Contiguous runs of `key:: value` property lines (Obsidian/Logseq-style
+/// metadata) — each renders as a two-column panel, the WYSIWYG twin of the
+/// reader's `render_property_table`. A run is one or more adjacent property
+/// lines; any non-property line ends it. Fenced code is skipped so a
+/// `Type::method()` code line isn't mistaken for a property. Returns line-index
+/// ranges in order.
+pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            i += 1;
+            continue;
+        }
+        if !in_fence && gpui_markdown::syntax::property(lines[i]).is_some() {
+            let start = i;
+            i += 1;
+            while i < lines.len()
+                && !lines[i].trim_start().starts_with("```")
+                && gpui_markdown::syntax::property(lines[i]).is_some()
+            {
+                i += 1;
+            }
+            out.push(start..i);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Split a `| a | b |` row into trimmed cell strings (the bounding pipes drop the
 /// empty leading/trailing cells they'd otherwise create).
 pub(crate) fn table_cells(line: &str) -> Vec<&str> {
@@ -2118,5 +2152,15 @@ mod tests {
             Some("  - [x] nested")
         );
         assert_eq!(toggle_task_checkbox("- plain"), None);
+    }
+
+    #[test]
+    fn property_regions_group_and_skip_code() {
+        // Two adjacent property lines form one region; prose breaks it.
+        let r = property_regions("attendees:: Bob\ntime:: 3pm\n\nprose\nowner:: Sue");
+        assert_eq!(r, vec![0..2, 4..5]);
+        // A `Type::method()` line inside a code fence isn't a property.
+        let r2 = property_regions("```rust\nFoo::bar()\n```\nkey:: v");
+        assert_eq!(r2, vec![3..4]);
     }
 }
