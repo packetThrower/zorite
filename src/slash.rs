@@ -44,6 +44,8 @@ pub enum ItemKind {
     Insert { snippet: String, caret: usize },
     /// Open the rows×cols table-size picker (instead of inserting a fixed table).
     TablePicker,
+    /// The hidden `/play` easter egg — only offered on that exact query.
+    Game,
 }
 
 /// One entry in the open palette.
@@ -223,6 +225,14 @@ pub fn build_slash_items(
             datetime_items(&q, &mut out);
         }
         SlashLevel::Root => {
+            // The easter egg: never listed, never filtered into view —
+            // exactly `/play` summons it.
+            if q == "play" {
+                out.push(PaletteItem {
+                    label: "▸ Blockdown".to_string(),
+                    kind: ItemKind::Game,
+                });
+            }
             markdown_items(&q, &mut out);
             datetime_items(&q, &mut out);
             template_items(&q, templates, title, &mut out);
@@ -717,6 +727,25 @@ mod tests {
             panic!("expected insert");
         };
         assert_eq!(snippet, "[[New]]");
+    }
+
+    #[test]
+    fn play_is_hidden_until_summoned() {
+        let none: Vec<Template> = Vec::new();
+        // Not listed on empty or partial queries…
+        for q in ["", "pla", "player", "p"] {
+            let items = build_slash_items(SlashLevel::Root, q, &none, "T");
+            assert!(
+                !items.iter().any(|i| matches!(i.kind, ItemKind::Game)),
+                "leaked at query {q:?}"
+            );
+        }
+        // …exactly `play` summons it, on top.
+        let items = build_slash_items(SlashLevel::Root, "play", &none, "T");
+        assert!(matches!(
+            items.first().map(|i| &i.kind),
+            Some(ItemKind::Game)
+        ));
     }
 
     #[test]

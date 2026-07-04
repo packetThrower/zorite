@@ -59,6 +59,12 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             .label(display)
             .child(overlay)
             .on_click(cx.listener(move |this: &mut AppView, _ev, window, cx| {
+                // Five quick clicks on the Journal tab open the arcade (the
+                // second door to `/play`) — and that fifth click is the
+                // game's, not the journal's.
+                if this.note_journal_tab_click(i, window, cx) {
+                    return;
+                }
                 this.activate_tab(i, window, cx);
             }));
         // The pinned Journal (index 0) has no close × and isn't draggable. Every

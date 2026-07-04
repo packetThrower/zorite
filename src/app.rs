@@ -77,6 +77,8 @@ pub enum TabKind {
     /// The graph view (All pages → "Graph"): pages and whiteboards as nodes,
     /// `page_links` as edges.
     Graph,
+    /// The hidden brick-breaker (`/play`).
+    Game,
 }
 
 /// An open tab: its content kind + a cached title for the tab strip.
@@ -452,6 +454,11 @@ pub struct AppView {
     all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
     /// The graph view's model (nodes + layout + camera), rebuilt on open.
     pub graph: Option<crate::ui::graph::GraphState>,
+    /// The hidden game's state + its ~60fps tick task, alive while its tab is.
+    pub game: Option<crate::ui::game::GameState>,
+    game_tick: Option<Task<()>>,
+    /// Konami-lite: consecutive quick clicks on the Journal tab (count, last).
+    journal_tab_clicks: (u8, std::time::Instant),
     pub graph_search: Option<GraphSearch>,
     // Auto-link-as-you-type state, shared into the editors' auto-replace
     // closures: lowercase page title -> canonical title, rebuilt with the
@@ -738,6 +745,9 @@ impl AppView {
             all_pages_kind: Default::default(),
             all_pages_pdfs: Vec::new(),
             graph: None,
+            game: None,
+            game_tick: None,
+            journal_tab_clicks: (0, std::time::Instant::now()),
             graph_search: None,
             auto_link_titles: Rc::new(RefCell::new(Default::default())),
             auto_link: Rc::new(std::cell::Cell::new(false)),
@@ -1545,6 +1555,7 @@ impl AppView {
                     self.rebuild_graph();
                 }
             }
+            TabKind::Game => self.page_editor = None,
         }
         // Focus the AppView so the window's key dispatch reaches its global shortcuts
         // (⌘F, ⌘W, …) right after a tab click — without having to click into the
@@ -2178,6 +2189,7 @@ impl AppView {
             Enter(SlashLevel),
             Insert(String, usize),
             OpenPicker(SlashTarget, usize, gpui::Bounds<gpui::Pixels>),
+            Game,
         }
         let act = {
             let Some(s) = self.slash.as_ref() else { return };
@@ -2189,10 +2201,16 @@ impl AppView {
                 ItemKind::Category(level) => Act::Enter(*level),
                 ItemKind::Insert { snippet, caret } => Act::Insert(snippet.clone(), *caret),
                 ItemKind::TablePicker => Act::OpenPicker(s.target.clone(), s.start, s.caret),
+                ItemKind::Game => Act::Game,
             }
         };
         match act {
             Act::Enter(level) => self.enter_slash_category(level, cx),
+            Act::Game => {
+                // Remove the typed `/play`, then slip into the game.
+                self.insert_slash(String::new(), 0, window, cx);
+                self.open_game(window, cx);
+            }
             Act::Insert(snippet, caret) => self.insert_slash(snippet, caret, window, cx),
             Act::OpenPicker(target, start, caret) => {
                 self.slash = None;
@@ -3350,6 +3368,152 @@ impl AppView {
             .set_setting("auto_lock_minutes", &minutes.to_string());
         crate::security::set_auto_lock_minutes(minutes);
         cx.notify();
+    }
+
+    /// Count quick consecutive clicks on the Journal tab; the fifth opens the
+    /// hidden game (the discoverable-by-fidgeting door; `/play` is the other).
+    /// Returns true when the fifth click fired (the game took the stage —
+    /// the caller must NOT re-activate the journal tab over it).
+    pub fn note_journal_tab_click(
+        &mut self,
+        ix: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !matches!(self.tabs.get(ix).map(|t| &t.kind), Some(TabKind::Journal)) {
+            self.journal_tab_clicks.0 = 0;
+            return false;
+        }
+        let now = std::time::Instant::now();
+        let (count, last) = self.journal_tab_clicks;
+        let count = if now.duration_since(last).as_millis() < 1200 {
+            count + 1
+        } else {
+            1
+        };
+        self.journal_tab_clicks = (count, now);
+        if count >= 5 {
+            self.journal_tab_clicks.0 = 0;
+            self.open_game(window, cx);
+            return true;
+        }
+        false
+    }
+
+    /// Open (or focus) the hidden game tab (`/play`), starting its tick task.
+    pub fn open_game(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.game.is_none() {
+            self.game = Some(crate::ui::game::GameState::new(cx.focus_handle()));
+        }
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Game))
+        {
+            self.activate_tab(ix, window, cx);
+        } else {
+            self.tabs.push(OpenTab {
+                kind: TabKind::Game,
+                title: "•".into(),
+            });
+            self.activate_tab(self.tabs.len() - 1, window, cx);
+        }
+        if let Some(g) = self.game.as_ref() {
+            window.focus(&g.focus, cx);
+        }
+        if self.game_tick.is_none() {
+            self.game_tick = Some(cx.spawn_in(window, async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(16))
+                        .await;
+                    let alive = this.update(cx, |this, cx| {
+                        let Some(g) = this.game.as_mut() else {
+                            return false;
+                        };
+                        // Simulate only while the game tab is front-most.
+                        let active = matches!(
+                            this.tabs.get(this.active).map(|t| &t.kind),
+                            Some(TabKind::Game)
+                        );
+                        if active && g.step(1.0 / 60.0) {
+                            cx.notify();
+                        }
+                        // A run just ended: write it to the high-score page.
+                        if let Some((score, level)) =
+                            this.game.as_mut().and_then(|g| g.take_record())
+                        {
+                            this.record_game_score(score, level, cx);
+                        }
+                        true
+                    });
+                    if !matches!(alive, Ok(true)) {
+                        break;
+                    }
+                }
+            }));
+        }
+    }
+
+    /// Append a finished run to the "Blockdown" high-score page (created on
+    /// first game over — a plain page, so the secret surfaces in the sidebar
+    /// and search only once someone has actually played).
+    fn record_game_score(&mut self, score: u32, level: u32, cx: &mut Context<Self>) {
+        if score == 0 {
+            return;
+        }
+        let Ok(page) = self.db.get_or_create_page("Blockdown") else {
+            return;
+        };
+        // Parse the existing table rows (| when | score | level |).
+        let mut rows: Vec<(String, u32, u32)> = page
+            .content
+            .lines()
+            .filter_map(|l| {
+                let mut cells = l.trim().strip_prefix('|')?.split('|');
+                let when = cells.next()?.trim().to_string();
+                let s: u32 = cells.next()?.trim().parse().ok()?;
+                let lv: u32 = cells.next()?.trim().parse().ok()?;
+                Some((when, s, lv))
+            })
+            .collect();
+        let when = format!(
+            "{} {}",
+            crate::dates::current_date(),
+            crate::dates::current_time()
+        );
+        rows.push((when, score, level));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.1));
+        rows.truncate(10);
+        let mut content = String::from(
+            "You found the arcade. Type `/play` in any note to defend your spot.
+
+             | when | score | level |
+|---|---|---|
+",
+        );
+        for (when, s, lv) in &rows {
+            content.push_str(&format!(
+                "| {when} | {s} | {lv} |
+"
+            ));
+        }
+        self.save_page_content(page.id, &content, cx);
+        self.refresh_sidebar();
+        cx.notify();
+    }
+
+    /// Esc in the game: close its tab and drop the state + tick task.
+    pub fn close_game(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Game))
+        {
+            self.close_tab(ix, window, cx);
+        }
+        self.game = None;
+        self.game_tick = None;
     }
 
     /// Open (or focus) the graph view tab, rebuilding nodes and layout.
@@ -5355,6 +5519,9 @@ impl AppView {
                     TabKind::Graph => {
                         view.update(cx, |this, cx| this.open_graph(window, cx));
                     }
+                    TabKind::Game => {
+                        view.update(cx, |this, cx| this.open_game(window, cx));
+                    }
                     TabKind::Journal => {}
                 }
                 view.update(cx, |this, _| {
@@ -5490,7 +5657,9 @@ impl AppView {
             // A board reloads cheaply from the DB on the destination window, so
             // it carries no live entity (no unsaved in-memory edits in Phase 0).
             TabKind::Whiteboard(_) => TabSeed::default(),
-            TabKind::Journal | TabKind::AllPages | TabKind::Graph => TabSeed::default(),
+            TabKind::Journal | TabKind::AllPages | TabKind::Graph | TabKind::Game => {
+                TabSeed::default()
+            }
         }
     }
 
@@ -5609,6 +5778,7 @@ impl AppView {
             TabKind::Whiteboard(id) => self.open_whiteboard(id, window, cx),
             TabKind::AllPages => self.open_all_pages(window, cx),
             TabKind::Graph => self.open_graph(window, cx),
+            TabKind::Game => self.open_game(window, cx),
             TabKind::Journal => {}
         }
         // After the open (whose tab switch wiped this window's store), adopt the
@@ -5819,7 +5989,11 @@ impl AppView {
                 }
                 ("Journal".to_string(), out)
             }
-            TabKind::Pdf(_) | TabKind::Whiteboard(_) | TabKind::AllPages | TabKind::Graph => {
+            TabKind::Pdf(_)
+            | TabKind::Whiteboard(_)
+            | TabKind::AllPages
+            | TabKind::Graph
+            | TabKind::Game => {
                 return;
             }
         };
@@ -6862,6 +7036,7 @@ impl Render for AppView {
                                         ui::all_pages::render(self, cx).into_any_element()
                                     }
                                     TabKind::Graph => ui::graph::render(self, cx),
+                                    TabKind::Game => ui::game::render(self, cx),
                                 }
                             })),
                     ),
