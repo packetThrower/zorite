@@ -20,6 +20,7 @@
 
 mod edn;
 pub mod logseq;
+pub mod obsidian;
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};

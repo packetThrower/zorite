@@ -53,6 +53,7 @@ actions!(
         GlobalSearch,
         // File menu: import a Logseq graph folder (no keybinding).
         ImportLogseq,
+        ImportObsidian,
         // Shrink any image wider than the content area back to fit the view.
         FitImages
     ]
@@ -160,6 +161,7 @@ fn build_app_menus() -> Vec<Menu> {
                 MenuItem::action("New Window", NewWindow),
                 MenuItem::separator(),
                 MenuItem::action("Import from Logseq…", ImportLogseq),
+                MenuItem::action("Import from Obsidian…", ImportObsidian),
                 MenuItem::action("Export as PDF…", ExportActivePdf),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", CloseTab),
