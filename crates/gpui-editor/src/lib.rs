@@ -2530,7 +2530,9 @@ impl EditorState {
     fn inline_math_at(&self, position: Point<Pixels>) -> Option<(Range<usize>, SharedString)> {
         self.inline_math_rects
             .iter()
-            .find(|(_, _, rect)| rect.contains(&position))
+            // Empty latex marks an inline IMAGE sharing this machinery — not a
+            // formula, so a click on it shouldn't open the math editor.
+            .find(|(_, latex, rect)| !latex.is_empty() && rect.contains(&position))
             .map(|(range, latex, _)| (range.clone(), latex.clone()))
     }
 
@@ -4224,6 +4226,83 @@ fn shape_inline_math(
     (nd, nr, nm, inline)
 }
 
+/// Inline `![](src)` images: swap each ready image's glyphs for a spacer to
+/// paint the raster over, reusing the inline-math machinery — the returned
+/// [`InlineMath`] entries carry an empty `latex` (so the click-to-edit path
+/// treats them as images, not formulas). A caret strictly inside an image's
+/// `![…](…)` leaves it raw for editing. Sizing matches the reader: ~40px tall,
+/// capped 240px wide, aspect from the raster's pixels.
+#[allow(clippy::too_many_arguments)]
+fn shape_inline_images(
+    window: &mut Window,
+    line: &str,
+    line_start: usize,
+    disp: String,
+    runs: Vec<TextRun>,
+    map: Vec<usize>,
+    caret_col: Option<usize>,
+    base_font: &Font,
+    fs: Pixels,
+    block_image: &BlockImageFn,
+) -> (String, Vec<TextRun>, Vec<usize>, Vec<InlineMath>) {
+    let spans = markdown_syntax::inline_image_spans(line);
+    if spans.is_empty() {
+        return (disp, runs, map, Vec::new());
+    }
+    let space_w = f32::from(measure_width(window, " ", base_font, fs)).max(1.);
+    let mut places: Vec<(Range<usize>, usize)> = Vec::new();
+    let mut imgs: Vec<(Arc<RenderImage>, Pixels, Pixels)> = Vec::new();
+    for (full, src) in spans {
+        if caret_col.is_some_and(|c| full.start < c && c < full.end) {
+            continue; // editing the raw `![](src)`
+        }
+        let Some(img) = block_image(&line[src]) else {
+            continue; // remote / PDF / not-yet-decoded → leave raw
+        };
+        let sz = img.size(0);
+        let (pw, ph) = (sz.width.0 as f32, sz.height.0 as f32);
+        if pw <= 0. || ph <= 0. {
+            continue;
+        }
+        let mut h = 40.0_f32;
+        let mut w = h * pw / ph;
+        if w > 240. {
+            let s = 240. / w;
+            w *= s;
+            h *= s;
+        }
+        let n = ((w / space_w).ceil() as usize).max(1);
+        places.push((full, n));
+        imgs.push((img, px(w), px(h)));
+    }
+    if places.is_empty() {
+        return (disp, runs, map, Vec::new());
+    }
+    let gap = TextRun {
+        len: 0,
+        font: base_font.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let (nd, nr, nm, placed) =
+        markdown_syntax::splice_inline_math(&disp, &runs, &map, &places, &gap);
+    let inline = placed
+        .into_iter()
+        .zip(imgs)
+        .map(|(p, (img, width, height))| InlineMath {
+            display_off: p.display_off,
+            source: line_start + p.source.start..line_start + p.source.end,
+            latex: SharedString::default(), // empty = image, not a formula
+            img,
+            width,
+            height,
+        })
+        .collect();
+    (nd, nr, nm, inline)
+}
+
 /// The WYSIWYG layout pass: shape `content` line-by-line so each logical line
 /// can use its own font size (headings are larger — W2) and a standalone image
 /// line can render as the image (W4). Returns, per logical line: the shaped
@@ -4948,17 +5027,28 @@ fn shape_document(
                 reveal_inline,
                 st,
             );
-            // Inline `$…$` math: swap each ready formula's glyphs for a spacer to paint over.
-            match (block_math, block_math_em) {
+            // Inline `$…$` math AND `![](src)` images: swap each ready one's
+            // glyphs for a spacer to paint the raster over (shared machinery).
+            let (disp, runs, m) = match (block_math, block_math_em) {
                 (Some(mathf), Some(em)) => {
                     let (disp, runs, m, im) = shape_inline_math(
                         window, line, line_start, disp, runs, m, caret_col, base_font, fs, mathf,
                         em,
                     );
                     line_inline_math = im;
+                    (disp, runs, m)
+                }
+                _ => (disp, runs, m),
+            };
+            match block_image {
+                Some(imgf) => {
+                    let (disp, runs, m, imgs) = shape_inline_images(
+                        window, line, line_start, disp, runs, m, caret_col, base_font, fs, imgf,
+                    );
+                    line_inline_math.extend(imgs);
                     (disp, runs, None, Some(m))
                 }
-                _ => (disp, runs, None, Some(m)),
+                None => (disp, runs, None, Some(m)),
             }
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).

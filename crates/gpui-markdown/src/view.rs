@@ -378,6 +378,12 @@ pub type MathRenderer = Rc<dyn Fn(SharedString) -> AnyElement>;
 /// `$…$` shows until then). Set via [`MarkdownView::on_inline_math`].
 pub type InlineMathRenderer = Rc<dyn Fn(SharedString) -> Option<(Arc<RenderImage>, f32, f32)>>;
 
+/// A renderer for an INLINE image (`![](src)` amid text): its src → the raster
+/// plus logical `(w, h)` sized to flow at the text's line height. Like inline
+/// math, the caller reserves a spacer in the line and paints the image over
+/// it; `None` (still decoding / no renderer) falls back to a clickable label.
+pub type InlineImageRenderer = Rc<dyn Fn(SharedString) -> Option<(Arc<RenderImage>, f32, f32)>>;
+
 /// Called when the rendered text is clicked (outside a link), with the **source**
 /// byte offset nearest the click and the click's window **y** — so the host can
 /// place its editor caret there and keep it under the cursor when switching into
@@ -401,6 +407,7 @@ pub struct MarkdownView {
     on_highlight: Option<CodeHighlighter>,
     on_math: Option<MathRenderer>,
     on_inline_math: Option<InlineMathRenderer>,
+    on_inline_image: Option<InlineImageRenderer>,
     /// In-page search query (non-empty when `Some`) + the active match index.
     query: Option<SharedString>,
     current_match: usize,
@@ -427,6 +434,7 @@ impl MarkdownView {
             on_highlight: None,
             on_math: None,
             on_inline_math: None,
+            on_inline_image: None,
             query: None,
             current_match: 0,
             block_scroll: None,
@@ -469,6 +477,13 @@ impl MarkdownView {
     /// stays literal `$…$` text.
     pub fn on_inline_math(mut self, handler: InlineMathRenderer) -> Self {
         self.on_inline_math = Some(handler);
+        self
+    }
+
+    /// Supply a renderer for inline `![](src)` images (raster + size). Without
+    /// one, an inline image stays a clickable label.
+    pub fn on_inline_image(mut self, handler: InlineImageRenderer) -> Self {
+        self.on_inline_image = Some(handler);
         self
     }
 
@@ -586,6 +601,7 @@ impl RenderOnce for MarkdownView {
             on_highlight: self.on_highlight,
             on_math: self.on_math,
             on_inline_math: self.on_inline_math,
+            on_inline_image: self.on_inline_image,
             id_base: self.id_base,
             counter: 0,
             definitions: HashMap::new(),
@@ -657,6 +673,7 @@ struct Ctx {
     on_highlight: Option<CodeHighlighter>,
     on_math: Option<MathRenderer>,
     on_inline_math: Option<InlineMathRenderer>,
+    on_inline_image: Option<InlineImageRenderer>,
     id_base: SharedString,
     counter: usize,
     /// `[id] -> url` from reference definitions (`[id]: url`), collected up
@@ -998,6 +1015,41 @@ pub fn images(source: &str) -> Vec<ImageInfo> {
     out
 }
 
+/// Every image `src` in `source` — block (leading) AND inline — so the host
+/// can pre-decode them all (inline images render as rasters too, not just
+/// leading ones). Pure: parses the markdown, no I/O.
+pub fn all_image_srcs(source: &str) -> Vec<SharedString> {
+    let mut out = Vec::new();
+    if let Ok(mdast::Node::Root(root)) = markdown::to_mdast(source, &markdown::ParseOptions::gfm())
+    {
+        collect_all_image_srcs(&root.children, &mut out);
+    }
+    out
+}
+
+fn collect_all_image_srcs(nodes: &[mdast::Node], out: &mut Vec<SharedString>) {
+    use mdast::Node::*;
+    for node in nodes {
+        match node {
+            Image(img) => out.push(img.url.clone().into()),
+            Paragraph(n) => collect_all_image_srcs(&n.children, out),
+            Heading(n) => collect_all_image_srcs(&n.children, out),
+            Blockquote(n) => collect_all_image_srcs(&n.children, out),
+            List(n) => collect_all_image_srcs(&n.children, out),
+            ListItem(n) => collect_all_image_srcs(&n.children, out),
+            Emphasis(n) => collect_all_image_srcs(&n.children, out),
+            Strong(n) => collect_all_image_srcs(&n.children, out),
+            Delete(n) => collect_all_image_srcs(&n.children, out),
+            Link(n) => collect_all_image_srcs(&n.children, out),
+            LinkReference(n) => collect_all_image_srcs(&n.children, out),
+            Table(n) => collect_all_image_srcs(&n.children, out),
+            TableRow(n) => collect_all_image_srcs(&n.children, out),
+            TableCell(n) => collect_all_image_srcs(&n.children, out),
+            _ => {}
+        }
+    }
+}
+
 /// Recurse paragraphs and list items, pushing each leading-image's [`ImageInfo`].
 fn collect_images(nodes: &[mdast::Node], out: &mut Vec<ImageInfo>) {
     for node in nodes {
@@ -1151,9 +1203,10 @@ struct Inline {
     /// rendered order, recorded as text is appended — so a click on the rendered
     /// text maps back to a source offset (see [`map_to_source`]).
     source_map: Vec<(usize, usize)>,
-    /// Inline `$…$` formulas: `(rendered byte offset of the spacer, raster, logical w, h)`. The
-    /// spacer (non-breaking spaces) reserves the width in the text; a canvas paints the raster
-    /// over it at the laid-out position (see [`inline_element`]).
+    /// Inline rasters — `$…$` formulas AND inline `![](src)` images — as
+    /// `(rendered byte offset of the spacer, raster, logical w, h)`. The spacer
+    /// (non-breaking spaces) reserves the width in the text; a canvas paints
+    /// the raster over it at the laid-out position (see [`inline_element`]).
     math: Vec<(usize, Arc<RenderImage>, f32, f32)>,
 }
 
@@ -1172,6 +1225,7 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         &ctx.style,
         &ctx.definitions,
         ctx.on_inline_math.as_ref(),
+        ctx.on_inline_image.as_ref(),
         &mut inl,
     );
 
@@ -1302,6 +1356,7 @@ fn build_inline(
     style: &MarkdownStyle,
     defs: &HashMap<String, String>,
     im: Option<&InlineMathRenderer>,
+    ii: Option<&InlineImageRenderer>,
     out: &mut Inline,
 ) {
     // Mutable so `<mark>` / `</mark>` — flat sibling HTML tags, not a wrapping node —
@@ -1313,12 +1368,12 @@ fn build_inline(
             mdast::Node::Strong(s) => {
                 let mut c = cur;
                 c.font_weight = Some(FontWeight::BOLD);
-                build_inline(&s.children, c, style, defs, im, out);
+                build_inline(&s.children, c, style, defs, im, ii, out);
             }
             mdast::Node::Emphasis(e) => {
                 let mut c = cur;
                 c.font_style = Some(FontStyle::Italic);
-                build_inline(&e.children, c, style, defs, im, out);
+                build_inline(&e.children, c, style, defs, im, ii, out);
             }
             mdast::Node::InlineCode(ic) => {
                 let mut c = cur;
@@ -1349,7 +1404,7 @@ fn build_inline(
                 let mut c = cur;
                 c.color = Some(style.link_color);
                 let start = out.text.len();
-                build_inline(&l.children, c, style, defs, im, out);
+                build_inline(&l.children, c, style, defs, im, ii, out);
                 let end = out.text.len();
                 if start < end {
                     out.links
@@ -1363,23 +1418,36 @@ fn build_inline(
                     thickness: px(1.0),
                     color: None,
                 });
-                build_inline(&d.children, c, style, defs, im, out);
+                build_inline(&d.children, c, style, defs, im, ii, out);
             }
             mdast::Node::Image(img) => {
-                // Render as a clickable label opening the URL (real image
-                // rendering is a follow-up).
-                let label = if img.alt.is_empty() {
-                    "🖼 image".to_string()
-                } else {
-                    format!("🖼 {}", img.alt)
-                };
-                let mut c = cur;
-                c.color = Some(style.link_color);
-                let start = out.text.len();
-                push_run(&label, c, out);
-                let end = out.text.len();
-                out.links
-                    .push((start..end, LinkTarget::Url(img.url.clone().into())));
+                out.map(node_src(node));
+                // A ready raster reserves a non-breaking spacer (≈ its width)
+                // that the paragraph's canvas paints the image over — the same
+                // mechanism as inline math. Until it's ready (or with no
+                // renderer) a clickable label shows so nothing is lost.
+                match ii.and_then(|f| f(img.url.clone().into())) {
+                    Some((raster, w, h)) => {
+                        let space_w = (f32::from(style.text_size) * 0.26).max(1.0);
+                        let n = ((w / space_w).ceil() as usize).max(1);
+                        out.math.push((out.text.len(), raster, w, h));
+                        out.text.extend(std::iter::repeat_n('\u{00A0}', n));
+                    }
+                    None => {
+                        let label = if img.alt.is_empty() {
+                            "🖼 image".to_string()
+                        } else {
+                            format!("🖼 {}", img.alt)
+                        };
+                        let mut c = cur;
+                        c.color = Some(style.link_color);
+                        let start = out.text.len();
+                        push_run(&label, c, out);
+                        let end = out.text.len();
+                        out.links
+                            .push((start..end, LinkTarget::Url(img.url.clone().into())));
+                    }
+                }
             }
             mdast::Node::FootnoteReference(f) => {
                 // Render `[label]` as a marker (not clickable — jumping would
@@ -1396,13 +1464,13 @@ fn build_inline(
                     let mut c = cur;
                     c.color = Some(style.link_color);
                     let start = out.text.len();
-                    build_inline(&l.children, c, style, defs, im, out);
+                    build_inline(&l.children, c, style, defs, im, ii, out);
                     let end = out.text.len();
                     if start < end {
                         out.links.push((start..end, LinkTarget::Url(url.into())));
                     }
                 } else {
-                    build_inline(&l.children, cur, style, defs, im, out);
+                    build_inline(&l.children, cur, style, defs, im, ii, out);
                 }
             }
             mdast::Node::ImageReference(img) => {
@@ -1437,7 +1505,7 @@ fn build_inline(
             // don't special-case.
             other => {
                 if let Some(children) = node_children(other) {
-                    build_inline(children, cur, style, defs, im, out);
+                    build_inline(children, cur, style, defs, im, ii, out);
                 }
             }
         }
@@ -1846,6 +1914,7 @@ fn inline_text(
         style,
         defs,
         None,
+        None,
         &mut inl,
     );
     inl.text
@@ -2027,6 +2096,7 @@ mod search_tests {
             HighlightStyle::default(),
             &style,
             &defs,
+            None,
             None,
             &mut inl,
         );
@@ -2430,6 +2500,7 @@ mod tests {
             &MarkdownStyle::default(),
             &HashMap::new(),
             None,
+            None,
             &mut inl,
         );
         inl
@@ -2503,6 +2574,7 @@ mod tests {
             &style,
             &HashMap::new(),
             None,
+            None,
             &mut inl,
         );
         assert_eq!(inl.text, "hi");
@@ -2521,6 +2593,7 @@ mod tests {
             HighlightStyle::default(),
             &style,
             &HashMap::new(),
+            None,
             None,
             &mut inl2,
         );
@@ -2646,6 +2719,7 @@ mod tests {
             &MarkdownStyle::default(),
             &defs,
             None,
+            None,
             &mut inl,
         );
         assert_eq!(inl.text, "the docs");
@@ -2663,6 +2737,7 @@ mod tests {
             HighlightStyle::default(),
             &MarkdownStyle::default(),
             &HashMap::new(),
+            None,
             None,
             &mut inl,
         );
@@ -2689,6 +2764,7 @@ mod tests {
                     HighlightStyle::default(),
                     &MarkdownStyle::default(),
                     &HashMap::new(),
+                    None,
                     None,
                     &mut inl,
                 );

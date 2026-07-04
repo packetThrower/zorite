@@ -2987,8 +2987,9 @@ impl AppView {
     /// `ensure_image_loaded` dedupes, so re-scanning is cheap; a finished decode
     /// notifies → repaint → the editor's block-image provider finds the bitmap.
     fn ensure_content_images(&mut self, content: &str, cx: &mut Context<Self>) {
-        for info in gpui_markdown::images(content) {
-            self.ensure_image_loaded(info.src, cx);
+        // Every image, block AND inline — inline images render as rasters too.
+        for src in gpui_markdown::all_image_srcs(content) {
+            self.ensure_image_loaded(src, cx);
         }
     }
 
