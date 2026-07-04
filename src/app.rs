@@ -991,12 +991,17 @@ impl AppView {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
                 }
-                EditorEvent::EditProperties { range, source } => {
+                EditorEvent::EditProperties {
+                    range,
+                    source,
+                    at_end,
+                } => {
                     this.open_prop_edit(
                         st.clone(),
                         SlashTarget::Day(key.clone()),
                         range.clone(),
                         source.clone(),
+                        *at_end,
                         window,
                         cx,
                     );
@@ -1871,12 +1876,17 @@ impl AppView {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
                 }
-                EditorEvent::EditProperties { range, source } => {
+                EditorEvent::EditProperties {
+                    range,
+                    source,
+                    at_end,
+                } => {
                     this.open_prop_edit(
                         st.clone(),
                         SlashTarget::Page(pid),
                         range.clone(),
                         source.clone(),
+                        *at_end,
                         window,
                         cx,
                     );
@@ -2998,12 +3008,14 @@ impl AppView {
 
     /// Seat the in-place property editor over a `key:: value` block (reusing the
     /// math block's reserved-gap machinery) and commit on blur.
+    #[allow(clippy::too_many_arguments)]
     fn open_prop_edit(
         &mut self,
         source: Entity<EditorState>,
         target: SlashTarget,
         range: std::ops::Range<usize>,
         block: SharedString,
+        at_end: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3032,7 +3044,7 @@ impl AppView {
         source.update(cx, |e, cx| {
             e.set_editing_block(range, editor.clone().into(), height, cx)
         });
-        editor.update(cx, |ed, cx| ed.focus_first(window, cx));
+        editor.update(cx, |ed, cx| ed.focus_end(at_end, window, cx));
         // Commit when the form loses focus (guarded on identity, like math).
         let weak = cx.entity().downgrade();
         let editor_id = editor.entity_id();

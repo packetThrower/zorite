@@ -339,13 +339,16 @@ pub enum EditorEvent {
         source: SharedString,
         position: Point<Pixels>,
     },
-    /// A property panel was clicked: the byte `range` of the whole `key:: value`
-    /// block and its `source`, so the host can seat an in-place property editor
-    /// (via `set_editing_block`) and replace the block's text on commit — the
-    /// same seat/commit pattern as [`EditorEvent::EditMath`] for a `$$` block.
+    /// A property panel was clicked or arrowed into: the byte `range` of the whole
+    /// `key:: value` block and its `source`, so the host can seat an in-place
+    /// property editor (via `set_editing_block`) and replace the block's text on
+    /// commit — the same seat/commit pattern as [`EditorEvent::EditMath`] for a
+    /// `$$` block. `at_end` seats focus on the last field (entered by arrowing up
+    /// from below) vs the first (click / arrowing down from above).
     EditProperties {
         range: Range<usize>,
         source: SharedString,
+        at_end: bool,
     },
 }
 
@@ -1215,6 +1218,15 @@ impl EditorState {
             });
             return;
         }
+        // Left into a property panel opens its editor at the last field.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: true,
+            });
+            return;
+        }
         self.move_to(off, cx);
     }
 
@@ -1245,6 +1257,15 @@ impl EditorState {
                 source,
                 at_end: false,
                 inline: false,
+            });
+            return;
+        }
+        // Right into a property panel opens its editor at the first field.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: false,
             });
             return;
         }
@@ -1279,6 +1300,16 @@ impl EditorState {
             });
             return;
         }
+        // Arrowing UP into a property panel opens its editor at the LAST field
+        // (entered from below), not the raw source.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: true,
+            });
+            return;
+        }
         // Set the caret directly (not via `move_to`) to keep the goal column.
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
@@ -1309,6 +1340,15 @@ impl EditorState {
                 source,
                 at_end: false,
                 inline: false,
+            });
+            return;
+        }
+        // Arrowing DOWN into a property panel opens its editor at the FIRST field.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: false,
             });
             return;
         }
@@ -1787,6 +1827,20 @@ impl EditorState {
             .map(|(r, source)| (starts[r.start]..self.line_end(r.end - 1), source.into()))
     }
 
+    /// The property block whose lines cover `row`, as an absolute byte range +
+    /// source — so a click or an arrow into the panel opens the property editor
+    /// instead of landing in (and revealing) the raw `key:: value` lines.
+    /// WYSIWYG-only, like [`Self::math_block_at`].
+    fn property_block_at(&self, row: usize) -> Option<(Range<usize>, SharedString)> {
+        self.markdown_style.as_ref()?;
+        let region = markdown_syntax::property_regions(&self.content)
+            .into_iter()
+            .find(|r| r.contains(&row))?;
+        let start = *self.line_starts().get(region.start)?;
+        let end = self.line_end(region.end - 1);
+        Some((start..end, self.content[start..end].to_string().into()))
+    }
+
     /// The inline `$…$` span strictly containing source byte `off` (between the `$` delimiters),
     /// as an absolute byte range + inner LaTeX — so arrowing the caret into a formula opens its
     /// structural editor instead of landing in (and revealing) the raw source. WYSIWYG-only.
@@ -1925,6 +1979,7 @@ impl EditorState {
                 cx.emit(EditorEvent::EditProperties {
                     range: start..end,
                     source: self.content[start..end].to_string().into(),
+                    at_end: false,
                 });
                 return;
             }

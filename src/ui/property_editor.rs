@@ -48,12 +48,65 @@ impl PropertyEditor {
         Self { rows, keys, focus }
     }
 
-    /// Focus the first value field (or the container when empty) so a
-    /// subsequent click-away blurs the whole editor and commits.
-    pub fn focus_first(&self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.rows.first() {
-            Some(row) => row.value.update(cx, |s, cx| s.focus(window, cx)),
+    /// Focus a value field on open: the last row's when entered by arrowing up
+    /// from below (`at_end`), else the first — so the caret lands where it came
+    /// from. Empty block focuses the container so a click-away still commits.
+    pub fn focus_end(&self, at_end: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let row = if at_end {
+            self.rows.last()
+        } else {
+            self.rows.first()
+        };
+        match row {
+            Some(r) => r.value.update(cx, |s, cx| s.focus(window, cx)),
             None => self.focus.focus(window, cx),
+        }
+    }
+
+    /// The `(row, is_key)` of the currently focused field, if any.
+    fn focused_cell(&self, window: &Window, cx: &App) -> Option<(usize, bool)> {
+        self.rows.iter().enumerate().find_map(|(i, r)| {
+            if r.key.read(cx).focus_handle(cx).is_focused(window) {
+                Some((i, true))
+            } else if r.value.read(cx).focus_handle(cx).is_focused(window) {
+                Some((i, false))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Focus row `row`'s key or value field (a no-op if out of range).
+    fn focus_cell(&self, row: usize, is_key: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(r) = self.rows.get(row) {
+            let input = if is_key { &r.key } else { &r.value };
+            input.update(cx, |s, cx| s.focus(window, cx));
+            cx.notify();
+        }
+    }
+
+    /// Up/Down move between rows in the same column. Only these reach here: the
+    /// text input claims Left/Right/Tab (and every other bound key) via its own
+    /// key context, and gpui routes bound keys straight to the input — a capture
+    /// handler never sees them — so horizontal movement stays inside the field.
+    fn nav_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((row, is_key)) = self.focused_cell(window, cx) else {
+            return;
+        };
+        let n = self.rows.len();
+        let handled = match ev.keystroke.key.as_str() {
+            "up" if row > 0 => {
+                self.focus_cell(row - 1, is_key, window, cx);
+                true
+            }
+            "down" if row + 1 < n => {
+                self.focus_cell(row + 1, is_key, window, cx);
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            cx.stop_propagation();
         }
     }
 
@@ -312,9 +365,15 @@ impl Render for PropertyEditor {
             .collect();
         div()
             .track_focus(&self.focus)
+            .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
+                this.nav_key(ev, window, cx);
+            }))
             .flex()
             .flex_col()
             .gap(px(2.0))
+            // Keep the block compact so the row-delete ✕ sits near the values,
+            // not flung to the far edge of the note.
+            .max_w(px(480.0))
             .children(rows)
             .child(
                 div()
