@@ -390,6 +390,10 @@ pub type InlineImageRenderer = Rc<dyn Fn(SharedString) -> Option<(Arc<RenderImag
 /// edit mode. Set via [`MarkdownView::on_click_source`].
 pub type ClickSourceHandler = Rc<dyn Fn(usize, Pixels, &mut Window, &mut App)>;
 
+/// A click on an inline image reports its `src` so the host can open a
+/// full-size preview. Set via [`MarkdownView::on_image_preview`].
+pub type ImagePreviewHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
+
 /// Toggle the task checkbox of a clicked list item — the argument is the source
 /// byte offset of that task item (feed it to [`toggle_task_at`]). Set via
 /// [`MarkdownView::on_task_toggle`].
@@ -416,6 +420,7 @@ pub struct MarkdownView {
     block_scroll: Option<ScrollHandle>,
     /// Click-to-caret: maps a click on the rendered text to its source offset.
     on_click_source: Option<ClickSourceHandler>,
+    on_image_preview: Option<ImagePreviewHandler>,
     /// Click a task checkbox to toggle it (the host applies + persists).
     on_task_toggle: Option<TaskToggleHandler>,
 }
@@ -439,6 +444,7 @@ impl MarkdownView {
             current_match: 0,
             block_scroll: None,
             on_click_source: None,
+            on_image_preview: None,
             on_task_toggle: None,
         }
     }
@@ -521,6 +527,12 @@ impl MarkdownView {
     /// click through gpui's text layout + a source-offset map built while rendering.
     pub fn on_click_source(mut self, handler: ClickSourceHandler) -> Self {
         self.on_click_source = Some(handler);
+        self
+    }
+
+    /// Supply a handler for a click on an inline image (opens a preview).
+    pub fn on_image_preview(mut self, handler: ImagePreviewHandler) -> Self {
+        self.on_image_preview = Some(handler);
         self
     }
 
@@ -609,6 +621,7 @@ impl RenderOnce for MarkdownView {
             current_match: self.current_match,
             match_ix: 0,
             on_click_source: self.on_click_source,
+            on_image_preview: self.on_image_preview,
             on_task_toggle: self.on_task_toggle,
             suppress_heading_top: false,
         };
@@ -686,6 +699,7 @@ struct Ctx {
     current_match: usize,
     match_ix: usize,
     on_click_source: Option<ClickSourceHandler>,
+    on_image_preview: Option<ImagePreviewHandler>,
     on_task_toggle: Option<TaskToggleHandler>,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
@@ -1194,6 +1208,15 @@ enum LinkTarget {
     Url(SharedString),
 }
 
+/// An inline raster spliced into a paragraph's text: `(display byte offset of
+/// the spacer, raster, logical w, h, image src)`. `src` is `Some` for an
+/// image (clickable → preview), `None` for a `$…$` formula.
+type InlineRaster = (usize, Arc<RenderImage>, f32, f32, Option<SharedString>);
+
+/// Window-space bounds of each painted inline image + its src, for click
+/// hit-testing (image click → preview).
+type ImageHits = Rc<RefCell<Vec<(Bounds<Pixels>, SharedString)>>>;
+
 #[derive(Default)]
 struct Inline {
     text: String,
@@ -1207,7 +1230,7 @@ struct Inline {
     /// `(rendered byte offset of the spacer, raster, logical w, h)`. The spacer
     /// (non-breaking spaces) reserves the width in the text; a canvas paints
     /// the raster over it at the laid-out position (see [`inline_element`]).
-    math: Vec<(usize, Arc<RenderImage>, f32, f32)>,
+    math: Vec<InlineRaster>,
 }
 
 impl Inline {
@@ -1291,14 +1314,29 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     // Click-to-caret: outside a link (link clicks `stop_propagation` above), map the
     // click to a source offset and report it so the host can place its editor caret
     // there. No handler (e.g. the journal feed) → just the inner element.
+    // Window-space bounds of each painted inline image + its src, filled by the
+    // canvas below and read by the click handler so a click on an image opens a
+    // preview instead of entering edit mode.
+    let image_hits: ImageHits = Rc::default();
     let el = match ctx.on_click_source.clone() {
         None => inner,
         Some(on_click_source) => {
             let source_map = inl.source_map;
             let click_layout = layout.clone();
+            let hits = image_hits.clone();
+            let preview = ctx.on_image_preview.clone();
             div()
                 .child(inner)
                 .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
+                    // An inline image → open its preview (before caret / edit).
+                    if let Some(p) = &preview
+                        && let Some((_, src)) =
+                            hits.borrow().iter().find(|(b, _)| b.contains(&ev.position))
+                    {
+                        cx.stop_propagation();
+                        p(src.clone(), window, cx);
+                        return;
+                    }
                     let rendered = click_layout
                         .index_for_position(ev.position)
                         .unwrap_or_else(|e| e);
@@ -1323,7 +1361,7 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     // A paragraph with inline formulas: paint each raster over its spacer via a canvas painted
     // AFTER the text (so the text layout is populated + gives the spacer's window position), and
     // grow the line height so a tall formula (a fraction) doesn't overlap the neighbouring line.
-    let tallest = math.iter().fold(0f32, |a, (.., h)| a.max(*h));
+    let tallest = math.iter().fold(0f32, |a, &(_, _, _, h, _)| a.max(h));
     let line_h = px((f32::from(ctx.style.text_size) * 1.4).max(tallest + 6.0));
     div()
         .relative()
@@ -1334,12 +1372,17 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
                 |_, _, _| {},
                 move |_bounds, _: (), window, _cx| {
                     let row_h = layout.line_height();
-                    for (off, img, w, h) in &math {
+                    let mut hits = image_hits.borrow_mut();
+                    hits.clear();
+                    for (off, img, w, h, src) in &math {
                         if let Some(p) = layout.position_for_index(*off) {
                             let y = p.y + (row_h - px(*h)) / 2.0;
                             let b = Bounds::new(point(p.x, y), size(px(*w), px(*h)));
                             let _ =
                                 window.paint_image(b, Corners::default(), img.clone(), 0, false);
+                            if let Some(src) = src {
+                                hits.push((b, src.clone()));
+                            }
                         }
                     }
                 },
@@ -1394,7 +1437,7 @@ fn build_inline(
                     Some((img, w, h)) => {
                         let space_w = (f32::from(style.text_size) * 0.26).max(1.0);
                         let n = ((w / space_w).ceil() as usize).max(1);
-                        out.math.push((out.text.len(), img, w, h));
+                        out.math.push((out.text.len(), img, w, h, None));
                         out.text.extend(std::iter::repeat_n('\u{00A0}', n));
                     }
                     None => push_run(&format!("${}$", m.value), cur, out),
@@ -1430,7 +1473,8 @@ fn build_inline(
                     Some((raster, w, h)) => {
                         let space_w = (f32::from(style.text_size) * 0.26).max(1.0);
                         let n = ((w / space_w).ceil() as usize).max(1);
-                        out.math.push((out.text.len(), raster, w, h));
+                        out.math
+                            .push((out.text.len(), raster, w, h, Some(img.url.clone().into())));
                         out.text.extend(std::iter::repeat_n('\u{00A0}', n));
                     }
                     None => {

@@ -339,6 +339,9 @@ pub enum EditorEvent {
         source: SharedString,
         position: Point<Pixels>,
     },
+    /// An inline `![](src)` image was left-clicked — the host opens a full-size
+    /// preview. The text is untouched.
+    PreviewImage(SharedString),
 }
 
 /// A table column's text alignment, for the host-driven alignment toolbar
@@ -1862,6 +1865,14 @@ impl EditorState {
             });
             return;
         }
+        // Left-click an inline image opens a full-size preview (host-shown).
+        if !event.modifiers.shift
+            && !event.modifiers.control
+            && let Some(src) = self.inline_image_at(event.position)
+        {
+            cx.emit(EditorEvent::PreviewImage(src));
+            return;
+        }
         // Left-click a link navigates, like the reading view: a `[[wiki]]` /
         // `#tag` opens that page, a `[text](url)` opens the url — consistent
         // with chips and inline math above. Only a plain single click: a
@@ -2534,6 +2545,19 @@ impl EditorState {
             // formula, so a click on it shouldn't open the math editor.
             .find(|(_, latex, rect)| !latex.is_empty() && rect.contains(&position))
             .map(|(range, latex, _)| (range.clone(), latex.clone()))
+    }
+
+    /// The inline image `src` under `position` (an empty-latex entry in
+    /// `inline_math_rects`), parsed from its `![alt](src)` source.
+    fn inline_image_at(&self, position: Point<Pixels>) -> Option<SharedString> {
+        let (range, _, _) = self
+            .inline_math_rects
+            .iter()
+            .find(|(_, latex, rect)| latex.is_empty() && rect.contains(&position))?;
+        let text = self.content.get(range.clone())?;
+        let open = text.rfind('(')?;
+        let close = text.rfind(')')?;
+        (open < close).then(|| text[open + 1..close].to_string().into())
     }
 
     /// If `position` lands on an inline image's bottom-right resize grip, the
@@ -5638,6 +5662,9 @@ struct PrepaintState {
     /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
     /// `[text](url)`), so hovering a clickable link shows a hand.
     link_grips: Vec<Hitbox>,
+    /// Pointer-cursor hitboxes over inline images (they open a preview on
+    /// click, so hovering shows a hand rather than the text caret).
+    inline_image_grips: Vec<Hitbox>,
     /// Icon asset paths for alert marker lines, cloned from the style so the
     /// paint can draw them next to the labels.
     alert_icons: Option<markdown_syntax::AlertIcons>,
@@ -5953,6 +5980,7 @@ impl Element for EditorElement {
         // a 3+-row link are skipped). Widget/code/table rows carry no inline
         // links (images and chips have their own machinery).
         let mut link_grips = Vec::new();
+        let mut inline_image_grips = Vec::new();
         if editor.markdown_style.is_some() && !editor.content.is_empty() {
             let starts = editor.line_starts();
             for (i, line_shaped) in wrapped.iter().enumerate() {
@@ -5999,6 +6027,24 @@ impl Element for EditorElement {
                         let tail = Bounds::new(point(origin.x, origin.y + p2.y), size(p2.x, *lh));
                         link_grips.push(window.insert_hitbox(head, HitboxBehavior::Normal));
                         link_grips.push(window.insert_hitbox(tail, HitboxBehavior::Normal));
+                    }
+                }
+                // Inline images on this line get a pointer-cursor hitbox (they
+                // open a preview) — bounds mirror the paint math (inset + the
+                // spacer's wrap-row position, centered in the row).
+                for im in inline_maths.get(i).into_iter().flatten() {
+                    if !im.latex.is_empty() {
+                        continue; // a `$…$` formula, not an image
+                    }
+                    if let Some(p) = line_shaped.position_for_index(im.display_off, *lh) {
+                        let hit = Bounds::new(
+                            point(
+                                bounds.origin.x + inset + p.x,
+                                bounds.origin.y + line_tops[i] + p.y + (*lh - im.height) / 2.,
+                            ),
+                            size(im.width, im.height),
+                        );
+                        inline_image_grips.push(window.insert_hitbox(hit, HitboxBehavior::Normal));
                     }
                 }
             }
@@ -6313,6 +6359,7 @@ impl Element for EditorElement {
             checkbox_grips,
             chip_grips,
             link_grips,
+            inline_image_grips,
             alert_icons: editor
                 .markdown_style
                 .as_ref()
@@ -6796,6 +6843,9 @@ impl Element for EditorElement {
         // Hovering an inline link shows a hand, like the reading view (the
         // hitboxes come from prepaint; cursor styles must be set during paint).
         for hb in &prepaint.link_grips {
+            window.set_cursor_style(CursorStyle::PointingHand, hb);
+        }
+        for hb in &prepaint.inline_image_grips {
             window.set_cursor_style(CursorStyle::PointingHand, hb);
         }
         self.editor.update(cx, |editor, _| {
