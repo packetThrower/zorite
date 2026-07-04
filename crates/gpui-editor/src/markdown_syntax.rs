@@ -239,6 +239,10 @@ pub(crate) fn hidden_runs(
     // — the line-level prefix while its gutter mark (bullet/number/box) is
     // painted, else the glyph and the raw marker would BOTH show.
     hide_prefix: usize,
+    // Show every inline marker (a selection touches this line, so the
+    // highlighted glyphs must be the copied bytes) while the prefix stays
+    // hidden behind its painted mark.
+    reveal_inline: bool,
     md: &SyntaxStyle,
 ) -> (String, Vec<TextRun>, Vec<usize>) {
     let mut spans = scan(line, md);
@@ -264,7 +268,7 @@ pub(crate) fn hidden_runs(
         let in_construct = reveal.start <= span.range.start && span.range.end <= reveal.end;
         let in_prefix = span.range.end <= reveal_prefix;
         let force = span.range.end <= hide_prefix;
-        let hidden = span.style.hide && (force || (!in_construct && !in_prefix));
+        let hidden = span.style.hide && (force || (!reveal_inline && !in_construct && !in_prefix));
         if !hidden {
             segs.push((span.range.clone(), Some(&span.style)));
         }
@@ -874,6 +878,52 @@ pub(crate) fn ordered_numbers(lines: &[&str]) -> Vec<(u32, usize)> {
     out
 }
 
+/// A copied slice with its ordered markers rewritten to their DISPLAYED
+/// positions — still digit markdown (letters/romans are display-only), so a
+/// nested block pastes starting at 1 and a continuation pastes as `3.`,
+/// exactly the counting the screen showed, in any markdown app. Lines whose
+/// marker sits outside the slice are copied verbatim. Positions come from
+/// the WHOLE document, so a mid-list copy keeps its true numbering.
+pub(crate) fn renumber_copy(content: &str, range: std::ops::Range<usize>) -> String {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let nums = ordered_numbers(&lines);
+    let mut out = String::with_capacity(range.len());
+    let mut line_start = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let line_end = line_start + line.len();
+        // The slice of this line (excluding its newline) inside the range.
+        let seg_start = range.start.max(line_start);
+        let seg_end = range.end.min(line_end);
+        if seg_start <= seg_end && range.start <= line_end && range.end >= line_start {
+            let rel = (seg_start - line_start)..(seg_end - line_start);
+            let marker = list_prefix(line).filter(|&(_, _, ordered, _)| ordered);
+            match marker {
+                // Rewrite only when the whole marker is inside the slice.
+                Some((plen, indent, _, _))
+                    if rel.start == 0 && rel.end >= plen && nums[i].0 > 0 =>
+                {
+                    out.push_str(&line[..indent]);
+                    out.push_str(&nums[i].0.to_string());
+                    // Keep the source's `.`/`)` punctuation and the body.
+                    let digits_end = indent
+                        + line.as_bytes()[indent..]
+                            .iter()
+                            .take_while(|b| b.is_ascii_digit())
+                            .count();
+                    out.push_str(&line[digits_end..rel.end]);
+                }
+                _ => out.push_str(&line[rel]),
+            }
+        }
+        // The newline between this line and the next, when it's in range.
+        if range.start <= line_end && line_end < range.end && i + 1 < lines.len() {
+            out.push('\n');
+        }
+        line_start = line_end + 1;
+    }
+    out
+}
+
 /// If `line` is a GFM task item — a list item whose body starts with `[ ]`,
 /// `[x]`, or `[X]` then a space — return `(prefix_len, indent, checked)`, where
 /// `prefix_len` covers the list marker plus the checkbox. The editor hides this
@@ -1451,6 +1501,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn copies_renumber_to_displayed_positions() {
+        // Source digits are stale (7., 9.) and the nested list starts at 3 —
+        // the copy carries what the SCREEN showed: 1,2 nested from 1.
+        let doc = "1. a\n7. b\n  3. c\n  9. d\n5. e";
+        assert_eq!(
+            renumber_copy(doc, 0..doc.len()),
+            "1. a\n2. b\n  1. c\n  2. d\n3. e"
+        );
+        // A mid-list copy keeps its true positions (paste renders 2,3).
+        let from = doc.find("7.").unwrap();
+        assert_eq!(
+            renumber_copy(doc, from..doc.len()),
+            "2. b\n  1. c\n  2. d\n3. e"
+        );
+        // A partial first line (marker outside the slice) is verbatim.
+        let from = doc.find("b").unwrap();
+        assert_eq!(
+            renumber_copy(doc, from..doc.find('c').unwrap() + 1),
+            "b\n  1. c"
+        );
+        // Non-list text passes through untouched.
+        assert_eq!(renumber_copy("plain\ntext", 0..10), "plain\ntext");
+    }
+
+    #[test]
+    fn selection_reveal_shows_inline_but_not_prefix() {
+        let (font, c, st) = (Font::default(), Hsla::default(), test_style());
+        // A selected list line: the `- ` prefix stays hidden behind its
+        // painted bullet, while inline markers come back so highlighted
+        // glyphs equal copied bytes.
+        let (disp, _, _) = hidden_runs("- a **b** c", &font, c, &[], None, 0, 2, true, &st);
+        assert_eq!(disp, "a **b** c");
+        // Same line unselected: both prefix and inline markers hidden.
+        let (disp, _, _) = hidden_runs("- a **b** c", &font, c, &[], None, 0, 2, false, &st);
+        assert_eq!(disp, "a b c");
+    }
+
+    #[test]
     fn scan_line_survives_multibyte_text() {
         // Regression: byte-wise scanning once str-sliced at continuation
         // bytes and panicked on this exact line.
@@ -1732,7 +1820,7 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, ..) = hidden_runs("- ### Notes", &font, c, &[], None, 0, 0, &st);
+        let (disp, ..) = hidden_runs("- ### Notes", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "Notes");
     }
 
@@ -1795,20 +1883,20 @@ mod tests {
         let st = test_style();
 
         // "**bold**" → "bold"; display 0 maps to source 2, end (4) to 8.
-        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], None, 0, 0, &st);
+        let (disp, _, map) = hidden_runs("**bold**", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "bold");
         assert_eq!(map.len(), disp.len() + 1);
         assert_eq!(map[0], 2);
         assert_eq!(map[4], 8);
 
         // "## Hi" → "Hi"; the `## ` prefix is gone, display 0 maps to source 3.
-        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], None, 0, 0, &st);
+        let (disp, _, map) = hidden_runs("## Hi", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "Hi");
         assert_eq!(map[0], 3);
         assert_eq!(map[2], 5);
 
         // No markers → unchanged, identity map.
-        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, 0, 0, &st);
+        let (disp, _, map) = hidden_runs("plain text", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "plain text");
         assert_eq!(map, (0..=10).collect::<Vec<_>>());
     }
@@ -1823,11 +1911,21 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, ..) = hidden_runs("![](images/a.png)", &font, c, &[], None, 0, 0, &st);
+        let (disp, ..) = hidden_runs("![](images/a.png)", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "");
 
         // A named alt still shows it, same as a plain link.
-        let (disp, ..) = hidden_runs("![alt](images/a.png)", &font, c, &[], None, 0, 0, &st);
+        let (disp, ..) = hidden_runs(
+            "![alt](images/a.png)",
+            &font,
+            c,
+            &[],
+            None,
+            0,
+            0,
+            false,
+            &st,
+        );
         assert_eq!(disp, "alt");
     }
 
@@ -1847,6 +1945,7 @@ mod tests {
             None,
             0,
             0,
+            false,
             &st,
         );
         assert_eq!(disp, "bold");
@@ -1862,6 +1961,7 @@ mod tests {
             None,
             0,
             0,
+            false,
             &st,
         );
         assert_eq!(disp, "plain text");
@@ -1881,16 +1981,16 @@ mod tests {
 
         let line = "**bold** *it*";
         // Caret in "bold" reveals the bold markers; the italic stays hidden.
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), 0, 0, &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), 0, 0, false, &st);
         assert_eq!(disp, "**bold** it");
         // Caret in "it" reveals the italic; the bold hides.
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), 0, 0, &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), 0, 0, false, &st);
         assert_eq!(disp, "bold *it*");
         // Caret in plain text reveals nothing.
-        let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), 0, 0, &st);
+        let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), 0, 0, false, &st);
         assert_eq!(disp, "a b");
         // No caret on the line → fully hidden (W6).
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], None, 0, 0, &st);
+        let (disp, _, _) = hidden_runs(line, &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "bold it");
     }
 
@@ -1916,13 +2016,13 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, _, map) = hidden_runs("> a **b**", &font, c, &[], None, 0, 0, &st);
+        let (disp, _, map) = hidden_runs("> a **b**", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "a b"); // "> " + "**" hidden
         assert_eq!(map[0], 2); // display 0 ('a') ← source 2
 
         // With the prefix revealed (caret on the line) the `> ` shows even when
         // the caret isn't in it; inline markers still hide unless under the caret.
-        let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, 0, &st);
+        let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, 0, false, &st);
         assert_eq!(disp, "> a b");
     }
 
@@ -1976,7 +2076,7 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, _, map) = hidden_runs("  - hi", &font, c, &[], None, 0, 0, &st);
+        let (disp, _, map) = hidden_runs("  - hi", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "hi");
         assert_eq!(map[0], 4); // display 0 ('h') ← source 4
     }
@@ -1994,7 +2094,7 @@ mod tests {
         let font = gpui::font("Helvetica");
         let c = hsla(0., 0., 0., 1.);
         let st = test_style();
-        let (disp, _, map) = hidden_runs("- [x] go", &font, c, &[], None, 0, 0, &st);
+        let (disp, _, map) = hidden_runs("- [x] go", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "go");
         assert_eq!(map[0], 6); // display 0 ('g') ← source 6
     }
