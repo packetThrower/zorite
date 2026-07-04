@@ -9,6 +9,94 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-03
+
+The biggest Zorite release yet: encrypt your notes with a password, see them
+as a graph, browse everything in one index, export any note to PDF, and make
+the app yours with custom fonts and full theme control.
+
+### Added
+
+- **Password & encryption** — encrypt the entire database with a password
+  (SQLCipher, AES-256). An unlock screen gates launch; **Remember on this
+  device** keeps the password in the OS keychain (macOS Keychain / Windows
+  Credential Manager; kernel keyring until reboot on Linux); an idle
+  **auto-lock** (5 min – 1 hour) and a **Lock now** action re-lock a running
+  app. The password itself is never stored — and never recoverable, so
+  don't lose it. Settings → Security.
+- **Graph view** — your pages and whiteboards as a Logseq-style map: linked
+  clusters lay out by a force simulation, orphan pages ring the outside.
+  Drag to pan or move nodes, pinch/⌘-scroll to zoom, click to open, hover to
+  highlight a neighborhood; a panel carries a legend with live counts,
+  search, and journal/orphan/whiteboard filters. Open it from All pages.
+- **All pages browser** — a sidebar list icon opens an index of every page,
+  whiteboard, and stored PDF: an A–Z/0–9/# strip and kind chips filter it,
+  rows show created/updated dates, and the filters stay pinned while you
+  scroll.
+- **Export to PDF** — right-click a tab or sidebar page (or ⌘P) to write the
+  note as a PDF, rendered like the reading view: styled text, tables,
+  images, alerts, typeset math, and mermaid diagrams. Pure-Rust, no browser.
+- **Custom fonts & full theme control** — Settings → Appearance picks the
+  app font (any installed family, or import a `.ttf`/`.otf`); custom theme
+  JSON can now override every color token (with `#RRGGBBAA` alpha) and name
+  its own font. Plus a **text size** setting (14–20 px) that drives all
+  three views.
+- **GitHub alerts** — `> [!NOTE]` through `[!CAUTION]` render with icons and
+  themeable colors in both the reader and WYSIWYG (which hides the marker
+  and paints a label). The lenient single-line form works too.
+- **Syntax highlighting** — fenced code blocks highlight ~20 common
+  languages, themed to your skin, in reader, WYSIWYG, and PDF export.
+- **Unlinked references** — a panel under Linked References lists pages and
+  journal days that mention the open page's title without linking it; a
+  one-click **Link** wraps the mentions as `[[links]]`.
+- **Auto-link as you type** (opt-in, Settings → Markdown) — typing an
+  existing page title wraps it as a `[[link]]` on the boundary keystroke;
+  `[[` completion now suggests whiteboards too.
+- **Namespace tooling** — renaming a page cascades to its `Foo::*` children
+  (links rewritten, atomically); right-click → **New sub-page**; child pages
+  show a clickable breadcrumb back to their ancestors.
+- **Calendar entry markers** — the jump-to-date calendar dots every day
+  that has a journal entry.
+- **Journal back-to-top** — a floating button appears once you've scrolled
+  and snaps back to today.
+- **Image housekeeping** — pasting or dropping an image whose contents are
+  already in the store reuses the existing file instead of duplicating it,
+  and Settings → General → **Unused images** sweeps unreferenced files to
+  the system trash (with a confirmation listing them).
+- **Remember window position** (Settings → General) — reopen with the size
+  and position you left, falling back to centered if that display is gone.
+- The `/` menu now covers the whole markdown vocabulary — math, alerts,
+  footnotes, strikethrough, highlights, and more.
+
+### Changed
+
+- **Numbered lists are Word-style** — nested levels display `1.` → `a.` →
+  `i.`, every list counts from 1 regardless of the raw digits, a break
+  restarts numbering, and Tab-indenting starts the nested list at 1. Editing
+  a list item no longer shifts the line left: the rendered markers stay put,
+  and only stepping into the marker itself reveals the raw text.
+- **Reader and WYSIWYG render alike** — tables, code cards, line height, and
+  list spacing/indentation now match across the two views, and both consume
+  one shared link/alert/table grammar so they can't drift apart.
+- **The journal feed re-renders faster** — parsed markdown is cached by
+  content, so typing in one day no longer re-parses every visible day.
+
+### Fixed
+
+- **Opening a note containing certain non-ASCII text** (e.g. `¯\_(ツ)_/¯`)
+  crashed the app; both markdown engines now scan multi-byte text safely.
+- **⌘V of an image or a copied file into a page** did nothing (or pasted
+  the file's name as text); images now insert at the caret, copied files
+  import like a drop, and whiteboards accept pasted files at the viewport
+  center.
+- **Renaming a page** now also rewrites `[[ spaced ]]` and `[[aliased|label]]`
+  link variants (deliberately-cased variants like `[[FOO]]` are left as
+  written), and never edits links inside code blocks.
+- **Auto-pair** — typing `[` over a selection that itself starts with `[`
+  wraps the selection instead of deleting it.
+- **The Journal tab** no longer draws a stray left border against the
+  sidebar.
+
 ## [0.4.2] - 2026-07-02
 
 A single fix for table editing.
