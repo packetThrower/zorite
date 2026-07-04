@@ -188,6 +188,25 @@ const ALERT_ICON_IMPORTANT: &str = "icons/message-square-warning.svg";
 const ALERT_ICON_WARNING: &str = "icons/triangle-alert.svg";
 const ALERT_ICON_CAUTION: &str = "icons/octagon-alert.svg";
 
+/// The icon shown before a property key in the property panel: a small built-in
+/// map of well-known keys (case-insensitive), with a generic text-field icon as
+/// the fallback so every property gets one (Obsidian-style). Paths are lucide
+/// assets bundled under `assets/icons/lucide`.
+fn property_icon(key: &str) -> Option<gpui::SharedString> {
+    let name = match key.trim().to_ascii_lowercase().as_str() {
+        "alias" | "aliases" => "arrow-up-right",
+        "tag" | "tags" => "tag",
+        "date" | "due" | "created" | "updated" | "modified" => "calendar",
+        "time" => "clock",
+        "attendee" | "attendees" | "people" | "author" | "owner" | "assignee" => "user",
+        "status" | "priority" => "list",
+        "location" | "place" => "map-pin",
+        "link" | "url" | "source" => "link",
+        _ => "align-left", // generic (text-field look)
+    };
+    Some(format!("icons/{name}.svg").into())
+}
+
 /// Per-OS monospace family for code. An unknown name falls back to the default
 /// font, so this is safe everywhere.
 fn mono_font() -> &'static str {
@@ -248,6 +267,7 @@ pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown:
             warning: ALERT_ICON_WARNING.into(),
             caution: ALERT_ICON_CAUTION.into(),
         }),
+        property_icon: Some(std::rc::Rc::new(property_icon)),
     }
 }
 
@@ -274,6 +294,7 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
             warning: ALERT_ICON_WARNING.into(),
             caution: ALERT_ICON_CAUTION.into(),
         }),
+        property_icon: Some(std::rc::Rc::new(property_icon)),
         rule: p.divider,
         mark_bg: gpui::rgba(0xFFD60066).into(),
         popover_bg: p.bg_sidebar,

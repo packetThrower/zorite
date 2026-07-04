@@ -46,7 +46,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 mod markdown_syntax;
-pub use markdown_syntax::{AlertIcons, MathAlign, SyntaxStyle};
+pub use markdown_syntax::{AlertIcons, MathAlign, PropertyIconFn, SyntaxStyle};
 
 /// Key context the editing actions are scoped to (so they only fire while an
 /// editor is focused).
@@ -3968,13 +3968,17 @@ enum PanelSeg {
 /// wiki-links render as pills.
 #[derive(Clone)]
 struct PropPanel {
-    /// `(key, value segments)` per property line, in source order.
-    rows: Vec<(SharedString, Vec<PanelSeg>)>,
+    /// `(key, icon asset path, value segments)` per property line, in order.
+    rows: Vec<(SharedString, Option<SharedString>, Vec<PanelSeg>)>,
     key_w: Pixels,
     /// Panel width (shared by every row) so hover borders align.
     width: Pixels,
     row_h: Pixels,
     height: Pixels,
+    /// Icon draw size (0 when the host resolves no icons); the key text is inset
+    /// by `key_indent` to leave room for it.
+    icon_sz: Pixels,
+    key_indent: Pixels,
     key_color: Hsla,
     value_color: Hsla,
     /// The rounded border drawn around the row under the pointer (Obsidian-style
@@ -4445,6 +4449,7 @@ fn shape_document(
                     base_color,
                     st.tag,
                     st.link,
+                    st.property_icon.as_ref(),
                 );
                 (r, panel)
             })
@@ -5215,7 +5220,19 @@ fn build_prop_panel(
     value_color: Hsla,
     tag_color: Hsla,
     link_color: Hsla,
+    icon_of: Option<&markdown_syntax::PropertyIconFn>,
 ) -> PropPanel {
+    // Reserve room for a leading icon whenever the host resolves any.
+    let icon_sz = if icon_of.is_some() {
+        font_size * 0.95
+    } else {
+        px(0.)
+    };
+    let key_indent = if icon_sz > px(0.) {
+        icon_sz + px(6.)
+    } else {
+        px(0.)
+    };
     let mut rows = Vec::new();
     let mut key_w = px(0.);
     let mut val_w = px(0.);
@@ -5224,6 +5241,7 @@ fn build_prop_panel(
             continue;
         };
         key_w = key_w.max(measure_width(window, k, font, font_size));
+        let icon = icon_of.and_then(|f| f(k));
         let mut w = px(0.);
         let segs = gpui_markdown::syntax::property_value_segments(v)
             .into_iter()
@@ -5248,9 +5266,9 @@ fn build_prop_panel(
             })
             .collect();
         val_w = val_w.max(w);
-        rows.push((SharedString::from(k.to_string()), segs));
+        rows.push((SharedString::from(k.to_string()), icon, segs));
     }
-    let key_w = key_w + px(20.);
+    let key_w = key_indent + key_w + px(20.);
     let width = key_w + val_w + px(10.);
     let row_h = font_size * LINE_HEIGHT_RATIO + px(8.);
     let height = row_h * rows.len() as f32;
@@ -5260,6 +5278,8 @@ fn build_prop_panel(
         width,
         row_h,
         height,
+        icon_sz,
+        key_indent,
         key_color,
         value_color,
         hover_border: key_color,
@@ -5283,7 +5303,7 @@ fn prop_pill_bounds(
     let line_h = font_size * LINE_HEIGHT_RATIO;
     let pad = px(10.);
     let mut out = Vec::new();
-    for (ri, (_key, segs)) in p.rows.iter().enumerate() {
+    for (ri, (_key, _icon, segs)) in p.rows.iter().enumerate() {
         let row_top = origin.y + p.row_h * ri as f32;
         let mut x = origin.x + p.key_w + pad;
         for seg in segs {
@@ -5323,7 +5343,7 @@ fn paint_prop_panel(
     let line_h = font_size * LINE_HEIGHT_RATIO;
     let pad = px(10.);
     let mouse = window.mouse_position();
-    for (ri, (key, segs)) in p.rows.iter().enumerate() {
+    for (ri, (key, icon, segs)) in p.rows.iter().enumerate() {
         let row_top = origin.y + p.row_h * ri as f32;
         let row_bounds = Bounds::new(point(origin.x, row_top), size(p.width, p.row_h));
         row_rects.push(row_bounds);
@@ -5339,7 +5359,21 @@ fn paint_prop_panel(
             });
         }
         let ty = row_top + (p.row_h - line_h) / 2.;
-        // Key (muted).
+        // Optional key icon (host-resolved), then the muted key name inset past it.
+        if let Some(path) = icon {
+            let ib = Bounds::new(
+                point(origin.x + pad, row_top + (p.row_h - p.icon_sz) / 2.),
+                size(p.icon_sz, p.icon_sz),
+            );
+            let _ = window.paint_svg(
+                ib,
+                path.clone(),
+                None,
+                gpui::TransformationMatrix::unit(),
+                p.key_color,
+                cx,
+            );
+        }
         let krun = TextRun {
             len: key.len(),
             font: font.clone(),
@@ -5352,7 +5386,7 @@ fn paint_prop_panel(
             .text_system()
             .shape_line(key.clone(), font_size, &[krun], None);
         let _ = ks.paint(
-            point(origin.x + pad, ty),
+            point(origin.x + pad + p.key_indent, ty),
             line_h,
             gpui::TextAlign::Left,
             None,

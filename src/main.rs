@@ -64,6 +64,15 @@ const ALERT_OCTAGON: &[u8] = include_bytes!("../assets/icons/octagon-alert.svg")
 // Sidebar "All pages" browser button.
 const LAYOUT_LIST: &[u8] = include_bytes!("../assets/icons/layout-list.svg");
 const WAYPOINTS: &[u8] = include_bytes!("../assets/icons/waypoints.svg");
+// Property-panel key icons (the Lucide faces gpui-component doesn't bundle;
+// `calendar` + `user` delegate to it). See `theme::property_icon`.
+const PROP_ARROW_UP_RIGHT: &[u8] = include_bytes!("../assets/icons/lucide/arrow-up-right.svg");
+const PROP_TAG: &[u8] = include_bytes!("../assets/icons/lucide/tag.svg");
+const PROP_CLOCK: &[u8] = include_bytes!("../assets/icons/lucide/clock.svg");
+const PROP_LIST: &[u8] = include_bytes!("../assets/icons/lucide/list.svg");
+const PROP_MAP_PIN: &[u8] = include_bytes!("../assets/icons/lucide/map-pin.svg");
+const PROP_LINK: &[u8] = include_bytes!("../assets/icons/lucide/link.svg");
+const PROP_ALIGN_LEFT: &[u8] = include_bytes!("../assets/icons/lucide/align-left.svg");
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -78,6 +87,13 @@ impl AssetSource for Assets {
             "icons/octagon-alert.svg" => Some(ALERT_OCTAGON),
             "icons/layout-list.svg" => Some(LAYOUT_LIST),
             "icons/waypoints.svg" => Some(WAYPOINTS),
+            "icons/arrow-up-right.svg" => Some(PROP_ARROW_UP_RIGHT),
+            "icons/tag.svg" => Some(PROP_TAG),
+            "icons/clock.svg" => Some(PROP_CLOCK),
+            "icons/list.svg" => Some(PROP_LIST),
+            "icons/map-pin.svg" => Some(PROP_MAP_PIN),
+            "icons/link.svg" => Some(PROP_LINK),
+            "icons/align-left.svg" => Some(PROP_ALIGN_LEFT),
             _ => None,
         };
         if let Some(bytes) = custom {

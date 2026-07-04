@@ -78,6 +78,7 @@ fn demo_markdown_style() -> SyntaxStyle {
         popover_hover: hsla(0.58, 0.75, 0.66, 0.16), // soft accent tint
         popover_divider: hsla(0., 0., 1., 0.18),     // group divider
         mono: font("Menlo"),
+        property_icon: None,
     }
 }
 

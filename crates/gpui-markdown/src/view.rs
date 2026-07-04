@@ -62,7 +62,15 @@ pub struct MarkdownStyle {
     /// `AssetSource`. `None` (the default) renders the title without an icon,
     /// keeping the crate asset-free.
     pub alert_icons: Option<AlertIcons>,
+    /// Resolves a property key (`tags`, `status`, …) to an icon shown before it
+    /// in the property panel. Host-provided (asset path through the host's
+    /// `AssetSource`) so the crate stays asset-agnostic; `None` = no icons.
+    pub property_icon: Option<PropertyIconFn>,
 }
+
+/// Maps a property key to an icon asset path the host serves, or `None` for no
+/// icon. Host-provided so the crate makes no assumption about which assets exist.
+pub type PropertyIconFn = Rc<dyn Fn(&str) -> Option<SharedString>>;
 
 /// Per-kind SVG asset paths for the alert title icons.
 #[derive(Clone)]
@@ -95,6 +103,7 @@ impl Default for MarkdownStyle {
             mono_font: "monospace".into(),
             alerts: AlertColors::default(),
             alert_icons: None,
+            property_icon: None,
         }
     }
 }
@@ -1692,6 +1701,33 @@ fn render_property_table(
                 }
             }
         }
+        // Key cell: an optional host-resolved icon, then the muted key name.
+        let icon_path = ctx.style.property_icon.as_ref().and_then(|f| f(&key));
+        let mut key_cell = div()
+            .w(px(140.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .py(px(3.0))
+            .text_color(key_col);
+        if let Some(path) = icon_path {
+            let sz = px(f32::from(ctx.style.text_size));
+            key_cell = key_cell.child(
+                svg()
+                    .path(path)
+                    .text_color(key_col)
+                    .w(sz)
+                    .h(sz)
+                    .flex_shrink_0(),
+            );
+        }
+        key_cell = key_cell.child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(key)),
+        );
         // A clean row (no grid lines); the whole row shows a rounded border on
         // hover (Obsidian-style). A reserved transparent border keeps the layout
         // from shifting when it appears.
@@ -1703,16 +1739,7 @@ fn render_property_table(
                 .border_1()
                 .border_color(gpui::transparent_black())
                 .hover(|s| s.border_color(hover_border))
-                .child(
-                    div()
-                        .w(px(140.0))
-                        .flex_shrink_0()
-                        .px(px(8.0))
-                        .py(px(3.0))
-                        .text_color(key_col)
-                        .font_weight(FontWeight::MEDIUM)
-                        .child(SharedString::from(key)),
-                )
+                .child(key_cell)
                 .child(val),
         );
     }

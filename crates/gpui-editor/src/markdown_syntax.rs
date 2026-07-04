@@ -64,7 +64,15 @@ pub struct SyntaxStyle {
     pub popover_divider: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
+    /// Resolves a property key (`tags`, `status`, …) to an icon shown before it
+    /// in the property panel. Host-provided (asset path through the host's
+    /// `AssetSource`) so the crate stays asset-agnostic; `None` = no icons.
+    pub property_icon: Option<PropertyIconFn>,
 }
+
+/// Maps a property key to an icon asset path the host serves, or `None` for no
+/// icon. Host-provided so the crate makes no assumption about which assets exist.
+pub type PropertyIconFn = std::rc::Rc<dyn Fn(&str) -> Option<gpui::SharedString>>;
 
 /// Styling a scanned span adds on top of the editor's base run.
 #[derive(Clone, Default)]
@@ -1881,6 +1889,7 @@ mod tests {
             popover_hover: c,
             popover_divider: c,
             mono: gpui::font("monospace"),
+            property_icon: None,
         }
     }
 
