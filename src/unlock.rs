@@ -57,11 +57,16 @@ impl UnlockView {
             if self.remember {
                 crate::security::remember_password(&password);
             }
-            // Open the main window first, then retire this one.
-            cx.defer(|cx| {
+            // Open the main window BEFORE retiring this one, in one deferred
+            // step: on Windows gpui exits when the window count hits zero,
+            // and the old defer ran the open AFTER the removal — a correct
+            // password closed both windows and the app (macOS survives a
+            // windowless beat, which hid the bug).
+            let this_window = window.window_handle();
+            cx.defer(move |cx| {
                 crate::open_main_window(cx);
+                let _ = this_window.update(cx, |_, window, _| window.remove_window());
             });
-            window.remove_window();
         } else {
             self.error = true;
             self.input.update(cx, |s, cx| {
