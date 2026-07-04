@@ -219,10 +219,13 @@ pub(crate) fn lock_now(cx: &mut App) {
         return;
     }
     security::set_session_key(None);
-    for window in cx.windows() {
+    // Snapshot first, open the unlock window, THEN close the app windows —
+    // the count must never hit zero (Windows exits on the last close).
+    let doomed = cx.windows();
+    unlock::open_unlock_window(cx);
+    for window in doomed {
         let _ = window.update(cx, |_, window, _| window.remove_window());
     }
-    unlock::open_unlock_window(cx);
 }
 
 /// Open the main application window. On failure (no usable graphics device) pop a
