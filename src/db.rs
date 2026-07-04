@@ -922,6 +922,44 @@ impl Db {
         )
     }
 
+    /// Every property key (`key:: value`) used across all pages, mapped to the
+    /// distinct values seen for it (keys and values both sorted). Fenced code is
+    /// skipped so a `Type::method()` line isn't counted. Powers the property
+    /// editor's key dropdown + value suggestions (and a future Properties page).
+    // ponytail: no consumer yet — the property editor (next stage) is the caller;
+    // the unit test exercises it in the meantime. Drop the allow when wired.
+    #[allow(dead_code)]
+    pub fn property_index(&self) -> rusqlite::Result<Vec<(String, Vec<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT content FROM pages")?;
+        let contents: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut map: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for content in &contents {
+            let mut in_fence = false;
+            for line in content.lines() {
+                if line.trim_start().starts_with("```") {
+                    in_fence = !in_fence;
+                    continue;
+                }
+                if in_fence {
+                    continue;
+                }
+                if let Some((k, v)) = gpui_markdown::syntax::property(line) {
+                    let vals = map.entry(k.to_string()).or_default();
+                    if !v.is_empty() {
+                        vals.insert(v.to_string());
+                    }
+                }
+            }
+        }
+        Ok(map
+            .into_iter()
+            .map(|(k, vs)| (k, vs.into_iter().collect()))
+            .collect())
+    }
+
     /// Every journal-day page (id + title only), for the graph view's
     /// Journals toggle.
     pub fn list_journal_pages(&self) -> rusqlite::Result<Vec<Page>> {
@@ -1412,6 +1450,30 @@ mod tests {
         assert!(db.content_references("photo-1.png").unwrap());
         assert!(db.content_references("board-bg.webp").unwrap());
         assert!(!db.content_references("unused.png").unwrap());
+    }
+
+    #[test]
+    fn property_index_collects_keys_values_and_skips_code() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.get_or_create_page("A").unwrap();
+        db.set_page_content(
+            a.id,
+            "attendees:: Bob\nstatus:: active\n```\nFoo::bar()\n```",
+        )
+        .unwrap();
+        let b = db.get_or_create_page("B").unwrap();
+        db.set_page_content(b.id, "status:: done\njust prose")
+            .unwrap();
+        let idx: std::collections::HashMap<String, Vec<String>> =
+            db.property_index().unwrap().into_iter().collect();
+        assert_eq!(idx.get("attendees").unwrap(), &vec!["Bob".to_string()]);
+        // Distinct values across pages, sorted.
+        assert_eq!(
+            idx.get("status").unwrap(),
+            &vec!["active".to_string(), "done".to_string()]
+        );
+        // A `Foo::bar()` line inside a code fence isn't a property key.
+        assert!(!idx.contains_key("Foo"));
     }
 
     #[test]
