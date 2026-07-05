@@ -9,6 +9,24 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Added
+
+- **Properties** — `key:: value` metadata lines (Obsidian/Logseq-style
+  "properties"), written anywhere on a page, now render as a clean two-column
+  panel in both the reading view and the live editor: a per-key icon, the key,
+  and the value with `#tags` and `[[wiki-links]]` shown as clickable pills, with
+  the row highlighting on hover. This generalizes the old alias-only handling —
+  any key works (`attendees::`, `status::`, `time::`, …), and the panel reads the
+  same whether you're viewing or editing.
+- **In-place property editor** — clicking a property panel, or arrowing the
+  caret into it, opens an editor seated right in the note that mirrors the
+  rendered panel (icons, muted keys, value pills — the value you're editing
+  reveals as raw text under the caret). Edit keys and values in place with a
+  dropdown of properties already used across your notes, add or remove rows, and
+  move between fields entirely from the keyboard (arrows step within and between
+  fields, Tab/Shift-Tab jump field to field). Clicking away writes the
+  `key:: value` lines back.
+
 ## [0.5.1] - 2026-07-03
 
 Two fixes, one urgent: Windows users could be locked out of an encrypted
