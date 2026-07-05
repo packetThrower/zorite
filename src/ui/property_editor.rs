@@ -3,19 +3,19 @@
 //! editor uses) when the caret enters a property panel; on blur the host reads
 //! [`PropertyEditor::to_source`] and writes the `key:: value` lines back.
 //!
-//! The form mirrors the rendered panel: each row shows the key's icon + a muted
-//! key and the value as pills, exactly like the read view — and a cell becomes
-//! an editable field only while it holds focus (click a cell to edit it). A
-//! focused key field also drops an autocomplete of keys already used across the
-//! vault (from `Db::property_index`); free text is allowed, so new keys can be
-//! typed.
+//! Custom fields: like the math editor, this owns every keystroke itself (one
+//! focus handle for the whole form, per-field text+caret state) rather than
+//! delegating to a component that claims the arrow keys. So the caret walks the
+//! whole form like a table — Left/Right hop fields at the text edges, Up/Down
+//! move rows, Tab steps field-to-field — and an idle field renders like the
+//! panel (icon + muted key, value pills). Stage 1 shows plain text while a field
+//! is focused; pill-while-editing is Stage 2.
 
 use gpui::{
-    App, AppContext, Context, Entity, FocusHandle, Focusable, InteractiveElement, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement, Render, SharedString, StatefulInteractiveElement,
-    Styled, Window, deferred, div, px, svg,
+    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, ParentElement, Render, SharedString, Styled, Window, deferred,
+    div, px, svg,
 };
-use gpui_component::input::{Input, InputState};
 
 use crate::theme;
 
@@ -23,12 +23,69 @@ pub struct PropertyEditor {
     rows: Vec<Row>,
     /// Property keys already used across the vault — the autocomplete source.
     keys: Vec<SharedString>,
+    /// The field being edited: `(row, is_key)`. `None` = nothing focused yet.
+    active: Option<(usize, bool)>,
     focus: FocusHandle,
 }
 
 struct Row {
-    key: Entity<InputState>,
-    value: Entity<InputState>,
+    key: Field,
+    value: Field,
+}
+
+/// A single editable text field: its content and the caret's byte offset.
+#[derive(Default)]
+struct Field {
+    text: String,
+    caret: usize,
+}
+
+impl Field {
+    fn new(s: &str) -> Self {
+        Self {
+            text: s.to_string(),
+            caret: s.len(),
+        }
+    }
+
+    fn insert(&mut self, s: &str) {
+        self.text.insert_str(self.caret, s);
+        self.caret += s.len();
+    }
+
+    fn backspace(&mut self) {
+        if self.caret > 0 {
+            let prev = prev_boundary(&self.text, self.caret);
+            self.text.replace_range(prev..self.caret, "");
+            self.caret = prev;
+        }
+    }
+
+    fn delete(&mut self) {
+        if self.caret < self.text.len() {
+            let next = next_boundary(&self.text, self.caret);
+            self.text.replace_range(self.caret..next, "");
+        }
+    }
+
+    /// Move the caret left; returns `false` when already at the start (so the
+    /// caller can hop to the previous field).
+    fn left(&mut self) -> bool {
+        if self.caret == 0 {
+            return false;
+        }
+        self.caret = prev_boundary(&self.text, self.caret);
+        true
+    }
+
+    /// Move the caret right; returns `false` when already at the end.
+    fn right(&mut self) -> bool {
+        if self.caret >= self.text.len() {
+            return false;
+        }
+        self.caret = next_boundary(&self.text, self.caret);
+        true
+    }
 }
 
 impl PropertyEditor {
@@ -37,144 +94,360 @@ impl PropertyEditor {
     pub fn new(
         source: &str,
         keys: Vec<SharedString>,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
         let rows = parse(source)
             .into_iter()
-            .map(|(k, v)| Row::new(&k, &v, window, cx))
+            .map(|(k, v)| Row {
+                key: Field::new(&k),
+                value: Field::new(&v),
+            })
             .collect();
-        let focus = cx.focus_handle();
-        Self { rows, keys, focus }
+        Self {
+            rows,
+            keys,
+            active: None,
+            focus: cx.focus_handle(),
+        }
     }
 
     /// Focus a value field on open: the last row's when entered by arrowing up
     /// from below (`at_end`), else the first — so the caret lands where it came
-    /// from. Empty block focuses the container so a click-away still commits.
-    pub fn focus_end(&self, at_end: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let row = if at_end {
-            self.rows.last()
-        } else {
-            self.rows.first()
-        };
-        match row {
-            Some(r) => r.value.update(cx, |s, cx| s.focus(window, cx)),
-            None => self.focus.focus(window, cx),
-        }
-    }
-
-    /// The `(row, is_key)` of the currently focused field, if any.
-    fn focused_cell(&self, window: &Window, cx: &App) -> Option<(usize, bool)> {
-        self.rows.iter().enumerate().find_map(|(i, r)| {
-            if r.key.read(cx).focus_handle(cx).is_focused(window) {
-                Some((i, true))
-            } else if r.value.read(cx).focus_handle(cx).is_focused(window) {
-                Some((i, false))
-            } else {
-                None
-            }
-        })
-    }
-
-    /// Focus row `row`'s key or value field (a no-op if out of range).
-    fn focus_cell(&self, row: usize, is_key: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(r) = self.rows.get(row) {
-            let input = if is_key { &r.key } else { &r.value };
-            input.update(cx, |s, cx| s.focus(window, cx));
-            cx.notify();
-        }
-    }
-
-    /// Up/Down move between rows in the same column. Only these reach here: the
-    /// text input claims Left/Right/Tab (and every other bound key) via its own
-    /// key context, and gpui routes bound keys straight to the input — a capture
-    /// handler never sees them — so horizontal movement stays inside the field.
-    fn nav_key(&mut self, ev: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let Some((row, is_key)) = self.focused_cell(window, cx) else {
+    /// from.
+    pub fn focus_end(&mut self, at_end: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if self.rows.is_empty() {
+            self.focus.focus(window, cx);
             return;
-        };
-        let n = self.rows.len();
-        let handled = match ev.keystroke.key.as_str() {
-            "up" if row > 0 => {
-                self.focus_cell(row - 1, is_key, window, cx);
-                true
-            }
-            "down" if row + 1 < n => {
-                self.focus_cell(row + 1, is_key, window, cx);
-                true
-            }
-            _ => false,
-        };
-        if handled {
-            cx.stop_propagation();
         }
+        let row = if at_end { self.rows.len() - 1 } else { 0 };
+        // Caret at the value's end when entering from below/right, else start.
+        let caret = if at_end {
+            self.rows[row].value.text.len()
+        } else {
+            0
+        };
+        self.rows[row].value.caret = caret;
+        self.active = Some((row, false));
+        self.focus.focus(window, cx);
+        cx.notify();
     }
 
     /// The current fields serialized back to `key:: value` lines (empty-key rows
     /// dropped). This is what the host writes over the source block on commit.
-    pub fn to_source(&self, cx: &App) -> String {
+    pub fn to_source(&self, _cx: &App) -> String {
         self.rows
             .iter()
             .filter_map(|r| {
-                let k = r.key.read(cx).value().trim().to_string();
+                let k = r.key.text.trim();
                 if k.is_empty() {
                     return None;
                 }
-                let v = r.value.read(cx).value().trim().to_string();
-                Some(format!("{k}:: {v}"))
+                Some(format!("{k}:: {}", r.value.text.trim()))
             })
             .collect::<Vec<_>>()
             .join("\n")
     }
 
-    fn add_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let row = Row::new("", "", window, cx);
-        row.key.update(cx, |s, cx| s.focus(window, cx));
-        self.rows.push(row);
+    fn field(&self, row: usize, is_key: bool) -> Option<&Field> {
+        self.rows
+            .get(row)
+            .map(|r| if is_key { &r.key } else { &r.value })
+    }
+
+    fn field_mut(&mut self, row: usize, is_key: bool) -> Option<&mut Field> {
+        self.rows
+            .get_mut(row)
+            .map(|r| if is_key { &mut r.key } else { &mut r.value })
+    }
+
+    /// Move focus to `(row, is_key)`, seating the caret at `caret_end` (true =
+    /// end of the target field, for leftward moves; false = start).
+    fn go(&mut self, row: usize, is_key: bool, caret_end: bool) {
+        if let Some(f) = self.field_mut(row, is_key) {
+            f.caret = if caret_end { f.text.len() } else { 0 };
+            self.active = Some((row, is_key));
+        }
+    }
+
+    /// Step to the next (`forward`) or previous field: key → value → next row's
+    /// key, and back. Bound to Tab / Shift+Tab via actions.
+    fn tab(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some((row, is_key)) = self.active else {
+            return;
+        };
+        let n = self.rows.len();
+        if forward {
+            if is_key {
+                self.go(row, false, false);
+            } else if row + 1 < n {
+                self.go(row + 1, true, false);
+            }
+        } else if !is_key {
+            self.go(row, true, true);
+        } else if row > 0 {
+            self.go(row - 1, false, true);
+        }
+        cx.notify();
+    }
+
+    fn add_row(&mut self, cx: &mut Context<Self>) {
+        self.rows.push(Row {
+            key: Field::default(),
+            value: Field::default(),
+        });
+        self.active = Some((self.rows.len() - 1, true));
         cx.notify();
     }
 
     fn remove_row(&mut self, i: usize, cx: &mut Context<Self>) {
         if i < self.rows.len() {
             self.rows.remove(i);
+            if self.active.map(|(r, _)| r) == Some(i) {
+                self.active = None;
+            }
             cx.notify();
         }
     }
 
-    fn focus_key(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(row) = self.rows.get(i) {
-            row.key.update(cx, |s, cx| s.focus(window, cx));
+    /// All key handling — the form owns every keystroke, so the caret navigates
+    /// the whole table.
+    fn key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some((row, is_key)) = self.active else {
+            return;
+        };
+        let n = self.rows.len();
+        let m = &ev.keystroke.modifiers;
+        match ev.keystroke.key.as_str() {
+            "left" => {
+                let moved = self.field_mut(row, is_key).is_some_and(Field::left);
+                if !moved {
+                    // Hop to the field on the left, caret at its end.
+                    if !is_key {
+                        self.go(row, true, true);
+                    } else if row > 0 {
+                        self.go(row - 1, false, true);
+                    }
+                }
+            }
+            "right" => {
+                let moved = self.field_mut(row, is_key).is_some_and(Field::right);
+                if !moved {
+                    if is_key {
+                        self.go(row, false, false);
+                    } else if row + 1 < n {
+                        self.go(row + 1, true, false);
+                    }
+                }
+            }
+            "up" if row > 0 => self.go(row - 1, is_key, true),
+            "down" if row + 1 < n => self.go(row + 1, is_key, true),
+            // Tab / Shift+Tab arrive as the PropNextField / PropPrevField actions
+            // (see `crate::actions`) so the default focus traversal can't grab them.
+            "home" => {
+                if let Some(f) = self.field_mut(row, is_key) {
+                    f.caret = 0;
+                }
+            }
+            "end" => {
+                if let Some(f) = self.field_mut(row, is_key) {
+                    f.caret = f.text.len();
+                }
+            }
+            "backspace" => {
+                if let Some(f) = self.field_mut(row, is_key) {
+                    f.backspace();
+                }
+            }
+            "delete" => {
+                if let Some(f) = self.field_mut(row, is_key) {
+                    f.delete();
+                }
+            }
+            "enter" | "escape" => {
+                // Commit: blur the form so the host's focus-out fires.
+                self.active = None;
+                cx.notify();
+                return;
+            }
+            _ => {
+                // Printable input: insert the produced character(s). Skip when a
+                // command modifier is held (shortcuts aren't text).
+                match &ev.keystroke.key_char {
+                    Some(ch) if !m.control && !m.platform && !m.function && !ch.is_empty() => {
+                        if let Some(f) = self.field_mut(row, is_key) {
+                            f.insert(ch);
+                        }
+                    }
+                    _ => return,
+                }
+            }
         }
         cx.notify();
+        cx.stop_propagation();
+    }
+}
+
+impl Focusable for PropertyEditor {
+    fn focus_handle(&self, _cx: &App) -> FocusHandle {
+        self.focus.clone()
+    }
+}
+
+impl Render for PropertyEditor {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let rows: Vec<_> = (0..self.rows.len())
+            .map(|i| self.render_row(i, cx))
+            .collect();
+        div()
+            .track_focus(&self.focus)
+            .key_context("PropertyEditor")
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                this.key_down(ev, window, cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::PropNextField, _w, cx| {
+                    this.tab(true, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &crate::actions::PropPrevField, _w, cx| {
+                    this.tab(false, cx);
+                }),
+            )
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .max_w(px(480.0))
+            .children(rows)
+            .child(
+                div()
+                    .id("prop-add")
+                    .mt(px(2.0))
+                    .px(px(6.0))
+                    .py(px(3.0))
+                    .text_size(px(12.0))
+                    .text_color(theme::accent())
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(theme::text_primary()))
+                    .child("+ Add property")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut PropertyEditor, _: &MouseDownEvent, _w, cx| {
+                            this.add_row(cx);
+                        }),
+                    ),
+            )
+    }
+}
+
+impl PropertyEditor {
+    fn render_row(&self, i: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let r = &self.rows[i];
+        let key_active = self.active == Some((i, true));
+        let value_active = self.active == Some((i, false));
+        let icon = theme::property_icon(&r.key.text);
+        let dropdown = key_active.then(|| self.key_autocomplete(i, cx)).flatten();
+
+        div()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .child(
+                div()
+                    .relative()
+                    .w(px(150.0))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .children(icon.map(|p| {
+                        svg()
+                            .path(p)
+                            .w(px(16.0))
+                            .h(px(16.0))
+                            .text_color(theme::text_tertiary())
+                            .flex_shrink_0()
+                    }))
+                    .child(self.render_field(i, true, key_active, cx))
+                    .children(dropdown),
+            )
+            .child(self.render_field(i, false, value_active, cx))
+            .child(
+                div()
+                    .id(("prop-remove", i))
+                    .flex_shrink_0()
+                    .px(px(6.0))
+                    .text_color(theme::text_tertiary())
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(theme::text_primary()))
+                    .child("✕")
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(
+                            move |this: &mut PropertyEditor, _: &MouseDownEvent, _w, cx| {
+                                this.remove_row(i, cx);
+                            },
+                        ),
+                    ),
+            )
+            .into_any_element()
     }
 
-    fn focus_value(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(row) = self.rows.get(i) {
-            row.value.update(cx, |s, cx| s.focus(window, cx));
-        }
-        cx.notify();
-    }
-
-    /// Pick a key from the autocomplete: fill the field, then move focus to the
-    /// value (which closes the dropdown).
-    fn pick_key(
-        &mut self,
+    /// A field: the editable text with a caret when active; the panel look
+    /// (muted key / value pills) otherwise. Clicking focuses it.
+    fn render_field(
+        &self,
         i: usize,
-        key: SharedString,
-        window: &mut Window,
+        is_key: bool,
+        active: bool,
         cx: &mut Context<Self>,
-    ) {
-        if let Some(row) = self.rows.get(i) {
-            row.key.update(cx, |s, cx| s.set_value(key, window, cx));
-            row.value.update(cx, |s, cx| s.focus(window, cx));
+    ) -> gpui::AnyElement {
+        let Some(f) = self.field(i, is_key) else {
+            return div().into_any_element();
+        };
+        let mut cell = div()
+            .id(("prop-field", i * 2 + usize::from(is_key)))
+            .py(px(4.0))
+            .cursor_text()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
+                    this.go(i, is_key, true);
+                    this.focus.focus(window, cx);
+                    cx.notify();
+                }),
+            );
+        if is_key {
+            cell = cell.w_full().text_color(theme::text_tertiary());
+        } else {
+            cell = cell.flex_1();
         }
-        cx.notify();
+        if active {
+            // Editable: text split at the caret with a bar between.
+            let (before, after) = f.text.split_at(f.caret);
+            cell.flex()
+                .items_center()
+                .child(before.to_string())
+                .child(div().w(px(1.5)).h(px(16.0)).bg(theme::accent()))
+                .child(after.to_string())
+                .into_any_element()
+        } else if is_key {
+            let label = if f.text.is_empty() {
+                "key".to_string()
+            } else {
+                f.text.clone()
+            };
+            cell.child(label).into_any_element()
+        } else {
+            cell.child(value_display(&f.text)).into_any_element()
+        }
     }
 
     /// The autocomplete panel for row `i`'s key field (vault keys, filtered by
     /// what's typed), dropped directly below the field.
     fn key_autocomplete(&self, i: usize, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let typed = self.rows.get(i)?.key.read(cx).value().to_lowercase();
+        let typed = self.rows.get(i)?.key.text.to_lowercase();
         let exact = self.keys.iter().any(|k| k.to_lowercase() == typed);
         let matches: Vec<SharedString> = if typed.is_empty() || exact {
             self.keys.clone()
@@ -203,7 +476,13 @@ impl PropertyEditor {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                            this.pick_key(i, key.clone(), window, cx);
+                            if let Some(r) = this.rows.get_mut(i) {
+                                r.key.text = key.to_string();
+                                r.key.caret = r.key.text.len();
+                            }
+                            this.go(i, false, false);
+                            this.focus.focus(window, cx);
+                            cx.notify();
                         }),
                     )
                     .into_any_element()
@@ -228,168 +507,6 @@ impl PropertyEditor {
             )
             .into_any_element(),
         )
-    }
-}
-
-impl Row {
-    fn new(key: &str, value: &str, window: &mut Window, cx: &mut Context<PropertyEditor>) -> Self {
-        let key = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("key")
-                .default_value(key.to_string())
-        });
-        let value = cx.new(|cx| {
-            InputState::new(window, cx)
-                .placeholder("value")
-                .default_value(value.to_string())
-        });
-        Self { key, value }
-    }
-}
-
-impl Focusable for PropertyEditor {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus.clone()
-    }
-}
-
-impl Render for PropertyEditor {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows: Vec<_> = (0..self.rows.len())
-            .map(|i| {
-                let r = &self.rows[i];
-                let key_focused = r.key.read(cx).focus_handle(cx).is_focused(window);
-                let value_focused = r.value.read(cx).focus_handle(cx).is_focused(window);
-                let key_val = r.key.read(cx).value();
-                let value_val = r.value.read(cx).value();
-                let icon = theme::property_icon(&key_val);
-                let dropdown = key_focused.then(|| self.key_autocomplete(i, cx)).flatten();
-
-                // The inputs are ALWAYS rendered (so focusing them from a click
-                // works); when a cell isn't focused, a panel-styled overlay (muted
-                // key / value pills) covers its input and, on click, focuses it.
-                let key_overlay = (!key_focused).then(|| {
-                    let label = if key_val.is_empty() {
-                        SharedString::from("key")
-                    } else {
-                        key_val
-                    };
-                    div()
-                        .id(("prop-key-ov", i))
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .px(px(2.0))
-                        .bg(theme::elevated())
-                        .text_color(theme::text_tertiary())
-                        .cursor_pointer()
-                        .child(label)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                                this.focus_key(i, window, cx);
-                            }),
-                        )
-                });
-                let value_overlay = (!value_focused).then(|| {
-                    div()
-                        .id(("prop-val-ov", i))
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .px(px(2.0))
-                        .bg(theme::elevated())
-                        .cursor_pointer()
-                        .child(value_display(&value_val))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                                this.focus_value(i, window, cx);
-                            }),
-                        )
-                });
-
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        div()
-                            .relative()
-                            .w(px(150.0))
-                            .flex_shrink_0()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.0))
-                            .children(icon.map(|p| {
-                                svg()
-                                    .path(p)
-                                    .w(px(16.0))
-                                    .h(px(16.0))
-                                    .text_color(theme::text_tertiary())
-                                    .flex_shrink_0()
-                            }))
-                            .child(
-                                div()
-                                    .relative()
-                                    .flex_1()
-                                    .child(Input::new(&self.rows[i].key).appearance(false))
-                                    .children(key_overlay),
-                            )
-                            .children(dropdown),
-                    )
-                    .child(
-                        div()
-                            .relative()
-                            .flex_1()
-                            .child(Input::new(&self.rows[i].value).appearance(false))
-                            .children(value_overlay),
-                    )
-                    .child(
-                        div()
-                            .id(("prop-remove", i))
-                            .flex_shrink_0()
-                            .px(px(6.0))
-                            .text_color(theme::text_tertiary())
-                            .cursor_pointer()
-                            .hover(|s| s.text_color(theme::text_primary()))
-                            .child("✕")
-                            .on_click(cx.listener(move |this: &mut PropertyEditor, _, _w, cx| {
-                                this.remove_row(i, cx);
-                            })),
-                    )
-                    .into_any_element()
-            })
-            .collect();
-        div()
-            .track_focus(&self.focus)
-            .capture_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, window, cx| {
-                this.nav_key(ev, window, cx);
-            }))
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            // Keep the block compact so the row-delete ✕ sits near the values,
-            // not flung to the far edge of the note.
-            .max_w(px(480.0))
-            .children(rows)
-            .child(
-                div()
-                    .id("prop-add")
-                    .mt(px(2.0))
-                    .px(px(6.0))
-                    .py(px(3.0))
-                    .text_size(px(12.0))
-                    .text_color(theme::accent())
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(theme::text_primary()))
-                    .child("+ Add property")
-                    .on_click(cx.listener(|this: &mut PropertyEditor, _, w, cx| {
-                        this.add_row(w, cx);
-                    })),
-            )
     }
 }
 
@@ -427,6 +544,14 @@ fn value_display(value: &str) -> impl IntoElement {
     row
 }
 
+fn prev_boundary(s: &str, i: usize) -> usize {
+    s[..i].char_indices().next_back().map_or(0, |(idx, _)| idx)
+}
+
+fn next_boundary(s: &str, i: usize) -> usize {
+    s[i..].chars().next().map_or(i, |c| i + c.len_utf8())
+}
+
 /// Split a property block into `(key, value)` pairs, ignoring lines that aren't
 /// properties (via the shared grammar).
 fn parse(source: &str) -> Vec<(String, String)> {
@@ -440,7 +565,7 @@ fn parse(source: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
+    use super::{Field, parse};
 
     #[test]
     fn parse_reads_property_lines_only() {
@@ -452,5 +577,20 @@ mod tests {
                 ("time".to_string(), "3:00pm".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn field_edits_at_the_caret() {
+        let mut f = Field::new("ab");
+        assert_eq!(f.caret, 2);
+        assert!(f.left()); // between a|b
+        f.insert("X");
+        assert_eq!(f.text, "aXb");
+        assert_eq!(f.caret, 2);
+        f.backspace(); // a|b (caret at 1)
+        assert_eq!(f.text, "ab");
+        assert_eq!(f.caret, 1);
+        assert!(f.left()); // |ab
+        assert!(!f.left()); // at start → caller hops fields
     }
 }
