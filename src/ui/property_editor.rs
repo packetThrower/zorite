@@ -7,14 +7,15 @@
 //! focus handle for the whole form, per-field text+caret state) rather than
 //! delegating to a component that claims the arrow keys. So the caret walks the
 //! whole form like a table — Left/Right hop fields at the text edges, Up/Down
-//! move rows, Tab steps field-to-field — and an idle field renders like the
-//! panel (icon + muted key, value pills). Stage 1 shows plain text while a field
-//! is focused; pill-while-editing is Stage 2.
+//! move rows, Tab steps field-to-field. It's built to mirror the rendered panel:
+//! icon + muted key + value pills (the focused value reveals only the caret's
+//! segment as raw text), matched to the note's text size and the panel's
+//! content-fit column widths, so opening the editor doesn't visibly jump.
 
 use gpui::{
     App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, ParentElement, Render, SharedString, Styled, Window, deferred,
-    div, px, svg,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString, Styled, Window,
+    deferred, div, px, svg,
 };
 
 use crate::theme;
@@ -25,6 +26,8 @@ pub struct PropertyEditor {
     keys: Vec<SharedString>,
     /// The field being edited: `(row, is_key)`. `None` = nothing focused yet.
     active: Option<(usize, bool)>,
+    /// The note's text size — the form matches the rendered panel's sizing.
+    text_size: f32,
     focus: FocusHandle,
 }
 
@@ -94,6 +97,7 @@ impl PropertyEditor {
     pub fn new(
         source: &str,
         keys: Vec<SharedString>,
+        text_size: f32,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -108,6 +112,7 @@ impl PropertyEditor {
             rows,
             keys,
             active: None,
+            text_size,
             focus: cx.focus_handle(),
         }
     }
@@ -295,9 +300,37 @@ impl Focusable for PropertyEditor {
 }
 
 impl Render for PropertyEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Content-fit the key column to the widest key (+ icon), like the panel,
+        // so the value column starts right after the keys instead of at a fixed
+        // width. Measured at the note's text size.
+        let fs = px(self.text_size);
+        let font = window.text_style().font();
+        let mut max_key = 0.0f32;
+        for r in &self.rows {
+            let label = if r.key.text.is_empty() {
+                "key"
+            } else {
+                r.key.text.as_str()
+            };
+            let run = gpui::TextRun {
+                len: label.len(),
+                font: font.clone(),
+                color: gpui::Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let w = window
+                .text_system()
+                .shape_line(SharedString::from(label.to_string()), fs, &[run], None)
+                .width();
+            max_key = max_key.max(f32::from(w));
+        }
+        // icon + gap(6) + widest key + a small trailing gap before the value.
+        let key_col = px(self.text_size * 0.95 + 6.0 + max_key + 14.0);
         let rows: Vec<_> = (0..self.rows.len())
-            .map(|i| self.render_row(i, cx))
+            .map(|i| self.render_row(i, key_col, cx))
             .collect();
         div()
             .track_focus(&self.focus)
@@ -317,7 +350,9 @@ impl Render for PropertyEditor {
             )
             .flex()
             .flex_col()
-            .gap(px(2.0))
+            // Match the rendered panel: the note's text size, rows stacked with
+            // no gap (the row height carries the spacing).
+            .text_size(px(self.text_size))
             .max_w(px(480.0))
             .children(rows)
             .child(
@@ -342,21 +377,24 @@ impl Render for PropertyEditor {
 }
 
 impl PropertyEditor {
-    fn render_row(&self, i: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_row(&self, i: usize, key_col: Pixels, cx: &mut Context<Self>) -> gpui::AnyElement {
         let r = &self.rows[i];
         let key_active = self.active == Some((i, true));
         let value_active = self.active == Some((i, false));
         let icon = theme::property_icon(&r.key.text);
         let dropdown = key_active.then(|| self.key_autocomplete(i, cx)).flatten();
+        let icon_sz = px(self.text_size * 0.95);
+        let row_h = px(self.text_size * 1.45 + 8.0);
 
         div()
             .flex()
             .items_center()
+            .h(row_h)
             .gap(px(6.0))
             .child(
                 div()
                     .relative()
-                    .w(px(150.0))
+                    .w(key_col)
                     .flex_shrink_0()
                     .flex()
                     .items_center()
@@ -364,8 +402,8 @@ impl PropertyEditor {
                     .children(icon.map(|p| {
                         svg()
                             .path(p)
-                            .w(px(16.0))
-                            .h(px(16.0))
+                            .w(icon_sz)
+                            .h(icon_sz)
                             .text_color(theme::text_tertiary())
                             .flex_shrink_0()
                     }))
@@ -406,9 +444,9 @@ impl PropertyEditor {
         let Some(f) = self.field(i, is_key) else {
             return div().into_any_element();
         };
+        let sz = self.text_size;
         let mut cell = div()
             .id(("prop-field", i * 2 + usize::from(is_key)))
-            .py(px(4.0))
             .cursor_text()
             .on_mouse_down(
                 MouseButton::Left,
@@ -429,12 +467,12 @@ impl PropertyEditor {
             cell.flex()
                 .items_center()
                 .child(before.to_string())
-                .child(caret_bar())
+                .child(caret_bar(sz))
                 .child(after.to_string())
                 .into_any_element()
         } else if active {
             // Value: pills, revealing the segment under the caret as raw text.
-            cell.child(active_value(f)).into_any_element()
+            cell.child(active_value(f, sz)).into_any_element()
         } else if is_key {
             let label = if f.text.is_empty() {
                 "key".to_string()
@@ -513,15 +551,15 @@ impl PropertyEditor {
     }
 }
 
-/// A blinkless caret bar.
-fn caret_bar() -> impl IntoElement {
-    div().w(px(1.5)).h(px(16.0)).bg(theme::accent())
+/// A blinkless caret bar sized to the text.
+fn caret_bar(text_size: f32) -> impl IntoElement {
+    div().w(px(1.5)).h(px(text_size * 1.2)).bg(theme::accent())
 }
 
 /// The focused value, rendered like the panel (tags/wiki-links as pills) except
 /// the segment the caret sits in, which shows raw text + the caret so it can be
 /// edited — reveal-on-caret, within the field.
-fn active_value(f: &Field) -> impl IntoElement {
+fn active_value(f: &Field, text_size: f32) -> impl IntoElement {
     let value = f.text.as_str();
     let caret = f.caret;
     let mut kids: Vec<gpui::AnyElement> = Vec::new();
@@ -529,12 +567,19 @@ fn active_value(f: &Field) -> impl IntoElement {
     let mut pos = 0;
     for (range, _hit) in gpui_markdown::syntax::links(value) {
         if range.start > pos {
-            push_editable(&mut kids, &value[pos..range.start], pos, caret, &mut placed);
+            push_editable(
+                &mut kids,
+                &value[pos..range.start],
+                pos,
+                caret,
+                &mut placed,
+                text_size,
+            );
         }
         let raw = &value[range.clone()];
         // The link the caret touches reveals raw; the rest stay pills.
         if !placed && caret >= range.start && caret <= range.end {
-            push_editable(&mut kids, raw, range.start, caret, &mut placed);
+            push_editable(&mut kids, raw, range.start, caret, &mut placed, text_size);
         } else {
             let is_tag = raw.starts_with('#');
             let color = if is_tag {
@@ -560,9 +605,9 @@ fn active_value(f: &Field) -> impl IntoElement {
         }
         pos = range.end;
     }
-    push_editable(&mut kids, &value[pos..], pos, caret, &mut placed);
+    push_editable(&mut kids, &value[pos..], pos, caret, &mut placed, text_size);
     if !placed {
-        kids.push(caret_bar().into_any_element());
+        kids.push(caret_bar(text_size).into_any_element());
     }
     div().flex().items_center().children(kids)
 }
@@ -574,13 +619,14 @@ fn push_editable(
     base: usize,
     caret: usize,
     placed: &mut bool,
+    text_size: f32,
 ) {
     if !*placed && caret >= base && caret <= base + text.len() {
         let split = caret - base;
         if split > 0 {
             kids.push(div().child(text[..split].to_string()).into_any_element());
         }
-        kids.push(caret_bar().into_any_element());
+        kids.push(caret_bar(text_size).into_any_element());
         if split < text.len() {
             kids.push(div().child(text[split..].to_string()).into_any_element());
         }

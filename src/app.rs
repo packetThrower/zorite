@@ -3031,8 +3031,10 @@ impl AppView {
             .into_iter()
             .map(|(k, _)| k.into())
             .collect();
-        let editor =
-            cx.new(|cx| crate::ui::property_editor::PropertyEditor::new(&block, keys, window, cx));
+        let text_size = self.text_size;
+        let editor = cx.new(|cx| {
+            crate::ui::property_editor::PropertyEditor::new(&block, keys, text_size, window, cx)
+        });
         let focus = editor.read(cx).focus_handle(cx);
         // Reserve a gap tall enough for the rows + the add-property button.
         let n = block
