@@ -423,15 +423,18 @@ impl PropertyEditor {
         } else {
             cell = cell.flex_1();
         }
-        if active {
-            // Editable: text split at the caret with a bar between.
+        if active && is_key {
+            // Key: plain text split at the caret (keys aren't pills).
             let (before, after) = f.text.split_at(f.caret);
             cell.flex()
                 .items_center()
                 .child(before.to_string())
-                .child(div().w(px(1.5)).h(px(16.0)).bg(theme::accent()))
+                .child(caret_bar())
                 .child(after.to_string())
                 .into_any_element()
+        } else if active {
+            // Value: pills, revealing the segment under the caret as raw text.
+            cell.child(active_value(f)).into_any_element()
         } else if is_key {
             let label = if f.text.is_empty() {
                 "key".to_string()
@@ -507,6 +510,99 @@ impl PropertyEditor {
             )
             .into_any_element(),
         )
+    }
+}
+
+/// A blinkless caret bar.
+fn caret_bar() -> impl IntoElement {
+    div().w(px(1.5)).h(px(16.0)).bg(theme::accent())
+}
+
+/// The focused value, rendered like the panel (tags/wiki-links as pills) except
+/// the segment the caret sits in, which shows raw text + the caret so it can be
+/// edited — reveal-on-caret, within the field.
+fn active_value(f: &Field) -> impl IntoElement {
+    let value = f.text.as_str();
+    let caret = f.caret;
+    let mut kids: Vec<gpui::AnyElement> = Vec::new();
+    let mut placed = false;
+    let mut pos = 0;
+    for (range, _hit) in gpui_markdown::syntax::links(value) {
+        if range.start > pos {
+            push_editable(&mut kids, &value[pos..range.start], pos, caret, &mut placed);
+        }
+        let raw = &value[range.clone()];
+        // The link the caret touches reveals raw; the rest stay pills.
+        if !placed && caret >= range.start && caret <= range.end {
+            push_editable(&mut kids, raw, range.start, caret, &mut placed);
+        } else {
+            let is_tag = raw.starts_with('#');
+            let color = if is_tag {
+                theme::tag()
+            } else {
+                theme::accent()
+            };
+            let mut bg = color;
+            bg.a = 0.16;
+            kids.push(
+                div()
+                    // Margin (not a row gap) so pills stay separated but the
+                    // caret sits tight against the text within a word.
+                    .mx(px(2.0))
+                    .px(px(7.0))
+                    .py(px(1.0))
+                    .rounded(px(6.0))
+                    .bg(bg)
+                    .text_color(color)
+                    .child(pill_label(raw))
+                    .into_any_element(),
+            );
+        }
+        pos = range.end;
+    }
+    push_editable(&mut kids, &value[pos..], pos, caret, &mut placed);
+    if !placed {
+        kids.push(caret_bar().into_any_element());
+    }
+    div().flex().items_center().children(kids)
+}
+
+/// Push a plain-text run, splitting it at the caret (once) with a caret bar.
+fn push_editable(
+    kids: &mut Vec<gpui::AnyElement>,
+    text: &str,
+    base: usize,
+    caret: usize,
+    placed: &mut bool,
+) {
+    if !*placed && caret >= base && caret <= base + text.len() {
+        let split = caret - base;
+        if split > 0 {
+            kids.push(div().child(text[..split].to_string()).into_any_element());
+        }
+        kids.push(caret_bar().into_any_element());
+        if split < text.len() {
+            kids.push(div().child(text[split..].to_string()).into_any_element());
+        }
+        *placed = true;
+    } else if !text.is_empty() {
+        kids.push(div().child(text.to_string()).into_any_element());
+    }
+}
+
+/// The display label of a link's raw span: a wiki-link's alias, a tag without
+/// `#`, a `[text](url)`'s text, else the raw text.
+fn pill_label(raw: &str) -> String {
+    if let Some(inner) = raw.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
+        gpui_markdown::syntax::wiki_target_display(inner)
+            .1
+            .to_string()
+    } else if let Some(tag) = raw.strip_prefix('#') {
+        tag.to_string()
+    } else if let Some(rest) = raw.strip_prefix('[') {
+        rest.split_once(']').map_or(raw, |(t, _)| t).to_string()
+    } else {
+        raw.to_string()
     }
 }
 
