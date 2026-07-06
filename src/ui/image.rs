@@ -12,7 +12,7 @@ use gpui::{
     MouseDownEvent, ParentElement, Pixels, SharedString, SharedUri, StatefulInteractiveElement,
     Styled, WeakEntity, canvas, div, img, px, relative,
 };
-use gpui_markdown::{ImageInfo, ImageRenderer};
+use gpui_markdown::{ImageInfo, ImageRenderer, InlineImageRenderer};
 
 use crate::app::AppView;
 use crate::images::ImageStore;
@@ -87,6 +87,36 @@ fn build_readonly(
                 .child(div().flex_shrink_0().child(image)),
         )
         .into_any_element()
+}
+
+/// The renderer handed to `MarkdownView::on_inline_image`: a decoded local
+/// image's raster + a size that flows inline (height capped so it doesn't
+/// tower over the text; width capped so a wide image doesn't blow out the
+/// line). PDFs and remote URLs return `None` (they fall back to a label).
+/// `None` while a local image is still decoding — `ensure_content_images`
+/// kicks the decode off, and the label shows until the raster lands.
+pub fn inline_renderer(app: &AppView) -> InlineImageRenderer {
+    let store = app.image_store();
+    Rc::new(move |src: SharedString| {
+        if crate::pdf::is_pdf(&src) || src.starts_with("http") {
+            return None;
+        }
+        let arc = store.borrow().get(&src)?;
+        let size = arc.size(0);
+        let (pw, ph) = (size.width.0 as f32, size.height.0 as f32);
+        if pw <= 0.0 || ph <= 0.0 {
+            return None;
+        }
+        // Flow at ~2.5 lines tall, capped to 240px wide.
+        let mut h = 40.0_f32;
+        let mut w = h * pw / ph;
+        if w > 240.0 {
+            let s = 240.0 / w;
+            w *= s;
+            h *= s;
+        }
+        Some((arc, w, h))
+    })
 }
 
 fn build(

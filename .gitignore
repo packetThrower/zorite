@@ -17,3 +17,6 @@
 # builds load any icon from here. Only the icons we actually ship get bundled
 # (committed) under assets/icons/ and compiled in.
 /assets/icons/lucide/
+
+# Obsidian test vault for importer development (not shipped)
+zorite_migration/
