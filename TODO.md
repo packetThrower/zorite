@@ -100,7 +100,7 @@ per-notebook settings sync.
 
 ## Completed
 
-### Obsidian parity (unreleased)
+### Obsidian parity (0.6.0)
 - [x] **Properties (`key:: value` anywhere)** (PR #32) — any-line properties render as a two-column panel (per-key icons, `#tag` / `[[link]]` values as clickable pills, hover highlight) in BOTH views; an **in-place property editor** seated in the note (click or arrow in; key dropdown fed by every key in the vault; full keyboard nav; writes `key:: value` back on blur); and a **Properties index page** (All pages → Properties): every key with its values + pages, icon overrides / pre-mapping from a picker, and rename-a-key-across-the-vault. Recognition shared in `gpui_markdown::syntax`; `alias::` keeps its `page_aliases` DB resolution
 - [x] **Block references & heading anchors** (PR #34) — ` ^block-id` gives a line an address; `[[Note#^id]]` and `[[Note#Heading]]` (case-insensitive) open the note scrolled to that line, in both views. Links read as `Note → anchor` (the raw `#^` / `#` renders as ` → `), the trailing `^id` marker hides outside the caret's line, `file.pdf#p3` and literal `#`-titled pages keep their meaning, and the link reindexer no longer spawns junk `Note#…` pages
 - [x] **Transclusion / embeds (`![[note]]`)** (PR #34) — a standalone `![[Note]]` / `![[Note#Heading]]` / `![[Note#^id]]` line renders the target's content in a quoted box with a clickable source label, in BOTH views: hover scrollbar + wheel hand-off at the edges, live updates when the source page changes, full inner rendering (images read-only, math, mermaid, highlighted code, nested embeds capped at depth 3), `|alias` renames the label; caret on the line edits the raw text
