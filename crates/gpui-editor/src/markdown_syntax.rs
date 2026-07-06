@@ -1217,6 +1217,31 @@ fn is_escaped(bytes: &[u8], idx: usize) -> bool {
 ///
 /// `$` and `\` are ASCII bytes that can't occur inside a multi-byte UTF-8 sequence, so the
 /// byte scan is char-safe and the returned ranges fall on char boundaries.
+/// Every inline `![alt](src)` image on `line`, as `(full span, src range)`.
+/// A whole-line image is handled as a block widget (`image_row`) before a line
+/// reaches inline shaping, so these are the mixed-line (text + image) ones.
+/// Images inside inline code aren't matched.
+pub(crate) fn inline_image_spans(line: &str) -> Vec<(Range<usize>, Range<usize>)> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'!'
+            && b[i + 1] == b'['
+            && let Some(rb) = line[i + 2..].find(']')
+            && line[i + 2 + rb + 1..].starts_with('(')
+            && let Some(rp) = line[i + 2 + rb + 2..].find(')')
+        {
+            let src = (i + 2 + rb + 2)..(i + 2 + rb + 2 + rp);
+            out.push((i..(src.end + 1), src.clone()));
+            i = src.end + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
     let bytes = line.as_bytes();
     let mut out = Vec::new();

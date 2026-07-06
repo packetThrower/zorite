@@ -350,6 +350,9 @@ pub enum EditorEvent {
         source: SharedString,
         at_end: bool,
     },
+    /// An inline `![](src)` image was left-clicked — the host opens a full-size
+    /// preview. The text is untouched.
+    PreviewImage(SharedString),
 }
 
 /// A table column's text alignment, for the host-driven alignment toolbar
@@ -1995,6 +1998,14 @@ impl EditorState {
                 return;
             }
         }
+        // Left-click an inline image opens a full-size preview (host-shown).
+        if !event.modifiers.shift
+            && !event.modifiers.control
+            && let Some(src) = self.inline_image_at(event.position)
+        {
+            cx.emit(EditorEvent::PreviewImage(src));
+            return;
+        }
         // Left-click a link navigates, like the reading view: a `[[wiki]]` /
         // `#tag` opens that page, a `[text](url)` opens the url — consistent
         // with chips and inline math above. Only a plain single click: a
@@ -2673,8 +2684,23 @@ impl EditorState {
     fn inline_math_at(&self, position: Point<Pixels>) -> Option<(Range<usize>, SharedString)> {
         self.inline_math_rects
             .iter()
-            .find(|(_, _, rect)| rect.contains(&position))
+            // Empty latex marks an inline IMAGE sharing this machinery — not a
+            // formula, so a click on it shouldn't open the math editor.
+            .find(|(_, latex, rect)| !latex.is_empty() && rect.contains(&position))
             .map(|(range, latex, _)| (range.clone(), latex.clone()))
+    }
+
+    /// The inline image `src` under `position` (an empty-latex entry in
+    /// `inline_math_rects`), parsed from its `![alt](src)` source.
+    fn inline_image_at(&self, position: Point<Pixels>) -> Option<SharedString> {
+        let (range, _, _) = self
+            .inline_math_rects
+            .iter()
+            .find(|(_, latex, rect)| latex.is_empty() && rect.contains(&position))?;
+        let text = self.content.get(range.clone())?;
+        let open = text.rfind('(')?;
+        let close = text.rfind(')')?;
+        (open < close).then(|| text[open + 1..close].to_string().into())
     }
 
     /// If `position` lands on an inline image's bottom-right resize grip, the
@@ -4429,6 +4455,83 @@ fn shape_inline_math(
     (nd, nr, nm, inline)
 }
 
+/// Inline `![](src)` images: swap each ready image's glyphs for a spacer to
+/// paint the raster over, reusing the inline-math machinery — the returned
+/// [`InlineMath`] entries carry an empty `latex` (so the click-to-edit path
+/// treats them as images, not formulas). A caret strictly inside an image's
+/// `![…](…)` leaves it raw for editing. Sizing matches the reader: ~40px tall,
+/// capped 240px wide, aspect from the raster's pixels.
+#[allow(clippy::too_many_arguments)]
+fn shape_inline_images(
+    window: &mut Window,
+    line: &str,
+    line_start: usize,
+    disp: String,
+    runs: Vec<TextRun>,
+    map: Vec<usize>,
+    caret_col: Option<usize>,
+    base_font: &Font,
+    fs: Pixels,
+    block_image: &BlockImageFn,
+) -> (String, Vec<TextRun>, Vec<usize>, Vec<InlineMath>) {
+    let spans = markdown_syntax::inline_image_spans(line);
+    if spans.is_empty() {
+        return (disp, runs, map, Vec::new());
+    }
+    let space_w = f32::from(measure_width(window, " ", base_font, fs)).max(1.);
+    let mut places: Vec<(Range<usize>, usize)> = Vec::new();
+    let mut imgs: Vec<(Arc<RenderImage>, Pixels, Pixels)> = Vec::new();
+    for (full, src) in spans {
+        if caret_col.is_some_and(|c| full.start < c && c < full.end) {
+            continue; // editing the raw `![](src)`
+        }
+        let Some(img) = block_image(&line[src]) else {
+            continue; // remote / PDF / not-yet-decoded → leave raw
+        };
+        let sz = img.size(0);
+        let (pw, ph) = (sz.width.0 as f32, sz.height.0 as f32);
+        if pw <= 0. || ph <= 0. {
+            continue;
+        }
+        let mut h = 40.0_f32;
+        let mut w = h * pw / ph;
+        if w > 240. {
+            let s = 240. / w;
+            w *= s;
+            h *= s;
+        }
+        let n = ((w / space_w).ceil() as usize).max(1);
+        places.push((full, n));
+        imgs.push((img, px(w), px(h)));
+    }
+    if places.is_empty() {
+        return (disp, runs, map, Vec::new());
+    }
+    let gap = TextRun {
+        len: 0,
+        font: base_font.clone(),
+        color: Hsla::default(),
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let (nd, nr, nm, placed) =
+        markdown_syntax::splice_inline_math(&disp, &runs, &map, &places, &gap);
+    let inline = placed
+        .into_iter()
+        .zip(imgs)
+        .map(|(p, (img, width, height))| InlineMath {
+            display_off: p.display_off,
+            source: line_start + p.source.start..line_start + p.source.end,
+            latex: SharedString::default(), // empty = image, not a formula
+            img,
+            width,
+            height,
+        })
+        .collect();
+    (nd, nr, nm, inline)
+}
+
 /// The WYSIWYG layout pass: shape `content` line-by-line so each logical line
 /// can use its own font size (headings are larger — W2) and a standalone image
 /// line can render as the image (W4). Returns, per logical line: the shaped
@@ -5260,17 +5363,28 @@ fn shape_document(
                 reveal_inline,
                 st,
             );
-            // Inline `$…$` math: swap each ready formula's glyphs for a spacer to paint over.
-            match (block_math, block_math_em) {
+            // Inline `$…$` math AND `![](src)` images: swap each ready one's
+            // glyphs for a spacer to paint the raster over (shared machinery).
+            let (disp, runs, m) = match (block_math, block_math_em) {
                 (Some(mathf), Some(em)) => {
                     let (disp, runs, m, im) = shape_inline_math(
                         window, line, line_start, disp, runs, m, caret_col, base_font, fs, mathf,
                         em,
                     );
                     line_inline_math = im;
+                    (disp, runs, m)
+                }
+                _ => (disp, runs, m),
+            };
+            match block_image {
+                Some(imgf) => {
+                    let (disp, runs, m, imgs) = shape_inline_images(
+                        window, line, line_start, disp, runs, m, caret_col, base_font, fs, imgf,
+                    );
+                    line_inline_math.extend(imgs);
                     (disp, runs, None, Some(m))
                 }
-                _ => (disp, runs, None, Some(m)),
+                None => (disp, runs, None, Some(m)),
             }
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).
@@ -6109,6 +6223,9 @@ struct PrepaintState {
     /// Pointer-cursor hitboxes over clickable property-panel pills, so hovering
     /// a pill shows a hand (like `link_grips`).
     prop_pill_grips: Vec<Hitbox>,
+    /// Pointer-cursor hitboxes over inline images (they open a preview on
+    /// click, so hovering shows a hand rather than the text caret).
+    inline_image_grips: Vec<Hitbox>,
     /// Icon asset paths for alert marker lines, cloned from the style so the
     /// paint can draw them next to the labels.
     alert_icons: Option<markdown_syntax::AlertIcons>,
@@ -6442,6 +6559,7 @@ impl Element for EditorElement {
         // a 3+-row link are skipped). Widget/code/table rows carry no inline
         // links (images and chips have their own machinery).
         let mut link_grips = Vec::new();
+        let mut inline_image_grips = Vec::new();
         if editor.markdown_style.is_some() && !editor.content.is_empty() {
             let starts = editor.line_starts();
             for (i, line_shaped) in wrapped.iter().enumerate() {
@@ -6488,6 +6606,24 @@ impl Element for EditorElement {
                         let tail = Bounds::new(point(origin.x, origin.y + p2.y), size(p2.x, *lh));
                         link_grips.push(window.insert_hitbox(head, HitboxBehavior::Normal));
                         link_grips.push(window.insert_hitbox(tail, HitboxBehavior::Normal));
+                    }
+                }
+                // Inline images on this line get a pointer-cursor hitbox (they
+                // open a preview) — bounds mirror the paint math (inset + the
+                // spacer's wrap-row position, centered in the row).
+                for im in inline_maths.get(i).into_iter().flatten() {
+                    if !im.latex.is_empty() {
+                        continue; // a `$…$` formula, not an image
+                    }
+                    if let Some(p) = line_shaped.position_for_index(im.display_off, *lh) {
+                        let hit = Bounds::new(
+                            point(
+                                bounds.origin.x + inset + p.x,
+                                bounds.origin.y + line_tops[i] + p.y + (*lh - im.height) / 2.,
+                            ),
+                            size(im.width, im.height),
+                        );
+                        inline_image_grips.push(window.insert_hitbox(hit, HitboxBehavior::Normal));
                     }
                 }
             }
@@ -6817,6 +6953,7 @@ impl Element for EditorElement {
             alert_fold_grips,
             link_grips,
             prop_pill_grips,
+            inline_image_grips,
             alert_icons: editor
                 .markdown_style
                 .as_ref()
@@ -7364,6 +7501,9 @@ impl Element for EditorElement {
             window.set_cursor_style(CursorStyle::PointingHand, hb);
         }
         for hb in &prepaint.prop_pill_grips {
+            window.set_cursor_style(CursorStyle::PointingHand, hb);
+        }
+        for hb in &prepaint.inline_image_grips {
             window.set_cursor_style(CursorStyle::PointingHand, hb);
         }
         self.editor.update(cx, |editor, _| {
