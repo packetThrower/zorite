@@ -64,7 +64,15 @@ pub struct SyntaxStyle {
     pub popover_divider: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
+    /// Resolves a property key (`tags`, `status`, …) to an icon shown before it
+    /// in the property panel. Host-provided (asset path through the host's
+    /// `AssetSource`) so the crate stays asset-agnostic; `None` = no icons.
+    pub property_icon: Option<PropertyIconFn>,
 }
+
+/// Maps a property key to an icon asset path the host serves, or `None` for no
+/// icon. Host-provided so the crate makes no assumption about which assets exist.
+pub type PropertyIconFn = std::rc::Rc<dyn Fn(&str) -> Option<gpui::SharedString>>;
 
 /// Styling a scanned span adds on top of the editor's base run.
 #[derive(Clone, Default)]
@@ -78,6 +86,10 @@ struct Style {
     /// A syntax marker (`**`, `#`, `[`, …) — dimmed when shown, and removed
     /// entirely when the line's markers are hidden (W6, reveal-on-caret).
     hide: bool,
+    /// What a hidden marker paints in its place (e.g. a block link's `#^`
+    /// shows ` → `): every replacement byte maps back to the span's start, so
+    /// the display↔source maps stay consistent. `None` = plain removal.
+    replace: Option<&'static str>,
 }
 
 struct Span {
@@ -253,14 +265,16 @@ pub(crate) fn hidden_runs(
     // per-construct reveal). Empty range when the caret is in plain text / absent.
     let reveal = caret_col.map_or(0..0, |c| construct_at(&spans, c));
 
-    // The visible segments (markers dropped), each a source byte range + style.
-    // A visible segment is copied verbatim, so source↔display is 1:1 within it —
-    // which lets a diagnostic (source coords) map straight onto the display.
-    let mut segs: Vec<(Range<usize>, Option<&Style>)> = Vec::new();
+    // The visible segments (markers dropped), each a source byte range + style
+    // (+ a replacement string when a hidden marker paints something in its
+    // place). A visible segment is copied verbatim, so source↔display is 1:1
+    // within it — which lets a diagnostic (source coords) map straight onto
+    // the display.
+    let mut segs: Vec<(Range<usize>, Option<&Style>, Option<&'static str>)> = Vec::new();
     let mut pos = 0;
     for span in &spans {
         if span.range.start > pos {
-            segs.push((pos..span.range.start, None));
+            segs.push((pos..span.range.start, None, None));
         }
         // A marker is shown when it's inside the caret's construct OR within the
         // revealed line-level prefix (e.g. a blockquote's `>` while the caret is
@@ -270,12 +284,14 @@ pub(crate) fn hidden_runs(
         let force = span.range.end <= hide_prefix;
         let hidden = span.style.hide && (force || (!reveal_inline && !in_construct && !in_prefix));
         if !hidden {
-            segs.push((span.range.clone(), Some(&span.style)));
+            segs.push((span.range.clone(), Some(&span.style), None));
+        } else if let Some(rep) = span.style.replace {
+            segs.push((span.range.clone(), Some(&span.style), Some(rep)));
         }
         pos = span.range.end;
     }
     if pos < line.len() {
-        segs.push((pos..line.len(), None));
+        segs.push((pos..line.len(), None, None));
     }
 
     let squiggle = UnderlineStyle {
@@ -286,7 +302,23 @@ pub(crate) fn hidden_runs(
     let mut display = String::with_capacity(line.len());
     let mut runs: Vec<TextRun> = Vec::new();
     let mut map: Vec<usize> = Vec::with_capacity(line.len() + 1);
-    for (src, style) in &segs {
+    for (src, style, replace) in &segs {
+        // A replacement paints in the hidden marker's place: its bytes all map
+        // back to the span's start (so caret/click math lands on the marker),
+        // and it takes one run in the marker's own style.
+        if let Some(rep) = replace {
+            display.push_str(rep);
+            map.extend(std::iter::repeat_n(src.start, rep.len()));
+            runs.push(run_for(
+                rep.len(),
+                *style,
+                base_font,
+                base_color,
+                Some(md),
+                None,
+            ));
+            continue;
+        }
         display.push_str(&line[src.clone()]);
         map.extend(src.clone());
         // Split the segment at any diagnostic edges falling inside it, so the
@@ -389,6 +421,11 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
     if apply_heading(text, start, end, st, out) {
         return;
     }
+    // An Obsidian block-id anchor at the line's end (` ^some-id`) is addressing,
+    // not content: a marker span dims it and W6 hides it (reveal-on-caret).
+    if let Some((at, _)) = gpui_markdown::syntax::block_id(&text[start..end]) {
+        marker(out, start + at..end, st.marker);
+    }
     // Blockquote: leading `>` (GFM nesting) + optional spaces. Hide the markers;
     // the body keeps inline styling over a muted base color (set by the caller).
     let mut i = start;
@@ -402,7 +439,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         // A GitHub alert's `[!NOTE]`-style marker hides with the quote prefix —
         // the paint draws a bold colored label in its place (LineMark::Alert).
-        if let Some((_, mlen)) = alert_prefix(&text[p..end]) {
+        if let Some((_, mlen, _)) = alert_prefix(&text[p..end]) {
             p += mlen;
         }
         marker(out, start..p, st.marker);
@@ -533,14 +570,45 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && let Some(close) = find2(b, i + 2, end, b']', b']')
         {
             marker(out, i..i + 2, st.marker);
-            push(
-                out,
-                i + 2..close,
-                Style {
-                    color: Some(st.link),
-                    ..Default::default()
-                },
-            );
+            let link = Style {
+                color: Some(st.link),
+                ..Default::default()
+            };
+            // An anchor in the target — a block ref (`[[Note#^id]]`) or a
+            // heading (`[[Note#My Heading]]`) — renders its `#^`/`#` as ` → `
+            // (the reader does the same), keeping the anchor text readable:
+            // `Note → id`. Raw form comes back on caret like any marker; a PDF
+            // page jump (`file.pdf#p3`) keeps its literal `#`. Any `|alias`
+            // after it keeps the link color.
+            let inner = &text[i + 2..close];
+            let target_end = inner.find('|').unwrap_or(inner.len());
+            let anchor = match inner[..target_end].find('#') {
+                Some(a) if !inner[..a].to_ascii_lowercase().ends_with(".pdf") => {
+                    let alen = if inner[a + 1..target_end].starts_with('^') {
+                        2
+                    } else {
+                        1
+                    };
+                    Some((a, alen))
+                }
+                _ => None,
+            };
+            match anchor {
+                Some((a, alen)) if a > 0 && a + alen < target_end => {
+                    push(out, i + 2..i + 2 + a, link.clone());
+                    out.push(Span {
+                        range: i + 2 + a..i + 2 + a + alen,
+                        style: Style {
+                            color: Some(st.marker),
+                            hide: true,
+                            replace: Some(" → "),
+                            ..Default::default()
+                        },
+                    });
+                    push(out, i + 2 + a + alen..close, link);
+                }
+                _ => push(out, i + 2..close, link),
+            }
             marker(out, close..close + 2, st.marker);
             i = close + 2;
             continue;
@@ -779,7 +847,39 @@ impl SyntaxStyle {
 /// The alert kind if `body` — a blockquote line's text after its `>` prefix —
 /// starts with an alert marker (see [`gpui_markdown::syntax::alert_prefix`]).
 pub(crate) fn alert_kind(body: &str) -> Option<AlertKind> {
-    alert_prefix(body).map(|(kind, _)| kind)
+    alert_prefix(body).map(|(kind, ..)| kind)
+}
+
+/// Foldable-callout regions: for each alert whose marker carries a fold char
+/// (`> [!NOTE]-` / `+`), the line range it spans (marker + its `>` continuation
+/// lines, ending at a blank/non-quote line or the next alert marker) and
+/// whether it's folded (`-`). Body lines of a folded region collapse in the
+/// WYSIWYG view unless the caret is inside (reveal-on-caret).
+pub(crate) fn alert_fold_regions(content: &str) -> Vec<(Range<usize>, bool)> {
+    // `Some(fold)` when the line is an alert marker; fold = its fold char.
+    fn marker_fold(line: &str) -> Option<Option<bool>> {
+        let p = blockquote_prefix(line)?;
+        alert_prefix(&line[p..]).map(|(_, _, fold)| fold)
+    }
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(Some(folded)) = marker_fold(lines[i]) {
+            let start = i;
+            i += 1;
+            while i < lines.len()
+                && blockquote_prefix(lines[i]).is_some()
+                && marker_fold(lines[i]).is_none()
+            {
+                i += 1;
+            }
+            out.push((start..i, folded));
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 pub(crate) fn blockquote_prefix(line: &str) -> Option<usize> {
@@ -1177,6 +1277,31 @@ fn is_escaped(bytes: &[u8], idx: usize) -> bool {
 ///
 /// `$` and `\` are ASCII bytes that can't occur inside a multi-byte UTF-8 sequence, so the
 /// byte scan is char-safe and the returned ranges fall on char boundaries.
+/// Every inline `![alt](src)` image on `line`, as `(full span, src range)`.
+/// A whole-line image is handled as a block widget (`image_row`) before a line
+/// reaches inline shaping, so these are the mixed-line (text + image) ones.
+/// Images inside inline code aren't matched.
+pub(crate) fn inline_image_spans(line: &str) -> Vec<(Range<usize>, Range<usize>)> {
+    let b = line.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 1 < b.len() {
+        if b[i] == b'!'
+            && b[i + 1] == b'['
+            && let Some(rb) = line[i + 2..].find(']')
+            && line[i + 2 + rb + 1..].starts_with('(')
+            && let Some(rp) = line[i + 2 + rb + 2..].find(')')
+        {
+            let src = (i + 2 + rb + 2)..(i + 2 + rb + 2 + rp);
+            out.push((i..(src.end + 1), src.clone()));
+            i = src.end + 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
     let bytes = line.as_bytes();
     let mut out = Vec::new();
@@ -1426,6 +1551,40 @@ pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
 /// A table row is a line whose trimmed text starts with `|`.
 pub(crate) fn is_table_row(line: &str) -> bool {
     line.trim_start().starts_with('|')
+}
+
+/// Contiguous runs of `key:: value` property lines (Obsidian/Logseq-style
+/// metadata) — each renders as a two-column panel, the WYSIWYG twin of the
+/// reader's `render_property_table`. A run is one or more adjacent property
+/// lines; any non-property line ends it. Fenced code is skipped so a
+/// `Type::method()` code line isn't mistaken for a property. Returns line-index
+/// ranges in order.
+pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            i += 1;
+            continue;
+        }
+        if !in_fence && gpui_markdown::syntax::property(lines[i]).is_some() {
+            let start = i;
+            i += 1;
+            while i < lines.len()
+                && !lines[i].trim_start().starts_with("```")
+                && gpui_markdown::syntax::property(lines[i]).is_some()
+            {
+                i += 1;
+            }
+            out.push(start..i);
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Split a `| a | b |` row into trimmed cell strings (the bounding pipes drop the
@@ -1847,6 +2006,7 @@ mod tests {
             popover_hover: c,
             popover_divider: c,
             mono: gpui::font("monospace"),
+            property_icon: None,
         }
     }
 
@@ -2118,5 +2278,24 @@ mod tests {
             Some("  - [x] nested")
         );
         assert_eq!(toggle_task_checkbox("- plain"), None);
+    }
+
+    #[test]
+    fn alert_fold_regions_span_the_quote_block() {
+        let src = "> [!NOTE]- hidden\n> body\n> more\nprose\n> [!TIP]+ open\n> b\n> [!NOTE] plain";
+        let r = alert_fold_regions(src);
+        // Folded NOTE spans its quote lines; open TIP's region ends at the
+        // plain (non-foldable) alert marker, which starts no region itself.
+        assert_eq!(r, vec![(0..3, true), (4..6, false)]);
+    }
+
+    #[test]
+    fn property_regions_group_and_skip_code() {
+        // Two adjacent property lines form one region; prose breaks it.
+        let r = property_regions("attendees:: Bob\ntime:: 3pm\n\nprose\nowner:: Sue");
+        assert_eq!(r, vec![0..2, 4..5]);
+        // A `Type::method()` line inside a code fence isn't a property.
+        let r2 = property_regions("```rust\nFoo::bar()\n```\nkey:: v");
+        assert_eq!(r2, vec![3..4]);
     }
 }

@@ -77,6 +77,9 @@ pub enum TabKind {
     /// The graph view (All pages → "Graph"): pages and whiteboards as nodes,
     /// `page_links` as edges.
     Graph,
+    /// The Properties page (All pages → "Properties"): every `key:: value`
+    /// property in the vault — browse values/pages, override icons, rename keys.
+    Properties,
     /// The hidden brick-breaker (`/play`).
     Game,
 }
@@ -340,6 +343,18 @@ fn to_editor_align(a: ratex_gpui::MathAlign) -> gpui_editor::MathAlign {
     }
 }
 
+/// An in-progress in-place property edit: the seated form, the note editor it
+/// overlays, and where to persist — mirrors [`MathEdit`] for the `$$` block.
+struct PropEdit {
+    editor: Entity<crate::ui::property_editor::PropertyEditor>,
+    source: Entity<EditorState>,
+    target: SlashTarget,
+    /// Commits the edit when the form loses focus (click-away). Kept alive here.
+    _blur_sub: gpui::Subscription,
+    /// Commits + seats the note caret on a keyboard exit (Enter / final Escape).
+    _exit_sub: gpui::Subscription,
+}
+
 struct MathEdit {
     editor: Entity<ratex_gpui::MathEditor>,
     source: Entity<EditorState>,
@@ -454,6 +469,8 @@ pub struct AppView {
     all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
     /// The graph view's model (nodes + layout + camera), rebuilt on open.
     pub graph: Option<crate::ui::graph::GraphState>,
+    /// The Properties page state (All pages → "Properties"); rebuilt on open.
+    pub props_page: Option<crate::ui::properties_page::PropsPageState>,
     /// The hidden game's state + its ~60fps tick task, alive while its tab is.
     pub game: Option<crate::ui::game::GameState>,
     game_tick: Option<Task<()>>,
@@ -468,14 +485,21 @@ pub struct AppView {
     // Highlighted code blocks, cached by (lang, content); both views' code
     // highlighter callbacks read it. See `highlight::HighlightStore`.
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
+    /// Resolved `![[target]]` transclusions for the WYSIWYG overlay: one view
+    /// per target + the row height to reserve. Filled by
+    /// `ensure_content_embeds`, read by the editors' embed providers.
+    embed_store: Rc<RefCell<crate::ui::embed::EmbedStore>>,
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
+    /// The inline image being previewed full-size (its src), or None.
+    image_lightbox: Option<SharedString>,
     // Focus for the open lightbox so it can capture Esc-to-close without a global
     // key binding (which would clash with the editor's Escape → slash-cancel).
     lightbox_focus: FocusHandle,
     // An open structural-math edit (a double-clicked `$$` block), or `None`.
     math_edit: Option<MathEdit>,
+    prop_edit: Option<PropEdit>,
     // Right-click context menu on a rendered formula (Copy LaTeX / Export SVG / Export PNG).
     ctx_menu: Option<CtxMenu>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
@@ -664,6 +688,9 @@ impl AppView {
             window,
             |this: &mut AppView, _sig, _ev: &DocChanged, window, cx| {
                 this.apply_external_edit(window, cx);
+                // Embeds transclude OTHER pages — re-resolve them so editing a
+                // source page updates every box embedding it.
+                this.refresh_embed_store(cx);
             },
         );
 
@@ -745,6 +772,7 @@ impl AppView {
             all_pages_kind: Default::default(),
             all_pages_pdfs: Vec::new(),
             graph: None,
+            props_page: None,
             game: None,
             game_tick: None,
             journal_tab_clicks: (0, std::time::Instant::now()),
@@ -752,9 +780,12 @@ impl AppView {
             auto_link_titles: Rc::new(RefCell::new(Default::default())),
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
+            embed_store: Rc::new(RefCell::new(Default::default())),
             mermaid_lightbox: None,
+            image_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             math_edit: None,
+            prop_edit: None,
             ctx_menu: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
@@ -837,6 +868,13 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .filter(|s| TEXT_SIZES.contains(s))
             .unwrap_or(DEFAULT_TEXT_SIZE);
+        // Property-icon overrides (Properties page) into the process-global map
+        // the renderers' resolvers read.
+        if let Some(json) = this.db.get_setting("property_icons")
+            && let Ok(map) = serde_json::from_str(&json)
+        {
+            crate::theme::set_property_icon_overrides(map);
+        }
         // Mirror the persisted auto-lock threshold into the process-global the
         // lock timer reads (it has no database handle).
         crate::security::set_auto_lock_minutes(
@@ -913,6 +951,7 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.embed_store.clone(),
             self.auto_link_titles.clone(),
             self.auto_link.clone(),
             window,
@@ -921,6 +960,7 @@ impl AppView {
         self.ensure_content_images(&content, cx);
         self.ensure_content_mermaid(&content, cx);
         self.ensure_content_math(&content, cx);
+        self.ensure_content_embeds(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -939,6 +979,7 @@ impl AppView {
                         this.ensure_content_images(&value, cx);
                         this.ensure_content_mermaid(&value, cx);
                         this.ensure_content_math(&value, cx);
+                        this.ensure_content_embeds(&value, cx);
                     }
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -978,6 +1019,24 @@ impl AppView {
                 EditorEvent::MathMenu { source, position } => {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
+                }
+                EditorEvent::EditProperties {
+                    range,
+                    source,
+                    at_end,
+                } => {
+                    this.open_prop_edit(
+                        st.clone(),
+                        SlashTarget::Day(key.clone()),
+                        range.clone(),
+                        source.clone(),
+                        *at_end,
+                        window,
+                        cx,
+                    );
+                }
+                EditorEvent::PreviewImage(src) => {
+                    this.open_image_lightbox(src.clone(), window, cx);
                 }
             },
         );
@@ -1200,6 +1259,10 @@ impl AppView {
     }
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A `[[Note#^block-id]]` link targets a block: open the note, then seat
+        // the caret at (and scroll to) the line carrying the `^block-id` anchor.
+        // Only the `#^` form is an anchor — a bare `#` stays part of the title.
+        let (title, block) = gpui_markdown::syntax::split_block_anchor(title);
         // A `[[file.pdf]]` link opens the PDF viewer instead of a page; a `#pN`
         // fragment (`[[file.pdf#p12]]`) also jumps to page N when it's already loaded.
         let (base, target_page) = match title.split_once('#') {
@@ -1225,9 +1288,45 @@ impl AppView {
             self.open_whiteboard(board.id, window, cx);
             return;
         }
+        // A `[[Note#Heading]]` link jumps to the heading — unless a page with
+        // the literal `#` title exists (Zorite titles may contain `#`, unlike
+        // Obsidian's), which wins so such pages keep working.
+        let (title, heading) = if block.is_none()
+            && title.contains('#')
+            && !matches!(self.db.get_page_by_title(title), Ok(Some(_)))
+        {
+            gpui_markdown::syntax::split_heading_anchor(title)
+        } else {
+            (title, None)
+        };
         match self.db.get_or_create_page(title) {
             Ok(page) => {
+                // An anchor seats the caret at (and scrolls to) its line — a
+                // block's `^id` or the matching heading — once the page's
+                // editor is up (deferred past this render pass). A stale
+                // anchor just opens the page.
+                let seat = (!page.is_journal)
+                    .then(|| {
+                        block
+                            .and_then(|id| {
+                                gpui_markdown::syntax::find_block_line(&page.content, id)
+                            })
+                            .or_else(|| {
+                                heading.and_then(|h| {
+                                    gpui_markdown::syntax::find_heading_line(&page.content, h)
+                                })
+                            })
+                    })
+                    .flatten();
                 self.open_page_foreground(page, window, cx);
+                if let Some(offset) = seat {
+                    let weak = cx.entity().downgrade();
+                    window.defer(cx, move |window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.edit_page_at_offset(offset, px(160.0), window, cx);
+                        });
+                    });
+                }
                 // The page may be newly created (via the New-page dialog or a
                 // [[link]]), so refresh the sidebar to show it — and tell other
                 // windows so their sidebars pick up the new page too.
@@ -1236,6 +1335,83 @@ impl AppView {
             }
             Err(e) => log::error!("open page '{title}': {e}"),
         }
+    }
+
+    /// Resolve every `![[target]]` embed in `content` — and, recursively, in
+    /// the embedded content itself (depth-capped) — to `(label, content)`, for
+    /// the reader's embed provider. Providers can't query mid-render, so hosts
+    /// build this map up front.
+    pub(crate) fn build_embed_map(
+        &self,
+        content: &str,
+    ) -> std::rc::Rc<HashMap<String, (SharedString, SharedString)>> {
+        let mut map = HashMap::new();
+        let mut queue: Vec<(String, usize)> = gpui_markdown::syntax::embed_targets(content)
+            .into_iter()
+            .map(|t| (t, 0usize))
+            .collect();
+        while let Some((target, depth)) = queue.pop() {
+            if depth >= 3 || map.contains_key(&target) {
+                continue;
+            }
+            if let Some((label, body)) = self.resolve_embed(&target) {
+                for t in gpui_markdown::syntax::embed_targets(&body) {
+                    queue.push((t, depth + 1));
+                }
+                map.insert(target, (label, body));
+            }
+        }
+        std::rc::Rc::new(map)
+    }
+
+    /// Resolve one embed target to `(source label, content)`: a whole page, a
+    /// `#^id` block's line, or a `#Heading` section — with the same rules as
+    /// navigation (a literal `#`-titled page wins; PDFs and whiteboards don't
+    /// embed). `None` leaves the `![[…]]` line rendering as plain text.
+    fn resolve_embed(&self, inner: &str) -> Option<(SharedString, SharedString)> {
+        use gpui_markdown::syntax::{
+            extract_block, extract_section, split_block_anchor, split_heading_anchor,
+            wiki_target_display,
+        };
+        let (target, display) = wiki_target_display(inner);
+        let (page_t, block) = split_block_anchor(target);
+        let (page_t, heading) = if block.is_none() {
+            if matches!(self.db.get_page_by_title(target), Ok(Some(_))) {
+                (target, None)
+            } else {
+                split_heading_anchor(target)
+            }
+        } else {
+            (page_t, None)
+        };
+        if crate::pdf::is_pdf(page_t)
+            || matches!(self.db.get_whiteboard_by_title(page_t), Ok(Some(_)))
+        {
+            return None;
+        }
+        let page = self
+            .db
+            .get_page_by_title(page_t)
+            .ok()
+            .flatten()
+            .or_else(|| self.db.get_page_by_alias(page_t).ok().flatten())?;
+        let range = if let Some(id) = block {
+            extract_block(&page.content, id)?
+        } else if let Some(h) = heading {
+            extract_section(&page.content, h)?
+        } else {
+            0..page.content.len()
+        };
+        let label = if display != target {
+            display.to_string()
+        } else if let Some(id) = block {
+            format!("{page_t} → {id}")
+        } else if let Some(h) = heading {
+            format!("{page_t} → {}", h.trim())
+        } else {
+            page.title.clone()
+        };
+        Some((label.into(), page.content[range].to_string().into()))
     }
 
     /// Toggle the jump-to-date calendar overlay (the sidebar calendar icon).
@@ -1538,6 +1714,7 @@ impl AppView {
                         self.ensure_content_images(&content, cx);
                         self.ensure_content_mermaid(&content, cx);
                         self.ensure_content_math(&content, cx);
+                        self.ensure_content_embeds(&content, cx);
                     }
                 }
             }
@@ -1554,6 +1731,11 @@ impl AppView {
                 if self.graph.is_none() {
                     self.rebuild_graph();
                 }
+            }
+            TabKind::Properties => {
+                self.page_editor = None;
+                // Rebuild on every activation so the index reflects fresh edits.
+                self.refresh_props_page(window, cx);
             }
             TabKind::Game => self.page_editor = None,
         }
@@ -1786,6 +1968,7 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.embed_store.clone(),
             self.auto_link_titles.clone(),
             self.auto_link.clone(),
             window,
@@ -1794,6 +1977,7 @@ impl AppView {
         self.ensure_content_images(&page.content, cx);
         self.ensure_content_mermaid(&page.content, cx);
         self.ensure_content_math(&page.content, cx);
+        self.ensure_content_embeds(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -1809,6 +1993,7 @@ impl AppView {
                         this.ensure_content_images(&value, cx);
                         this.ensure_content_mermaid(&value, cx);
                         this.ensure_content_math(&value, cx);
+                        this.ensure_content_embeds(&value, cx);
                     }
                     this.update_slash(SlashTarget::Page(pid), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -1848,6 +2033,24 @@ impl AppView {
                 EditorEvent::MathMenu { source, position } => {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
+                }
+                EditorEvent::EditProperties {
+                    range,
+                    source,
+                    at_end,
+                } => {
+                    this.open_prop_edit(
+                        st.clone(),
+                        SlashTarget::Page(pid),
+                        range.clone(),
+                        source.clone(),
+                        *at_end,
+                        window,
+                        cx,
+                    );
+                }
+                EditorEvent::PreviewImage(src) => {
+                    this.open_image_lightbox(src.clone(), window, cx);
                 }
             },
         );
@@ -2401,6 +2604,7 @@ impl AppView {
         self.ensure_content_images(&new, cx);
         self.ensure_content_mermaid(&new, cx);
         self.ensure_content_math(&new, cx);
+        self.ensure_content_embeds(&new, cx);
         cx.notify();
     }
 
@@ -2668,6 +2872,23 @@ impl AppView {
 
     /// Close the lightbox and hand focus back to the app root (so keyboard shortcuts
     /// keep working).
+    /// Open a full-size preview of the image `src` (click an inline image).
+    pub fn open_image_lightbox(
+        &mut self,
+        src: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.image_lightbox = Some(src);
+        window.focus(&self.lightbox_focus, cx);
+        cx.notify();
+    }
+
+    pub fn close_image_lightbox(&mut self, cx: &mut Context<Self>) {
+        self.image_lightbox = None;
+        cx.notify();
+    }
+
     pub fn close_mermaid_lightbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mermaid_lightbox = None;
         window.focus(&self.focus_handle, cx);
@@ -2922,6 +3143,7 @@ impl AppView {
                 .update(cx, |e, cx| e.replace_range(range, &replacement, cx));
             let new = edit.source.read(cx).text().to_string();
             self.ensure_content_math(&new, cx);
+            self.ensure_content_embeds(&new, cx);
             match &edit.target {
                 SlashTarget::Day(key) => self.save_journal(key, &new, cx),
                 SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
@@ -2956,6 +3178,109 @@ impl AppView {
         // Rasterize the edited formula into the shared store, or the block-math provider
         // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
         self.ensure_content_math(&new, cx);
+        self.ensure_content_embeds(&new, cx);
+        match &edit.target {
+            SlashTarget::Day(key) => self.save_journal(key, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        cx.notify();
+        Some((edit.source, new_range))
+    }
+
+    /// Seat the in-place property editor over a `key:: value` block (reusing the
+    /// math block's reserved-gap machinery) and commit on blur.
+    #[allow(clippy::too_many_arguments)]
+    fn open_prop_edit(
+        &mut self,
+        source: Entity<EditorState>,
+        target: SlashTarget,
+        range: std::ops::Range<usize>,
+        block: SharedString,
+        at_end: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Clicking another panel commits the one being edited first.
+        if self.prop_edit.is_some() {
+            self.commit_prop_edit(cx);
+        }
+        // Existing property keys across the vault feed the key dropdown.
+        let keys: Vec<SharedString> = self
+            .db
+            .property_index()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, _)| k.into())
+            .collect();
+        let text_size = self.text_size;
+        let editor = cx.new(|cx| {
+            crate::ui::property_editor::PropertyEditor::new(&block, keys, text_size, window, cx)
+        });
+        let focus = editor.read(cx).focus_handle(cx);
+        // Reserve a gap tall enough for the rows + the add-property button.
+        let n = block
+            .lines()
+            .filter(|l| gpui_markdown::syntax::property(l).is_some())
+            .count()
+            .max(1);
+        let height = px(n as f32 * 34.0 + 44.0);
+        source.update(cx, |e, cx| {
+            e.set_editing_block(range, editor.clone().into(), height, cx)
+        });
+        editor.update(cx, |ed, cx| ed.focus_end(at_end, window, cx));
+        // Commit when the form loses focus (guarded on identity, like math).
+        let weak = cx.entity().downgrade();
+        let editor_id = editor.entity_id();
+        let blur_sub = window.on_focus_out(&focus, cx, move |_ev, _window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                if this
+                    .prop_edit
+                    .as_ref()
+                    .is_some_and(|p| p.editor.entity_id() == editor_id)
+                {
+                    this.commit_prop_edit(cx);
+                }
+            })
+            .ok();
+        });
+        // Enter / the final Escape exit from the keyboard: commit and seat the
+        // note caret on the line after the block (like leaving a math block).
+        let exit_sub = cx.subscribe_in(
+            &editor,
+            window,
+            |this, _ed, _: &crate::ui::property_editor::PropExit, window, cx| {
+                if let Some((source, block)) = this.commit_prop_edit(cx) {
+                    source.update(cx, |e, cx| e.exit_math(block, true, window, cx));
+                }
+            },
+        );
+        self.prop_edit = Some(PropEdit {
+            editor,
+            source,
+            target,
+            _blur_sub: blur_sub,
+            _exit_sub: exit_sub,
+        });
+        cx.notify();
+    }
+
+    /// Serialize the property form back to `key:: value` lines, splice it over
+    /// the block, and persist. Returns the source editor + the new block's range
+    /// so a keyboard exit can seat the caret beside it.
+    fn commit_prop_edit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<EditorState>, std::ops::Range<usize>)> {
+        let edit = self.prop_edit.take()?;
+        let new_block = edit.editor.read(cx).to_source(cx);
+        let Some(range) = edit.source.update(cx, |e, cx| e.end_editing_block(cx)) else {
+            cx.notify();
+            return None;
+        };
+        let new_range = range.start..range.start + new_block.len();
+        edit.source
+            .update(cx, |e, cx| e.replace_range(range, &new_block, cx));
+        let new = edit.source.read(cx).text().to_string();
         match &edit.target {
             SlashTarget::Day(key) => self.save_journal(key, &new, cx),
             SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
@@ -2987,8 +3312,9 @@ impl AppView {
     /// `ensure_image_loaded` dedupes, so re-scanning is cheap; a finished decode
     /// notifies → repaint → the editor's block-image provider finds the bitmap.
     fn ensure_content_images(&mut self, content: &str, cx: &mut Context<Self>) {
-        for info in gpui_markdown::images(content) {
-            self.ensure_image_loaded(info.src, cx);
+        // Every image, block AND inline — inline images render as rasters too.
+        for src in gpui_markdown::all_image_srcs(content) {
+            self.ensure_image_loaded(src, cx);
         }
     }
 
@@ -3006,6 +3332,121 @@ impl AppView {
     /// Kick off the off-thread typeset of every `$$…$$` block in `content`, so an editor
     /// in WYSIWYG mode can render them as equations. Idempotent; a finished render
     /// notifies → repaint → the editor's math provider finds the bitmap.
+    /// Resolve every `![[target]]` embed in `content` into the shared store the
+    /// editors' overlay provider reads: one `EmbedView` per target plus the row
+    /// height to reserve — estimated from the embedded content's line count and
+    /// capped (long content scrolls inside the view). A target that no longer
+    /// resolves drops out, falling back to the chip.
+    fn ensure_content_embeds(&mut self, content: &str, cx: &mut Context<Self>) {
+        for inner in gpui_markdown::syntax::embed_targets(content) {
+            self.upsert_embed(inner, cx);
+        }
+    }
+
+    /// Re-resolve every target already in the embed store against the database.
+    /// Runs on each (debounced) doc change, so an embed live-updates when its
+    /// SOURCE page is edited — the embedding page's own ensure-pass only runs
+    /// when that page reloads.
+    pub(crate) fn refresh_embed_store(&mut self, cx: &mut Context<Self>) {
+        let targets: Vec<String> = self.embed_store.borrow().keys().cloned().collect();
+        for inner in targets {
+            self.upsert_embed(inner, cx);
+        }
+    }
+
+    /// Scroll the active tab's content surface by `delta_y` — the wheel
+    /// hand-off from an embed that can't scroll any further itself (its
+    /// occluding overlay blocks the surface's own wheel handling while the
+    /// pointer is over it).
+    pub(crate) fn scroll_active_surface(&mut self, delta_y: Pixels, cx: &mut Context<Self>) {
+        let handle = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Journal) => &self.feed_scroll,
+            Some(TabKind::Page(_)) => &self.page_scroll,
+            _ => return,
+        };
+        let mut o = handle.offset();
+        // Upward overshoot clamps here; the downward limit clamps on layout.
+        o.y = (o.y + delta_y).min(px(0.0));
+        handle.set_offset(o);
+        cx.notify();
+    }
+
+    /// Resolve one embed target into the store: create or update its view and
+    /// recompute the reserved height. A target that no longer resolves drops
+    /// out (the editor falls back to the chip).
+    fn upsert_embed(&mut self, inner: String, cx: &mut Context<Self>) {
+        let Some((label, body)) = self.resolve_embed(&inner) else {
+            self.embed_store.borrow_mut().remove(&inner);
+            return;
+        };
+        // Rasterize/decode the embedded content's constructs into the shared
+        // stores (images, mermaid, math), so the box renders them like the
+        // note they came from — both here and in the reader's embeds.
+        self.ensure_content_images(&body, cx);
+        self.ensure_content_mermaid(&body, cx);
+        self.ensure_content_math(&body, cx);
+        let lh = f32::from(self.text_size()) * 1.45;
+        let lines = body.lines().count().max(1) as f32;
+        let height = (40.0 + lines * (lh + 6.0)).clamp(64.0, 340.0);
+        let nav_target: SharedString = gpui_markdown::syntax::wiki_target_display(&inner)
+            .0
+            .to_string()
+            .into();
+        let text_size = self.text_size();
+        let list_indent = self.list_indent();
+        // Fresh renderers + nested-embed map each upsert: they're cheap Rc
+        // closures over the shared stores, and the nested map tracks the
+        // (possibly changed) body.
+        let image = crate::ui::image::embed_renderer(self, cx);
+        let mermaid = crate::ui::mermaid::renderer(self, cx);
+        let math = crate::ui::math::renderer(self, cx);
+        let inline_math = crate::ui::math::inline_renderer(self);
+        let highlight = self.highlighter_fn();
+        let nested = self.build_embed_map(&body);
+        let existing = self.embed_store.borrow().get(&inner).cloned();
+        match existing {
+            Some((view, _)) => {
+                view.update(cx, |v, cx| {
+                    if v.content != body || v.label != label || v.text_size != text_size {
+                        v.content = body;
+                        v.label = label;
+                        v.nav_target = nav_target;
+                        v.text_size = text_size;
+                        v.list_indent = list_indent;
+                        cx.notify();
+                    }
+                    v.image = image;
+                    v.mermaid = mermaid;
+                    v.math = math;
+                    v.inline_math = inline_math;
+                    v.highlight = highlight;
+                    v.nested = nested;
+                });
+                self.embed_store.borrow_mut().insert(inner, (view, height));
+            }
+            None => {
+                let app = cx.entity().downgrade();
+                let view = cx.new(|_| crate::ui::embed::EmbedView {
+                    nav_target,
+                    label,
+                    content: body,
+                    text_size,
+                    list_indent,
+                    app,
+                    scroll: gpui::ScrollHandle::new(),
+                    hovered: false,
+                    image,
+                    mermaid,
+                    math,
+                    inline_math,
+                    highlight,
+                    nested,
+                });
+                self.embed_store.borrow_mut().insert(inner, (view, height));
+            }
+        }
+    }
+
     fn ensure_content_math(&mut self, content: &str, cx: &mut Context<Self>) {
         for source in gpui_editor::math_sources(content) {
             self.ensure_math_loaded(source, cx);
@@ -3545,6 +3986,114 @@ impl AppView {
             title: "Graph".into(),
         });
         self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Open (or focus) the Properties page tab (All pages → "Properties").
+    pub(crate) fn open_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Properties))
+        {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        self.tabs.push(OpenTab {
+            kind: TabKind::Properties,
+            title: "Properties".into(),
+        });
+        self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Rebuild the Properties page's index from the DB (activation + edits),
+    /// preserving its UI state (expansion, menus) when it already exists.
+    pub(crate) fn refresh_props_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let index = self.db.property_index_detailed().unwrap_or_default();
+        match &mut self.props_page {
+            Some(state) => state.index = index,
+            None => {
+                self.props_page = Some(crate::ui::properties_page::PropsPageState::new(
+                    index, window, cx,
+                ))
+            }
+        }
+        cx.notify();
+    }
+
+    /// Set (or clear, with `None`) a property key's icon override and persist
+    /// the map. `key` = "" targets the Properties page's add-mapping row, whose
+    /// key comes from its input.
+    pub(crate) fn set_property_icon(
+        &mut self,
+        key: &str,
+        icon: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = if key.is_empty() {
+            let Some(state) = &self.props_page else {
+                return;
+            };
+            let typed = state.new_key_input.read(cx).value().trim().to_string();
+            if !crate::ui::properties_page::valid_key(&typed) {
+                return;
+            }
+            typed
+        } else {
+            key.to_string()
+        };
+        let mut map = crate::theme::property_icon_overrides();
+        match icon {
+            Some(name) => {
+                map.insert(key.to_ascii_lowercase(), name.to_string());
+            }
+            None => {
+                map.remove(&key.to_ascii_lowercase());
+            }
+        }
+        crate::theme::set_property_icon_overrides(map.clone());
+        let json = serde_json::to_string(&map).unwrap_or_default();
+        if let Err(e) = self.db.set_setting("property_icons", &json) {
+            log::error!("save property icons: {e}");
+        }
+        if let Some(state) = &mut self.props_page {
+            state.close_menus();
+        }
+        self.signal_doc_changed(cx);
+        cx.notify();
+    }
+
+    /// Commit the Properties page's pending key rename: rewrite `old:: value`
+    /// lines to the typed name across every page (carrying any icon override
+    /// along), then rebuild the index.
+    pub(crate) fn commit_prop_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.props_page else {
+            return;
+        };
+        let Some((old, input)) = state.rename_state() else {
+            return;
+        };
+        state.clear_rename();
+        let new = input.read(cx).value().trim().to_string();
+        if new == old || !crate::ui::properties_page::valid_key(&new) {
+            cx.notify();
+            return;
+        }
+        match self.db.rename_property_key(&old, &new) {
+            Ok(changed) if !changed.is_empty() => {
+                // Carry the icon override to the new name.
+                let mut map = crate::theme::property_icon_overrides();
+                if let Some(icon) = map.remove(&old.to_ascii_lowercase()) {
+                    map.insert(new.to_ascii_lowercase(), icon);
+                    crate::theme::set_property_icon_overrides(map.clone());
+                    let json = serde_json::to_string(&map).unwrap_or_default();
+                    let _ = self.db.set_setting("property_icons", &json);
+                }
+                self.signal_doc_changed(cx);
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("rename property {old} -> {new}: {e}"),
+        }
+        self.refresh_props_page(window, cx);
     }
 
     pub(crate) fn rebuild_graph(&mut self) {
@@ -4493,23 +5042,39 @@ impl AppView {
             value.len()
         };
         let (before, after) = value.split_at(pos);
-        // Keep the image on its own line (a blank line before unless we're
-        // already at a block boundary, and a newline after).
-        let lead = if before.is_empty() || before.ends_with("\n\n") {
-            ""
-        } else if before.ends_with('\n') {
-            "\n"
+        // Paste mid-line → insert the image INLINE at the caret (it flows in
+        // the sentence, both views render it inline). Only on an otherwise-
+        // empty line does it get its own block line.
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        let before_line = &before[line_start..];
+        let after_line = after.split('\n').next().unwrap_or("");
+        let inline = at_cursor
+            && (!before_line.trim().is_empty() || !after_line.trim().is_empty())
+            && !crate::pdf::is_pdf(rel);
+        let (snippet, caret) = if inline {
+            let snippet = format!("![]({rel})");
+            // Caret just past `)` — a boundary, not inside — so the image
+            // renders immediately and typing continues after it.
+            let caret = pos + snippet.len();
+            (snippet, caret)
         } else {
-            "\n\n"
+            // Own line: a blank line before unless already at a block
+            // boundary, and a newline after.
+            let lead = if before.is_empty() || before.ends_with("\n\n") {
+                ""
+            } else if before.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            let trail = if after.starts_with('\n') { "" } else { "\n" };
+            let snippet = format!("{lead}![]({rel}){trail}");
+            // Caret on the line BELOW the image, never the image's own line —
+            // the caret's row reveals raw source, which would hide the
+            // just-inserted image (and its resize grip) until clicked away.
+            let caret = pos + snippet.len() + if trail.is_empty() { 1 } else { 0 };
+            (snippet, caret)
         };
-        let trail = if after.starts_with('\n') { "" } else { "\n" };
-        let snippet = format!("{lead}![]({rel}){trail}");
-        // Caret on the line BELOW the image, never the image's own line — the
-        // caret's row reveals raw source, which would hide the just-inserted
-        // image (and its resize grip) until the user clicked away. With a
-        // `trail` newline the snippet already ends past the image line; when
-        // `after` supplied the newline instead, hop over it.
-        let caret = pos + snippet.len() + if trail.is_empty() { 1 } else { 0 };
         let new = format!("{before}{snippet}{after}");
         editor.update(cx, |st, cx| {
             st.set_text(new.clone(), cx);
@@ -5519,6 +6084,9 @@ impl AppView {
                     TabKind::Graph => {
                         view.update(cx, |this, cx| this.open_graph(window, cx));
                     }
+                    TabKind::Properties => {
+                        view.update(cx, |this, cx| this.open_properties(window, cx));
+                    }
                     TabKind::Game => {
                         view.update(cx, |this, cx| this.open_game(window, cx));
                     }
@@ -5657,9 +6225,11 @@ impl AppView {
             // A board reloads cheaply from the DB on the destination window, so
             // it carries no live entity (no unsaved in-memory edits in Phase 0).
             TabKind::Whiteboard(_) => TabSeed::default(),
-            TabKind::Journal | TabKind::AllPages | TabKind::Graph | TabKind::Game => {
-                TabSeed::default()
-            }
+            TabKind::Journal
+            | TabKind::AllPages
+            | TabKind::Graph
+            | TabKind::Properties
+            | TabKind::Game => TabSeed::default(),
         }
     }
 
@@ -5778,6 +6348,7 @@ impl AppView {
             TabKind::Whiteboard(id) => self.open_whiteboard(id, window, cx),
             TabKind::AllPages => self.open_all_pages(window, cx),
             TabKind::Graph => self.open_graph(window, cx),
+            TabKind::Properties => self.open_properties(window, cx),
             TabKind::Game => self.open_game(window, cx),
             TabKind::Journal => {}
         }
@@ -5993,6 +6564,7 @@ impl AppView {
             | TabKind::Whiteboard(_)
             | TabKind::AllPages
             | TabKind::Graph
+            | TabKind::Properties
             | TabKind::Game => {
                 return;
             }
@@ -6785,6 +7357,56 @@ impl Render for AppView {
 
         // A clicked mermaid diagram, expanded full-window: the cached image at full
         // resolution in a scrollable box, on a dimmed backdrop that dismisses on click.
+        // Inline-image preview: a full-window modal showing the image at size,
+        // dismissed by Esc or a backdrop click (mirrors the mermaid lightbox).
+        let image_lightbox = self.image_lightbox.clone().and_then(|src| {
+            let path = crate::paths::resolve_local(&src)?;
+            Some(
+                gpui::deferred(
+                    div()
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::hsla(0., 0., 0., 0.72))
+                        .track_focus(&self.lightbox_focus)
+                        .on_key_down(cx.listener(
+                            |this: &mut AppView, ev: &gpui::KeyDownEvent, _window, cx| {
+                                if ev.keystroke.key == "escape" {
+                                    this.close_image_lightbox(cx);
+                                }
+                            },
+                        ))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut AppView, _, _window, cx| {
+                                this.close_image_lightbox(cx);
+                            }),
+                        )
+                        .child(
+                            gpui::img(path)
+                                .max_w(gpui::relative(0.95))
+                                .max_h(gpui::relative(0.95))
+                                .rounded(px(8.0))
+                                .shadow_lg(),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(14.0))
+                                .right(px(18.0))
+                                .text_size(px(22.0))
+                                .text_color(gpui::white())
+                                .cursor_pointer()
+                                .child("✕"),
+                        ),
+                )
+                .into_any_element(),
+            )
+        });
+
         let mermaid_lightbox = self
             .mermaid_lightbox
             .clone()
@@ -7177,6 +7799,9 @@ impl Render for AppView {
                                         ui::all_pages::render(self, cx).into_any_element()
                                     }
                                     TabKind::Graph => ui::graph::render(self, cx),
+                                    TabKind::Properties => {
+                                        ui::properties_page::render(self, cx).into_any_element()
+                                    }
                                     TabKind::Game => ui::game::render(self, cx),
                                 }
                             })),
@@ -7187,6 +7812,7 @@ impl Render for AppView {
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)
+            .children(image_lightbox)
             .children(ctx_menu_overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
@@ -7418,6 +8044,7 @@ fn make_editor(
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     math_store: Rc<RefCell<crate::math::MathStore>>,
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
+    embed_store: Rc<RefCell<crate::ui::embed::EmbedStore>>,
     auto_link_titles: Rc<RefCell<std::collections::HashMap<String, String>>>,
     auto_link: Rc<std::cell::Cell<bool>>,
     window: &mut Window,
@@ -7435,6 +8062,15 @@ fn make_editor(
         editor.set_block_image_provider(move |src| image_store.borrow().get(src));
         // A `![](file.pdf)` renders as a clickable chip (label = file name) that
         // opens the PDF viewer on click — matching the reading view.
+        // A standalone `![[target]]` renders the resolved transclusion in the
+        // gap its line reserves (see `ensure_content_embeds`); unresolved
+        // targets fall back to the chip below.
+        editor.set_embed_provider(move |inner| {
+            embed_store
+                .borrow()
+                .get(inner)
+                .map(|(v, h)| (v.clone().into(), px(*h)))
+        });
         editor.set_block_chip_provider(|src| {
             crate::pdf::is_pdf(src).then(|| {
                 crate::pdf::resolve_path(src)

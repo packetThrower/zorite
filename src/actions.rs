@@ -55,7 +55,11 @@ actions!(
         ImportLogseq,
         ImportObsidian,
         // Shrink any image wider than the content area back to fit the view.
-        FitImages
+        FitImages,
+        // The custom property editor's Tab / Shift+Tab field stepping (bound in
+        // its own key context so they override the default focus traversal).
+        PropNextField,
+        PropPrevField
     ]
 );
 
@@ -88,6 +92,13 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", SlashDown, Some(EDITOR_CONTEXT)),
         KeyBinding::new("enter", SlashConfirm, Some(EDITOR_CONTEXT)),
         KeyBinding::new("escape", SlashCancel, Some(EDITOR_CONTEXT)),
+    ]);
+    // The custom property editor (context "PropertyEditor") owns Tab / Shift+Tab
+    // to step between its fields — otherwise the default focus traversal grabs
+    // Tab and jumps out to the sidebar search box.
+    cx.bind_keys([
+        KeyBinding::new("tab", PropNextField, Some("PropertyEditor")),
+        KeyBinding::new("shift-tab", PropPrevField, Some("PropertyEditor")),
     ]);
     // Paste-image: bind the platform's real paste chord — Cmd+V on macOS, Ctrl+V on
     // Windows/Linux. gpui treats `cmd-` and `ctrl-` as distinct chords, so a bare

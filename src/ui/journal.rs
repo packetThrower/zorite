@@ -184,6 +184,10 @@ fn rendered_day(
         let toggle_weak = cx.entity().downgrade();
         let toggle_content = content.to_string();
         let toggle_date = d.clone();
+        let fold_weak = cx.entity().downgrade();
+        let fold_content = content.to_string();
+        let embeds = app.build_embed_map(&content);
+        let fold_date = d.clone();
         let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
             .style(theme::markdown_style(app.list_indent(), app.text_size()))
             .on_image(crate::ui::image::renderer(
@@ -195,6 +199,13 @@ fn rendered_day(
             .on_highlight(app.highlighter_fn())
             .on_math(crate::ui::math::renderer(app, cx))
             .on_inline_math(crate::ui::math::inline_renderer(app))
+            .on_inline_image(crate::ui::image::inline_renderer(app))
+            .on_image_preview({
+                let weak = cx.entity().downgrade();
+                std::rc::Rc::new(move |src, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.open_image_lightbox(src, window, cx));
+                })
+            })
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))
@@ -217,7 +228,23 @@ fn rendered_day(
                         this.signal_doc_changed(cx);
                     });
                 }
-            }));
+            }))
+            // Click a foldable callout's title → flip its `-`/`+` in the source.
+            .on_alert_toggle(std::rc::Rc::new(move |offset, _window, cx| {
+                if let Some(new) =
+                    gpui_markdown::syntax::toggle_alert_fold_at(&fold_content, offset)
+                {
+                    let _ = fold_weak.update(cx, |this, cx| {
+                        this.save_journal(&fold_date, &new, cx);
+                        this.signal_doc_changed(cx);
+                    });
+                }
+            }))
+            // Standalone `![[target]]` lines render their target inline;
+            // images inside them go through the read-only renderer (a resize
+            // would rewrite the wrong page).
+            .on_embed(std::rc::Rc::new(move |target| embeds.get(target).cloned()))
+            .on_embed_image(crate::ui::image::embed_renderer(app, cx));
         // Track the markdown root's bounds — click-to-caret's scroll anchor.
         if let Some(de) = app.day_editors.get(date) {
             md = md.track_blocks(de.md_scroll.clone());

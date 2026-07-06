@@ -708,22 +708,7 @@ fn is_internal_prop(key: &str) -> bool {
     )
 }
 
-/// Split a `key:: value` property line. The key must look like an identifier
-/// so prose containing `::` (e.g. Zorite links!) isn't mistaken for one.
-fn parse_prop(line: &str) -> Option<(&str, &str)> {
-    let rest = line.trim_start();
-    let idx = rest.find("::")?;
-    let key = &rest[..idx];
-    if key.is_empty()
-        || !key
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-        || !key.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
-    {
-        return None;
-    }
-    Some((key, rest[idx + 2..].trim()))
-}
+use gpui_markdown::syntax::property as parse_prop;
 
 /// Per-import conversion state: the block-ref map and pending asset copies.
 struct Converter {
