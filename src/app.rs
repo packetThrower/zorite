@@ -348,6 +348,8 @@ struct PropEdit {
     target: SlashTarget,
     /// Commits the edit when the form loses focus (click-away). Kept alive here.
     _blur_sub: gpui::Subscription,
+    /// Commits + seats the note caret on a keyboard exit (Enter / final Escape).
+    _exit_sub: gpui::Subscription,
 }
 
 struct MathEdit {
@@ -3062,26 +3064,41 @@ impl AppView {
             })
             .ok();
         });
+        // Enter / the final Escape exit from the keyboard: commit and seat the
+        // note caret on the line after the block (like leaving a math block).
+        let exit_sub = cx.subscribe_in(
+            &editor,
+            window,
+            |this, _ed, _: &crate::ui::property_editor::PropExit, window, cx| {
+                if let Some((source, block)) = this.commit_prop_edit(cx) {
+                    source.update(cx, |e, cx| e.exit_math(block, true, window, cx));
+                }
+            },
+        );
         self.prop_edit = Some(PropEdit {
             editor,
             source,
             target,
             _blur_sub: blur_sub,
+            _exit_sub: exit_sub,
         });
         cx.notify();
     }
 
     /// Serialize the property form back to `key:: value` lines, splice it over
-    /// the block, and persist.
-    fn commit_prop_edit(&mut self, cx: &mut Context<Self>) {
-        let Some(edit) = self.prop_edit.take() else {
-            return;
-        };
+    /// the block, and persist. Returns the source editor + the new block's range
+    /// so a keyboard exit can seat the caret beside it.
+    fn commit_prop_edit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<EditorState>, std::ops::Range<usize>)> {
+        let edit = self.prop_edit.take()?;
         let new_block = edit.editor.read(cx).to_source(cx);
         let Some(range) = edit.source.update(cx, |e, cx| e.end_editing_block(cx)) else {
             cx.notify();
-            return;
+            return None;
         };
+        let new_range = range.start..range.start + new_block.len();
         edit.source
             .update(cx, |e, cx| e.replace_range(range, &new_block, cx));
         let new = edit.source.read(cx).text().to_string();
@@ -3090,6 +3107,7 @@ impl AppView {
             SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
         }
         cx.notify();
+        Some((edit.source, new_range))
     }
 
     /// The caret arrowed past a formula's edge: commit the edit, then seat the text caret beside

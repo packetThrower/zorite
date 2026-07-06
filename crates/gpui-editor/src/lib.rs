@@ -1958,27 +1958,17 @@ impl EditorState {
             }
             return;
         }
-        // Left-click elsewhere on a property panel opens the in-place editor for
-        // its whole block — the panel edits its properties, not the raw markdown.
-        if event.click_count == 1
-            && !event.modifiers.shift
-            && !event.modifiers.control
-            && self
-                .prop_row_rects
-                .iter()
-                .any(|b| b.contains(&event.position))
-        {
+        // Left-click on (or beside) a property panel opens the in-place editor
+        // for its whole block — the panel edits its properties, not the raw
+        // markdown. Keyed off the ROW the click maps to, not the painted panel
+        // rects, so a click in the empty space right of the panel opens the
+        // editor too instead of seating the caret in (and revealing) the source.
+        if event.click_count == 1 && !event.modifiers.shift && !event.modifiers.control {
             let offset = self.index_for_mouse_position(event.position);
-            let (row, _) = self.row_col(offset);
-            if let Some(region) = markdown_syntax::property_regions(&self.content)
-                .into_iter()
-                .find(|r| r.contains(&row))
-            {
-                let start = self.line_starts()[region.start];
-                let end = self.line_end(region.end - 1);
+            if let Some((range, source)) = self.property_block_at(self.row_col(offset).0) {
                 cx.emit(EditorEvent::EditProperties {
-                    range: start..end,
-                    source: self.content[start..end].to_string().into(),
+                    range,
+                    source,
                     at_end: false,
                 });
                 return;

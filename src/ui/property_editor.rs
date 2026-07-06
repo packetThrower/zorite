@@ -14,11 +14,15 @@
 
 use gpui::{
     App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString, Styled, Window,
-    deferred, div, px, svg,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
+    StatefulInteractiveElement, Styled, Window, deferred, div, px, svg,
 };
 
 use crate::theme;
+
+/// Emitted when the user exits the form from the keyboard (Enter, or the last
+/// Escape) — the host commits and seats the note caret after the block.
+pub struct PropExit;
 
 pub struct PropertyEditor {
     rows: Vec<Row>,
@@ -26,10 +30,17 @@ pub struct PropertyEditor {
     keys: Vec<SharedString>,
     /// The field being edited: `(row, is_key)`. `None` = nothing focused yet.
     active: Option<(usize, bool)>,
+    /// Escape closed the key autocomplete without leaving the field; typing or
+    /// refocusing re-shows it.
+    dropdown_suppressed: bool,
+    /// Scroll state of the key autocomplete (it caps at ~7 rows and scrolls).
+    menu_scroll: gpui::ScrollHandle,
     /// The note's text size — the form matches the rendered panel's sizing.
     text_size: f32,
     focus: FocusHandle,
 }
+
+impl gpui::EventEmitter<PropExit> for PropertyEditor {}
 
 struct Row {
     key: Field,
@@ -112,6 +123,8 @@ impl PropertyEditor {
             rows,
             keys,
             active: None,
+            dropdown_suppressed: false,
+            menu_scroll: gpui::ScrollHandle::new(),
             text_size,
             focus: cx.focus_handle(),
         }
@@ -172,6 +185,7 @@ impl PropertyEditor {
         if let Some(f) = self.field_mut(row, is_key) {
             f.caret = if caret_end { f.text.len() } else { 0 };
             self.active = Some((row, is_key));
+            self.dropdown_suppressed = false;
         }
     }
 
@@ -218,6 +232,25 @@ impl PropertyEditor {
     /// All key handling — the form owns every keystroke, so the caret navigates
     /// the whole table.
     fn key_down(&mut self, ev: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        // Escape backs out one layer at a time: close the key autocomplete,
+        // then leave the field, then exit the form (the host commits + returns
+        // the caret to the note). Handled before the active guard so the final
+        // escape works with nothing focused.
+        if ev.keystroke.key == "escape" {
+            match self.active {
+                Some((_, true)) if !self.dropdown_suppressed => {
+                    self.dropdown_suppressed = true;
+                }
+                Some(_) => self.active = None,
+                None => {
+                    cx.emit(PropExit);
+                    return;
+                }
+            }
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         let Some((row, is_key)) = self.active else {
             return;
         };
@@ -263,16 +296,18 @@ impl PropertyEditor {
                 if let Some(f) = self.field_mut(row, is_key) {
                     f.backspace();
                 }
+                // Editing the key re-shows a dismissed autocomplete.
+                self.dropdown_suppressed &= !is_key;
             }
             "delete" => {
                 if let Some(f) = self.field_mut(row, is_key) {
                     f.delete();
                 }
+                self.dropdown_suppressed &= !is_key;
             }
-            "enter" | "escape" => {
-                // Commit: blur the form so the host's focus-out fires.
-                self.active = None;
-                cx.notify();
+            "enter" => {
+                // Done: the host commits and seats the note caret after the block.
+                cx.emit(PropExit);
                 return;
             }
             _ => {
@@ -283,6 +318,7 @@ impl PropertyEditor {
                         if let Some(f) = self.field_mut(row, is_key) {
                             f.insert(ch);
                         }
+                        self.dropdown_suppressed &= !is_key;
                     }
                     _ => return,
                 }
@@ -382,7 +418,9 @@ impl PropertyEditor {
         let key_active = self.active == Some((i, true));
         let value_active = self.active == Some((i, false));
         let icon = theme::property_icon(&r.key.text);
-        let dropdown = key_active.then(|| self.key_autocomplete(i, cx)).flatten();
+        let dropdown = (key_active && !self.dropdown_suppressed)
+            .then(|| self.key_autocomplete(i, cx))
+            .flatten();
         let icon_sz = px(self.text_size * 0.95);
         let row_h = px(self.text_size * 1.45 + 8.0);
 
@@ -502,6 +540,13 @@ impl PropertyEditor {
         if matches.is_empty() {
             return None;
         }
+        // Fixed row height + a capped viewport: long key lists scroll (with a
+        // thumb) instead of growing unbounded — same recipe as the editor's own
+        // suggestion menu.
+        const ROW_H: f32 = 26.0;
+        const PAD: f32 = 4.0;
+        const MAX_H: f32 = 186.0; // ~7 rows
+        let count = matches.len();
         let items: Vec<_> = matches
             .into_iter()
             .enumerate()
@@ -509,8 +554,11 @@ impl PropertyEditor {
                 let key = k.clone();
                 div()
                     .id(("prop-key-opt", i * 1000 + n))
+                    .flex_shrink_0()
+                    .h(px(ROW_H))
+                    .flex()
+                    .items_center()
                     .px(px(10.0))
-                    .py(px(4.0))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::accent_tint()))
                     .child(k)
@@ -529,6 +577,26 @@ impl PropertyEditor {
                     .into_any_element()
             })
             .collect();
+        // Scrollbar thumb, shown when the rows overflow the cap — sized from the
+        // content height + positioned from the live scroll offset (a wheel scroll
+        // re-renders, so this tracks).
+        let rows_h = count as f32 * ROW_H;
+        let view_h = MAX_H - 2.0 * PAD;
+        let thumb = (rows_h > view_h).then(|| {
+            let scrolled = (-f32::from(self.menu_scroll.offset().y)).clamp(0.0, rows_h - view_h);
+            let thumb_h = (view_h * view_h / rows_h).max(24.0);
+            let thumb_top = PAD + scrolled / (rows_h - view_h) * (view_h - thumb_h);
+            let mut c = theme::text_tertiary();
+            c.a = 0.5;
+            div()
+                .absolute()
+                .top(px(thumb_top))
+                .right(px(2.0))
+                .w(px(6.0))
+                .h(px(thumb_h))
+                .rounded(px(3.0))
+                .bg(c)
+        });
         Some(
             deferred(
                 div()
@@ -542,9 +610,21 @@ impl PropertyEditor {
                     .border_1()
                     .border_color(theme::divider())
                     .rounded(px(6.0))
+                    .overflow_hidden()
                     .text_color(theme::text_primary())
                     .text_size(px(13.0))
-                    .children(items),
+                    .child(
+                        div()
+                            .id("prop-key-menu")
+                            .max_h(px(MAX_H))
+                            .overflow_y_scroll()
+                            .track_scroll(&self.menu_scroll)
+                            .flex()
+                            .flex_col()
+                            .py(px(PAD))
+                            .children(items),
+                    )
+                    .children(thumb),
             )
             .into_any_element(),
         )
