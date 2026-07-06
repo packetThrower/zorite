@@ -6,6 +6,7 @@ work is collected under [Completed](#completed) at the bottom.
 ## Contents
 
 - [Notes & navigation](#notes--navigation)
+- [Notebooks (multiple data folders)](#notebooks-multiple-data-folders)
 - [Performance](#performance)
 - [App & polish](#app--polish)
 - [Settings window](#settings-window)
@@ -15,6 +16,61 @@ work is collected under [Completed](#completed) at the bottom.
 
 ## Notes & navigation
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
+
+## Notebooks (multiple data folders)
+
+Obsidian-style multiple "vaults" — separate, self-contained data sets the user
+switches between (work / personal / a shared folder in Dropbox). **Not called
+vaults**; working name **Notebooks** (alternatives considered: Spaces,
+Workspaces, Collections). Not slated for the next release — planned 2026-07-06.
+
+**Why this is cheaper than it sounds — what already exists:**
+- A data dir is already a fully self-contained bundle: `zorite.db` + `images/`
+  + `pdf/` + `themes/` + `fonts/` + the window-bounds sidecar. Nothing lives
+  outside it except the location-pointer file (`data_location.json`, fixed home
+  = the OS-default dir). Settings, favorites, recents, theme — all in the DB,
+  so they're per-notebook for free.
+- `paths.rs` already points the app at an arbitrary dir: `plan_relocation`
+  distinguishes **Switch** (target already holds a `zorite.db` → point at it in
+  place) from **Move** (relocate current data) — so "open a different data set"
+  exists internally today; it lacks only a registry, a switcher UI, and a
+  restart hook. `ZORITE_DATA` proves the isolation (it's how all live testing
+  runs).
+- gpui has `cx.restart()` (Zed's updater uses it) — a clean relaunch is
+  available for switch-by-restart.
+
+**Phase 1 — registry + switcher, switch = relaunch:**
+- [ ] Extend `data_location.json` into a registry: `{active, notebooks:
+  [{name, dir}]}`. Serde compat both ways (old builds ignore unknown fields;
+  `#[serde(default)]` reads old files). First launch after the update
+  auto-registers the current dir as **"Main"**.
+- [ ] **Switcher at the bottom of the sidebar** (user-picked spot): a compact
+  chip showing the active notebook's name; clicking opens a popover — the
+  notebook list (✓ on active, click to switch), **New notebook…** (name + a
+  folder picker; seeds a fresh empty dir), **Add existing…** (pick a folder
+  that holds a `zorite.db`), right-click → rename / **remove from list**
+  (forgets the entry, never deletes files) / Reveal in Finder. Hide the chip
+  (or show "Main" quietly) when only one notebook is registered.
+- [ ] Switch = write `active` to the pointer file + `cx.restart()`. An
+  encrypted target notebook lands on its unlock screen naturally, and restart
+  sidesteps the Windows zero-window-exit gotcha entirely.
+- [ ] Window title gains the notebook name when more than one is registered.
+- [ ] Settings → General's existing "data location" pane folds into this
+  (Move becomes a per-notebook action; Switch is superseded by the registry).
+- [ ] `ZORITE_DATA` keeps top precedence (dev/test), bypassing the registry.
+
+**Phase 2 — restartless switching / notebooks open side-by-side (only if
+Phase 1 proves demand):**
+- The crux: `paths::data_dir()` is a process-wide `OnceLock` and every store
+  resolves through it — per-window notebooks means threading a data-dir
+  context through every `paths::*` call site (the big refactor).
+- Per-notebook `DocSignal` (today one process-global would cross-sync
+  different notebooks' windows), block cross-notebook tab drags
+  (`GlobalAppWindows`), audit per-`AppView` caches (image/mermaid/highlight
+  stores are per-window already; the parse cache is content-keyed, safe).
+
+**Out of scope** (matching Obsidian): cross-notebook links/search/embeds,
+per-notebook settings sync.
 
 ## Performance
 - [ ] Move SQLite writes off the UI thread (background executor) — **fsync stall handled** for now via WAL + `synchronous = NORMAL` in `Db::open` (per-keystroke autosave no longer fsyncs on the UI thread; measured worst case ~1.2 ms at a 50k-char page, well within a frame). The full off-thread refactor is now a lower-priority fast-follow (pathological pages / slow or contended disks)
