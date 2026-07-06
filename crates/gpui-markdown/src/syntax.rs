@@ -408,6 +408,51 @@ pub fn split_block_anchor(target: &str) -> (&str, Option<&str>) {
     }
 }
 
+/// Split a wiki-link target into `(page, heading)`: `Note#My Heading` links to
+/// the heading on the page `Note`. Splits at the first `#` when both sides are
+/// non-empty and the page part isn't a PDF (`file.pdf#p3` keeps its page-jump
+/// meaning). Block anchors (`#^`) are the caller's first check —
+/// [`split_block_anchor`] — and a Zorite page title may itself contain `#`, so
+/// navigation should prefer an existing literal-titled page before splitting.
+pub fn split_heading_anchor(target: &str) -> (&str, Option<&str>) {
+    match target.split_once('#') {
+        Some((page, heading))
+            if !page.is_empty()
+                && !heading.trim().is_empty()
+                && !heading.starts_with('^')
+                && !page.to_ascii_lowercase().ends_with(".pdf") =>
+        {
+            (page, Some(heading))
+        }
+        _ => (target, None),
+    }
+}
+
+/// The byte offset of the start of the line carrying the ATX heading whose
+/// text matches `heading` (case-insensitive, trimmed; fenced code skipped),
+/// searching top to bottom. Drives navigation for `[[Note#Heading]]` links.
+pub fn find_heading_line(content: &str, heading: &str) -> Option<usize> {
+    let want = heading.trim().to_lowercase();
+    let mut start = 0;
+    let mut in_fence = false;
+    for line in content.split('\n') {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            let t = line.trim_start();
+            let level = t.bytes().take_while(|&b| b == b'#').count();
+            if (1..=6).contains(&level)
+                && let Some(text) = t[level..].strip_prefix(' ')
+                && text.trim().to_lowercase() == want
+            {
+                return Some(start);
+            }
+        }
+        start += line.len() + 1;
+    }
+    None
+}
+
 /// The byte offset of the start of the line carrying the block anchor `^id`,
 /// searching top to bottom. Drives navigation for `[[Note#^id]]` links.
 pub fn find_block_line(content: &str, id: &str) -> Option<usize> {
@@ -579,6 +624,27 @@ mod tests {
         let src = "intro\nthe fact ^fact-1\nmore";
         assert_eq!(find_block_line(src, "fact-1"), Some(6));
         assert_eq!(find_block_line(src, "nope"), None);
+    }
+
+    #[test]
+    fn heading_anchors() {
+        assert_eq!(
+            split_heading_anchor("Note#My Heading"),
+            ("Note", Some("My Heading"))
+        );
+        assert_eq!(split_heading_anchor("Note"), ("Note", None));
+        // Block anchors, PDFs, and empty sides don't split as headings.
+        assert_eq!(split_heading_anchor("Note#^id"), ("Note#^id", None));
+        assert_eq!(split_heading_anchor("file.pdf#p3"), ("file.pdf#p3", None));
+        assert_eq!(split_heading_anchor("#Heading"), ("#Heading", None));
+        assert_eq!(split_heading_anchor("Note#"), ("Note#", None));
+
+        let src = "intro\n## My Heading\nbody\n```\n# not a heading\n```\n### Deep One";
+        // Case-insensitive, trimmed; fences skipped.
+        assert_eq!(find_heading_line(src, "my heading"), Some(6));
+        assert_eq!(find_heading_line(src, " Deep One "), Some(49));
+        assert_eq!(find_heading_line(src, "not a heading"), None);
+        assert_eq!(find_heading_line(src, "missing"), None);
     }
 
     #[test]

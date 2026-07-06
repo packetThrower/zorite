@@ -31,13 +31,15 @@ log: <https://github.com/packetThrower/zorite/releases>.
   and the pages carrying it (click through to open). From the same page you can
   override any key's icon from a picker (or map an icon to a key before its
   first use), and rename a key across every page at once.
-- **Block references** — end a line with ` ^some-id` to give it an address, then
-  link to it from anywhere with `[[Note#^some-id]]`: clicking opens the note and
-  jumps straight to that line. The link reads as `Note → some-id` in both views
-  (an `|alias` still overrides), and the `^id` anchor itself stays out of the
-  way — hidden in the reading view, dimmed/hidden in the editor until the caret
-  is on its line. Previously such a link created a page literally named
-  `Note#^some-id`.
+- **Block references and heading links** — end a line with ` ^some-id` to give
+  it an address, then link to it from anywhere with `[[Note#^some-id]]`; or link
+  straight to a heading with `[[Note#My Heading]]` (case-insensitive). Clicking
+  opens the note and jumps to that line. Either link reads as `Note → anchor` in
+  both views (an `|alias` still overrides), and the `^id` anchor itself stays
+  out of the way — hidden in the reading view, dimmed/hidden in the editor until
+  the caret is on its line. `file.pdf#p3` keeps its page-jump meaning, and a
+  page whose title literally contains `#` still opens by its full name.
+  Previously an anchor link created a page literally named `Note#…`.
 - **Foldable callouts** — an Obsidian-style fold char on an alert marker makes
   it collapsible: `> [!NOTE]-` starts folded (only the title shows), `> [!NOTE]+`
   starts open, and a plain `> [!NOTE]` stays as-is. A chevron joins the title in

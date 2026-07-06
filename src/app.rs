@@ -1271,14 +1271,36 @@ impl AppView {
             self.open_whiteboard(board.id, window, cx);
             return;
         }
+        // A `[[Note#Heading]]` link jumps to the heading — unless a page with
+        // the literal `#` title exists (Zorite titles may contain `#`, unlike
+        // Obsidian's), which wins so such pages keep working.
+        let (title, heading) = if block.is_none()
+            && title.contains('#')
+            && !matches!(self.db.get_page_by_title(title), Ok(Some(_)))
+        {
+            gpui_markdown::syntax::split_heading_anchor(title)
+        } else {
+            (title, None)
+        };
         match self.db.get_or_create_page(title) {
             Ok(page) => {
-                // A block anchor seats the caret at (and scrolls to) the line
-                // carrying `^id`, once the page's editor is up (deferred past
-                // this render pass). A missing/stale id just opens the page.
-                let seat = block
-                    .filter(|_| !page.is_journal)
-                    .and_then(|id| gpui_markdown::syntax::find_block_line(&page.content, id));
+                // An anchor seats the caret at (and scrolls to) its line — a
+                // block's `^id` or the matching heading — once the page's
+                // editor is up (deferred past this render pass). A stale
+                // anchor just opens the page.
+                let seat = (!page.is_journal)
+                    .then(|| {
+                        block
+                            .and_then(|id| {
+                                gpui_markdown::syntax::find_block_line(&page.content, id)
+                            })
+                            .or_else(|| {
+                                heading.and_then(|h| {
+                                    gpui_markdown::syntax::find_heading_line(&page.content, h)
+                                })
+                            })
+                    })
+                    .flatten();
                 self.open_page_foreground(page, window, cx);
                 if let Some(offset) = seat {
                     let weak = cx.entity().downgrade();

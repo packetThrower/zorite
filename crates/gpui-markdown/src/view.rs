@@ -1542,18 +1542,19 @@ fn push_text(
                     out.map(src_base + plain_start);
                     push_run(&value[plain_start..i], cur, out);
                     out.map(src_base + i + 2); // the display text sits just past `[[`
-                    // An unaliased block link (`[[Note#^id]]`) reads as
-                    // `Note → id` — the editor renders the same, and an alias
-                    // still overrides the display entirely.
-                    let (page, block) = crate::syntax::split_block_anchor(display);
-                    if let (true, Some(id)) = (display == target, block) {
-                        push_link(
-                            &format!("{page} → {id}"),
-                            target,
-                            style.link_color,
-                            cur,
-                            out,
-                        );
+                    // An unaliased anchor link (`[[Note#^id]]` / `[[Note#Heading]]`)
+                    // reads as `Note → anchor` — the editor renders the same, and
+                    // an alias still overrides the display entirely.
+                    let anchored = (display == target).then(|| {
+                        let (page, block) = crate::syntax::split_block_anchor(display);
+                        if let Some(id) = block {
+                            return Some(format!("{page} → {id}"));
+                        }
+                        let (page, heading) = crate::syntax::split_heading_anchor(display);
+                        heading.map(|h| format!("{page} → {}", h.trim()))
+                    });
+                    if let Some(Some(shown)) = anchored {
+                        push_link(&shown, target, style.link_color, cur, out);
                     } else {
                         push_link(display, target, style.link_color, cur, out);
                     }

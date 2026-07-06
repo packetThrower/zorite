@@ -574,17 +574,30 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 color: Some(st.link),
                 ..Default::default()
             };
-            // A block anchor in the target (`[[Note#^id]]`): the `#^` renders
-            // as ` → ` (the reader does the same), keeping the block id
-            // readable — `Note → id`. Raw `#^` comes back on caret like any
-            // marker. Any `|alias` after it keeps the link color.
+            // An anchor in the target — a block ref (`[[Note#^id]]`) or a
+            // heading (`[[Note#My Heading]]`) — renders its `#^`/`#` as ` → `
+            // (the reader does the same), keeping the anchor text readable:
+            // `Note → id`. Raw form comes back on caret like any marker; a PDF
+            // page jump (`file.pdf#p3`) keeps its literal `#`. Any `|alias`
+            // after it keeps the link color.
             let inner = &text[i + 2..close];
             let target_end = inner.find('|').unwrap_or(inner.len());
-            match inner[..target_end].find("#^") {
-                Some(a) if a > 0 && a + 2 < target_end => {
+            let anchor = match inner[..target_end].find('#') {
+                Some(a) if !inner[..a].to_ascii_lowercase().ends_with(".pdf") => {
+                    let alen = if inner[a + 1..target_end].starts_with('^') {
+                        2
+                    } else {
+                        1
+                    };
+                    Some((a, alen))
+                }
+                _ => None,
+            };
+            match anchor {
+                Some((a, alen)) if a > 0 && a + alen < target_end => {
                     push(out, i + 2..i + 2 + a, link.clone());
                     out.push(Span {
-                        range: i + 2 + a..i + 2 + a + 2,
+                        range: i + 2 + a..i + 2 + a + alen,
                         style: Style {
                             color: Some(st.marker),
                             hide: true,
@@ -592,7 +605,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                             ..Default::default()
                         },
                     });
-                    push(out, i + 2 + a + 2..close, link);
+                    push(out, i + 2 + a + alen..close, link);
                 }
                 _ => push(out, i + 2..close, link),
             }
