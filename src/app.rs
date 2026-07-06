@@ -471,6 +471,8 @@ pub struct AppView {
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
+    /// The inline image being previewed full-size (its src), or None.
+    image_lightbox: Option<SharedString>,
     // Focus for the open lightbox so it can capture Esc-to-close without a global
     // key binding (which would clash with the editor's Escape → slash-cancel).
     lightbox_focus: FocusHandle,
@@ -753,6 +755,7 @@ impl AppView {
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
             mermaid_lightbox: None,
+            image_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             math_edit: None,
             ctx_menu: None,
@@ -978,6 +981,9 @@ impl AppView {
                 EditorEvent::MathMenu { source, position } => {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
+                }
+                EditorEvent::PreviewImage(src) => {
+                    this.open_image_lightbox(src.clone(), window, cx);
                 }
             },
         );
@@ -1849,6 +1855,9 @@ impl AppView {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
                 }
+                EditorEvent::PreviewImage(src) => {
+                    this.open_image_lightbox(src.clone(), window, cx);
+                }
             },
         );
         // gpui-editor has no Focus/Blur events; listen on its focus handle.
@@ -2668,6 +2677,23 @@ impl AppView {
 
     /// Close the lightbox and hand focus back to the app root (so keyboard shortcuts
     /// keep working).
+    /// Open a full-size preview of the image `src` (click an inline image).
+    pub fn open_image_lightbox(
+        &mut self,
+        src: SharedString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.image_lightbox = Some(src);
+        window.focus(&self.lightbox_focus, cx);
+        cx.notify();
+    }
+
+    pub fn close_image_lightbox(&mut self, cx: &mut Context<Self>) {
+        self.image_lightbox = None;
+        cx.notify();
+    }
+
     pub fn close_mermaid_lightbox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.mermaid_lightbox = None;
         window.focus(&self.focus_handle, cx);
@@ -2987,8 +3013,9 @@ impl AppView {
     /// `ensure_image_loaded` dedupes, so re-scanning is cheap; a finished decode
     /// notifies → repaint → the editor's block-image provider finds the bitmap.
     fn ensure_content_images(&mut self, content: &str, cx: &mut Context<Self>) {
-        for info in gpui_markdown::images(content) {
-            self.ensure_image_loaded(info.src, cx);
+        // Every image, block AND inline — inline images render as rasters too.
+        for src in gpui_markdown::all_image_srcs(content) {
+            self.ensure_image_loaded(src, cx);
         }
     }
 
@@ -4493,23 +4520,39 @@ impl AppView {
             value.len()
         };
         let (before, after) = value.split_at(pos);
-        // Keep the image on its own line (a blank line before unless we're
-        // already at a block boundary, and a newline after).
-        let lead = if before.is_empty() || before.ends_with("\n\n") {
-            ""
-        } else if before.ends_with('\n') {
-            "\n"
+        // Paste mid-line → insert the image INLINE at the caret (it flows in
+        // the sentence, both views render it inline). Only on an otherwise-
+        // empty line does it get its own block line.
+        let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+        let before_line = &before[line_start..];
+        let after_line = after.split('\n').next().unwrap_or("");
+        let inline = at_cursor
+            && (!before_line.trim().is_empty() || !after_line.trim().is_empty())
+            && !crate::pdf::is_pdf(rel);
+        let (snippet, caret) = if inline {
+            let snippet = format!("![]({rel})");
+            // Caret just past `)` — a boundary, not inside — so the image
+            // renders immediately and typing continues after it.
+            let caret = pos + snippet.len();
+            (snippet, caret)
         } else {
-            "\n\n"
+            // Own line: a blank line before unless already at a block
+            // boundary, and a newline after.
+            let lead = if before.is_empty() || before.ends_with("\n\n") {
+                ""
+            } else if before.ends_with('\n') {
+                "\n"
+            } else {
+                "\n\n"
+            };
+            let trail = if after.starts_with('\n') { "" } else { "\n" };
+            let snippet = format!("{lead}![]({rel}){trail}");
+            // Caret on the line BELOW the image, never the image's own line —
+            // the caret's row reveals raw source, which would hide the
+            // just-inserted image (and its resize grip) until clicked away.
+            let caret = pos + snippet.len() + if trail.is_empty() { 1 } else { 0 };
+            (snippet, caret)
         };
-        let trail = if after.starts_with('\n') { "" } else { "\n" };
-        let snippet = format!("{lead}![]({rel}){trail}");
-        // Caret on the line BELOW the image, never the image's own line — the
-        // caret's row reveals raw source, which would hide the just-inserted
-        // image (and its resize grip) until the user clicked away. With a
-        // `trail` newline the snippet already ends past the image line; when
-        // `after` supplied the newline instead, hop over it.
-        let caret = pos + snippet.len() + if trail.is_empty() { 1 } else { 0 };
         let new = format!("{before}{snippet}{after}");
         editor.update(cx, |st, cx| {
             st.set_text(new.clone(), cx);
@@ -6645,6 +6688,56 @@ impl Render for AppView {
 
         // A clicked mermaid diagram, expanded full-window: the cached image at full
         // resolution in a scrollable box, on a dimmed backdrop that dismisses on click.
+        // Inline-image preview: a full-window modal showing the image at size,
+        // dismissed by Esc or a backdrop click (mirrors the mermaid lightbox).
+        let image_lightbox = self.image_lightbox.clone().and_then(|src| {
+            let path = crate::paths::resolve_local(&src)?;
+            Some(
+                gpui::deferred(
+                    div()
+                        .occlude()
+                        .absolute()
+                        .inset_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(gpui::hsla(0., 0., 0., 0.72))
+                        .track_focus(&self.lightbox_focus)
+                        .on_key_down(cx.listener(
+                            |this: &mut AppView, ev: &gpui::KeyDownEvent, _window, cx| {
+                                if ev.keystroke.key == "escape" {
+                                    this.close_image_lightbox(cx);
+                                }
+                            },
+                        ))
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|this: &mut AppView, _, _window, cx| {
+                                this.close_image_lightbox(cx);
+                            }),
+                        )
+                        .child(
+                            gpui::img(path)
+                                .max_w(gpui::relative(0.95))
+                                .max_h(gpui::relative(0.95))
+                                .rounded(px(8.0))
+                                .shadow_lg(),
+                        )
+                        .child(
+                            div()
+                                .absolute()
+                                .top(px(14.0))
+                                .right(px(18.0))
+                                .text_size(px(22.0))
+                                .text_color(gpui::white())
+                                .cursor_pointer()
+                                .child("✕"),
+                        ),
+                )
+                .into_any_element(),
+            )
+        });
+
         let mermaid_lightbox = self
             .mermaid_lightbox
             .clone()
@@ -7046,6 +7139,7 @@ impl Render for AppView {
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)
+            .children(image_lightbox)
             .children(ctx_menu_overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the

@@ -195,6 +195,13 @@ fn rendered_day(
             .on_highlight(app.highlighter_fn())
             .on_math(crate::ui::math::renderer(app, cx))
             .on_inline_math(crate::ui::math::inline_renderer(app))
+            .on_inline_image(crate::ui::image::inline_renderer(app))
+            .on_image_preview({
+                let weak = cx.entity().downgrade();
+                std::rc::Rc::new(move |src, window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.open_image_lightbox(src, window, cx));
+                })
+            })
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))
