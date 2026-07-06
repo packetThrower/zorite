@@ -582,6 +582,9 @@ pub struct EditorState {
     /// Window-space bounds of each painted task checkbox, with its logical line —
     /// so a click on the box toggles `[ ]`↔`[x]` instead of placing the caret.
     checkbox_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// Painted chevron bounds of foldable callouts (`(line, rect)`, from the
+    /// last paint) — a click flips the marker's `-`/`+` fold char.
+    alert_fold_rects: Vec<(usize, Bounds<Pixels>)>,
     /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
     /// that image paints at the live width and other mouse handling is suppressed.
     image_resize: Option<ImageResize>,
@@ -675,6 +678,7 @@ impl EditorState {
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
+            alert_fold_rects: Vec::new(),
             image_resize: None,
             editing_block: None,
             inline_math_rects: Vec::new(),
@@ -1917,6 +1921,23 @@ impl EditorState {
             }
             return;
         }
+        // A press on a foldable callout's chevron flips its `-`/`+` fold char
+        // (folding/unfolding the body) instead of placing the caret — the same
+        // toggle-in-source model as the task checkbox.
+        if let Some(row) = self.alert_fold_at(event.position) {
+            let start = self.line_starts()[row];
+            let line = &self.content[start..self.line_end(row)];
+            if let Some((at, folded)) = gpui_markdown::syntax::alert_fold_char(line) {
+                let range = start + at..start + at + 1;
+                let repl = if folded { "+" } else { "-" };
+                self.record_edit(&range, repl);
+                self.content.replace_range(range.clone(), repl);
+                self.remap_diagnostics(&range, 1);
+                cx.emit(EditorEvent::Changed);
+                cx.notify();
+            }
+            return;
+        }
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
         if let Some(src) = self.chip_at(event.position) {
@@ -2687,6 +2708,21 @@ impl EditorState {
     fn checkbox_at(&self, position: Point<Pixels>) -> Option<usize> {
         let pad = px(4.);
         self.checkbox_rects.iter().find_map(|&(line, rect)| {
+            Bounds::new(
+                point(rect.origin.x - pad, rect.origin.y - pad),
+                size(rect.size.width + pad * 2., rect.size.height + pad * 2.),
+            )
+            .contains(&position)
+            .then_some(line)
+        })
+    }
+
+    /// If `position` lands on a foldable callout's chevron painted last frame,
+    /// that marker's logical line — so a click can flip its fold char. Padded
+    /// like the task checkbox to stay easy to hit.
+    fn alert_fold_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let pad = px(4.);
+        self.alert_fold_rects.iter().find_map(|&(line, rect)| {
             Bounds::new(
                 point(rect.origin.x - pad, rect.origin.y - pad),
                 size(rect.size.width + pad * 2., rect.size.height + pad * 2.),
@@ -4132,6 +4168,11 @@ enum LineMark {
         label: &'static str,
         kind: markdown_syntax::AlertKind,
         text_inset: Pixels,
+        /// Foldable callout (`[!NOTE]-`/`+`): `Some(true)` = folded. A chevron
+        /// paints at `chevron_x` (after the label) and clicking it flips the
+        /// fold char in the source.
+        fold: Option<bool>,
+        chevron_x: Pixels,
     },
     /// List item: a painted bullet (`•`) or number (`N.`) at `bullet_x` (where the
     /// hidden source marker began), muted; the body sits at `text_inset` — the
@@ -4534,6 +4575,16 @@ fn shape_document(
             .collect(),
         None => Vec::new(),
     };
+    // Folded callouts (`> [!NOTE]-`): each region's BODY lines collapse (the
+    // marker line stays, painting the label + chevron) unless the caret is
+    // inside the region — reveal-on-caret, so arrowing in unfolds for editing.
+    let alert_folds: Vec<Range<usize>> = md
+        .map(|_| markdown_syntax::alert_fold_regions(content))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(r, folded)| *folded && caret_row.is_none_or(|cr| !r.contains(&cr)))
+        .map(|(r, _)| r)
+        .collect();
     // `<!-- math:ALIGN -->` marker lines to hide (revealed only when the caret lands on them),
     // like table style markers.
     let math_marker_lines: Vec<usize> = if md.is_some() {
@@ -4711,6 +4762,35 @@ fn shape_document(
             inline_maths.push(Vec::new());
             line_start = line_end + 1;
             alert_run = None;
+            continue;
+        }
+
+        // A folded callout's body lines collapse (height 0); its marker line
+        // falls through to normal handling, painting the label + chevron. The
+        // caret entering the region reveals it (filtered above).
+        if alert_folds
+            .iter()
+            .any(|r| r.contains(&idx) && idx != r.start)
+        {
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(px(0.));
+            widgets.push(None);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
             continue;
         }
 
@@ -4943,7 +5023,7 @@ fn shape_document(
             !is_code && table.is_none() && (widget.is_none() || img_inset > px(0.))
         }) {
             if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
-                if let Some((kind, mlen)) = markdown_syntax::alert_prefix(&line[plen..]) {
+                if let Some((kind, mlen, fold)) = markdown_syntax::alert_prefix(&line[plen..]) {
                     // The alert's marker line: hide `> [!NOTE] ` (the scan
                     // does the same) and paint a bold label in its place; a
                     // same-line body insets past the label's measured width.
@@ -4960,13 +5040,23 @@ fn shape_document(
                     } else {
                         px(0.)
                     };
+                    // A foldable callout's chevron sits after the label and
+                    // pushes any same-line body further right.
+                    let chevron_x = px(QUOTE_INSET) + icon_w + label_w + px(8.);
+                    let chevron_w = if fold.is_some() {
+                        measure_width(window, "▾", base_font, base_font_size) + px(8.)
+                    } else {
+                        px(0.)
+                    };
                     Some((
                         plen + mlen,
                         LineMark::Alert {
                             bar: color,
                             label: kind.label(),
                             kind,
-                            text_inset: px(QUOTE_INSET) + icon_w + label_w + px(8.),
+                            text_inset: chevron_x + chevron_w,
+                            fold,
+                            chevron_x,
                         },
                     ))
                 } else {
@@ -6011,6 +6101,8 @@ struct PrepaintState {
     /// grips' resize cursor). Set in paint via `set_cursor_style`.
     checkbox_grips: Vec<(usize, Hitbox)>,
     chip_grips: Vec<(usize, Hitbox)>,
+    /// Pointer-cursor hitboxes over foldable-callout chevrons, keyed by line.
+    alert_fold_grips: Vec<(usize, Hitbox)>,
     /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
     /// `[text](url)`), so hovering a clickable link shows a hand.
     link_grips: Vec<Hitbox>,
@@ -6300,6 +6392,7 @@ impl Element for EditorElement {
         // by line so paint sets the cursor on each (see `set_cursor_style`).
         let mut checkbox_grips = Vec::new();
         let mut chip_grips = Vec::new();
+        let mut alert_fold_grips = Vec::new();
         for (i, lh) in line_heights.iter().enumerate() {
             if let Some(LineMark::Check { bullet_x, .. }) = marks.get(i).copied().flatten() {
                 let sz = font_size * 0.78;
@@ -6311,6 +6404,23 @@ impl Element for EditorElement {
                     size(sz + pad * 2., sz + pad * 2.),
                 );
                 checkbox_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+            if let Some(LineMark::Alert {
+                fold: Some(_),
+                chevron_x,
+                ..
+            }) = marks.get(i).copied().flatten()
+            {
+                // A generous box around the chevron (its glyph is ~an em wide).
+                let pad = px(4.);
+                let hit = Bounds::new(
+                    point(
+                        bounds.origin.x + chevron_x - pad,
+                        bounds.origin.y + line_tops[i],
+                    ),
+                    size(font_size + pad * 2., *lh),
+                );
+                alert_fold_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
             }
             if matches!(
                 widgets.get(i).and_then(Option::as_ref),
@@ -6704,6 +6814,7 @@ impl Element for EditorElement {
             image_grips,
             checkbox_grips,
             chip_grips,
+            alert_fold_grips,
             link_grips,
             prop_pill_grips,
             alert_icons: editor
@@ -6774,6 +6885,9 @@ impl Element for EditorElement {
         // Window-space box bounds of each painted task checkbox + its line, for the
         // next frame's click-to-toggle hit-testing (committed below).
         let mut checkbox_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
+        // A foldable callout's chevron bounds (from this paint), so a click can
+        // flip its fold char — the checkbox-toggle pattern.
+        let mut alert_fold_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
         // Logseq-style list nesting guides: `outline` holds the bullet x of each
         // active ancestor level, so a faint vertical line can drop from each down
         // through its descendants. Popped on dedent, reset off the list.
@@ -6842,10 +6956,51 @@ impl Element for EditorElement {
             // Alert marker line: the colored bar plus a bold label ("Note", …)
             // where the hidden `[!NOTE]` marker was.
             if let Some(LineMark::Alert {
-                bar, label, kind, ..
+                bar,
+                label,
+                kind,
+                fold,
+                chevron_x,
+                ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
                 window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), bar));
+                // Foldable callout: a chevron after the label; clicking it flips
+                // the `-`/`+` in the source (rects committed for on_mouse_down).
+                if let Some(folded) = fold {
+                    let glyph: SharedString = if folded { "▸" } else { "▾" }.into();
+                    let run = TextRun {
+                        len: glyph.len(),
+                        font: font.clone(),
+                        color: bar,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let shaped = window
+                        .text_system()
+                        .shape_line(glyph, font_size, &[run], None);
+                    let cx0 = origin.x + chevron_x;
+                    let _ = shaped.paint(
+                        point(cx0, origin.y),
+                        *lh,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    alert_fold_rects.push((
+                        i,
+                        Bounds::new(point(cx0, origin.y), size(shaped.width(), *lh)),
+                    ));
+                    if let Some(hb) = prepaint
+                        .alert_fold_grips
+                        .iter()
+                        .find_map(|(l, hb)| (*l == i).then_some(hb))
+                    {
+                        window.set_cursor_style(CursorStyle::PointingHand, hb);
+                    }
+                }
                 // Icon (when the host supplies asset paths), then the bold label.
                 let mut label_x = origin.x + px(QUOTE_INSET);
                 if let Some(icons) = &prepaint.alert_icons {
@@ -7225,6 +7380,7 @@ impl Element for EditorElement {
             editor.prop_pill_rects = prop_pill_rects;
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
+            editor.alert_fold_rects = alert_fold_rects;
             editor.table_row_add_rects = table_row_add_rects;
             editor.table_col_add_rects = table_col_add_rects;
             editor.table_hover_zones = table_hover_zones;

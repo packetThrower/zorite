@@ -165,13 +165,23 @@ impl AlertKindExt for AlertKind {
 /// Public so other renderers of the same construct (e.g. a PDF exporter)
 /// share the exact recognition.
 pub fn alert_children(b: &mdast::Blockquote) -> Option<(AlertKind, Vec<mdast::Node>)> {
+    alert_parts(b).map(|(kind, _, _, children)| (kind, children))
+}
+
+/// [`alert_children`] plus the callout's fold state (`Some(true)` = folded)
+/// and the marker's source byte offset — what a foldable callout's chevron
+/// click reports so the host can flip the `-`/`+` in the source.
+pub fn alert_parts(
+    b: &mdast::Blockquote,
+) -> Option<(AlertKind, Option<bool>, usize, Vec<mdast::Node>)> {
     let Some(mdast::Node::Paragraph(p)) = b.children.first() else {
         return None;
     };
     let Some(mdast::Node::Text(t)) = p.children.first() else {
         return None;
     };
-    let (kind, strip) = alert_marker(&t.value)?;
+    let marker_offset = t.position.as_ref().map_or(0, |p| p.start.offset);
+    let (kind, strip, fold) = alert_marker(&t.value)?;
     let mut children = b.children.clone();
     if let Some(mdast::Node::Paragraph(p)) = children.first_mut() {
         if strip >= t.value.len() {
@@ -191,7 +201,7 @@ pub fn alert_children(b: &mdast::Blockquote) -> Option<(AlertKind, Vec<mdast::No
             }
         }
     }
-    Some((kind, children))
+    Some((kind, fold, marker_offset, children))
 }
 
 /// An authoring snippet for a markdown construct: a label, the text to
@@ -420,6 +430,7 @@ pub struct MarkdownView {
     on_click_source: Option<ClickSourceHandler>,
     /// Click a task checkbox to toggle it (the host applies + persists).
     on_task_toggle: Option<TaskToggleHandler>,
+    on_alert_toggle: Option<TaskToggleHandler>,
 }
 
 impl MarkdownView {
@@ -441,6 +452,7 @@ impl MarkdownView {
             block_scroll: None,
             on_click_source: None,
             on_task_toggle: None,
+            on_alert_toggle: None,
         }
     }
 
@@ -525,6 +537,15 @@ impl MarkdownView {
         self.on_task_toggle = Some(handler);
         self
     }
+
+    /// Called when a foldable callout's title is clicked, with the marker's
+    /// source byte offset — the host flips the `-`/`+` fold char (see
+    /// [`crate::syntax::toggle_alert_fold_at`]) and persists, like a task
+    /// checkbox toggle.
+    pub fn on_alert_toggle(mut self, handler: TaskToggleHandler) -> Self {
+        self.on_alert_toggle = Some(handler);
+        self
+    }
 }
 
 /// Content-keyed parse cache. The host's journal feed re-renders every
@@ -604,6 +625,7 @@ impl RenderOnce for MarkdownView {
             match_ix: 0,
             on_click_source: self.on_click_source,
             on_task_toggle: self.on_task_toggle,
+            on_alert_toggle: self.on_alert_toggle,
             suppress_heading_top: false,
         };
 
@@ -683,6 +705,7 @@ struct Ctx {
     match_ix: usize,
     on_click_source: Option<ClickSourceHandler>,
     on_task_toggle: Option<TaskToggleHandler>,
+    on_alert_toggle: Option<TaskToggleHandler>,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
@@ -836,8 +859,12 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
         }
         mdast::Node::Blockquote(b) => {
             // A GitHub alert (`> [!NOTE]` …): colored border + bold title, body
-            // in the normal text color (unlike a plain quote's muted tone).
-            if let Some((kind, children)) = alert_children(b) {
+            // in the normal text color (unlike a plain quote's muted tone). An
+            // Obsidian fold char (`[!NOTE]-`/`+`) makes it a foldable callout:
+            // a chevron joins the title, clicking flips the `-`/`+` in the
+            // source (via the host's handler), and a folded callout shows only
+            // its title.
+            if let Some((kind, fold, marker_offset, children)) = alert_parts(b) {
                 let color = kind.color(&ctx.style.alerts);
                 let mut title = div()
                     .flex()
@@ -858,6 +885,32 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     );
                 }
                 title = title.child(kind.label());
+                let folded = fold == Some(true);
+                let mut title = title.into_any_element();
+                if fold.is_some() {
+                    let chevron = if folded { "▸" } else { "▾" };
+                    ctx.counter += 1;
+                    let mut row = div()
+                        .id(ElementId::Name(
+                            format!("{}-fold-{}", ctx.id_base, ctx.counter).into(),
+                        ))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(title)
+                        .child(div().text_color(color).child(chevron));
+                    if let Some(toggle) = ctx.on_alert_toggle.clone() {
+                        row = row.cursor_pointer().on_mouse_down(
+                            MouseButton::Left,
+                            move |_: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                toggle(marker_offset, window, cx);
+                            },
+                        );
+                    }
+                    title = row.into_any_element();
+                }
                 let mut q = div()
                     .border_l_2()
                     .border_color(color)
@@ -866,9 +919,11 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     .flex_col()
                     .gap(px(6.0))
                     .child(title);
-                for child in &children {
-                    if let Some(el) = render_block(child, ctx, window) {
-                        q = q.child(el);
+                if !folded {
+                    for child in &children {
+                        if let Some(el) = render_block(child, ctx, window) {
+                            q = q.child(el);
+                        }
                     }
                 }
                 return Some(q.into_any_element());
@@ -2451,16 +2506,16 @@ mod tests {
     fn alert_marker_and_strip() {
         assert!(matches!(
             alert_marker("[!NOTE]\nbody"),
-            Some((AlertKind::Note, 8))
+            Some((AlertKind::Note, 8, None))
         ));
         assert!(matches!(
             alert_marker("[!WARNING]"),
-            Some((AlertKind::Warning, 10))
+            Some((AlertKind::Warning, 10, None))
         ));
         // Lenient form: body text on the marker line (strip includes the space).
         assert!(matches!(
             alert_marker("[!NOTE] trailing"),
-            Some((AlertKind::Note, 8))
+            Some((AlertKind::Note, 8, None))
         ));
         // Wrong case / glued text → plain blockquote.
         assert!(alert_marker("[!note]\nbody").is_none());

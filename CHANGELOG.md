@@ -31,6 +31,13 @@ log: <https://github.com/packetThrower/zorite/releases>.
   and the pages carrying it (click through to open). From the same page you can
   override any key's icon from a picker (or map an icon to a key before its
   first use), and rename a key across every page at once.
+- **Foldable callouts** — an Obsidian-style fold char on an alert marker makes
+  it collapsible: `> [!NOTE]-` starts folded (only the title shows), `> [!NOTE]+`
+  starts open, and a plain `> [!NOTE]` stays as-is. A chevron joins the title in
+  both views; clicking it folds/unfolds and persists the state in the note
+  (the `-`/`+` flips in the source, like ticking a task checkbox). In the live
+  editor, arrowing the caret into a folded callout reveals it while you edit and
+  it folds back when you leave.
 
 ## [0.5.1] - 2026-07-03
 

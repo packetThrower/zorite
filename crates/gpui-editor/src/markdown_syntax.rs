@@ -410,7 +410,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         // A GitHub alert's `[!NOTE]`-style marker hides with the quote prefix —
         // the paint draws a bold colored label in its place (LineMark::Alert).
-        if let Some((_, mlen)) = alert_prefix(&text[p..end]) {
+        if let Some((_, mlen, _)) = alert_prefix(&text[p..end]) {
             p += mlen;
         }
         marker(out, start..p, st.marker);
@@ -787,7 +787,39 @@ impl SyntaxStyle {
 /// The alert kind if `body` — a blockquote line's text after its `>` prefix —
 /// starts with an alert marker (see [`gpui_markdown::syntax::alert_prefix`]).
 pub(crate) fn alert_kind(body: &str) -> Option<AlertKind> {
-    alert_prefix(body).map(|(kind, _)| kind)
+    alert_prefix(body).map(|(kind, ..)| kind)
+}
+
+/// Foldable-callout regions: for each alert whose marker carries a fold char
+/// (`> [!NOTE]-` / `+`), the line range it spans (marker + its `>` continuation
+/// lines, ending at a blank/non-quote line or the next alert marker) and
+/// whether it's folded (`-`). Body lines of a folded region collapse in the
+/// WYSIWYG view unless the caret is inside (reveal-on-caret).
+pub(crate) fn alert_fold_regions(content: &str) -> Vec<(Range<usize>, bool)> {
+    // `Some(fold)` when the line is an alert marker; fold = its fold char.
+    fn marker_fold(line: &str) -> Option<Option<bool>> {
+        let p = blockquote_prefix(line)?;
+        alert_prefix(&line[p..]).map(|(_, _, fold)| fold)
+    }
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(Some(folded)) = marker_fold(lines[i]) {
+            let start = i;
+            i += 1;
+            while i < lines.len()
+                && blockquote_prefix(lines[i]).is_some()
+                && marker_fold(lines[i]).is_none()
+            {
+                i += 1;
+            }
+            out.push((start..i, folded));
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 pub(crate) fn blockquote_prefix(line: &str) -> Option<usize> {
@@ -2161,6 +2193,15 @@ mod tests {
             Some("  - [x] nested")
         );
         assert_eq!(toggle_task_checkbox("- plain"), None);
+    }
+
+    #[test]
+    fn alert_fold_regions_span_the_quote_block() {
+        let src = "> [!NOTE]- hidden\n> body\n> more\nprose\n> [!TIP]+ open\n> b\n> [!NOTE] plain";
+        let r = alert_fold_regions(src);
+        // Folded NOTE spans its quote lines; open TIP's region ends at the
+        // plain (non-foldable) alert marker, which starts no region itself.
+        assert_eq!(r, vec![(0..3, true), (4..6, false)]);
     }
 
     #[test]

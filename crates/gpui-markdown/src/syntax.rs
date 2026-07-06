@@ -41,16 +41,24 @@ impl AlertKind {
 /// Match an alert marker at the start of a blockquote's text content: the
 /// marker must be uppercase and either alone on its first line (GitHub's
 /// form) or followed by a space and the body (`[!NOTE] like so` — the way
-/// people naturally type it). Returns the kind and how many bytes to strip
-/// (the marker plus its newline/space separator).
-pub fn alert_marker(value: &str) -> Option<(AlertKind, usize)> {
+/// people naturally type it). An Obsidian-style fold char directly after the
+/// `]` makes the callout foldable: `[!NOTE]-` = folded by default, `[!NOTE]+`
+/// = open (`None` = not foldable). Returns the kind, how many bytes to strip
+/// (marker, fold char, and the newline/space separator), and the fold state.
+pub fn alert_marker(value: &str) -> Option<(AlertKind, usize, Option<bool>)> {
     for (kind, m) in ALERT_MARKERS {
         if let Some(rest) = value.strip_prefix(m) {
+            let (fold, flen) = match rest.as_bytes().first() {
+                Some(b'-') => (Some(true), 1),
+                Some(b'+') => (Some(false), 1),
+                _ => (None, 0),
+            };
+            let rest = &rest[flen..];
             if rest.is_empty() {
-                return Some((kind, m.len()));
+                return Some((kind, m.len() + flen, fold));
             }
             if rest.starts_with('\n') || rest.starts_with(' ') {
-                return Some((kind, m.len() + 1));
+                return Some((kind, m.len() + flen + 1, fold));
             }
         }
     }
@@ -58,23 +66,66 @@ pub fn alert_marker(value: &str) -> Option<(AlertKind, usize)> {
 }
 
 /// [`alert_marker`] for a single line's body (text after a blockquote's `>`
-/// prefix): tolerates leading spaces and returns the kind plus the byte
-/// length consumed within `body` (spaces, marker, one separator space) — what
-/// a line-oriented editor hides before painting the label.
-pub fn alert_prefix(body: &str) -> Option<(AlertKind, usize)> {
+/// prefix): tolerates leading spaces and returns the kind, the byte length
+/// consumed within `body` (spaces, marker, fold char, one separator space) —
+/// what a line-oriented editor hides before painting the label — and the fold
+/// state (`Some(true)` = folded).
+pub fn alert_prefix(body: &str) -> Option<(AlertKind, usize, Option<bool>)> {
     let trimmed = body.trim_start();
     let ws = body.len() - trimmed.len();
     for (kind, m) in ALERT_MARKERS {
         if let Some(rest) = trimmed.strip_prefix(m) {
+            let (fold, flen) = match rest.as_bytes().first() {
+                Some(b'-') => (Some(true), 1),
+                Some(b'+') => (Some(false), 1),
+                _ => (None, 0),
+            };
+            let rest = &rest[flen..];
             if rest.is_empty() {
-                return Some((kind, ws + m.len()));
+                return Some((kind, ws + m.len() + flen, fold));
             }
             if rest.starts_with(' ') {
-                return Some((kind, ws + m.len() + 1));
+                return Some((kind, ws + m.len() + flen + 1, fold));
             }
         }
     }
     None
+}
+
+/// The fold char of the alert marker on `line` (a full source line, `>` prefix
+/// included): its byte offset within the line and the current state
+/// (`true` = `-`/folded). `None` when the line isn't a foldable alert marker.
+pub fn alert_fold_char(line: &str) -> Option<(usize, bool)> {
+    let b = line.as_bytes();
+    let mut p = 0;
+    while p < b.len() && (b[p] == b'>' || b[p] == b' ') {
+        p += 1;
+    }
+    let (_, _, fold) = alert_prefix(&line[p..])?;
+    let folded = fold?;
+    // The fold char sits right after the marker's closing `]`.
+    let close = line[p..].find(']')? + p;
+    Some((close + 1, folded))
+}
+
+/// Flip the fold state (`-` ↔ `+`) of the foldable alert marker on the line
+/// containing byte `offset`, returning the new content — what a click on a
+/// callout's chevron persists (the checkbox-toggle pattern).
+pub fn toggle_alert_fold_at(content: &str, offset: usize) -> Option<String> {
+    if offset > content.len() {
+        return None;
+    }
+    let line_start = content[..offset].rfind('\n').map_or(0, |p| p + 1);
+    let line_end = content[offset..]
+        .find('\n')
+        .map_or(content.len(), |p| offset + p);
+    let (at, folded) = alert_fold_char(&content[line_start..line_end])?;
+    let mut out = content.to_string();
+    out.replace_range(
+        line_start + at..line_start + at + 1,
+        if folded { "+" } else { "-" },
+    );
+    Some(out)
 }
 
 /// Visual style of a GFM table, chosen per-table via a `<!-- table:STYLE -->`
@@ -423,20 +474,52 @@ mod tests {
     fn alert_recognition_both_forms() {
         assert!(matches!(
             alert_marker("[!NOTE]\nbody"),
-            Some((AlertKind::Note, 8))
+            Some((AlertKind::Note, 8, None))
         ));
         assert!(matches!(
             alert_marker("[!NOTE] inline"),
-            Some((AlertKind::Note, 8))
+            Some((AlertKind::Note, 8, None))
         ));
         assert!(alert_marker("[!note] no").is_none());
         assert!(alert_marker("[!NOTEXT]").is_none());
 
         assert!(matches!(
             alert_prefix("  [!TIP] x"),
-            Some((AlertKind::Tip, 9))
+            Some((AlertKind::Tip, 9, None))
         ));
         assert_eq!(AlertKind::Caution.label(), "Caution");
+    }
+
+    #[test]
+    fn alert_fold_markers_and_toggle() {
+        // `-` = folded, `+` = open; the strip consumes the fold char.
+        assert!(matches!(
+            alert_marker("[!NOTE]-\nbody"),
+            Some((AlertKind::Note, 9, Some(true)))
+        ));
+        assert!(matches!(
+            alert_marker("[!NOTE]+ inline"),
+            Some((AlertKind::Note, 9, Some(false)))
+        ));
+        assert!(matches!(
+            alert_prefix(" [!TIP]- x"),
+            Some((AlertKind::Tip, 9, Some(true)))
+        ));
+        // A `-` not directly after `]` is body text, not a fold marker.
+        assert!(matches!(
+            alert_marker("[!NOTE] - item"),
+            Some((AlertKind::Note, 8, None))
+        ));
+
+        // The fold char locates + flips within a full source line.
+        assert_eq!(alert_fold_char("> [!NOTE]- body"), Some((9, true)));
+        assert_eq!(alert_fold_char("> [!NOTE] body"), None);
+        let src = "before\n> [!TIP]- hidden\n> more\nafter";
+        let toggled = toggle_alert_fold_at(src, 10).unwrap();
+        assert_eq!(toggled, "before\n> [!TIP]+ hidden\n> more\nafter");
+        let back = toggle_alert_fold_at(&toggled, 10).unwrap();
+        assert_eq!(back, src);
+        assert!(toggle_alert_fold_at("plain text", 2).is_none());
     }
 
     #[test]
