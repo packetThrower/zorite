@@ -11,6 +11,13 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
+- **Collapsible headings** — hover a heading and a chevron appears past the
+  text; click it to fold everything under that heading (up to the next heading
+  of the same or a higher level), in both the reading view and the live editor.
+  A folded heading always shows its ▸ so hidden content stays visible, nested
+  folds work, and in the live editor arrowing the caret into a folded section
+  reveals it while you edit and folds it back when you leave. Folds are
+  per-session view state — nothing is written into the note.
 - **Properties** — `key:: value` metadata lines (Obsidian/Logseq-style
   "properties"), written anywhere on a page, now render as a clean two-column
   panel in both the reading view and the live editor: a per-key icon, the key,

@@ -289,6 +289,15 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
                     });
                 }
             }))
+            // Heading fold chevrons: session-local per-page state on the app.
+            .folded_headings(app.reader_folds(&format!("page:{}", pe.id)))
+            .on_heading_toggle({
+                let weak = cx.entity().downgrade();
+                let note = format!("page:{}", pe.id);
+                std::rc::Rc::new(move |key, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.toggle_reader_fold(&note, key, cx));
+                })
+            })
             // Standalone `![[target]]` lines render their target inline;
             // images inside them go through the read-only renderer (a resize
             // would rewrite the wrong page).

@@ -618,6 +618,21 @@ pub struct EditorState {
     /// The property row the pointer was last over — drives `on_mouse_move`'s
     /// repaint-on-change (like the table hover).
     prop_hover_row: Option<usize>,
+    /// Collapsed headings, keyed by the heading's trimmed source line
+    /// (`## Goals`). View-local — markdown has no heading-fold syntax (unlike
+    /// callouts' `-`/`+`), so folds live for the editor's lifetime and a key
+    /// self-heals by vanishing when its heading text is edited.
+    folded_headings: std::collections::HashSet<String>,
+    /// Painted chevron bounds of heading folds (`(line, rect)`, from the last
+    /// paint) — a click toggles that heading in `folded_headings`.
+    heading_fold_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// Window-space bounds of every heading's first visual row (from the last
+    /// paint) — `on_mouse_move` hit-tests these for the hover chevron.
+    heading_row_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// The heading line the pointer was last over — its chevron shows on hover
+    /// (a fold chevron on every heading would clutter). Drives
+    /// `on_mouse_move`'s repaint-on-change, like the property-row hover.
+    heading_hover_row: Option<usize>,
 }
 
 /// A math block under in-line structural edit: the byte range to overwrite on commit, and
@@ -697,6 +712,10 @@ impl EditorState {
             prop_pill_rects: Vec::new(),
             prop_row_rects: Vec::new(),
             prop_hover_row: None,
+            folded_headings: std::collections::HashSet::new(),
+            heading_fold_rects: Vec::new(),
+            heading_row_rects: Vec::new(),
+            heading_hover_row: None,
         }
     }
 
@@ -2004,6 +2023,29 @@ impl EditorState {
             }
             return;
         }
+        // A press on a heading's fold chevron toggles its section collapsed —
+        // view-local state, not an edit (markdown has no heading-fold syntax).
+        if let Some(row) = self.heading_fold_at(event.position) {
+            let start = self.line_starts()[row];
+            let end = self.line_end(row);
+            let key = self.content[start..end].trim().to_string();
+            if !self.folded_headings.remove(&key) {
+                // Folding with the caret inside the section would no-op
+                // (reveal-on-caret keeps it open) — seat the caret at the
+                // heading's end first.
+                let single = std::collections::HashSet::from([key.clone()]);
+                let crow = self.row_col(self.cursor_offset()).0;
+                if markdown_syntax::heading_fold_regions(&self.content, &single)
+                    .iter()
+                    .any(|r| crow > r.start && crow < r.end)
+                {
+                    self.move_to(end, cx);
+                }
+                self.folded_headings.insert(key);
+            }
+            cx.notify();
+            return;
+        }
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
         if let Some((src, wiki)) = self.chip_at(event.position) {
@@ -2283,6 +2325,16 @@ impl EditorState {
             .position(|b| b.contains(&event.position));
         if prow != self.prop_hover_row {
             self.prop_hover_row = prow;
+            cx.notify();
+        }
+        // Repaint the heading fold chevron when the pointer enters/leaves a
+        // heading row (the chevron is hover-revealed).
+        let hrow = self
+            .heading_row_rects
+            .iter()
+            .find_map(|(row, b)| b.contains(&event.position).then_some(*row));
+        if hrow != self.heading_hover_row {
+            self.heading_hover_row = hrow;
             cx.notify();
         }
     }
@@ -2816,6 +2868,21 @@ impl EditorState {
     fn alert_fold_at(&self, position: Point<Pixels>) -> Option<usize> {
         let pad = px(4.);
         self.alert_fold_rects.iter().find_map(|&(line, rect)| {
+            Bounds::new(
+                point(rect.origin.x - pad, rect.origin.y - pad),
+                size(rect.size.width + pad * 2., rect.size.height + pad * 2.),
+            )
+            .contains(&position)
+            .then_some(line)
+        })
+    }
+
+    /// If `position` lands on a heading's fold chevron painted last frame,
+    /// that heading's logical line — so a click can toggle its fold. Padded
+    /// like the callout chevron.
+    fn heading_fold_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let pad = px(4.);
+        self.heading_fold_rects.iter().find_map(|&(line, rect)| {
             Bounds::new(
                 point(rect.origin.x - pad, rect.origin.y - pad),
                 size(rect.size.width + pad * 2., rect.size.height + pad * 2.),
@@ -4643,6 +4710,9 @@ fn shape_document(
     // here (driving its row height) so the layout reflows live, rather than the
     // image painting over a stale, saved-size row.
     resize: Option<ImageResize>,
+    // Collapsed headings (trimmed source lines) — their section lines fold to
+    // height 0 like a folded callout's body.
+    folded_headings: &std::collections::HashSet<String>,
 ) -> ShapedLines {
     let mut wrapped = Vec::new();
     let mut heights = Vec::new();
@@ -4753,13 +4823,28 @@ fn shape_document(
     // Folded callouts (`> [!NOTE]-`): each region's BODY lines collapse (the
     // marker line stays, painting the label + chevron) unless the caret is
     // inside the region — reveal-on-caret, so arrowing in unfolds for editing.
-    let alert_folds: Vec<Range<usize>> = md
+    let mut alert_folds: Vec<Range<usize>> = md
         .map(|_| markdown_syntax::alert_fold_regions(content))
         .unwrap_or_default()
         .into_iter()
         .filter(|(r, folded)| *folded && caret_row.is_none_or(|cr| !r.contains(&cr)))
         .map(|(r, _)| r)
         .collect();
+    // Collapsed heading sections fold the same way: the heading line stays
+    // (its chevron paints there), the section's lines go to height 0, and the
+    // caret STRICTLY INSIDE THE BODY reveals — the fold state itself is
+    // view-local (`EditorState::folded_headings`), not in the source. Unlike a
+    // callout (whose marker line reveals its body — that's how you reach the
+    // fold char), the caret sitting on the heading line itself must not
+    // reveal: it's exactly where the caret lands after clicking around a
+    // section you then fold.
+    if md.is_some() {
+        alert_folds.extend(
+            markdown_syntax::heading_fold_regions(content, folded_headings)
+                .into_iter()
+                .filter(|r| caret_row.is_none_or(|cr| cr <= r.start || cr >= r.end)),
+        );
+    }
     // `<!-- math:ALIGN -->` marker lines to hide (revealed only when the caret lands on them),
     // like table style markers.
     let math_marker_lines: Vec<usize> = if md.is_some() {
@@ -6358,6 +6443,14 @@ struct PrepaintState {
     chip_grips: Vec<(usize, Hitbox)>,
     /// Pointer-cursor hitboxes over foldable-callout chevrons, keyed by line.
     alert_fold_grips: Vec<(usize, Hitbox)>,
+    /// Heading fold chevrons to paint: `(line, folded, x)` — x is line-local,
+    /// past the heading text. Only hovered or already-folded headings get one.
+    heading_chevrons: Vec<(usize, bool, Pixels)>,
+    /// Pointer-cursor hitboxes over heading fold chevrons, keyed by line.
+    heading_fold_grips: Vec<(usize, Hitbox)>,
+    /// Window-space bounds of every heading's first visual row, for
+    /// `on_mouse_move`'s hover tracking (committed to the editor in paint).
+    heading_row_rects: Vec<(usize, Bounds<Pixels>)>,
     /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
     /// `[text](url)`), so hovering a clickable link shows a hand.
     link_grips: Vec<Hitbox>,
@@ -6479,6 +6572,7 @@ impl Element for EditorElement {
                     sf,
                     selection,
                     editor.image_resize,
+                    &editor.folded_headings,
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
                 // or the element lays out shorter than it paints.
@@ -6596,6 +6690,7 @@ impl Element for EditorElement {
                     sf,
                     selection,
                     editor.image_resize,
+                    &editor.folded_headings,
                 )
             };
 
@@ -6691,6 +6786,53 @@ impl Element for EditorElement {
                     size(bounds.size.width, *lh),
                 );
                 chip_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+        }
+
+        // Heading fold chevrons: every heading row gets a hover-tracking rect;
+        // a chevron (+ its hand-cursor hitbox) only when that row is hovered
+        // or already folded — one on every heading would clutter.
+        let mut heading_chevrons = Vec::new();
+        let mut heading_fold_grips = Vec::new();
+        let mut heading_row_rects = Vec::new();
+        if editor.markdown_style.is_some() && !editor.content.is_empty() {
+            let starts = editor.line_starts();
+            for (i, line_shaped) in wrapped.iter().enumerate() {
+                // A fence's `# comment` line isn't a heading; folded rows
+                // (height 0, inside an outer fold) can't anchor a chevron.
+                if backgrounds.get(i).and_then(Option::as_ref).is_some() {
+                    continue;
+                }
+                let (Some(&start), Some(&lh)) = (starts.get(i), line_heights.get(i)) else {
+                    continue;
+                };
+                let line = &editor.content[start..editor.line_end(i)];
+                if markdown_syntax::heading_level(line).is_none() || lh == px(0.) {
+                    continue;
+                }
+                let top = bounds.origin.y + line_tops[i];
+                heading_row_rects.push((
+                    i,
+                    Bounds::new(point(bounds.origin.x, top), size(bounds.size.width, lh)),
+                ));
+                let folded = editor.folded_headings.contains(line.trim());
+                if !folded && editor.heading_hover_row != Some(i) {
+                    continue;
+                }
+                // Past the heading text (its mark inset + shaped width), capped
+                // inside the right edge for a wrapped heading.
+                let inset = marks
+                    .get(i)
+                    .copied()
+                    .flatten()
+                    .map_or(px(0.), LineMark::inset);
+                let x = (inset + line_shaped.width() + px(10.)).min(bounds.size.width - px(20.));
+                heading_chevrons.push((i, folded, x));
+                let hit = Bounds::new(
+                    point(bounds.origin.x + x - px(4.), top),
+                    size(font_size + px(8.), lh),
+                );
+                heading_fold_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
             }
         }
 
@@ -7094,6 +7236,9 @@ impl Element for EditorElement {
             checkbox_grips,
             chip_grips,
             alert_fold_grips,
+            heading_chevrons,
+            heading_fold_grips,
+            heading_row_rects,
             link_grips,
             prop_pill_grips,
             inline_image_grips,
@@ -7168,6 +7313,7 @@ impl Element for EditorElement {
         // A foldable callout's chevron bounds (from this paint), so a click can
         // flip its fold char — the checkbox-toggle pattern.
         let mut alert_fold_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
+        let mut heading_fold_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
         // Logseq-style list nesting guides: `outline` holds the bullet x of each
         // active ancestor level, so a faint vertical line can drop from each down
         // through its descendants. Popped on dedent, reset off the list.
@@ -7232,6 +7378,47 @@ impl Element for EditorElement {
             // past it by QUOTE_INSET).
             if let Some(LineMark::Quote { bar, .. }) = prepaint.marks.get(i).copied().flatten() {
                 window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), bar));
+            }
+            // Heading fold chevron (hovered or folded headings only): painted
+            // past the heading text, muted; clicking toggles the fold (rects
+            // committed for on_mouse_down, like the callout chevron).
+            if let Some(&(_, folded, cx0)) =
+                prepaint.heading_chevrons.iter().find(|(r, _, _)| *r == i)
+            {
+                let glyph: SharedString = if folded { "▸" } else { "▾" }.into();
+                let mut muted = text_color;
+                muted.a *= 0.45;
+                let run = TextRun {
+                    len: glyph.len(),
+                    font: font.clone(),
+                    color: muted,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window
+                    .text_system()
+                    .shape_line(glyph, font_size, &[run], None);
+                let gx = origin.x + cx0;
+                let _ = shaped.paint(
+                    point(gx, origin.y),
+                    *lh,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                heading_fold_rects.push((
+                    i,
+                    Bounds::new(point(gx, origin.y), size(shaped.width(), *lh)),
+                ));
+                if let Some(hb) = prepaint
+                    .heading_fold_grips
+                    .iter()
+                    .find_map(|(l, hb)| (*l == i).then_some(hb))
+                {
+                    window.set_cursor_style(CursorStyle::PointingHand, hb);
+                }
             }
             // Alert marker line: the colored bar plus a bold label ("Note", …)
             // where the hidden `[!NOTE]` marker was.
@@ -7664,6 +7851,8 @@ impl Element for EditorElement {
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
             editor.alert_fold_rects = alert_fold_rects;
+            editor.heading_fold_rects = heading_fold_rects;
+            editor.heading_row_rects = std::mem::take(&mut prepaint.heading_row_rects);
             editor.table_row_add_rects = table_row_add_rects;
             editor.table_col_add_rects = table_col_add_rects;
             editor.table_hover_zones = table_hover_zones;

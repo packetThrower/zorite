@@ -4,7 +4,7 @@
 //! construct recognition.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -14,8 +14,8 @@ use gpui::{
     AnyElement, App, Bounds, Corners, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
     InteractiveElement, InteractiveText, IntoElement, MouseButton, MouseDownEvent, ParentElement,
     Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas, div, point, px, relative, rgb,
-    rgba, size, svg,
+    StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas, div, point,
+    prelude::FluentBuilder, px, relative, rgb, rgba, size, svg,
 };
 use markdown::mdast;
 
@@ -424,6 +424,12 @@ pub type ImagePreviewHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 /// [`MarkdownView::on_task_toggle`].
 pub type TaskToggleHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 
+/// Called when a heading's fold chevron is clicked, with the heading's fold
+/// key — its trimmed source line (`## Goals`). The host owns the fold set
+/// (this view is rebuilt every frame) and passes it back via
+/// [`MarkdownView::folded_headings`].
+pub type HeadingToggleHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
+
 /// A rendered markdown document element — the reader view of a note.
 #[derive(IntoElement)]
 pub struct MarkdownView {
@@ -451,6 +457,10 @@ pub struct MarkdownView {
     on_alert_toggle: Option<TaskToggleHandler>,
     on_embed: Option<EmbedProvider>,
     on_embed_image: Option<ImageRenderer>,
+    /// Collapsed headings (trimmed source lines, e.g. `## Goals`) — their
+    /// sections don't render. Host-owned state; see [`HeadingToggleHandler`].
+    folded_headings: HashSet<String>,
+    on_heading_toggle: Option<HeadingToggleHandler>,
 }
 
 impl MarkdownView {
@@ -477,6 +487,8 @@ impl MarkdownView {
             on_alert_toggle: None,
             on_embed: None,
             on_embed_image: None,
+            folded_headings: HashSet::new(),
+            on_heading_toggle: None,
         }
     }
 
@@ -600,6 +612,21 @@ impl MarkdownView {
         self.on_embed_image = Some(renderer);
         self
     }
+
+    /// The collapsed headings (trimmed source lines) — their sections are
+    /// skipped and their chevrons render pointing right.
+    pub fn folded_headings(mut self, folded: HashSet<String>) -> Self {
+        self.folded_headings = folded;
+        self
+    }
+
+    /// Called when a heading's fold chevron is clicked; the host toggles the
+    /// key in its fold set and re-renders. Without a handler headings show no
+    /// chevron (embeds and other read-only surfaces).
+    pub fn on_heading_toggle(mut self, handler: HeadingToggleHandler) -> Self {
+        self.on_heading_toggle = Some(handler);
+        self
+    }
 }
 
 /// Content-keyed parse cache. The host's journal feed re-renders every
@@ -684,6 +711,8 @@ impl RenderOnce for MarkdownView {
             on_alert_toggle: self.on_alert_toggle,
             on_embed: self.on_embed,
             on_embed_image: self.on_embed_image,
+            folded_headings: self.folded_headings,
+            on_heading_toggle: self.on_heading_toggle,
             suppress_heading_top: false,
             embed_depth: 0,
         };
@@ -708,7 +737,18 @@ impl RenderOnce for MarkdownView {
                 // A `<!-- table:STYLE -->` comment styles the next table and is
                 // itself hidden; everything else renders normally.
                 let mut pending_style = None;
+                // A folded heading's section is skipped: everything after it
+                // until the next heading at its level or higher.
+                let mut fold_below: Option<u8> = None;
                 for node in &root.children {
+                    if let mdast::Node::Heading(h) = node
+                        && fold_below.is_some_and(|l| h.depth <= l)
+                    {
+                        fold_below = None;
+                    }
+                    if fold_below.is_some() {
+                        continue;
+                    }
                     if let mdast::Node::Html(h) = node
                         && let Some(style) = table_style_marker(&h.value)
                     {
@@ -727,6 +767,12 @@ impl RenderOnce for MarkdownView {
                     pending_style = None;
                     if let Some(el) = render_block(node, &mut ctx, window) {
                         col = col.child(el);
+                    }
+                    if let mdast::Node::Heading(h) = node
+                        && heading_fold_key(h, &source)
+                            .is_some_and(|k| ctx.folded_headings.contains(&k))
+                    {
+                        fold_below = Some(h.depth);
                     }
                 }
             }
@@ -769,6 +815,12 @@ struct Ctx {
     on_alert_toggle: Option<TaskToggleHandler>,
     on_embed: Option<EmbedProvider>,
     on_embed_image: Option<ImageRenderer>,
+    /// Collapsed headings (trimmed source lines) — the root walk skips their
+    /// sections; the heading arm renders their chevron pointing right.
+    folded_headings: HashSet<String>,
+    /// Fold chevron click → the host toggles the key. `None` = no chevrons
+    /// (embeds, read-only surfaces).
+    on_heading_toggle: Option<HeadingToggleHandler>,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
@@ -837,15 +889,52 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     _ => 6.0,
                 })
             };
-            Some(
-                div()
-                    .mt(top)
-                    .text_size(size)
-                    .text_color(color)
-                    .font_weight(FontWeight::BOLD)
-                    .child(inline_element(&h.children, ctx))
-                    .into_any_element(),
-            )
+            let text = div()
+                .text_size(size)
+                .text_color(color)
+                .font_weight(FontWeight::BOLD)
+                .child(inline_element(&h.children, ctx));
+            // Fold chevron: hover-revealed (always shown when folded — the
+            // hidden section needs a visible sign), clicking toggles via the
+            // host's handler. The section skip itself lives in the root walk.
+            if let Some(toggle) = ctx.on_heading_toggle.clone()
+                && let Some(key) = heading_fold_key(h, &ctx.source)
+            {
+                let folded = ctx.folded_headings.contains(&key);
+                ctx.counter += 1;
+                let group: SharedString = format!("{}-hfold-{}", ctx.id_base, ctx.counter).into();
+                let mut muted = ctx.style.muted_color;
+                muted.a *= 0.8;
+                let chevron = div()
+                    .id(ElementId::Name(format!("{group}-btn").into()))
+                    .cursor_pointer()
+                    .text_size(ctx.style.text_size)
+                    .text_color(muted)
+                    .when(!folded, |d| {
+                        d.invisible().group_hover(group.clone(), |s| s.visible())
+                    })
+                    // Mouse-down + stop_propagation (the callout chevron's
+                    // pattern) so the click can't fall through to the
+                    // surrounding click-to-edit surface.
+                    .on_mouse_down(MouseButton::Left, move |_: &MouseDownEvent, window, app| {
+                        app.stop_propagation();
+                        toggle(&key, window, app);
+                    })
+                    .child(if folded { "▸" } else { "▾" });
+                return Some(
+                    div()
+                        .group(group)
+                        .mt(top)
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(text)
+                        .child(chevron)
+                        .into_any_element(),
+                );
+            }
+            Some(div().mt(top).child(text).into_any_element())
         }
         mdast::Node::List(list) => Some(render_list(list, ctx, 0, window)),
         mdast::Node::Code(c) => {
@@ -1854,6 +1943,14 @@ fn collect_definitions(node: &mdast::Node, out: &mut HashMap<String, String>) {
 /// contract). `Grid` is the default (no marker).
 /// The embed target when paragraph `p` is exactly a standalone `![[target]]`
 /// line (a single text child holding just the embed).
+/// A heading's fold key — its trimmed first source line (`## Goals`), the
+/// same key the WYSIWYG editor uses, so folds read the same across views.
+fn heading_fold_key(h: &mdast::Heading, source: &str) -> Option<String> {
+    let pos = h.position.as_ref()?;
+    let s = source.get(pos.start.offset..pos.end.offset)?;
+    Some(s.lines().next().unwrap_or(s).trim().to_string())
+}
+
 fn embed_target(p: &mdast::Paragraph) -> Option<String> {
     if p.children.len() != 1 {
         return None;
@@ -1882,6 +1979,9 @@ fn render_embed(
         ctx.on_alert_toggle.take(),
         ctx.query.take(),
         ctx.on_image.take(),
+        // Heading folds are the embedding page's state — its keys would
+        // misfire on the embedded page's same-named headings.
+        ctx.on_heading_toggle.take(),
     );
     // Images render through the read-only variant inside embeds (no resize
     // grip): their source ranges belong to the embedded page, and a resize
@@ -1925,6 +2025,7 @@ fn render_embed(
         ctx.on_alert_toggle,
         ctx.query,
         ctx.on_image,
+        ctx.on_heading_toggle,
     ) = saved;
 
     // Source label: muted, link-colored on the name, click opens/jumps.

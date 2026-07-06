@@ -759,6 +759,54 @@ pub(crate) fn heading_level(line: &str) -> Option<u8> {
     ((1..=6).contains(&n) && (n == b.len() || b[n] == b' ')).then_some(n as u8)
 }
 
+/// Line ranges (heading line through section end) of collapsed heading
+/// sections: `folded` holds the trimmed source lines of folded headings
+/// (`## Goals`). A section runs from its heading to the next heading of the
+/// same or a higher level, fence-aware — mirrors
+/// [`gpui_markdown::syntax::extract_section`]. Every line matching a folded
+/// key folds (duplicate headings fold together; the key is the line text).
+pub(crate) fn heading_fold_regions(
+    content: &str,
+    folded: &std::collections::HashSet<String>,
+) -> Vec<Range<usize>> {
+    if folded.is_empty() {
+        return Vec::new();
+    }
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            i += 1;
+            continue;
+        }
+        let level = if in_fence {
+            None
+        } else {
+            heading_level(lines[i])
+        };
+        match level {
+            Some(l) if folded.contains(lines[i].trim()) => {
+                let start = i;
+                i += 1;
+                while i < lines.len() {
+                    if lines[i].trim_start().starts_with("```") {
+                        in_fence = !in_fence;
+                    } else if !in_fence && heading_level(lines[i]).is_some_and(|n| n <= l) {
+                        break;
+                    }
+                    i += 1;
+                }
+                out.push(start..i);
+            }
+            _ => i += 1,
+        }
+    }
+    out
+}
+
 /// True if `line` is a thematic break (horizontal rule): three or more of the
 /// same `-`, `*`, or `_`, separated only by optional spaces — e.g. `---`, `***`,
 /// `- - -`. The editor paints a divider in its place (reveal-on-caret). Matches
@@ -2287,6 +2335,19 @@ mod tests {
         // Folded NOTE spans its quote lines; open TIP's region ends at the
         // plain (non-foldable) alert marker, which starts no region itself.
         assert_eq!(r, vec![(0..3, true), (4..6, false)]);
+    }
+
+    #[test]
+    fn heading_fold_regions_span_their_section() {
+        let src = "# Top\nbody\n## Sub\nsub body\n```\n# not a heading\n```\n## Next\nx";
+        let folded: std::collections::HashSet<String> = ["## Sub".to_string()].into();
+        // `## Sub` folds through the fence (the `#` inside is code) up to
+        // `## Next`; nothing else folds.
+        assert_eq!(heading_fold_regions(src, &folded), vec![2..7]);
+        // Folding `# Top` swallows everything (no later h1).
+        let folded: std::collections::HashSet<String> = ["# Top".to_string()].into();
+        assert_eq!(heading_fold_regions(src, &folded), vec![0..9]);
+        assert!(heading_fold_regions(src, &Default::default()).is_empty());
     }
 
     #[test]

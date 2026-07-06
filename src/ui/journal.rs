@@ -240,6 +240,15 @@ fn rendered_day(
                     });
                 }
             }))
+            // Heading fold chevrons: session-local per-day state on the app.
+            .folded_headings(app.reader_folds(&d.to_string()))
+            .on_heading_toggle({
+                let weak = cx.entity().downgrade();
+                let note = d.to_string();
+                std::rc::Rc::new(move |key, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.toggle_reader_fold(&note, key, cx));
+                })
+            })
             // Standalone `![[target]]` lines render their target inline;
             // images inside them go through the read-only renderer (a resize
             // would rewrite the wrong page).

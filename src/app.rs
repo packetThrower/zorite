@@ -489,6 +489,11 @@ pub struct AppView {
     /// per target + the row height to reserve. Filled by
     /// `ensure_content_embeds`, read by the editors' embed providers.
     embed_store: Rc<RefCell<crate::ui::embed::EmbedStore>>,
+    /// Reading-view heading folds, per note (keyed by day date / `page:{id}`),
+    /// each set holding trimmed heading lines (`## Goals`). Session-local,
+    /// like the WYSIWYG editor's own fold state — markdown has no heading-fold
+    /// syntax to persist to.
+    reader_folds: HashMap<String, std::collections::HashSet<String>>,
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
@@ -781,6 +786,7 @@ impl AppView {
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
             embed_store: Rc::new(RefCell::new(Default::default())),
+            reader_folds: HashMap::new(),
             mermaid_lightbox: None,
             image_lightbox: None,
             lightbox_focus: cx.focus_handle(),
@@ -2762,6 +2768,20 @@ impl AppView {
     /// can read ready bitmaps during paint.
     pub fn image_store(&self) -> Rc<RefCell<crate::images::ImageStore>> {
         self.image_store.clone()
+    }
+
+    /// The reading view's folded headings for `note` (a day date / `page:{id}`).
+    pub fn reader_folds(&self, note: &str) -> std::collections::HashSet<String> {
+        self.reader_folds.get(note).cloned().unwrap_or_default()
+    }
+
+    /// Toggle a heading's fold in `note`'s reading view (see `reader_folds`).
+    pub fn toggle_reader_fold(&mut self, note: &str, heading: &str, cx: &mut Context<Self>) {
+        let set = self.reader_folds.entry(note.to_string()).or_default();
+        if !set.remove(heading) {
+            set.insert(heading.to_string());
+        }
+        cx.notify();
     }
 
     /// The rendered-diagram cache, shared into the markdown mermaid renderer.
