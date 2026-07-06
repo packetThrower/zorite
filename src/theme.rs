@@ -191,12 +191,74 @@ const ALERT_ICON_IMPORTANT: &str = "icons/message-square-warning.svg";
 const ALERT_ICON_WARNING: &str = "icons/triangle-alert.svg";
 const ALERT_ICON_CAUTION: &str = "icons/octagon-alert.svg";
 
-/// The icon shown before a property key in the property panel: a small built-in
-/// map of well-known keys (case-insensitive), with a generic text-field icon as
-/// the fallback so every property gets one (Obsidian-style). Paths are lucide
+thread_local! {
+    /// User icon overrides for property keys (lowercased key → icon name),
+    /// loaded from the `property_icons` setting at startup and edited from the
+    /// Properties page. Checked before the built-in map.
+    static PROPERTY_ICON_OVERRIDES: RefCell<std::collections::HashMap<String, String>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Replace the property-icon overrides (parsed from the `property_icons`
+/// setting's JSON map). Called at startup and after every edit.
+pub(crate) fn set_property_icon_overrides(map: std::collections::HashMap<String, String>) {
+    PROPERTY_ICON_OVERRIDES.with(|m| *m.borrow_mut() = map);
+}
+
+/// A copy of the current overrides (lowercased key → icon name), for the
+/// Properties page to edit and persist.
+pub(crate) fn property_icon_overrides() -> std::collections::HashMap<String, String> {
+    PROPERTY_ICON_OVERRIDES.with(|m| m.borrow().clone())
+}
+
+/// The curated icon names the Properties page's picker offers — every face the
+/// built-in map uses (all embedded or bundled, so release builds serve them).
+pub(crate) const PROPERTY_ICON_CHOICES: &[&str] = &[
+    "align-left",
+    "arrow-up-right",
+    "tag",
+    "calendar",
+    "clock",
+    "user",
+    "list",
+    "map-pin",
+    "link",
+    "folder",
+    "shapes",
+    "mail",
+    "phone",
+    "star",
+    "dollar-sign",
+    "alarm-clock",
+    "circle-check",
+    "target",
+    "bookmark",
+    "building",
+    "hash",
+    "text",
+    "book",
+    "smile",
+    "cloud",
+    "code",
+];
+
+/// The icon shown before a property key in the property panel: a user override
+/// (set on the Properties page) when present, else a small built-in map of
+/// well-known keys (case-insensitive), with a generic text-field icon as the
+/// fallback so every property gets one (Obsidian-style). Paths are lucide
 /// assets bundled under `assets/icons/lucide`.
 pub(crate) fn property_icon(key: &str) -> Option<gpui::SharedString> {
-    let name = match key.trim().to_ascii_lowercase().as_str() {
+    let lower = key.trim().to_ascii_lowercase();
+    if let Some(name) = PROPERTY_ICON_OVERRIDES.with(|m| m.borrow().get(&lower).cloned()) {
+        return Some(format!("icons/{name}.svg").into());
+    }
+    let name = builtin_property_icon(&lower);
+    Some(format!("icons/{name}.svg").into())
+}
+
+/// The built-in icon name for a (lowercased) property key.
+pub(crate) fn builtin_property_icon(lower: &str) -> &'static str {
+    match lower {
         "alias" | "aliases" => "arrow-up-right",
         "tag" | "tags" => "tag",
         "date" | "due" | "created" | "updated" | "modified" => "calendar",
@@ -223,8 +285,7 @@ pub(crate) fn property_icon(key: &str) -> Option<gpui::SharedString> {
         "weather" => "cloud",
         "repo" | "code" => "code",
         _ => "align-left", // generic (text-field look)
-    };
-    Some(format!("icons/{name}.svg").into())
+    }
 }
 
 /// Per-OS monospace family for code. An unknown name falls back to the default

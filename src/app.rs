@@ -77,6 +77,9 @@ pub enum TabKind {
     /// The graph view (All pages → "Graph"): pages and whiteboards as nodes,
     /// `page_links` as edges.
     Graph,
+    /// The Properties page (All pages → "Properties"): every `key:: value`
+    /// property in the vault — browse values/pages, override icons, rename keys.
+    Properties,
     /// The hidden brick-breaker (`/play`).
     Game,
 }
@@ -466,6 +469,8 @@ pub struct AppView {
     all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
     /// The graph view's model (nodes + layout + camera), rebuilt on open.
     pub graph: Option<crate::ui::graph::GraphState>,
+    /// The Properties page state (All pages → "Properties"); rebuilt on open.
+    pub props_page: Option<crate::ui::properties_page::PropsPageState>,
     /// The hidden game's state + its ~60fps tick task, alive while its tab is.
     pub game: Option<crate::ui::game::GameState>,
     game_tick: Option<Task<()>>,
@@ -758,6 +763,7 @@ impl AppView {
             all_pages_kind: Default::default(),
             all_pages_pdfs: Vec::new(),
             graph: None,
+            props_page: None,
             game: None,
             game_tick: None,
             journal_tab_clicks: (0, std::time::Instant::now()),
@@ -851,6 +857,13 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .filter(|s| TEXT_SIZES.contains(s))
             .unwrap_or(DEFAULT_TEXT_SIZE);
+        // Property-icon overrides (Properties page) into the process-global map
+        // the renderers' resolvers read.
+        if let Some(json) = this.db.get_setting("property_icons")
+            && let Ok(map) = serde_json::from_str(&json)
+        {
+            crate::theme::set_property_icon_overrides(map);
+        }
         // Mirror the persisted auto-lock threshold into the process-global the
         // lock timer reads (it has no database handle).
         crate::security::set_auto_lock_minutes(
@@ -1583,6 +1596,11 @@ impl AppView {
                 if self.graph.is_none() {
                     self.rebuild_graph();
                 }
+            }
+            TabKind::Properties => {
+                self.page_editor = None;
+                // Rebuild on every activation so the index reflects fresh edits.
+                self.refresh_props_page(window, cx);
             }
             TabKind::Game => self.page_editor = None,
         }
@@ -3693,6 +3711,114 @@ impl AppView {
         self.activate_tab(self.tabs.len() - 1, window, cx);
     }
 
+    /// Open (or focus) the Properties page tab (All pages → "Properties").
+    pub(crate) fn open_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Properties))
+        {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        self.tabs.push(OpenTab {
+            kind: TabKind::Properties,
+            title: "Properties".into(),
+        });
+        self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Rebuild the Properties page's index from the DB (activation + edits),
+    /// preserving its UI state (expansion, menus) when it already exists.
+    pub(crate) fn refresh_props_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let index = self.db.property_index_detailed().unwrap_or_default();
+        match &mut self.props_page {
+            Some(state) => state.index = index,
+            None => {
+                self.props_page = Some(crate::ui::properties_page::PropsPageState::new(
+                    index, window, cx,
+                ))
+            }
+        }
+        cx.notify();
+    }
+
+    /// Set (or clear, with `None`) a property key's icon override and persist
+    /// the map. `key` = "" targets the Properties page's add-mapping row, whose
+    /// key comes from its input.
+    pub(crate) fn set_property_icon(
+        &mut self,
+        key: &str,
+        icon: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = if key.is_empty() {
+            let Some(state) = &self.props_page else {
+                return;
+            };
+            let typed = state.new_key_input.read(cx).value().trim().to_string();
+            if !crate::ui::properties_page::valid_key(&typed) {
+                return;
+            }
+            typed
+        } else {
+            key.to_string()
+        };
+        let mut map = crate::theme::property_icon_overrides();
+        match icon {
+            Some(name) => {
+                map.insert(key.to_ascii_lowercase(), name.to_string());
+            }
+            None => {
+                map.remove(&key.to_ascii_lowercase());
+            }
+        }
+        crate::theme::set_property_icon_overrides(map.clone());
+        let json = serde_json::to_string(&map).unwrap_or_default();
+        if let Err(e) = self.db.set_setting("property_icons", &json) {
+            log::error!("save property icons: {e}");
+        }
+        if let Some(state) = &mut self.props_page {
+            state.close_menus();
+        }
+        self.signal_doc_changed(cx);
+        cx.notify();
+    }
+
+    /// Commit the Properties page's pending key rename: rewrite `old:: value`
+    /// lines to the typed name across every page (carrying any icon override
+    /// along), then rebuild the index.
+    pub(crate) fn commit_prop_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.props_page else {
+            return;
+        };
+        let Some((old, input)) = state.rename_state() else {
+            return;
+        };
+        state.clear_rename();
+        let new = input.read(cx).value().trim().to_string();
+        if new == old || !crate::ui::properties_page::valid_key(&new) {
+            cx.notify();
+            return;
+        }
+        match self.db.rename_property_key(&old, &new) {
+            Ok(changed) if !changed.is_empty() => {
+                // Carry the icon override to the new name.
+                let mut map = crate::theme::property_icon_overrides();
+                if let Some(icon) = map.remove(&old.to_ascii_lowercase()) {
+                    map.insert(new.to_ascii_lowercase(), icon);
+                    crate::theme::set_property_icon_overrides(map.clone());
+                    let json = serde_json::to_string(&map).unwrap_or_default();
+                    let _ = self.db.set_setting("property_icons", &json);
+                }
+                self.signal_doc_changed(cx);
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("rename property {old} -> {new}: {e}"),
+        }
+        self.refresh_props_page(window, cx);
+    }
+
     pub(crate) fn rebuild_graph(&mut self) {
         let filters = self.graph.as_ref().map(|g| g.filters()).unwrap_or_default();
         self.rebuild_graph_with(filters);
@@ -5665,6 +5791,9 @@ impl AppView {
                     TabKind::Graph => {
                         view.update(cx, |this, cx| this.open_graph(window, cx));
                     }
+                    TabKind::Properties => {
+                        view.update(cx, |this, cx| this.open_properties(window, cx));
+                    }
                     TabKind::Game => {
                         view.update(cx, |this, cx| this.open_game(window, cx));
                     }
@@ -5803,9 +5932,11 @@ impl AppView {
             // A board reloads cheaply from the DB on the destination window, so
             // it carries no live entity (no unsaved in-memory edits in Phase 0).
             TabKind::Whiteboard(_) => TabSeed::default(),
-            TabKind::Journal | TabKind::AllPages | TabKind::Graph | TabKind::Game => {
-                TabSeed::default()
-            }
+            TabKind::Journal
+            | TabKind::AllPages
+            | TabKind::Graph
+            | TabKind::Properties
+            | TabKind::Game => TabSeed::default(),
         }
     }
 
@@ -5924,6 +6055,7 @@ impl AppView {
             TabKind::Whiteboard(id) => self.open_whiteboard(id, window, cx),
             TabKind::AllPages => self.open_all_pages(window, cx),
             TabKind::Graph => self.open_graph(window, cx),
+            TabKind::Properties => self.open_properties(window, cx),
             TabKind::Game => self.open_game(window, cx),
             TabKind::Journal => {}
         }
@@ -6139,6 +6271,7 @@ impl AppView {
             | TabKind::Whiteboard(_)
             | TabKind::AllPages
             | TabKind::Graph
+            | TabKind::Properties
             | TabKind::Game => {
                 return;
             }
@@ -7182,6 +7315,9 @@ impl Render for AppView {
                                         ui::all_pages::render(self, cx).into_any_element()
                                     }
                                     TabKind::Graph => ui::graph::render(self, cx),
+                                    TabKind::Properties => {
+                                        ui::properties_page::render(self, cx).into_any_element()
+                                    }
                                     TabKind::Game => ui::game::render(self, cx),
                                 }
                             })),
