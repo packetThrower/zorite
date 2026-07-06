@@ -1,6 +1,6 @@
 ---
 title: Journal & pages
-description: 'The daily-journal feed, click-to-edit Markdown, wiki-links and backlinks, tags, namespaces and sub-pages, aliases, the slash command palette, templates, and auto-pairing.'
+description: 'The daily-journal feed, click-to-edit Markdown, wiki-links and backlinks, block references and embeds, properties, tags, namespaces and sub-pages, aliases, the slash command palette, templates, and auto-pairing.'
 ---
 
 The journal is an infinite, reverse-chronological stream of days — today on top,
@@ -35,6 +35,49 @@ it doesn't exist yet. The reverse direction is automatic: every page shows a
 
 `#tags` work the same way — clickable in the rendered view, each one its own
 page with its own backlinks.
+
+## Block references and heading links
+
+A link can point *inside* a page, not just at it. End any line with a
+` ^some-id` marker to give it an address, then link to it from anywhere with
+`[[Note#^some-id]]`; or skip the marker and link straight to a heading with
+`[[Note#My Heading]]` (case-insensitive). Clicking either opens the note and
+jumps to that line.
+
+Both links read cleanly — `[[Note#^some-id]]` displays as **Note → some-id**
+(an `|alias` still overrides the label) — and the ` ^id` marker itself stays
+out of the way: hidden in the reading view, dimmed in the editor until your
+caret is on its line. `file.pdf#p3` keeps its page-jump meaning, and a page
+whose title literally contains `#` still opens by its full name.
+
+## Embeds (transclusion)
+
+A line holding just `![[Note]]` renders that note's content right there, in a
+quoted box with a clickable source label. `![[Note#My Heading]]` embeds one
+section, `![[Note#^some-id]]` a single block, and an `|alias` renames the
+label. The box shows the real rendered content — images, math, diagrams,
+code, even embeds inside embeds — scrolls when it overflows (the wheel hands
+back to the page at the edges), and **live-updates** as you edit the source
+page. In the editor, put the caret on the line to edit the raw `![[…]]` text.
+
+## Properties
+
+A `key:: value` line anywhere in a note is a **property** — Obsidian/Logseq
+style. Consecutive property lines render as a clean two-column panel: a
+per-key icon, the muted key, and the value with `#tags` and `[[wiki-links]]`
+shown as clickable pills. Any key works — `attendees::`, `status::`,
+`time::`, whatever your templates use.
+
+Click the panel (or arrow the caret into it) and it opens an **in-place
+editor** that mirrors the rendered panel: edit keys and values directly, pick
+from a dropdown of every key already used across your notes, add or remove
+rows, and move between fields entirely from the keyboard. Clicking away
+writes the `key:: value` lines back.
+
+**All pages → Properties** opens the property index: every key with its icon,
+page count, and values — expand a key to see each value and the pages
+carrying it, override any key's **icon** from a picker (or map one before the
+key's first use), and **rename a key** across every page at once.
 
 ## Namespaces and sub-pages
 
@@ -131,6 +174,14 @@ alerts** (`> [!NOTE]` through `[!CAUTION]`) render with icons and themeable
 colors, and fenced code blocks get **syntax highlighting** for the common
 languages. **Mermaid diagrams** (flowchart, sequence, class) render pure-Rust,
 themed to your skin; click one to expand it.
+
+Long notes fold: an Obsidian-style fold char makes a **callout collapsible**
+(`> [!NOTE]-` starts folded, `+` starts open — click the chevron by the title,
+and the state persists in the note), and every **heading** folds too — hover
+one and a chevron appears past the text; click it to collapse everything
+under that heading up to the next one at its level. Heading folds are view
+state, not written into the note, and in the editor arrowing the caret into a
+folded section reveals it while you edit.
 
 <picture>
   <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-mermaid-light.png" />

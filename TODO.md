@@ -22,7 +22,8 @@ work is collected under [Completed](#completed) at the bottom.
 Obsidian-style multiple "vaults" — separate, self-contained data sets the user
 switches between (work / personal / a shared folder in Dropbox). **Not called
 vaults**; working name **Notebooks** (alternatives considered: Spaces,
-Workspaces, Collections). Not slated for the next release — planned 2026-07-06.
+Workspaces, Collections). **Held for 0.7.0** (planned 2026-07-06; not in the
+next release).
 
 **Why this is cheaper than it sounds — what already exists:**
 - A data dir is already a fully self-contained bundle: `zorite.db` + `images/`

@@ -26,13 +26,26 @@ selection.
   ([`Diagnostic`]); a right-click menu offers replacements via a lazy provider.
 - **Live-preview Markdown ("WYSIWYG"):** with a [`SyntaxStyle`] installed, the
   editor styles its own content as you type — headings (variable line height),
-  bold / italic / strikethrough, inline code, links / wiki-links / tags,
-  blockquotes, lists, clickable task checkboxes, fenced code blocks, thematic rules,
-  footnotes, reference links, `<mark>` — with the raw Markdown markers hidden and
-  revealed only around the caret.
+  bold / italic / strikethrough, inline code, links / wiki-links / tags
+  (clickable, emitting `OpenLink` / `OpenWikiLink`), blockquotes, lists,
+  clickable task checkboxes, fenced code blocks, thematic rules, footnotes,
+  reference links, `<mark>` — with the raw Markdown markers hidden and
+  revealed only around the caret. **GitHub alerts** render with a colored bar
+  and title (Obsidian's foldable `> [!NOTE]-`/`+` collapses on a chevron
+  click, the flip written back to the source), and **headings fold** — hover
+  one for a chevron that collapses its section (view-local state,
+  reveal-on-caret while editing).
+- **Anchors & properties:** trailing ` ^block-id` markers dim/hide like other
+  syntax; `[[Note#Heading]]` / `[[Note#^id]]` targets display as
+  `Note → anchor`; and consecutive `key:: value` lines render as a two-column
+  **property panel** (per-key icons via `SyntaxStyle::property_icon`, pill
+  values) — clicking or arrowing into one emits `EditProperties` so the host
+  can seat an in-place property editor.
 - **Block widgets:** standalone images, file chips (e.g. PDF embeds), mermaid
-  diagrams, and `$$…$$` math blocks render in place via host-supplied providers
-  (raw source under the caret).
+  diagrams, `$$…$$` math blocks, and `![[Note]]` **transclusions** (any
+  `AnyView` the host resolves, in a reserved gap) render in place via
+  host-supplied providers (raw source under the caret). Mid-text images flow
+  as small inline thumbnails; a click emits `PreviewImage`.
 - **Math:** display `$$…$$` blocks **and** inline `$…$` formulas typeset via the
   math provider; clicking or arrowing into one emits `EditMath` so the host can
   seat its own 2-D structural editor in the spot the editor reserves
@@ -116,6 +129,9 @@ editor.update(cx, |ed, cx| {
     ed.set_block_image_provider(|src| my_images.get(src));
     // …file chips (e.g. PDF embeds) show a label and click through OpenLink…
     ed.set_block_chip_provider(|src| is_pdf(src).then(|| file_name(src).into()));
+    // …standalone ![[Note]] lines render the host's transclusion view in a
+    // reserved gap of the given height…
+    ed.set_embed_provider(|target| my_embeds.get(target));
     // …```mermaid fences render as diagrams (raster + logical w/h)…
     ed.set_block_mermaid_provider(|src| my_mermaid.get(src));
     // …$$…$$ blocks and inline $…$ render typeset (logical size; set the em
@@ -169,10 +185,13 @@ Subscribe with `cx.subscribe(&editor, …)`. [`EditorEvent`]:
 | Variant | Meaning |
 | --- | --- |
 | `Changed` | The text changed via a user edit (typing, delete, paste, IME, applying a suggestion). **Not** emitted for programmatic [`set_text`]. |
-| `OpenLink(SharedString)` | A file chip was left-clicked — the host should open the `src`. The chip stays in the document. |
+| `OpenLink(SharedString)` | A file chip, `[text](url)` link, or bare URL was left-clicked — the host should open the `src`. |
+| `OpenWikiLink(SharedString)` | A `[[wiki-link]]` / `#tag` (or a wiki file chip / property pill) was left-clicked, with the target name — the host navigates. The target may carry a `#Heading` / `#^id` anchor. |
 | `SelectionChanged` | The caret/selection moved without a text change — for updating a caret-anchored affordance (e.g. a table-alignment toolbar). |
 | `EditMath { range, source, at_end, inline }` | The caret entered a `$$…$$` block or inline `$…$` formula (click / arrow-in). The host opens a structural editor seeded from `source`, seats it (`set_editing_block` / `set_editing_inline`), and overwrites `range` on commit. `inline` distinguishes block vs in-line; `at_end` seats the caret at the formula's end vs start. |
 | `MathMenu { source, position }` | A rendered formula was right-clicked — the host shows a context menu (copy LaTeX / export) at the window-space `position`. |
+| `EditProperties { range, source, at_end }` | A `key:: value` property panel was clicked or arrowed into: the block's byte `range` + `source`. The host seats an in-place property editor (`set_editing_block`) and overwrites `range` on commit — the same seat/commit pattern as `EditMath`. `at_end` = entered from below (focus the last field). |
+| `PreviewImage(SharedString)` | An inline (mid-text) image thumbnail was left-clicked — the host opens a full-size preview. The text is untouched. |
 
 ---
 
@@ -273,6 +292,7 @@ loading/caching/rendering and supplies a provider:
 ```rust
 fn set_block_image_provider(&mut self, provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)
 fn set_block_chip_provider(&mut self, provider: impl Fn(&str) -> Option<SharedString> + 'static)
+fn set_embed_provider(&mut self, provider: impl Fn(&str) -> Option<(AnyView, Pixels)> + 'static)
 fn set_block_mermaid_provider(&mut self, provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)
 fn set_block_math_provider(&mut self, provider: impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)
 fn set_block_math_em(&mut self, em: f32)   // em the math provider rasterizes at — enables inline `$…$`
@@ -283,6 +303,15 @@ fn set_block_math_em(&mut self, em: f32)   // em the math provider rasterizes at
 - **Chip:** classify an `![](src)` as a file chip (e.g. a PDF) and return its
   label → the line renders as a clickable chip; a left-click emits
   `EditorEvent::OpenLink(src)`, a right-click places the caret to edit.
+- **Embed:** resolve a standalone `![[target]]` line (Obsidian transclusion)
+  to a host view + the row height to reserve → the editor reserves the gap in
+  its layout and paints the `AnyView` there as an absolute overlay (skipped on
+  the caret's row, where the raw `![[…]]` text shows for editing). The host
+  owns resolution (fetch the target page, render it — typically with
+  [`gpui-markdown`](../gpui-markdown/README.md), whose `syntax::embed_targets`
+  / `extract_block` / `extract_section` slice `#^id` / `#Heading` anchors) and
+  refreshing the views when a source page changes. `None` renders a compact
+  `⧉ target` chip for an unresolved target.
 - **Mermaid:** resolve a fenced block's source → a rendered diagram bitmap.
   Pre-render with [`mermaid_sources`].
 - **Math:** resolve a formula's LaTeX → a typeset bitmap. Pre-render with
@@ -345,6 +374,7 @@ editor stays theme-agnostic. All fields are `gpui::Hsla` except `mono: gpui::Fon
 | `mark_bg` | `<mark>` highlight background |
 | `popover_*` | the built-in right-click menus (table ops, spell suggestions) |
 | `mono` | monospace font for inline code + code blocks |
+| `property_icon` | `Option<PropertyIconFn>` — property key → SVG asset path for the panel's per-key icons (`None` = no icons) |
 
 ### `struct Diagnostic`
 
@@ -356,7 +386,10 @@ A flagged span to underline. `&text[range]` is the offending word.
 
 ### `enum EditorEvent`
 
-`Changed` · `OpenLink(SharedString)` · `SelectionChanged` · `EditMath { range, source, at_end, inline }` · `MathMenu { source, position }` — see [Events](#events).
+`Changed` · `OpenLink(SharedString)` · `OpenWikiLink(SharedString)` ·
+`SelectionChanged` · `EditMath { range, source, at_end, inline }` ·
+`MathMenu { source, position }` · `EditProperties { range, source, at_end }` ·
+`PreviewImage(SharedString)` — see [Events](#events).
 
 ### `enum CellAlign`
 

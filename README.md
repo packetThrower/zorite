@@ -68,6 +68,21 @@ Developed in close collaboration with Claude (Anthropic).
   and their `[[links]]` follow — and right-click → **New sub-page** starts a
   page under it. A subdued `alias::` field takes alternate names, so `[[hen]]`
   can resolve to your `chicken` page.
+- **Properties** — Obsidian/Logseq-style `key:: value` lines anywhere in a note
+  render as a clean two-column panel (a per-key icon, values with clickable
+  `#tag` / `[[link]]` pills) in both the reading view and the live editor —
+  click the panel to edit keys and values **in place**, with a dropdown of
+  every key you already use. A **Properties page** (All pages → Properties)
+  indexes every key across your notes: browse values and the pages carrying
+  them, override any key's icon, and rename a key everywhere at once.
+- **Block references, heading anchors & embeds** — end a line with
+  ` ^some-id` to give it an address, then link to it from anywhere with
+  `[[Note#^some-id]]`, or link straight to a heading with `[[Note#My Heading]]`
+  — clicking jumps to that line, and either link reads as `Note → anchor`. A
+  line holding just `![[Note]]` (or `![[Note#Heading]]` / `![[Note#^id]]`)
+  **transcludes** the target's content right there — a quoted box with a
+  clickable source label that live-updates as the source page changes, in both
+  views.
 - **All pages & a graph view** — an **All pages** browser (A–Z strip, kind
   filters, created/updated columns) indexes every page, whiteboard, and PDF;
   from it, a Logseq-style **graph view** lays out your pages and links as an
@@ -110,7 +125,8 @@ Developed in close collaboration with Claude (Anthropic).
   **HEIC/HEIF and AVIF** — iPhone photos); identical imports are **deduped**, and
   Settings can sweep **unused images** to the trash; **paste** or **drag-and-drop** a file
   to add one (copied into the data dir's `images/`), and drag the corner handle to
-  resize (saved as `{width=N}`).
+  resize (saved as `{width=N}`). An image **mid-sentence** flows with the text
+  as a small thumbnail — click it for a full-size preview.
 - **PDF viewer** — link a PDF with `[[file.pdf]]` / `![](file.pdf)` or drop one
   onto a note to open it in a dedicated **page-virtualized** viewer tab (only
   pages near the viewport are rasterized; scrolled-away pages free their memory
@@ -121,10 +137,13 @@ Developed in close collaboration with Claude (Anthropic).
   reusable [`gpui-pdf`](crates/gpui-pdf/README.md) crate.
 - **Markdown rendering** — CommonMark + GFM (headings, bold/italic/code, lists,
   quotes, tables, strikethrough, `<mark>` highlights), **GitHub alerts**
-  (`> [!NOTE]` … `[!CAUTION]`, themeable colors + icons), **syntax-highlighted
-  code blocks** (tree-sitter, ~20 languages), and **Mermaid diagrams**
-  (flowchart / sequence / class, rendered pure-Rust and themed to your skin;
-  click one to expand it) — via the [`gpui-markdown`](crates/gpui-markdown/README.md)
+  (`> [!NOTE]` … `[!CAUTION]`, themeable colors + icons — Obsidian's
+  **foldable** `> [!NOTE]-` form collapses to its title), **collapsible
+  headings** (hover a heading → a chevron folds its whole section),
+  **syntax-highlighted code blocks** (tree-sitter, ~20 languages), and
+  **Mermaid diagrams** (flowchart / sequence / class, rendered pure-Rust and
+  themed to your skin; click one to expand it) — via the
+  [`gpui-markdown`](crates/gpui-markdown/README.md)
   crate. **Find in page** searches the rendered text with highlight and count.
 - **Export to PDF** — right-click a tab or sidebar page, or press
   `⌘P` / `Ctrl+P` for the active tab: a native save dialog, then a real PDF —
@@ -137,7 +156,12 @@ Developed in close collaboration with Claude (Anthropic).
   style, not by hand-editing LaTeX). Per-formula left/center/right alignment, plus a
   right-click menu to **copy LaTeX** or **export PNG / SVG** — via the reusable
   [`ratex-gpui`](crates/ratex-gpui/README.md) crate.
-- **Import from Logseq** — `File → Import from Logseq…` brings in a graph's
+- **Import from Obsidian or Logseq** — `File → Import from Obsidian…` reads a
+  vault: folders become `::` namespaces (or flatten, your choice), links and
+  aliases resolve, callouts map to alerts, frontmatter feeds
+  aliases/tags/properties, daily notes become journal days, and block ids,
+  anchors, and `![[embeds]]` come across **as-is** — plus **`.canvas` boards →
+  native whiteboards**. `File → Import from Logseq…` brings in a graph's
   pages, journals, and assets (namespaces, tasks, properties, aliases, embeds,
   block-refs, and `hls__*` PDF-highlight pages all handled), plus its
   **whiteboards** (tldraw boards → native Zorite boards, images and all) and

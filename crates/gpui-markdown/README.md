@@ -12,8 +12,11 @@ rendering a mermaid diagram, syntax-highlighting code, and click-to-caret. Stand
 This is **the** markdown crate of the Zorite workspace, in two layers:
 
 - **`gpui_markdown::syntax`** — always compiled, **dependency-free**: the shared
-  construct *recognition* (linkables, GitHub alert kinds, table styles, heading
-  scales) that this reader, the [`gpui-editor`](../gpui-editor/README.md) WYSIWYG
+  construct *recognition* (linkables, GitHub alert kinds + fold chars, table
+  styles, heading scales, `key:: value` properties, ` ^block-id` anchors,
+  `#Heading` / `#^id` link-target splitting, and `![[embed]]` lines with
+  block/section extraction) that this reader, the
+  [`gpui-editor`](../gpui-editor/README.md) WYSIWYG
   view, and the PDF exporter all consume, so what a construct IS is defined once.
 - **The reader view** (everything below) — behind the default-on **`view`**
   feature, which owns the `gpui` + `markdown` dependencies. Consumers that only
@@ -30,7 +33,29 @@ This is **the** markdown crate of the Zorite workspace, in two layers:
   `<!-- table:STYLE -->` marker
 - **GitHub alerts** — `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` /
   `[!CAUTION]` blockquotes render with a colored bar, bold title, and optional
-  host-supplied icons; the natural inline form (`> [!NOTE] like so`) works too
+  host-supplied icons; the natural inline form (`> [!NOTE] like so`) works too.
+  Obsidian's **fold char** makes a callout collapsible — `> [!NOTE]-` renders
+  folded (title + chevron only), `+` open; clicking the title dispatches to
+  [`on_alert_toggle`](#interaction-handlers) so the host can flip the char in
+  the source
+- **Collapsible headings** — every heading gets a hover-revealed fold chevron;
+  a folded heading's whole section is skipped. The fold set is host-owned
+  ([`folded_headings`](#collapsible-headings-1) + `on_heading_toggle`) since
+  this view is rebuilt every frame
+- **Properties** — consecutive `key:: value` lines render as a two-column
+  panel: per-key icons (via `MarkdownStyle::property_icon`), muted keys, and
+  values with `#tag` / `[[wiki-link]]` segments as clickable pills
+- **Block ids, anchors & embeds** — a trailing ` ^block-id` marker hides from
+  the rendered text; `[[Note#Heading]]` / `[[Note#^id]]` link targets display
+  as `Note → anchor`; and a standalone `![[Note]]` line **transcludes** the
+  target's content in a quoted box via a host resolver
+  ([`on_embed`](#embedprovider)), nested embeds included
+- **Inline (in-flow) images** — an image that doesn't lead its paragraph
+  renders as a small in-flow thumbnail via [`on_inline_image`](#inlineimagerenderer),
+  wrapping with the text; a click dispatches to `on_image_preview`
+- **Clickable task checkboxes** — a `- [ ]` box click dispatches its source
+  offset to [`on_task_toggle`](#interaction-handlers) so the host can flip
+  `[ ]`↔`[x]` and persist
 - **Syntax highlighting** — fenced code with a language tag colors its tokens via
   a host-supplied `on_highlight` closure (bring your own engine; Zorite passes
   gpui-component's tree-sitter highlighter)
@@ -88,9 +113,18 @@ tree. All builder methods take and return `self`.
 | `on_mermaid` | `fn on_mermaid(self, handler: MermaidRenderer) -> Self` | Render ` ```mermaid ` blocks as diagrams. Without it, such a block renders as plain code. |
 | `on_math` | `fn on_math(self, handler: MathRenderer) -> Self` | Render `$$…$$` math blocks as typeset images. Without it, a block renders as its raw LaTeX. |
 | `on_inline_math` | `fn on_inline_math(self, handler: InlineMathRenderer) -> Self` | Render inline `$…$` formulas (raster painted over a reserved gap in the line). Without it, inline math stays literal `$…$` text. |
+| `on_inline_image` | `fn on_inline_image(self, handler: InlineImageRenderer) -> Self` | Render mid-text images as small in-flow thumbnails. Without it they keep the label fallback. |
+| `on_highlight` | `fn on_highlight(self, handler: CodeHighlighter) -> Self` | Color the tokens of fenced code with a language tag (bring your own engine). |
+| `on_embed` | `fn on_embed(self, provider: EmbedProvider) -> Self` | Resolve a standalone `![[target]]` line to `(label, content)` — renders the transclusion box. See [`EmbedProvider`](#embedprovider). |
+| `on_embed_image` | `fn on_embed_image(self, renderer: ImageRenderer) -> Self` | The image renderer used **inside** embeds (typically a read-only variant — an embed's source offsets belong to another document). |
 | `search` | `fn search(self, query: impl Into<SharedString>, current: usize) -> Self` | Highlight matches of `query`, emphasizing the `current`-th. See [In-page find](#in-page-find). |
 | `track_blocks` | `fn track_blocks(self, handle: ScrollHandle) -> Self` | Track-scroll the block column so the host can scroll a match into view. See [In-page find](#in-page-find). |
 | `on_click_source` | `fn on_click_source(self, handler: ClickSourceHandler) -> Self` | Report the source offset nearest a click (for click-to-caret). |
+| `on_image_preview` | `fn on_image_preview(self, handler: ImagePreviewHandler) -> Self` | Handle a click on an inline thumbnail (open a full-size preview). |
+| `on_task_toggle` | `fn on_task_toggle(self, handler: TaskToggleHandler) -> Self` | Handle a task-checkbox click (the host flips `[ ]`↔`[x]` at the offset and persists). |
+| `on_alert_toggle` | `fn on_alert_toggle(self, handler: TaskToggleHandler) -> Self` | Handle a foldable callout's title click (the host flips the `-`/`+` at the marker offset — see `syntax::toggle_alert_fold_at`). |
+| `folded_headings` | `fn folded_headings(self, folded: HashSet<String>) -> Self` | The collapsed headings (trimmed source lines, e.g. `## Goals`) — their sections are skipped. |
+| `on_heading_toggle` | `fn on_heading_toggle(self, handler: HeadingToggleHandler) -> Self` | Handle a heading fold-chevron click; the host toggles the key in its set and re-renders. Without it, headings show no chevron. |
 
 Parsing uses the [`markdown`](https://crates.io/crates/markdown) crate with
 `ParseOptions::gfm()` (CommonMark + GFM). If parsing fails, the raw source is shown
@@ -121,6 +155,7 @@ pub struct MarkdownStyle {
     pub line_height: f32,         // body line height × text_size (match your editor's)
     pub alerts: AlertColors,      // GitHub alert bar/title colors, one per kind
     pub alert_icons: Option<AlertIcons>, // SVG asset paths for alert icons (None = label only)
+    pub property_icon: Option<PropertyIconFn>, // property key -> SVG asset path (None = no icons)
 }
 ```
 
@@ -230,6 +265,76 @@ offset nearest the click and the click's window **y**. A host uses it to place i
 editor's caret there and keep it under the cursor when switching into edit mode.
 The crate maps the click through gpui's text layout plus a source-offset map it
 builds while rendering (accounting for stripped `[[ ]]` / `#` / inline-code markup).
+
+### `EmbedProvider`
+
+```rust
+pub type EmbedProvider = Rc<dyn Fn(&str) -> Option<(SharedString, SharedString)>>;
+```
+
+Resolves a standalone `![[target]]` line (Obsidian transclusion) to the
+`(label, content)` to render — a quoted box with a small clickable source
+label (wired through `on_wiki_link`) above the target's content, rendered like
+any note. Render-time closures can't query a database, so the host
+**pre-resolves**: collect the targets with `syntax::embed_targets(source)`
+(recursing into resolved content for nested embeds), fetch each page — slicing
+by `syntax::extract_block` / `extract_section` for `#^id` / `#Heading`
+anchors — and hand the map's `get` in as the provider. `None` leaves the line
+as literal text. Inside an embed, write-back handlers (click-to-caret, task
+and callout toggles, heading folds) and in-page find are suppressed — those
+source offsets belong to the *embedding* page — and images render through
+`on_embed_image` (supply a grip-less read-only variant). Nesting is capped at
+depth 3, which also breaks embed cycles.
+
+### `InlineImageRenderer`
+
+```rust
+pub type InlineImageRenderer = Rc<dyn Fn(SharedString) -> Option<(Arc<RenderImage>, f32, f32)>>;
+```
+
+Renders a **mid-text** image (one that doesn't lead its paragraph) as a small
+in-flow thumbnail: given the `src`, return the decoded raster plus the logical
+`(width, height)` to flow at, or `None` (still decoding / remote / PDF) to
+keep the clickable-label fallback. Same reserved-spacer machinery as inline
+math, so the line wraps normally and grows to fit. A click on the thumbnail
+dispatches to `on_image_preview`.
+
+### Interaction handlers
+
+```rust
+pub type ImagePreviewHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;  // src
+pub type TaskToggleHandler   = Rc<dyn Fn(usize, &mut Window, &mut App)>;         // source byte offset
+pub type HeadingToggleHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;         // heading fold key
+```
+
+- `on_image_preview` — an inline thumbnail was clicked; open a full-size view.
+- `on_task_toggle` — a `- [ ]` checkbox was clicked, with the checkbox's
+  source offset; flip it with the crate's `toggle_task_at(source, offset)` and
+  persist.
+- `on_alert_toggle` (same signature as tasks) — a foldable callout's title was
+  clicked, with the `[!KIND]` marker's offset; flip the `-`/`+` with
+  `syntax::toggle_alert_fold_at(source, offset)` and persist.
+
+### Collapsible headings
+
+Fold state is **host-owned** — `MarkdownView` is `RenderOnce`, rebuilt every
+frame, so it can't keep state. Keep a `HashSet<String>` per document of the
+folded headings' trimmed source lines (`"## Goals"`), pass it via
+`folded_headings(set)`, and toggle keys in `on_heading_toggle`:
+
+```rust
+MarkdownView::new("note-1", source)
+    .folded_headings(my_folds.clone())
+    .on_heading_toggle(Rc::new(move |key, _window, cx| {
+        // insert/remove `key` in your set, then notify to re-render
+    }))
+```
+
+A folded heading renders with a `▸` chevron and its section — everything until
+the next heading at its level or higher — is skipped. Unfolded headings show
+their chevron on hover. The line-text key is shared with gpui-editor's
+WYSIWYG folds, and self-heals: editing the heading drops the fold instead of
+letting it drift.
 
 ### In-page find
 
@@ -345,10 +450,20 @@ Not handled (not enabled by `gfm()`): frontmatter (YAML/TOML) and MDX. Footnote
 references render as `[label]` markers but aren't click-to-jump (that would need
 anchors this text-based renderer doesn't have).
 
-Also rendered: **GitHub alerts** on blockquotes (both marker forms), Zorite-style
-`[[wiki-links]]` and `#tags` (namespaced `#a/b` included — the grammar is the
-shared `syntax` module's), and table-style / math-alignment control comments,
-which — like all HTML comments — never render.
+Also rendered: **GitHub alerts** on blockquotes (both marker forms, plus the
+foldable `-`/`+` variant), Zorite-style `[[wiki-links]]` and `#tags`
+(namespaced `#a/b` included — the grammar is the shared `syntax` module's),
+`[[Note#Heading]]` / `[[Note#^id]]` anchors (displayed as `Note → anchor`),
+trailing ` ^block-id` markers (hidden), `key:: value` **property panels**,
+standalone `![[Note]]` **embeds**, and table-style / math-alignment control
+comments, which — like all HTML comments — never render.
+
+The `syntax` module's recognizers back all of it and are public: `links` /
+`link_at`, `alert_marker` / `alert_prefix` / `alert_fold_char` /
+`toggle_alert_fold_at`, `table_style_marker`, `heading_scale`, `block_id`,
+`split_block_anchor` / `split_heading_anchor`, `find_block_line` /
+`find_heading_line`, `embed_line` / `embed_targets`, `extract_block` /
+`extract_section`, and `property` / `property_value_segments`.
 
 ## Status
 
