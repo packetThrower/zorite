@@ -31,6 +31,16 @@ pub struct EmbedView {
     /// content outgrows the reserved height.
     pub scroll: gpui::ScrollHandle,
     pub hovered: bool,
+    /// The full renderer set, so embedded content shows images (read-only —
+    /// resizing would rewrite the wrong page), mermaid, math, and highlighted
+    /// code just like the note it came from. Built by `upsert_embed`.
+    pub image: gpui_markdown::ImageRenderer,
+    pub mermaid: gpui_markdown::MermaidRenderer,
+    pub math: gpui_markdown::MathRenderer,
+    pub inline_math: gpui_markdown::InlineMathRenderer,
+    pub highlight: gpui_markdown::CodeHighlighter,
+    /// Pre-resolved nested embeds (`![[…]]` inside this embed's content).
+    pub nested: std::rc::Rc<HashMap<String, (SharedString, SharedString)>>,
 }
 
 impl Render for EmbedView {
@@ -60,6 +70,7 @@ impl Render for EmbedView {
                     .bg(c)
             })
         };
+        let nested = self.nested.clone();
         let md = gpui_markdown::MarkdownView::new(
             format!("embed-{}", self.nav_target),
             self.content.clone(),
@@ -67,7 +78,18 @@ impl Render for EmbedView {
         .style(theme::markdown_style(self.list_indent, self.text_size))
         .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
             let _ = wiki_app.update(cx, |this, cx| this.open_page_title(&title, window, cx));
-        }));
+        }))
+        // The full renderer set, like the note this content came from — images
+        // arrive through the read-only path (see `EmbedView::image`).
+        .on_image(self.image.clone())
+        .on_embed_image(self.image.clone())
+        .on_mermaid(self.mermaid.clone())
+        .on_math(self.math.clone())
+        .on_inline_math(self.inline_math.clone())
+        .on_highlight(self.highlight.clone())
+        // Embeds nested inside this one, pre-resolved by the host (the
+        // MarkdownView's own depth cap keeps cycles finite).
+        .on_embed(std::rc::Rc::new(move |target| nested.get(target).cloned()));
         div()
             .id("embed-root")
             .size_full()

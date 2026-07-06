@@ -438,6 +438,7 @@ pub struct MarkdownView {
     on_task_toggle: Option<TaskToggleHandler>,
     on_alert_toggle: Option<TaskToggleHandler>,
     on_embed: Option<EmbedProvider>,
+    on_embed_image: Option<ImageRenderer>,
 }
 
 impl MarkdownView {
@@ -461,6 +462,7 @@ impl MarkdownView {
             on_task_toggle: None,
             on_alert_toggle: None,
             on_embed: None,
+            on_embed_image: None,
         }
     }
 
@@ -561,6 +563,16 @@ impl MarkdownView {
         self.on_embed = Some(provider);
         self
     }
+
+    /// The image renderer used INSIDE embeds, replacing [`Self::on_image`]
+    /// there — hosts supply a read-only variant, since an embedded image's
+    /// source range belongs to the embedded page and a resize written through
+    /// the embedding page's handler would corrupt it. Unset = no images in
+    /// embeds.
+    pub fn on_embed_image(mut self, renderer: ImageRenderer) -> Self {
+        self.on_embed_image = Some(renderer);
+        self
+    }
 }
 
 /// Content-keyed parse cache. The host's journal feed re-renders every
@@ -642,6 +654,7 @@ impl RenderOnce for MarkdownView {
             on_task_toggle: self.on_task_toggle,
             on_alert_toggle: self.on_alert_toggle,
             on_embed: self.on_embed,
+            on_embed_image: self.on_embed_image,
             suppress_heading_top: false,
             embed_depth: 0,
         };
@@ -724,6 +737,7 @@ struct Ctx {
     on_task_toggle: Option<TaskToggleHandler>,
     on_alert_toggle: Option<TaskToggleHandler>,
     on_embed: Option<EmbedProvider>,
+    on_embed_image: Option<ImageRenderer>,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
@@ -1755,7 +1769,12 @@ fn render_embed(
         ctx.on_task_toggle.take(),
         ctx.on_alert_toggle.take(),
         ctx.query.take(),
+        ctx.on_image.take(),
     );
+    // Images render through the read-only variant inside embeds (no resize
+    // grip): their source ranges belong to the embedded page, and a resize
+    // written through the embedding page's handler would corrupt it.
+    ctx.on_image = ctx.on_embed_image.clone();
     ctx.embed_depth += 1;
     let mut body = div().flex().flex_col().gap(px(8.0));
     if let Some(parsed) = parse_cached(&content)
@@ -1793,6 +1812,7 @@ fn render_embed(
         ctx.on_task_toggle,
         ctx.on_alert_toggle,
         ctx.query,
+        ctx.on_image,
     ) = saved;
 
     // Source label: muted, link-colored on the name, click opens/jumps.

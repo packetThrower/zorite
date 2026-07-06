@@ -3352,6 +3352,12 @@ impl AppView {
             self.embed_store.borrow_mut().remove(&inner);
             return;
         };
+        // Rasterize/decode the embedded content's constructs into the shared
+        // stores (images, mermaid, math), so the box renders them like the
+        // note they came from — both here and in the reader's embeds.
+        self.ensure_content_images(&body, cx);
+        self.ensure_content_mermaid(&body, cx);
+        self.ensure_content_math(&body, cx);
         let lh = f32::from(self.text_size()) * 1.45;
         let lines = body.lines().count().max(1) as f32;
         let height = (40.0 + lines * (lh + 6.0)).clamp(64.0, 340.0);
@@ -3361,6 +3367,15 @@ impl AppView {
             .into();
         let text_size = self.text_size();
         let list_indent = self.list_indent();
+        // Fresh renderers + nested-embed map each upsert: they're cheap Rc
+        // closures over the shared stores, and the nested map tracks the
+        // (possibly changed) body.
+        let image = crate::ui::image::embed_renderer(self, cx);
+        let mermaid = crate::ui::mermaid::renderer(self, cx);
+        let math = crate::ui::math::renderer(self, cx);
+        let inline_math = crate::ui::math::inline_renderer(self);
+        let highlight = self.highlighter_fn();
+        let nested = self.build_embed_map(&body);
         let existing = self.embed_store.borrow().get(&inner).cloned();
         match existing {
             Some((view, _)) => {
@@ -3373,6 +3388,12 @@ impl AppView {
                         v.list_indent = list_indent;
                         cx.notify();
                     }
+                    v.image = image;
+                    v.mermaid = mermaid;
+                    v.math = math;
+                    v.inline_math = inline_math;
+                    v.highlight = highlight;
+                    v.nested = nested;
                 });
                 self.embed_store.borrow_mut().insert(inner, (view, height));
             }
@@ -3387,6 +3408,12 @@ impl AppView {
                     app,
                     scroll: gpui::ScrollHandle::new(),
                     hovered: false,
+                    image,
+                    mermaid,
+                    math,
+                    inline_math,
+                    highlight,
+                    nested,
                 });
                 self.embed_store.borrow_mut().insert(inner, (view, height));
             }

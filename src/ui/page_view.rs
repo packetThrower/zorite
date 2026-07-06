@@ -282,8 +282,11 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
                     });
                 }
             }))
-            // Standalone `![[target]]` lines render their target inline.
-            .on_embed(std::rc::Rc::new(move |target| embeds.get(target).cloned()));
+            // Standalone `![[target]]` lines render their target inline;
+            // images inside them go through the read-only renderer (a resize
+            // would rewrite the wrong page).
+            .on_embed(std::rc::Rc::new(move |target| embeds.get(target).cloned()))
+            .on_embed_image(crate::ui::image::embed_renderer(app, cx));
         // Paint in-page find matches (⌘F) when the bar is open.
         if let Some(pf) = app.page_find.as_ref() {
             md = md.search(pf.query.clone(), pf.current);

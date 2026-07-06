@@ -233,8 +233,11 @@ fn rendered_day(
                     });
                 }
             }))
-            // Standalone `![[target]]` lines render their target inline.
-            .on_embed(std::rc::Rc::new(move |target| embeds.get(target).cloned()));
+            // Standalone `![[target]]` lines render their target inline;
+            // images inside them go through the read-only renderer (a resize
+            // would rewrite the wrong page).
+            .on_embed(std::rc::Rc::new(move |target| embeds.get(target).cloned()))
+            .on_embed_image(crate::ui::image::embed_renderer(app, cx));
         // Track the markdown root's bounds — click-to-caret's scroll anchor.
         if let Some(de) = app.day_editors.get(date) {
             md = md.track_blocks(de.md_scroll.clone());
