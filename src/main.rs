@@ -66,27 +66,27 @@ const LAYOUT_LIST: &[u8] = include_bytes!("../assets/icons/layout-list.svg");
 const WAYPOINTS: &[u8] = include_bytes!("../assets/icons/waypoints.svg");
 // Property-panel key icons (the Lucide faces gpui-component doesn't bundle;
 // `calendar` + `user` delegate to it). See `theme::property_icon`.
-const PROP_ARROW_UP_RIGHT: &[u8] = include_bytes!("../assets/icons/lucide/arrow-up-right.svg");
-const PROP_TAG: &[u8] = include_bytes!("../assets/icons/lucide/tag.svg");
-const PROP_CLOCK: &[u8] = include_bytes!("../assets/icons/lucide/clock.svg");
-const PROP_LIST: &[u8] = include_bytes!("../assets/icons/lucide/list.svg");
-const PROP_MAP_PIN: &[u8] = include_bytes!("../assets/icons/lucide/map-pin.svg");
-const PROP_LINK: &[u8] = include_bytes!("../assets/icons/lucide/link.svg");
-const PROP_ALIGN_LEFT: &[u8] = include_bytes!("../assets/icons/lucide/align-left.svg");
-const PROP_SHAPES: &[u8] = include_bytes!("../assets/icons/lucide/shapes.svg");
-const PROP_MAIL: &[u8] = include_bytes!("../assets/icons/lucide/mail.svg");
-const PROP_PHONE: &[u8] = include_bytes!("../assets/icons/lucide/phone.svg");
-const PROP_DOLLAR_SIGN: &[u8] = include_bytes!("../assets/icons/lucide/dollar-sign.svg");
-const PROP_ALARM_CLOCK: &[u8] = include_bytes!("../assets/icons/lucide/alarm-clock.svg");
-const PROP_TARGET: &[u8] = include_bytes!("../assets/icons/lucide/target.svg");
-const PROP_BOOKMARK: &[u8] = include_bytes!("../assets/icons/lucide/bookmark.svg");
-const PROP_BUILDING: &[u8] = include_bytes!("../assets/icons/lucide/building.svg");
-const PROP_HASH: &[u8] = include_bytes!("../assets/icons/lucide/hash.svg");
-const PROP_TEXT: &[u8] = include_bytes!("../assets/icons/lucide/text.svg");
-const PROP_BOOK: &[u8] = include_bytes!("../assets/icons/lucide/book.svg");
-const PROP_SMILE: &[u8] = include_bytes!("../assets/icons/lucide/smile.svg");
-const PROP_CLOUD: &[u8] = include_bytes!("../assets/icons/lucide/cloud.svg");
-const PROP_CODE: &[u8] = include_bytes!("../assets/icons/lucide/code.svg");
+const PROP_ARROW_UP_RIGHT: &[u8] = include_bytes!("../assets/icons/arrow-up-right.svg");
+const PROP_TAG: &[u8] = include_bytes!("../assets/icons/tag.svg");
+const PROP_CLOCK: &[u8] = include_bytes!("../assets/icons/clock.svg");
+const PROP_LIST: &[u8] = include_bytes!("../assets/icons/list.svg");
+const PROP_MAP_PIN: &[u8] = include_bytes!("../assets/icons/map-pin.svg");
+const PROP_LINK: &[u8] = include_bytes!("../assets/icons/link.svg");
+const PROP_ALIGN_LEFT: &[u8] = include_bytes!("../assets/icons/align-left.svg");
+const PROP_SHAPES: &[u8] = include_bytes!("../assets/icons/shapes.svg");
+const PROP_MAIL: &[u8] = include_bytes!("../assets/icons/mail.svg");
+const PROP_PHONE: &[u8] = include_bytes!("../assets/icons/phone.svg");
+const PROP_DOLLAR_SIGN: &[u8] = include_bytes!("../assets/icons/dollar-sign.svg");
+const PROP_ALARM_CLOCK: &[u8] = include_bytes!("../assets/icons/alarm-clock.svg");
+const PROP_TARGET: &[u8] = include_bytes!("../assets/icons/target.svg");
+const PROP_BOOKMARK: &[u8] = include_bytes!("../assets/icons/bookmark.svg");
+const PROP_BUILDING: &[u8] = include_bytes!("../assets/icons/building.svg");
+const PROP_HASH: &[u8] = include_bytes!("../assets/icons/hash.svg");
+const PROP_TEXT: &[u8] = include_bytes!("../assets/icons/text.svg");
+const PROP_BOOK: &[u8] = include_bytes!("../assets/icons/book.svg");
+const PROP_SMILE: &[u8] = include_bytes!("../assets/icons/smile.svg");
+const PROP_CLOUD: &[u8] = include_bytes!("../assets/icons/cloud.svg");
+const PROP_CODE: &[u8] = include_bytes!("../assets/icons/code.svg");
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
