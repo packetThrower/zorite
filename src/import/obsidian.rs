@@ -9,11 +9,14 @@
 //!   bare `[[Tasks]]` and a full `[[Projects/Tasks]]` both land on it. The
 //!   `namespaces: false` option flattens instead (title = note name).
 //! - **Links** — `[[Note]]` / `[[Note|alias]]` pass through (resolved to
-//!   their namespaced title); `[[Note#Heading]]` / `[[Note#^block]]` lose the
-//!   anchor (Zorite links to pages, not sub-anchors).
+//!   their namespaced title); `[[Note#Heading]]` / `[[Note#^block]]` keep the
+//!   anchor (Zorite jumps to headings and `^id` blocks), and trailing
+//!   ` ^block-id` markers stay in the text as anchor targets. A nested
+//!   Obsidian heading path (`#H1#H2`) keeps its last segment.
 //! - **Embeds** — `![[image.png]]` → `![](images/…)` (asset copied);
-//!   `![[Other Note]]` transclusion → a plain `[[Other Note]]` link (Zorite
-//!   doesn't transclude).
+//!   `![[Other Note]]` / `![[Note#Heading]]` / `![[Note#^id]]` transclusions
+//!   pass through as Zorite embeds (promoted onto their own line — Zorite
+//!   renders only standalone `![[…]]` lines).
 //! - **Callouts** — `> [!note]` … (any of Obsidian's ~13 types) → Zorite's
 //!   five GitHub-style alerts (`> [!NOTE]` …) with a fallback.
 //! - **Highlights / comments** — `==text==` → `<mark>text</mark>`;
@@ -381,9 +384,9 @@ impl Converter<'_> {
             out.push_str(&self.convert_line(line));
         }
 
-        // Zorite renders an image only when it LEADS a line (block object);
-        // an Obsidian embed mid-sentence would otherwise vanish. Break any
-        // image onto its own line so it renders.
+        // Zorite renders an image only when it LEADS a line (block object)
+        // and a `![[…]]` embed only when it's ALONE on one; an Obsidian embed
+        // mid-sentence would otherwise vanish. Break either onto its own line.
         out = promote_images(&out);
 
         // Hoist frontmatter tags into the body as `#tags` (nested ones keep
@@ -407,8 +410,7 @@ impl Converter<'_> {
         if let Some(conv) = convert_callout(line) {
             return conv;
         }
-        let line = strip_block_id(line);
-        let line = strip_comments(&line);
+        let line = strip_comments(line);
         let line = convert_highlights(&line);
         self.convert_embeds_and_links(&line)
     }
@@ -465,11 +467,12 @@ impl Converter<'_> {
         out
     }
 
-    /// `![[target]]` — an image/PDF asset, or a note transclusion downgraded
-    /// to a link.
+    /// `![[target]]` — an image/PDF asset, or a note transclusion kept as a
+    /// real Zorite embed (`![[Title]]` / `![[Title#Heading]]` / `![[Title#^id]]`,
+    /// an `|alias` renaming the label).
     fn embed(&mut self, inner: &str) -> String {
-        let (target, _) = split_anchor(inner);
-        let (name, _alias) = split_alias(target);
+        let (target, alias) = split_alias(inner);
+        let (name, anchor) = split_anchor(target);
         let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
         if IMAGE_EXTS.contains(&ext.as_str()) {
             if let Some(managed) = self.copy_asset(name, "images") {
@@ -486,8 +489,17 @@ impl Converter<'_> {
             self.warnings.push(format!("missing embedded PDF: {name}"));
             return format!("[[{name}]]");
         }
-        // A note transclusion → a plain link (Zorite doesn't transclude).
-        self.wiki_link(target)
+        // A note transclusion → a Zorite embed (promoted onto its own line
+        // later — Zorite renders only standalone `![[…]]` lines).
+        let title = self.resolve(name.trim());
+        let full = match anchor {
+            Some(a) => format!("{title}#{}", flatten_anchor(a)),
+            None => title,
+        };
+        match alias {
+            Some(a) => format!("![[{full}|{a}]]"),
+            None => format!("![[{full}]]"),
+        }
     }
 
     fn markdown_image(&mut self, alt: &str, path: &str) -> String {
@@ -506,16 +518,25 @@ impl Converter<'_> {
         format!("![{alt}]({path})")
     }
 
-    /// `[[target(#anchor)(|alias)]]` → a resolved Zorite wiki-link (anchor
-    /// dropped, alias kept).
+    /// `[[target(#anchor)(|alias)]]` → a resolved Zorite wiki-link. `#Heading`
+    /// and `#^block` anchors are kept — Zorite jumps to them.
     fn wiki_link(&mut self, inner: &str) -> String {
         let (target, alias) = split_alias(inner);
-        let (name, _anchor) = split_anchor(target);
+        let (name, anchor) = split_anchor(target);
         let title = self.resolve(name.trim());
+        let full = match anchor {
+            Some(a) => format!("{title}#{}", flatten_anchor(a)),
+            None => title.clone(),
+        };
         match alias {
-            Some(a) => format!("[[{title}|{a}]]"),
-            None if title != name.trim() => format!("[[{title}|{}]]", name.trim()),
-            None => format!("[[{title}]]"),
+            Some(a) => format!("[[{full}|{a}]]"),
+            // A namespaced resolution shows the original bare name as the
+            // alias — unless an anchor is present (Zorite then renders the
+            // `Title → anchor` display itself, which an alias would hide).
+            None if title != name.trim() && anchor.is_none() => {
+                format!("[[{full}|{}]]", name.trim())
+            }
+            None => format!("[[{full}]]"),
         }
     }
 
@@ -926,21 +947,6 @@ fn map_callout(kind: &str) -> &'static str {
     }
 }
 
-/// Drop a trailing Obsidian block-id marker (` ^block-id` at line end) — it's
-/// an anchor target Zorite has no use for.
-fn strip_block_id(line: &str) -> String {
-    let trimmed = line.trim_end();
-    if let Some((before, id)) = trimmed.rsplit_once(" ^")
-        && !id.is_empty()
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        return before.to_string();
-    }
-    line.to_string()
-}
-
 /// Drop `%%comment%%` spans (Obsidian comments). Handles inline spans; a lone
 /// `%%` toggling across lines is left as-is (rare).
 fn strip_comments(line: &str) -> String {
@@ -1001,8 +1007,19 @@ fn split_anchor(target: &str) -> (&str, Option<&str>) {
     }
 }
 
-/// Put any image that shares a line with other text on its own line (a
-/// blank line before and after) so Zorite's reader renders it as a block.
+/// A nested Obsidian heading path (`H1#H2`) keeps only its last segment — the
+/// deepest heading is what Zorite can jump to. Block anchors (`^id`) pass
+/// through whole.
+fn flatten_anchor(a: &str) -> &str {
+    if a.starts_with('^') {
+        a
+    } else {
+        a.rsplit('#').next().unwrap_or(a)
+    }
+}
+
+/// Put any image or `![[…]]` embed that shares a line with other text on its
+/// own line (a blank line before and after) so Zorite renders it as a block.
 /// Lines that are already just an image (optionally with a `{width=N}` tail)
 /// are left alone.
 fn promote_images(body: &str) -> String {
@@ -1063,12 +1080,21 @@ fn split_images(line: &str) -> Vec<&str> {
     out
 }
 
-/// Byte ranges of every `![alt](url)` image in `line`.
+/// Byte ranges of every `![alt](url)` image and `![[…]]` note embed in `line`.
 fn image_spans(line: &str) -> Vec<std::ops::Range<usize>> {
     let b = line.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
     while i + 1 < b.len() {
+        if b[i] == b'!'
+            && line[i + 1..].starts_with("[[")
+            && let Some(close) = line[i + 3..].find("]]")
+        {
+            let end = i + 3 + close + 2;
+            out.push(i..end);
+            i = end;
+            continue;
+        }
         if b[i] == b'!'
             && b[i + 1] == b'['
             && let Some(rb) = line[i + 2..].find(']')
@@ -1217,11 +1243,19 @@ mod tests {
             c.wiki_link("Projects/Tasks"),
             "[[Projects::Tasks|Projects/Tasks]]"
         );
-        // Anchor dropped, explicit alias kept.
+        // Anchors kept: heading, block id, and a nested heading path (last
+        // segment wins). An explicit alias still applies; a namespaced
+        // resolution skips the auto-alias so Zorite's `Title → anchor` shows.
         assert_eq!(
             c.wiki_link("Meeting Notes#Heading|see"),
-            "[[Meeting Notes|see]]"
+            "[[Meeting Notes#Heading|see]]"
         );
+        assert_eq!(
+            c.wiki_link("Meeting Notes#^decision1"),
+            "[[Meeting Notes#^decision1]]"
+        );
+        assert_eq!(c.wiki_link("Meeting Notes#A#B"), "[[Meeting Notes#B]]");
+        assert_eq!(c.wiki_link("Roadmap#Plan"), "[[Projects::Roadmap#Plan]]");
         // Ambiguous bare name → left as-is + warning.
         assert_eq!(c.wiki_link("Tasks"), "[[Tasks]]");
         assert!(c.warnings.iter().any(|w| w.contains("ambiguous")));
@@ -1237,8 +1271,16 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("missing embedded image"))
         );
-        // A note embed downgrades to a link.
-        assert_eq!(c.embed("Meeting Notes"), "[[Meeting Notes]]");
+        // A note embed stays a transclusion, resolved + anchor/alias kept.
+        assert_eq!(c.embed("Meeting Notes"), "![[Meeting Notes]]");
+        assert_eq!(
+            c.embed("Roadmap#^goals|The goals"),
+            "![[Projects::Roadmap#^goals|The goals]]"
+        );
+        assert_eq!(
+            c.embed("Meeting Notes#Decisions"),
+            "![[Meeting Notes#Decisions]]"
+        );
     }
 
     #[test]
@@ -1293,16 +1335,22 @@ mod tests {
         assert_eq!(promote_images("![](images/a.png)"), "![](images/a.png)");
         // A `{width=N}` caption tail stays with a lone image.
         assert_eq!(promote_images("no images"), "no images");
+        // A mid-sentence `![[…]]` embed moves onto its own line too.
+        assert_eq!(
+            promote_images("see ![[Meeting Notes]] too"),
+            "see\n\n![[Meeting Notes]]\n\ntoo"
+        );
+        assert_eq!(promote_images("![[Meeting Notes]]"), "![[Meeting Notes]]");
     }
 
     #[test]
-    fn strips_trailing_block_ids() {
+    fn block_id_markers_kept() {
+        let mut c = conv();
+        // A trailing ` ^id` is an anchor target Zorite indexes — keep it.
         assert_eq!(
-            strip_block_id("Decision here. ^decision1"),
-            "Decision here."
+            c.convert_line("Decision here. ^decision1"),
+            "Decision here. ^decision1"
         );
-        assert_eq!(strip_block_id("no anchor here"), "no anchor here");
-        assert_eq!(strip_block_id("a ^b c"), "a ^b c"); // not at line end
     }
 
     #[test]
