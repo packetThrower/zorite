@@ -574,7 +574,7 @@ pub struct EditorState {
     block_math_em: Option<f32>,
     /// Per-logical-line `src` for rows painted as a file chip (from the last
     /// paint), so a left-click can open it and a right-click can edit it.
-    chip_rows: Vec<Option<SharedString>>,
+    chip_rows: Vec<Option<(SharedString, bool)>>,
     /// Window-space painted bounds of each inline image, with its logical line
     /// index (from the last paint), so a press near a corner can start a resize
     /// and know which `![](src)` line to rewrite. One entry per rendered image.
@@ -1940,8 +1940,12 @@ impl EditorState {
         }
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
-        if let Some(src) = self.chip_at(event.position) {
-            cx.emit(EditorEvent::OpenLink(src));
+        if let Some((src, wiki)) = self.chip_at(event.position) {
+            cx.emit(if wiki {
+                EditorEvent::OpenWikiLink(src)
+            } else {
+                EditorEvent::OpenLink(src)
+            });
             return;
         }
         // Left-click an inline `$…$` formula opens its structural editor at the formula's spot
@@ -2651,7 +2655,7 @@ impl EditorState {
 
     /// The `src` of a file chip on the row at window `position`, if that row is a
     /// chip (from the last paint) — left-click opens it, right-click edits.
-    fn chip_at(&self, position: Point<Pixels>) -> Option<SharedString> {
+    fn chip_at(&self, position: Point<Pixels>) -> Option<(SharedString, bool)> {
         if self.wrapped.is_empty() || self.chip_rows.iter().all(Option::is_none) {
             return None;
         }
@@ -4056,6 +4060,9 @@ enum Block {
         bg: Hsla,
         border: Hsla,
         height: Pixels,
+        /// `src` is a wiki target (an `![[embed]]` chip → OpenWikiLink, which
+        /// navigates + jumps to any anchor) vs a file path (→ OpenLink).
+        wiki: bool,
     },
     /// A run of `key:: value` properties as a two-column panel (the reader's
     /// `render_property_table` twin). Painted on the region's first line; the
@@ -4909,7 +4916,25 @@ fn shape_document(
             }
             _ => px(0.),
         };
-        let widget: Option<Block> = if let Some(st) = md
+        let widget: Option<Block> = if let Some(st) = md.filter(|_| !is_code)
+            && let Some(inner) = gpui_markdown::syntax::embed_line(line)
+        {
+            // A standalone `![[target]]` transclusion renders as a clickable
+            // chip (`⧉ Note → anchor`) that opens/jumps to the source — the
+            // reading view renders the full embedded content; nesting live
+            // views inside the editor isn't feasible. Raw on caret, like a
+            // file chip.
+            let (target, _) = gpui_markdown::syntax::wiki_target_display(inner);
+            (Some(idx) != caret_row).then(|| Block::Chip {
+                src: target.to_string().into(),
+                label: embed_chip_label(inner).into(),
+                link: st.link,
+                bg: st.code_bg,
+                border: st.marker,
+                height: fs * LINE_HEIGHT_RATIO + px(CHIP_PAD * 2.),
+                wiki: true,
+            })
+        } else if let Some(st) = md
             && let Some((src, w_attr, _)) = img_row
         {
             if let Some(label) = block_chip.and_then(|f| f(src)) {
@@ -4922,6 +4947,7 @@ fn shape_document(
                     bg: st.code_bg,
                     border: st.marker,
                     height: fs * LINE_HEIGHT_RATIO + px(CHIP_PAD * 2.),
+                    wiki: false,
                 })
             } else {
                 // An image renders even on the caret's own row — a Word-style
@@ -5615,6 +5641,25 @@ fn paint_prop_panel(
                 x += tw;
             }
         }
+    }
+}
+
+/// The label of an `![[target]]` embed chip: an alias verbatim, else the
+/// anchor-link display (`Note → id` / `Note → Heading`), else the page name —
+/// each behind a transclusion glyph.
+fn embed_chip_label(inner: &str) -> String {
+    let (target, display) = gpui_markdown::syntax::wiki_target_display(inner);
+    if display != target {
+        return format!("⧉ {display}");
+    }
+    let (page, block) = gpui_markdown::syntax::split_block_anchor(target);
+    if let Some(id) = block {
+        return format!("⧉ {page} → {id}");
+    }
+    let (page, heading) = gpui_markdown::syntax::split_heading_anchor(target);
+    match heading {
+        Some(h) => format!("⧉ {page} → {}", h.trim()),
+        None => format!("⧉ {page}"),
     }
 }
 
@@ -7350,11 +7395,11 @@ impl Element for EditorElement {
             .zip(prepaint.marks.iter())
             .map(|(bg, mark)| row_inset(*bg, *mark))
             .collect();
-        let chip_rows: Vec<Option<SharedString>> = prepaint
+        let chip_rows: Vec<Option<(SharedString, bool)>> = prepaint
             .widgets
             .iter()
             .map(|w| match w {
-                Some(Block::Chip { src, .. }) => Some(src.clone()),
+                Some(Block::Chip { src, wiki, .. }) => Some((src.clone(), *wiki)),
                 _ => None,
             })
             .collect();

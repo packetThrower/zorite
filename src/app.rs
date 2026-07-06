@@ -1320,6 +1320,83 @@ impl AppView {
         }
     }
 
+    /// Resolve every `![[target]]` embed in `content` — and, recursively, in
+    /// the embedded content itself (depth-capped) — to `(label, content)`, for
+    /// the reader's embed provider. Providers can't query mid-render, so hosts
+    /// build this map up front.
+    pub(crate) fn build_embed_map(
+        &self,
+        content: &str,
+    ) -> std::rc::Rc<HashMap<String, (SharedString, SharedString)>> {
+        let mut map = HashMap::new();
+        let mut queue: Vec<(String, usize)> = gpui_markdown::syntax::embed_targets(content)
+            .into_iter()
+            .map(|t| (t, 0usize))
+            .collect();
+        while let Some((target, depth)) = queue.pop() {
+            if depth >= 3 || map.contains_key(&target) {
+                continue;
+            }
+            if let Some((label, body)) = self.resolve_embed(&target) {
+                for t in gpui_markdown::syntax::embed_targets(&body) {
+                    queue.push((t, depth + 1));
+                }
+                map.insert(target, (label, body));
+            }
+        }
+        std::rc::Rc::new(map)
+    }
+
+    /// Resolve one embed target to `(source label, content)`: a whole page, a
+    /// `#^id` block's line, or a `#Heading` section — with the same rules as
+    /// navigation (a literal `#`-titled page wins; PDFs and whiteboards don't
+    /// embed). `None` leaves the `![[…]]` line rendering as plain text.
+    fn resolve_embed(&self, inner: &str) -> Option<(SharedString, SharedString)> {
+        use gpui_markdown::syntax::{
+            extract_block, extract_section, split_block_anchor, split_heading_anchor,
+            wiki_target_display,
+        };
+        let (target, display) = wiki_target_display(inner);
+        let (page_t, block) = split_block_anchor(target);
+        let (page_t, heading) = if block.is_none() {
+            if matches!(self.db.get_page_by_title(target), Ok(Some(_))) {
+                (target, None)
+            } else {
+                split_heading_anchor(target)
+            }
+        } else {
+            (page_t, None)
+        };
+        if crate::pdf::is_pdf(page_t)
+            || matches!(self.db.get_whiteboard_by_title(page_t), Ok(Some(_)))
+        {
+            return None;
+        }
+        let page = self
+            .db
+            .get_page_by_title(page_t)
+            .ok()
+            .flatten()
+            .or_else(|| self.db.get_page_by_alias(page_t).ok().flatten())?;
+        let range = if let Some(id) = block {
+            extract_block(&page.content, id)?
+        } else if let Some(h) = heading {
+            extract_section(&page.content, h)?
+        } else {
+            0..page.content.len()
+        };
+        let label = if display != target {
+            display.to_string()
+        } else if let Some(id) = block {
+            format!("{page_t} → {id}")
+        } else if let Some(h) = heading {
+            format!("{page_t} → {}", h.trim())
+        } else {
+            page.title.clone()
+        };
+        Some((label.into(), page.content[range].to_string().into()))
+    }
+
     /// Toggle the jump-to-date calendar overlay (the sidebar calendar icon).
     /// Opening resets to the current month and refreshes the entry markers.
     pub fn toggle_calendar(&mut self, cx: &mut Context<Self>) {

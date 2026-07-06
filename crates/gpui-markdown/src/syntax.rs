@@ -466,6 +466,67 @@ pub fn find_block_line(content: &str, id: &str) -> Option<usize> {
     None
 }
 
+/// The embed target when `line` is a standalone transclusion — exactly
+/// `![[target]]` (Obsidian's embed syntax) and nothing else on the line.
+/// Mid-text embeds don't count; they render as plain links.
+pub fn embed_line(line: &str) -> Option<&str> {
+    let t = line.trim();
+    let inner = t.strip_prefix("![[")?.strip_suffix("]]")?;
+    (!inner.trim().is_empty() && !inner.contains("]]")).then(|| inner.trim())
+}
+
+/// Every standalone embed target in `content`, in order — what a host
+/// pre-resolves before rendering (recursing into resolved content itself for
+/// nested embeds).
+pub fn embed_targets(content: &str) -> Vec<String> {
+    content
+        .split('\n')
+        .filter_map(embed_line)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The source range of the block carrying the anchor `^id` — its whole line —
+/// for embedding (`![[Note#^id]]`).
+pub fn extract_block(content: &str, id: &str) -> Option<std::ops::Range<usize>> {
+    let start = find_block_line(content, id)?;
+    let end = content[start..]
+        .find('\n')
+        .map_or(content.len(), |p| start + p);
+    Some(start..end)
+}
+
+/// The source range of the section under `heading` — the heading line through
+/// the line before the next heading of the same or higher level (fenced code
+/// skipped) — for embedding (`![[Note#Heading]]`).
+pub fn extract_section(content: &str, heading: &str) -> Option<std::ops::Range<usize>> {
+    let start = find_heading_line(content, heading)?;
+    let level = content[start..]
+        .trim_start()
+        .bytes()
+        .take_while(|&b| b == b'#')
+        .count();
+    let mut pos = content[start..]
+        .find('\n')
+        .map_or(content.len(), |p| start + p + 1);
+    let mut in_fence = false;
+    while pos < content.len() {
+        let line_end = content[pos..].find('\n').map_or(content.len(), |p| pos + p);
+        let line = &content[pos..line_end];
+        let t = line.trim_start();
+        if t.starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            let l = t.bytes().take_while(|&b| b == b'#').count();
+            if (1..=level).contains(&l) && t[l..].starts_with(' ') {
+                return Some(start..pos.saturating_sub(1).max(start));
+            }
+        }
+        pos = line_end + 1;
+    }
+    Some(start..content.len())
+}
+
 /// Split a `key:: value` property line into `(key, value)`. The key must look
 /// like an identifier (starts with a letter; letters/digits/`-_.` after) so
 /// prose containing `::` — Zorite `[[wiki]]` links, `C++::method` — isn't
@@ -624,6 +685,29 @@ mod tests {
         let src = "intro\nthe fact ^fact-1\nmore";
         assert_eq!(find_block_line(src, "fact-1"), Some(6));
         assert_eq!(find_block_line(src, "nope"), None);
+    }
+
+    #[test]
+    fn embeds_and_extraction() {
+        assert_eq!(embed_line("![[Note]]"), Some("Note"));
+        assert_eq!(embed_line("  ![[Note#^id]]  "), Some("Note#^id"));
+        assert_eq!(embed_line("text ![[Note]]"), None); // not standalone
+        assert_eq!(embed_line("![[]]"), None);
+        assert_eq!(embed_line("[[Note]]"), None);
+
+        let src = "pre\nthe block ^b1\n## Sec\nbody\nmore\n### Sub\ndeep\n## Next\nafter";
+        assert_eq!(&src[extract_block(src, "b1").unwrap()], "the block ^b1");
+        // A section runs through its subsections, stopping at the next
+        // same-or-higher heading.
+        assert_eq!(
+            &src[extract_section(src, "Sec").unwrap()],
+            "## Sec\nbody\nmore\n### Sub\ndeep"
+        );
+        assert_eq!(
+            &src[extract_section(src, "Next").unwrap()],
+            "## Next\nafter"
+        );
+        assert!(extract_section(src, "missing").is_none());
     }
 
     #[test]

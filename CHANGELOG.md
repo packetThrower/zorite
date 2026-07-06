@@ -31,6 +31,17 @@ log: <https://github.com/packetThrower/zorite/releases>.
   and the pages carrying it (click through to open). From the same page you can
   override any key's icon from a picker (or map an icon to a key before its
   first use), and rename a key across every page at once.
+- **Embeds (transclusion)** — a line holding just `![[Note]]` renders that
+  note's content right there in the reading view, in a quoted box with a
+  clickable source label; `![[Note#^id]]` embeds a single block and
+  `![[Note#Heading]]` a whole section (an `|alias` renames the label, and
+  embeds nest a few levels deep). The live editor shows an embed as a compact
+  `⧉ Note → anchor` chip that opens the source — click into the line to edit
+  the raw text. Edits to the source page show up in every embed.
+- **Anchor links no longer spawn junk pages** — linking to `[[Note#^id]]` or
+  `[[Note#Heading]]` used to auto-create a page literally named `Note#…` when
+  links were indexed; the index now targets the real page (an existing page
+  whose title genuinely contains `#` still wins).
 - **Block references and heading links** — end a line with ` ^some-id` to give
   it an address, then link to it from anywhere with `[[Note#^some-id]]`; or link
   straight to a heading with `[[Note#My Heading]]` (case-insensitive). Clicking

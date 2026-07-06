@@ -353,6 +353,12 @@ pub const SNIPPETS: &[Snippet] = &[
 /// Called when a `[[wiki-link]]` is clicked, with the trimmed title.
 pub type WikiLinkHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 
+/// Resolves a standalone `![[target]]` embed to `(source label, content)` —
+/// the host pre-resolves targets from its database (a page, a `#^id` block, or
+/// a `#Heading` section) since render-time providers can't query. `None` (or a
+/// missing target) falls back to rendering the line as text.
+pub type EmbedProvider = Rc<dyn Fn(&str) -> Option<(SharedString, SharedString)>>;
+
 /// A standalone image (a paragraph that is just `![alt](src)`, optionally
 /// followed by a `{width=N}` attribute). Handed to the host's [`ImageRenderer`]
 /// so it can render a real, possibly interactive, image element.
@@ -431,6 +437,7 @@ pub struct MarkdownView {
     /// Click a task checkbox to toggle it (the host applies + persists).
     on_task_toggle: Option<TaskToggleHandler>,
     on_alert_toggle: Option<TaskToggleHandler>,
+    on_embed: Option<EmbedProvider>,
 }
 
 impl MarkdownView {
@@ -453,6 +460,7 @@ impl MarkdownView {
             on_click_source: None,
             on_task_toggle: None,
             on_alert_toggle: None,
+            on_embed: None,
         }
     }
 
@@ -546,6 +554,13 @@ impl MarkdownView {
         self.on_alert_toggle = Some(handler);
         self
     }
+
+    /// Install the embed resolver: a standalone `![[target]]` line renders the
+    /// target's content in a bordered box (see [`EmbedProvider`]).
+    pub fn on_embed(mut self, provider: EmbedProvider) -> Self {
+        self.on_embed = Some(provider);
+        self
+    }
 }
 
 /// Content-keyed parse cache. The host's journal feed re-renders every
@@ -626,7 +641,9 @@ impl RenderOnce for MarkdownView {
             on_click_source: self.on_click_source,
             on_task_toggle: self.on_task_toggle,
             on_alert_toggle: self.on_alert_toggle,
+            on_embed: self.on_embed,
             suppress_heading_top: false,
+            embed_depth: 0,
         };
 
         let mut col = div()
@@ -706,10 +723,14 @@ struct Ctx {
     on_click_source: Option<ClickSourceHandler>,
     on_task_toggle: Option<TaskToggleHandler>,
     on_alert_toggle: Option<TaskToggleHandler>,
+    on_embed: Option<EmbedProvider>,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
     suppress_heading_top: bool,
+    /// Transclusion nesting level — embeds inside embeds stop at a small cap,
+    /// which also breaks A-embeds-B-embeds-A cycles.
+    embed_depth: usize,
 }
 
 // --- Block rendering ---
@@ -717,6 +738,16 @@ struct Ctx {
 fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Option<AnyElement> {
     match node {
         mdast::Node::Paragraph(p) => {
+            // A standalone `![[target]]` line transcludes the target: the host
+            // pre-resolves it to content and a box renders it in place. An
+            // unresolved target (or no provider) falls through to plain text,
+            // and a depth cap keeps embed cycles finite.
+            if let Some(target) = embed_target(p)
+                && ctx.embed_depth < 3
+                && let Some((label, content)) = ctx.on_embed.as_ref().and_then(|f| f(&target))
+            {
+                return Some(render_embed(&target, label, content, ctx, window));
+            }
             // A block of `key:: value` lines renders as a property panel.
             if let Some(rows) = property_rows(p, &ctx.source.clone()) {
                 ctx.counter += 1;
@@ -1695,6 +1726,108 @@ fn collect_definitions(node: &mdast::Node, out: &mut HashMap<String, String>) {
 /// Per-table visual style, from a `<!-- table:STYLE -->` marker comment on the
 /// line above the table (mirrors the editor; the style names are the shared
 /// contract). `Grid` is the default (no marker).
+/// The embed target when paragraph `p` is exactly a standalone `![[target]]`
+/// line (a single text child holding just the embed).
+fn embed_target(p: &mdast::Paragraph) -> Option<String> {
+    if p.children.len() != 1 {
+        return None;
+    }
+    let mdast::Node::Text(t) = &p.children[0] else {
+        return None;
+    };
+    crate::syntax::embed_line(&t.value).map(str::to_string)
+}
+
+/// Render a transclusion: a bordered box with a small clickable source label
+/// (opens/jumps to the target) above the target content, rendered like any
+/// note. Handlers that write back by source offset (click-to-caret, task and
+/// callout toggles) and in-page search are suppressed inside — those offsets
+/// belong to the embedding page, not the embedded one.
+fn render_embed(
+    target: &str,
+    label: SharedString,
+    content: SharedString,
+    ctx: &mut Ctx,
+    window: &mut Window,
+) -> AnyElement {
+    let saved = (
+        ctx.on_click_source.take(),
+        ctx.on_task_toggle.take(),
+        ctx.on_alert_toggle.take(),
+        ctx.query.take(),
+    );
+    ctx.embed_depth += 1;
+    let mut body = div().flex().flex_col().gap(px(8.0));
+    if let Some(parsed) = parse_cached(&content)
+        && let mdast::Node::Root(root) = parsed.as_ref()
+    {
+        for node in &root.children {
+            collect_definitions(node, &mut ctx.definitions);
+        }
+        let mut pending_style = None;
+        for node in &root.children {
+            if let mdast::Node::Html(h) = node
+                && let Some(style) = table_style_marker(&h.value)
+            {
+                pending_style = Some(style);
+                continue;
+            }
+            if let mdast::Node::Table(t) = node {
+                body = body.child(render_table(
+                    t,
+                    ctx,
+                    pending_style.take().unwrap_or_default(),
+                    window,
+                ));
+                continue;
+            }
+            pending_style = None;
+            if let Some(el) = render_block(node, ctx, window) {
+                body = body.child(el);
+            }
+        }
+    }
+    ctx.embed_depth -= 1;
+    (
+        ctx.on_click_source,
+        ctx.on_task_toggle,
+        ctx.on_alert_toggle,
+        ctx.query,
+    ) = saved;
+
+    // Source label: muted, link-colored on the name, click opens/jumps.
+    let mut header = div()
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(4.0))
+        .text_size(px(f32::from(ctx.style.text_size) * 0.8))
+        .text_color(ctx.style.link_color)
+        .child(label);
+    if let Some(on_wiki) = ctx.on_wiki_link.clone() {
+        let t: SharedString = target.to_string().into();
+        header = header.cursor_pointer().on_mouse_down(
+            MouseButton::Left,
+            move |_: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                on_wiki(t.clone(), window, cx);
+            },
+        );
+    }
+    div()
+        .border_l_2()
+        .border_color(ctx.style.muted_color)
+        .rounded(px(4.0))
+        .pl(px(12.0))
+        .py(px(4.0))
+        .flex()
+        .flex_col()
+        .gap(px(6.0))
+        .child(header)
+        .child(body)
+        .into_any_element()
+}
+
 /// If every line of paragraph `p` is a `key:: value` property, return the rows
 /// as `(key, value, value_offset)` — `value_offset` is the source byte offset
 /// where the value text begins, so a click on it maps back precisely. `None`
