@@ -1242,6 +1242,10 @@ impl AppView {
     }
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A `[[Note#^block-id]]` link targets a block: open the note, then seat
+        // the caret at (and scroll to) the line carrying the `^block-id` anchor.
+        // Only the `#^` form is an anchor — a bare `#` stays part of the title.
+        let (title, block) = gpui_markdown::syntax::split_block_anchor(title);
         // A `[[file.pdf]]` link opens the PDF viewer instead of a page; a `#pN`
         // fragment (`[[file.pdf#p12]]`) also jumps to page N when it's already loaded.
         let (base, target_page) = match title.split_once('#') {
@@ -1269,7 +1273,21 @@ impl AppView {
         }
         match self.db.get_or_create_page(title) {
             Ok(page) => {
+                // A block anchor seats the caret at (and scrolls to) the line
+                // carrying `^id`, once the page's editor is up (deferred past
+                // this render pass). A missing/stale id just opens the page.
+                let seat = block
+                    .filter(|_| !page.is_journal)
+                    .and_then(|id| gpui_markdown::syntax::find_block_line(&page.content, id));
                 self.open_page_foreground(page, window, cx);
+                if let Some(offset) = seat {
+                    let weak = cx.entity().downgrade();
+                    window.defer(cx, move |window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.edit_page_at_offset(offset, px(160.0), window, cx);
+                        });
+                    });
+                }
                 // The page may be newly created (via the New-page dialog or a
                 // [[link]]), so refresh the sidebar to show it — and tell other
                 // windows so their sidebars pick up the new page too.

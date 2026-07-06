@@ -1542,7 +1542,21 @@ fn push_text(
                     out.map(src_base + plain_start);
                     push_run(&value[plain_start..i], cur, out);
                     out.map(src_base + i + 2); // the display text sits just past `[[`
-                    push_link(display, target, style.link_color, cur, out);
+                    // An unaliased block link (`[[Note#^id]]`) reads as
+                    // `Note → id` — the editor renders the same, and an alias
+                    // still overrides the display entirely.
+                    let (page, block) = crate::syntax::split_block_anchor(display);
+                    if let (true, Some(id)) = (display == target, block) {
+                        push_link(
+                            &format!("{page} → {id}"),
+                            target,
+                            style.link_color,
+                            cur,
+                            out,
+                        );
+                    } else {
+                        push_link(display, target, style.link_color, cur, out);
+                    }
                     i += 2 + close + 2;
                     plain_start = i;
                     continue;
@@ -1550,6 +1564,20 @@ fn push_text(
             }
             i += 1; // not a valid link; the '[' stays plain
             continue;
+        }
+        // An Obsidian block-id anchor (` ^some-id` at a line's end) is an
+        // addressing artifact, not content — hide it (like Obsidian's preview).
+        // Text nodes carry soft breaks, so a "line end" is a `\n` or the end of
+        // the value.
+        if bytes[i] == b' ' && value[i + 1..].starts_with('^') {
+            let end = value[i..].find('\n').map_or(value.len(), |p| i + p);
+            if crate::syntax::block_id(&value[..end]).is_some_and(|(at, _)| at == i) {
+                out.map(src_base + plain_start);
+                push_run(&value[plain_start..i], cur, out);
+                i = end;
+                plain_start = i;
+                continue;
+            }
         }
         // #tag — at a word boundary, followed by tag characters (the shared
         // grammar: namespaced `#a/b` included, boundary = any non-word char).

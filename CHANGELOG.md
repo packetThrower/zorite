@@ -31,6 +31,13 @@ log: <https://github.com/packetThrower/zorite/releases>.
   and the pages carrying it (click through to open). From the same page you can
   override any key's icon from a picker (or map an icon to a key before its
   first use), and rename a key across every page at once.
+- **Block references** — end a line with ` ^some-id` to give it an address, then
+  link to it from anywhere with `[[Note#^some-id]]`: clicking opens the note and
+  jumps straight to that line. The link reads as `Note → some-id` in both views
+  (an `|alias` still overrides), and the `^id` anchor itself stays out of the
+  way — hidden in the reading view, dimmed/hidden in the editor until the caret
+  is on its line. Previously such a link created a page literally named
+  `Note#^some-id`.
 - **Foldable callouts** — an Obsidian-style fold char on an alert marker makes
   it collapsible: `> [!NOTE]-` starts folded (only the title shows), `> [!NOTE]+`
   starts open, and a plain `> [!NOTE]` stays as-is. A chevron joins the title in

@@ -384,6 +384,43 @@ pub fn link_at(line: &str, col: usize) -> Option<LinkHit> {
         .map(|(_, hit)| hit)
 }
 
+/// The Obsidian block-id anchor at the end of `line` (` ^some-id`): the byte
+/// where its leading space starts (so renderers can hide the whole tail) and
+/// the id itself. The id must be non-empty, made of word chars / `-`, and sit
+/// at the line's end (trailing whitespace tolerated).
+pub fn block_id(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end();
+    let (before, id) = trimmed.rsplit_once(" ^")?;
+    if id.is_empty() || !id.bytes().all(|b| is_word_char(b) || b == b'-') {
+        return None;
+    }
+    Some((before.len(), id))
+}
+
+/// Split a wiki-link target into `(page, block id)`: `Note#^id` links to the
+/// block carrying `^id` on the page `Note`; anything else is a plain page
+/// target. Only the `#^` form is an anchor — a bare `#` stays part of the
+/// title (page names may contain it, and `file.pdf#p3` has its own meaning).
+pub fn split_block_anchor(target: &str) -> (&str, Option<&str>) {
+    match target.split_once("#^") {
+        Some((page, id)) if !page.is_empty() && !id.is_empty() => (page, Some(id)),
+        _ => (target, None),
+    }
+}
+
+/// The byte offset of the start of the line carrying the block anchor `^id`,
+/// searching top to bottom. Drives navigation for `[[Note#^id]]` links.
+pub fn find_block_line(content: &str, id: &str) -> Option<usize> {
+    let mut start = 0;
+    for line in content.split('\n') {
+        if block_id(line).is_some_and(|(_, i)| i == id) {
+            return Some(start);
+        }
+        start += line.len() + 1;
+    }
+    None
+}
+
 /// Split a `key:: value` property line into `(key, value)`. The key must look
 /// like an identifier (starts with a letter; letters/digits/`-_.` after) so
 /// prose containing `::` — Zorite `[[wiki]]` links, `C++::method` — isn't
@@ -520,6 +557,28 @@ mod tests {
         let back = toggle_alert_fold_at(&toggled, 10).unwrap();
         assert_eq!(back, src);
         assert!(toggle_alert_fold_at("plain text", 2).is_none());
+    }
+
+    #[test]
+    fn block_ids_and_anchor_links() {
+        assert_eq!(
+            block_id("Decision made. ^decision1"),
+            Some((14, "decision1"))
+        );
+        assert_eq!(block_id("trailing space ^id  "), Some((14, "id")));
+        assert_eq!(block_id("no anchor"), None);
+        assert_eq!(block_id("mid ^id not at end"), None);
+        assert_eq!(block_id("bad chars ^a b"), None);
+
+        assert_eq!(split_block_anchor("Note#^id"), ("Note", Some("id")));
+        assert_eq!(split_block_anchor("Note"), ("Note", None));
+        // A bare `#` is part of the title, not an anchor.
+        assert_eq!(split_block_anchor("C# Notes"), ("C# Notes", None));
+        assert_eq!(split_block_anchor("file.pdf#p3"), ("file.pdf#p3", None));
+
+        let src = "intro\nthe fact ^fact-1\nmore";
+        assert_eq!(find_block_line(src, "fact-1"), Some(6));
+        assert_eq!(find_block_line(src, "nope"), None);
     }
 
     #[test]
