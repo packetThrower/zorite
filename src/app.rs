@@ -77,6 +77,9 @@ pub enum TabKind {
     /// The graph view (All pages → "Graph"): pages and whiteboards as nodes,
     /// `page_links` as edges.
     Graph,
+    /// The Properties page (All pages → "Properties"): every `key:: value`
+    /// property in the vault — browse values/pages, override icons, rename keys.
+    Properties,
     /// The hidden brick-breaker (`/play`).
     Game,
 }
@@ -340,6 +343,18 @@ fn to_editor_align(a: ratex_gpui::MathAlign) -> gpui_editor::MathAlign {
     }
 }
 
+/// An in-progress in-place property edit: the seated form, the note editor it
+/// overlays, and where to persist — mirrors [`MathEdit`] for the `$$` block.
+struct PropEdit {
+    editor: Entity<crate::ui::property_editor::PropertyEditor>,
+    source: Entity<EditorState>,
+    target: SlashTarget,
+    /// Commits the edit when the form loses focus (click-away). Kept alive here.
+    _blur_sub: gpui::Subscription,
+    /// Commits + seats the note caret on a keyboard exit (Enter / final Escape).
+    _exit_sub: gpui::Subscription,
+}
+
 struct MathEdit {
     editor: Entity<ratex_gpui::MathEditor>,
     source: Entity<EditorState>,
@@ -454,6 +469,8 @@ pub struct AppView {
     all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
     /// The graph view's model (nodes + layout + camera), rebuilt on open.
     pub graph: Option<crate::ui::graph::GraphState>,
+    /// The Properties page state (All pages → "Properties"); rebuilt on open.
+    pub props_page: Option<crate::ui::properties_page::PropsPageState>,
     /// The hidden game's state + its ~60fps tick task, alive while its tab is.
     pub game: Option<crate::ui::game::GameState>,
     game_tick: Option<Task<()>>,
@@ -478,6 +495,7 @@ pub struct AppView {
     lightbox_focus: FocusHandle,
     // An open structural-math edit (a double-clicked `$$` block), or `None`.
     math_edit: Option<MathEdit>,
+    prop_edit: Option<PropEdit>,
     // Right-click context menu on a rendered formula (Copy LaTeX / Export SVG / Export PNG).
     ctx_menu: Option<CtxMenu>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
@@ -747,6 +765,7 @@ impl AppView {
             all_pages_kind: Default::default(),
             all_pages_pdfs: Vec::new(),
             graph: None,
+            props_page: None,
             game: None,
             game_tick: None,
             journal_tab_clicks: (0, std::time::Instant::now()),
@@ -758,6 +777,7 @@ impl AppView {
             image_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             math_edit: None,
+            prop_edit: None,
             ctx_menu: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
@@ -840,6 +860,13 @@ impl AppView {
             .and_then(|s| s.parse().ok())
             .filter(|s| TEXT_SIZES.contains(s))
             .unwrap_or(DEFAULT_TEXT_SIZE);
+        // Property-icon overrides (Properties page) into the process-global map
+        // the renderers' resolvers read.
+        if let Some(json) = this.db.get_setting("property_icons")
+            && let Ok(map) = serde_json::from_str(&json)
+        {
+            crate::theme::set_property_icon_overrides(map);
+        }
         // Mirror the persisted auto-lock threshold into the process-global the
         // lock timer reads (it has no database handle).
         crate::security::set_auto_lock_minutes(
@@ -981,6 +1008,21 @@ impl AppView {
                 EditorEvent::MathMenu { source, position } => {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
+                }
+                EditorEvent::EditProperties {
+                    range,
+                    source,
+                    at_end,
+                } => {
+                    this.open_prop_edit(
+                        st.clone(),
+                        SlashTarget::Day(key.clone()),
+                        range.clone(),
+                        source.clone(),
+                        *at_end,
+                        window,
+                        cx,
+                    );
                 }
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
@@ -1561,6 +1603,11 @@ impl AppView {
                     self.rebuild_graph();
                 }
             }
+            TabKind::Properties => {
+                self.page_editor = None;
+                // Rebuild on every activation so the index reflects fresh edits.
+                self.refresh_props_page(window, cx);
+            }
             TabKind::Game => self.page_editor = None,
         }
         // Focus the AppView so the window's key dispatch reaches its global shortcuts
@@ -1854,6 +1901,21 @@ impl AppView {
                 EditorEvent::MathMenu { source, position } => {
                     // Not editing → no Align items (nothing to re-justify live + persist).
                     this.open_math_menu(source.clone(), *position, false, cx);
+                }
+                EditorEvent::EditProperties {
+                    range,
+                    source,
+                    at_end,
+                } => {
+                    this.open_prop_edit(
+                        st.clone(),
+                        SlashTarget::Page(pid),
+                        range.clone(),
+                        source.clone(),
+                        *at_end,
+                        window,
+                        cx,
+                    );
                 }
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
@@ -2990,6 +3052,108 @@ impl AppView {
         Some((edit.source, new_range))
     }
 
+    /// Seat the in-place property editor over a `key:: value` block (reusing the
+    /// math block's reserved-gap machinery) and commit on blur.
+    #[allow(clippy::too_many_arguments)]
+    fn open_prop_edit(
+        &mut self,
+        source: Entity<EditorState>,
+        target: SlashTarget,
+        range: std::ops::Range<usize>,
+        block: SharedString,
+        at_end: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Clicking another panel commits the one being edited first.
+        if self.prop_edit.is_some() {
+            self.commit_prop_edit(cx);
+        }
+        // Existing property keys across the vault feed the key dropdown.
+        let keys: Vec<SharedString> = self
+            .db
+            .property_index()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(k, _)| k.into())
+            .collect();
+        let text_size = self.text_size;
+        let editor = cx.new(|cx| {
+            crate::ui::property_editor::PropertyEditor::new(&block, keys, text_size, window, cx)
+        });
+        let focus = editor.read(cx).focus_handle(cx);
+        // Reserve a gap tall enough for the rows + the add-property button.
+        let n = block
+            .lines()
+            .filter(|l| gpui_markdown::syntax::property(l).is_some())
+            .count()
+            .max(1);
+        let height = px(n as f32 * 34.0 + 44.0);
+        source.update(cx, |e, cx| {
+            e.set_editing_block(range, editor.clone().into(), height, cx)
+        });
+        editor.update(cx, |ed, cx| ed.focus_end(at_end, window, cx));
+        // Commit when the form loses focus (guarded on identity, like math).
+        let weak = cx.entity().downgrade();
+        let editor_id = editor.entity_id();
+        let blur_sub = window.on_focus_out(&focus, cx, move |_ev, _window, cx| {
+            weak.update(cx, |this: &mut AppView, cx| {
+                if this
+                    .prop_edit
+                    .as_ref()
+                    .is_some_and(|p| p.editor.entity_id() == editor_id)
+                {
+                    this.commit_prop_edit(cx);
+                }
+            })
+            .ok();
+        });
+        // Enter / the final Escape exit from the keyboard: commit and seat the
+        // note caret on the line after the block (like leaving a math block).
+        let exit_sub = cx.subscribe_in(
+            &editor,
+            window,
+            |this, _ed, _: &crate::ui::property_editor::PropExit, window, cx| {
+                if let Some((source, block)) = this.commit_prop_edit(cx) {
+                    source.update(cx, |e, cx| e.exit_math(block, true, window, cx));
+                }
+            },
+        );
+        self.prop_edit = Some(PropEdit {
+            editor,
+            source,
+            target,
+            _blur_sub: blur_sub,
+            _exit_sub: exit_sub,
+        });
+        cx.notify();
+    }
+
+    /// Serialize the property form back to `key:: value` lines, splice it over
+    /// the block, and persist. Returns the source editor + the new block's range
+    /// so a keyboard exit can seat the caret beside it.
+    fn commit_prop_edit(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(Entity<EditorState>, std::ops::Range<usize>)> {
+        let edit = self.prop_edit.take()?;
+        let new_block = edit.editor.read(cx).to_source(cx);
+        let Some(range) = edit.source.update(cx, |e, cx| e.end_editing_block(cx)) else {
+            cx.notify();
+            return None;
+        };
+        let new_range = range.start..range.start + new_block.len();
+        edit.source
+            .update(cx, |e, cx| e.replace_range(range, &new_block, cx));
+        let new = edit.source.read(cx).text().to_string();
+        match &edit.target {
+            SlashTarget::Day(key) => self.save_journal(key, &new, cx),
+            SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
+        }
+        cx.notify();
+        Some((edit.source, new_range))
+    }
+
     /// The caret arrowed past a formula's edge: commit the edit, then seat the text caret beside
     /// it (and re-focus the note editor) — the keyboard path out of the structural editor, as
     /// opposed to clicking away. An inline `$…$` seats the caret right beside the span on the
@@ -3572,6 +3736,114 @@ impl AppView {
             title: "Graph".into(),
         });
         self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Open (or focus) the Properties page tab (All pages → "Properties").
+    pub(crate) fn open_properties(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self
+            .tabs
+            .iter()
+            .position(|t| matches!(t.kind, TabKind::Properties))
+        {
+            self.activate_tab(ix, window, cx);
+            return;
+        }
+        self.tabs.push(OpenTab {
+            kind: TabKind::Properties,
+            title: "Properties".into(),
+        });
+        self.activate_tab(self.tabs.len() - 1, window, cx);
+    }
+
+    /// Rebuild the Properties page's index from the DB (activation + edits),
+    /// preserving its UI state (expansion, menus) when it already exists.
+    pub(crate) fn refresh_props_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let index = self.db.property_index_detailed().unwrap_or_default();
+        match &mut self.props_page {
+            Some(state) => state.index = index,
+            None => {
+                self.props_page = Some(crate::ui::properties_page::PropsPageState::new(
+                    index, window, cx,
+                ))
+            }
+        }
+        cx.notify();
+    }
+
+    /// Set (or clear, with `None`) a property key's icon override and persist
+    /// the map. `key` = "" targets the Properties page's add-mapping row, whose
+    /// key comes from its input.
+    pub(crate) fn set_property_icon(
+        &mut self,
+        key: &str,
+        icon: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        let key = if key.is_empty() {
+            let Some(state) = &self.props_page else {
+                return;
+            };
+            let typed = state.new_key_input.read(cx).value().trim().to_string();
+            if !crate::ui::properties_page::valid_key(&typed) {
+                return;
+            }
+            typed
+        } else {
+            key.to_string()
+        };
+        let mut map = crate::theme::property_icon_overrides();
+        match icon {
+            Some(name) => {
+                map.insert(key.to_ascii_lowercase(), name.to_string());
+            }
+            None => {
+                map.remove(&key.to_ascii_lowercase());
+            }
+        }
+        crate::theme::set_property_icon_overrides(map.clone());
+        let json = serde_json::to_string(&map).unwrap_or_default();
+        if let Err(e) = self.db.set_setting("property_icons", &json) {
+            log::error!("save property icons: {e}");
+        }
+        if let Some(state) = &mut self.props_page {
+            state.close_menus();
+        }
+        self.signal_doc_changed(cx);
+        cx.notify();
+    }
+
+    /// Commit the Properties page's pending key rename: rewrite `old:: value`
+    /// lines to the typed name across every page (carrying any icon override
+    /// along), then rebuild the index.
+    pub(crate) fn commit_prop_rename(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = &mut self.props_page else {
+            return;
+        };
+        let Some((old, input)) = state.rename_state() else {
+            return;
+        };
+        state.clear_rename();
+        let new = input.read(cx).value().trim().to_string();
+        if new == old || !crate::ui::properties_page::valid_key(&new) {
+            cx.notify();
+            return;
+        }
+        match self.db.rename_property_key(&old, &new) {
+            Ok(changed) if !changed.is_empty() => {
+                // Carry the icon override to the new name.
+                let mut map = crate::theme::property_icon_overrides();
+                if let Some(icon) = map.remove(&old.to_ascii_lowercase()) {
+                    map.insert(new.to_ascii_lowercase(), icon);
+                    crate::theme::set_property_icon_overrides(map.clone());
+                    let json = serde_json::to_string(&map).unwrap_or_default();
+                    let _ = self.db.set_setting("property_icons", &json);
+                }
+                self.signal_doc_changed(cx);
+            }
+            Ok(_) => {}
+            Err(e) => log::error!("rename property {old} -> {new}: {e}"),
+        }
+        self.refresh_props_page(window, cx);
     }
 
     pub(crate) fn rebuild_graph(&mut self) {
@@ -5562,6 +5834,9 @@ impl AppView {
                     TabKind::Graph => {
                         view.update(cx, |this, cx| this.open_graph(window, cx));
                     }
+                    TabKind::Properties => {
+                        view.update(cx, |this, cx| this.open_properties(window, cx));
+                    }
                     TabKind::Game => {
                         view.update(cx, |this, cx| this.open_game(window, cx));
                     }
@@ -5700,9 +5975,11 @@ impl AppView {
             // A board reloads cheaply from the DB on the destination window, so
             // it carries no live entity (no unsaved in-memory edits in Phase 0).
             TabKind::Whiteboard(_) => TabSeed::default(),
-            TabKind::Journal | TabKind::AllPages | TabKind::Graph | TabKind::Game => {
-                TabSeed::default()
-            }
+            TabKind::Journal
+            | TabKind::AllPages
+            | TabKind::Graph
+            | TabKind::Properties
+            | TabKind::Game => TabSeed::default(),
         }
     }
 
@@ -5821,6 +6098,7 @@ impl AppView {
             TabKind::Whiteboard(id) => self.open_whiteboard(id, window, cx),
             TabKind::AllPages => self.open_all_pages(window, cx),
             TabKind::Graph => self.open_graph(window, cx),
+            TabKind::Properties => self.open_properties(window, cx),
             TabKind::Game => self.open_game(window, cx),
             TabKind::Journal => {}
         }
@@ -6036,6 +6314,7 @@ impl AppView {
             | TabKind::Whiteboard(_)
             | TabKind::AllPages
             | TabKind::Graph
+            | TabKind::Properties
             | TabKind::Game => {
                 return;
             }
@@ -7129,6 +7408,9 @@ impl Render for AppView {
                                         ui::all_pages::render(self, cx).into_any_element()
                                     }
                                     TabKind::Graph => ui::graph::render(self, cx),
+                                    TabKind::Properties => {
+                                        ui::properties_page::render(self, cx).into_any_element()
+                                    }
                                     TabKind::Game => ui::game::render(self, cx),
                                 }
                             })),

@@ -46,7 +46,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 mod markdown_syntax;
-pub use markdown_syntax::{AlertIcons, MathAlign, SyntaxStyle};
+pub use markdown_syntax::{AlertIcons, MathAlign, PropertyIconFn, SyntaxStyle};
 
 /// Key context the editing actions are scoped to (so they only fire while an
 /// editor is focused).
@@ -339,6 +339,17 @@ pub enum EditorEvent {
         source: SharedString,
         position: Point<Pixels>,
     },
+    /// A property panel was clicked or arrowed into: the byte `range` of the whole
+    /// `key:: value` block and its `source`, so the host can seat an in-place
+    /// property editor (via `set_editing_block`) and replace the block's text on
+    /// commit — the same seat/commit pattern as [`EditorEvent::EditMath`] for a
+    /// `$$` block. `at_end` seats focus on the last field (entered by arrowing up
+    /// from below) vs the first (click / arrowing down from above).
+    EditProperties {
+        range: Range<usize>,
+        source: SharedString,
+        at_end: bool,
+    },
     /// An inline `![](src)` image was left-clicked — the host opens a full-size
     /// preview. The text is untouched.
     PreviewImage(SharedString),
@@ -574,6 +585,9 @@ pub struct EditorState {
     /// Window-space bounds of each painted task checkbox, with its logical line —
     /// so a click on the box toggles `[ ]`↔`[x]` instead of placing the caret.
     checkbox_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// Painted chevron bounds of foldable callouts (`(line, rect)`, from the
+    /// last paint) — a click flips the marker's `-`/`+` fold char.
+    alert_fold_rects: Vec<(usize, Bounds<Pixels>)>,
     /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
     /// that image paints at the live width and other mouse handling is suppressed.
     image_resize: Option<ImageResize>,
@@ -587,6 +601,16 @@ pub struct EditorState {
     /// An inline `$…$` formula under structural edit: its byte range + the host's editor view,
     /// overlaid at the formula's spot. `None` = none.
     editing_inline: Option<EditingInline>,
+    /// Painted bounds + target of each property-panel pill (from the last paint),
+    /// so a left-click opens it (`OpenWikiLink` / `OpenLink`).
+    prop_pill_rects: Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)>,
+    /// Painted bounds of each property-panel row (from the last paint), so
+    /// `on_mouse_move` repaints when the hovered row changes (the panel's hover
+    /// border reads the live pointer during paint).
+    prop_row_rects: Vec<Bounds<Pixels>>,
+    /// The property row the pointer was last over — drives `on_mouse_move`'s
+    /// repaint-on-change (like the table hover).
+    prop_hover_row: Option<usize>,
 }
 
 /// A math block under in-line structural edit: the byte range to overwrite on commit, and
@@ -657,10 +681,14 @@ impl EditorState {
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
+            alert_fold_rects: Vec::new(),
             image_resize: None,
             editing_block: None,
             inline_math_rects: Vec::new(),
             editing_inline: None,
+            prop_pill_rects: Vec::new(),
+            prop_row_rects: Vec::new(),
+            prop_hover_row: None,
         }
     }
 
@@ -1197,6 +1225,15 @@ impl EditorState {
             });
             return;
         }
+        // Left into a property panel opens its editor at the last field.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: true,
+            });
+            return;
+        }
         self.move_to(off, cx);
     }
 
@@ -1227,6 +1264,15 @@ impl EditorState {
                 source,
                 at_end: false,
                 inline: false,
+            });
+            return;
+        }
+        // Right into a property panel opens its editor at the first field.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: false,
             });
             return;
         }
@@ -1261,6 +1307,16 @@ impl EditorState {
             });
             return;
         }
+        // Arrowing UP into a property panel opens its editor at the LAST field
+        // (entered from below), not the raw source.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: true,
+            });
+            return;
+        }
         // Set the caret directly (not via `move_to`) to keep the goal column.
         self.selected_range = off..off;
         self.last_edit = EditKind::Other;
@@ -1291,6 +1347,15 @@ impl EditorState {
                 source,
                 at_end: false,
                 inline: false,
+            });
+            return;
+        }
+        // Arrowing DOWN into a property panel opens its editor at the FIRST field.
+        if let Some((range, source)) = self.property_block_at(self.row_col(off).0) {
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end: false,
             });
             return;
         }
@@ -1769,6 +1834,20 @@ impl EditorState {
             .map(|(r, source)| (starts[r.start]..self.line_end(r.end - 1), source.into()))
     }
 
+    /// The property block whose lines cover `row`, as an absolute byte range +
+    /// source — so a click or an arrow into the panel opens the property editor
+    /// instead of landing in (and revealing) the raw `key:: value` lines.
+    /// WYSIWYG-only, like [`Self::math_block_at`].
+    fn property_block_at(&self, row: usize) -> Option<(Range<usize>, SharedString)> {
+        self.markdown_style.as_ref()?;
+        let region = markdown_syntax::property_regions(&self.content)
+            .into_iter()
+            .find(|r| r.contains(&row))?;
+        let start = *self.line_starts().get(region.start)?;
+        let end = self.line_end(region.end - 1);
+        Some((start..end, self.content[start..end].to_string().into()))
+    }
+
     /// The inline `$…$` span strictly containing source byte `off` (between the `$` delimiters),
     /// as an absolute byte range + inner LaTeX — so arrowing the caret into a formula opens its
     /// structural editor instead of landing in (and revealing) the raw source. WYSIWYG-only.
@@ -1845,6 +1924,23 @@ impl EditorState {
             }
             return;
         }
+        // A press on a foldable callout's chevron flips its `-`/`+` fold char
+        // (folding/unfolding the body) instead of placing the caret — the same
+        // toggle-in-source model as the task checkbox.
+        if let Some(row) = self.alert_fold_at(event.position) {
+            let start = self.line_starts()[row];
+            let line = &self.content[start..self.line_end(row)];
+            if let Some((at, folded)) = gpui_markdown::syntax::alert_fold_char(line) {
+                let range = start + at..start + at + 1;
+                let repl = if folded { "+" } else { "-" };
+                self.record_edit(&range, repl);
+                self.content.replace_range(range.clone(), repl);
+                self.remap_diagnostics(&range, 1);
+                cx.emit(EditorEvent::Changed);
+                cx.notify();
+            }
+            return;
+        }
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
         if let Some(src) = self.chip_at(event.position) {
@@ -1864,6 +1960,43 @@ impl EditorState {
                 inline: true,
             });
             return;
+        }
+        // Left-click a property-panel pill opens its target — the pill is painted
+        // over a collapsed source line, so hit-test the painted bounds directly
+        // (not the raw text like `link_at` below).
+        if event.click_count == 1
+            && !event.modifiers.shift
+            && !event.modifiers.control
+            && let Some((_, hit)) = self
+                .prop_pill_rects
+                .iter()
+                .find(|(b, _)| b.contains(&event.position))
+        {
+            match hit {
+                gpui_markdown::syntax::LinkHit::Page(t) => {
+                    cx.emit(EditorEvent::OpenWikiLink(t.clone().into()))
+                }
+                gpui_markdown::syntax::LinkHit::Url(u) => {
+                    cx.emit(EditorEvent::OpenLink(u.clone().into()))
+                }
+            }
+            return;
+        }
+        // Left-click on (or beside) a property panel opens the in-place editor
+        // for its whole block — the panel edits its properties, not the raw
+        // markdown. Keyed off the ROW the click maps to, not the painted panel
+        // rects, so a click in the empty space right of the panel opens the
+        // editor too instead of seating the caret in (and revealing) the source.
+        if event.click_count == 1 && !event.modifiers.shift && !event.modifiers.control {
+            let offset = self.index_for_mouse_position(event.position);
+            if let Some((range, source)) = self.property_block_at(self.row_col(offset).0) {
+                cx.emit(EditorEvent::EditProperties {
+                    range,
+                    source,
+                    at_end: false,
+                });
+                return;
+            }
         }
         // Left-click an inline image opens a full-size preview (host-shown).
         if !event.modifiers.shift
@@ -2073,6 +2206,16 @@ impl EditorState {
         if region != self.table_hover_region || cell != self.table_hover_cell {
             self.table_hover_region = region;
             self.table_hover_cell = cell;
+            cx.notify();
+        }
+        // Repaint the property-panel hover border when the pointer moves between
+        // rows (the border itself reads the live pointer during paint).
+        let prow = self
+            .prop_row_rects
+            .iter()
+            .position(|b| b.contains(&event.position));
+        if prow != self.prop_hover_row {
+            self.prop_hover_row = prow;
             cx.notify();
         }
     }
@@ -2591,6 +2734,21 @@ impl EditorState {
     fn checkbox_at(&self, position: Point<Pixels>) -> Option<usize> {
         let pad = px(4.);
         self.checkbox_rects.iter().find_map(|&(line, rect)| {
+            Bounds::new(
+                point(rect.origin.x - pad, rect.origin.y - pad),
+                size(rect.size.width + pad * 2., rect.size.height + pad * 2.),
+            )
+            .contains(&position)
+            .then_some(line)
+        })
+    }
+
+    /// If `position` lands on a foldable callout's chevron painted last frame,
+    /// that marker's logical line — so a click can flip its fold char. Padded
+    /// like the task checkbox to stay easy to hit.
+    fn alert_fold_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let pad = px(4.);
+        self.alert_fold_rects.iter().find_map(|&(line, rect)| {
             Bounds::new(
                 point(rect.origin.x - pad, rect.origin.y - pad),
                 size(rect.size.width + pad * 2., rect.size.height + pad * 2.),
@@ -3925,6 +4083,47 @@ enum Block {
         border: Hsla,
         height: Pixels,
     },
+    /// A run of `key:: value` properties as a two-column panel (the reader's
+    /// `render_property_table` twin). Painted on the region's first line; the
+    /// rest of the region's lines collapse. The caret entering the region
+    /// reveals the raw source (like a math block).
+    Properties(PropPanel),
+}
+
+/// A rendered piece of a property value in the panel: plain text, or a colored
+/// pill (tag / wiki-link / URL).
+#[derive(Clone)]
+enum PanelSeg {
+    Plain(SharedString),
+    Pill {
+        text: SharedString,
+        color: Hsla,
+        target: gpui_markdown::syntax::LinkHit,
+    },
+}
+
+/// Layout for a WYSIWYG property panel: the measured rows (key + value
+/// segments), the column widths + per-row height, and the key/value colors. No
+/// grid lines — rows read clean (Obsidian-style); the value's tags and
+/// wiki-links render as pills.
+#[derive(Clone)]
+struct PropPanel {
+    /// `(key, icon asset path, value segments)` per property line, in order.
+    rows: Vec<(SharedString, Option<SharedString>, Vec<PanelSeg>)>,
+    key_w: Pixels,
+    /// Panel width (shared by every row) so hover borders align.
+    width: Pixels,
+    row_h: Pixels,
+    height: Pixels,
+    /// Icon draw size (0 when the host resolves no icons); the key text is inset
+    /// by `key_indent` to leave room for it.
+    icon_sz: Pixels,
+    key_indent: Pixels,
+    key_color: Hsla,
+    value_color: Hsla,
+    /// The rounded border drawn around the row under the pointer (Obsidian-style
+    /// whole-row hover).
+    hover_border: Hsla,
 }
 
 impl Block {
@@ -3932,6 +4131,7 @@ impl Block {
         match self {
             Block::Image(i) => i.height,
             Block::Chip { height, .. } => *height,
+            Block::Properties(p) => p.height,
         }
     }
 }
@@ -3994,6 +4194,11 @@ enum LineMark {
         label: &'static str,
         kind: markdown_syntax::AlertKind,
         text_inset: Pixels,
+        /// Foldable callout (`[!NOTE]-`/`+`): `Some(true)` = folded. A chevron
+        /// paints at `chevron_x` (after the label) and clicking it flips the
+        /// fold char in the source.
+        fold: Option<bool>,
+        chevron_x: Pixels,
     },
     /// List item: a painted bullet (`•`) or number (`N.`) at `bullet_x` (where the
     /// hidden source marker began), muted; the body sits at `text_inset` — the
@@ -4447,6 +4652,42 @@ fn shape_document(
             .collect(),
         None => Vec::new(),
     };
+    // `key:: value` property runs → two-column panels (reader parity). Like a
+    // math block, the panel paints on the region's first line and the rest of
+    // its lines collapse; the caret entering the region is filtered out here so
+    // the raw source shows for editing.
+    let props: Vec<(Range<usize>, PropPanel)> = match md {
+        Some(st) => markdown_syntax::property_regions(content)
+            .into_iter()
+            .filter(|r| caret_row.is_none_or(|cr| !r.contains(&cr)))
+            .map(|r| {
+                let panel = build_prop_panel(
+                    &lines,
+                    &r,
+                    window,
+                    base_font,
+                    base_font_size,
+                    st.marker,
+                    base_color,
+                    st.tag,
+                    st.link,
+                    st.property_icon.as_ref(),
+                );
+                (r, panel)
+            })
+            .collect(),
+        None => Vec::new(),
+    };
+    // Folded callouts (`> [!NOTE]-`): each region's BODY lines collapse (the
+    // marker line stays, painting the label + chevron) unless the caret is
+    // inside the region — reveal-on-caret, so arrowing in unfolds for editing.
+    let alert_folds: Vec<Range<usize>> = md
+        .map(|_| markdown_syntax::alert_fold_regions(content))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|(r, folded)| *folded && caret_row.is_none_or(|cr| !r.contains(&cr)))
+        .map(|(r, _)| r)
+        .collect();
     // `<!-- math:ALIGN -->` marker lines to hide (revealed only when the caret lands on them),
     // like table style markers.
     let math_marker_lines: Vec<usize> = if md.is_some() {
@@ -4601,6 +4842,67 @@ fn shape_document(
         if let Some((range, bi)) = math.iter().find(|(r, _)| r.contains(&idx)) {
             let (h, widget) = if idx == range.start {
                 (bi.height, Some(Block::Image(bi.clone())))
+            } else {
+                (px(0.), None)
+            };
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(widget);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
+            alert_run = None;
+            continue;
+        }
+
+        // A folded callout's body lines collapse (height 0); its marker line
+        // falls through to normal handling, painting the label + chevron. The
+        // caret entering the region reveals it (filtered above).
+        if alert_folds
+            .iter()
+            .any(|r| r.contains(&idx) && idx != r.start)
+        {
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(px(0.));
+            widgets.push(None);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
+            continue;
+        }
+
+        // A property panel renders on the region's first line; the rest collapse.
+        // (Like math, the region is filtered out above when the caret is inside,
+        // so the raw `key:: value` lines show for editing.)
+        if let Some((range, panel)) = props.iter().find(|(r, _)| r.contains(&idx)) {
+            let (h, widget) = if idx == range.start {
+                (panel.height, Some(Block::Properties(panel.clone())))
             } else {
                 (px(0.), None)
             };
@@ -4824,7 +5126,7 @@ fn shape_document(
             !is_code && table.is_none() && (widget.is_none() || img_inset > px(0.))
         }) {
             if let Some(plen) = markdown_syntax::blockquote_prefix(line) {
-                if let Some((kind, mlen)) = markdown_syntax::alert_prefix(&line[plen..]) {
+                if let Some((kind, mlen, fold)) = markdown_syntax::alert_prefix(&line[plen..]) {
                     // The alert's marker line: hide `> [!NOTE] ` (the scan
                     // does the same) and paint a bold label in its place; a
                     // same-line body insets past the label's measured width.
@@ -4841,13 +5143,23 @@ fn shape_document(
                     } else {
                         px(0.)
                     };
+                    // A foldable callout's chevron sits after the label and
+                    // pushes any same-line body further right.
+                    let chevron_x = px(QUOTE_INSET) + icon_w + label_w + px(8.);
+                    let chevron_w = if fold.is_some() {
+                        measure_width(window, "▾", base_font, base_font_size) + px(8.)
+                    } else {
+                        px(0.)
+                    };
                     Some((
                         plen + mlen,
                         LineMark::Alert {
                             bar: color,
                             label: kind.label(),
                             kind,
-                            text_inset: px(QUOTE_INSET) + icon_w + label_w + px(8.),
+                            text_inset: chevron_x + chevron_w,
+                            fold,
+                            chevron_x,
                         },
                     ))
                 } else {
@@ -5174,6 +5486,250 @@ fn shape_document(
         marks,
         inline_maths,
     )
+}
+
+/// Measure a property region's rows into a [`PropPanel`] with content-fit
+/// columns (like the editor's tables). Values are segmented into plain runs +
+/// link pills so the panel matches the reader.
+#[allow(clippy::too_many_arguments)]
+fn build_prop_panel(
+    lines: &[&str],
+    range: &Range<usize>,
+    window: &mut Window,
+    font: &Font,
+    font_size: Pixels,
+    key_color: Hsla,
+    value_color: Hsla,
+    tag_color: Hsla,
+    link_color: Hsla,
+    icon_of: Option<&markdown_syntax::PropertyIconFn>,
+) -> PropPanel {
+    // Reserve room for a leading icon whenever the host resolves any.
+    let icon_sz = if icon_of.is_some() {
+        font_size * 0.95
+    } else {
+        px(0.)
+    };
+    let key_indent = if icon_sz > px(0.) {
+        icon_sz + px(6.)
+    } else {
+        px(0.)
+    };
+    let mut rows = Vec::new();
+    let mut key_w = px(0.);
+    let mut val_w = px(0.);
+    for &line in &lines[range.start..range.end] {
+        let Some((k, v)) = gpui_markdown::syntax::property(line) else {
+            continue;
+        };
+        key_w = key_w.max(measure_width(window, k, font, font_size));
+        let icon = icon_of.and_then(|f| f(k));
+        let mut w = px(0.);
+        let segs = gpui_markdown::syntax::property_value_segments(v)
+            .into_iter()
+            .map(|seg| match seg {
+                gpui_markdown::syntax::PropSeg::Text(t) => {
+                    w += measure_width(window, &t, font, font_size);
+                    PanelSeg::Plain(t.into())
+                }
+                gpui_markdown::syntax::PropSeg::Pill {
+                    label,
+                    is_tag,
+                    target,
+                } => {
+                    w += measure_width(window, &label, font, font_size)
+                        + px(PILL_PAD_X * 2. + PILL_GAP);
+                    PanelSeg::Pill {
+                        text: label.into(),
+                        color: if is_tag { tag_color } else { link_color },
+                        target,
+                    }
+                }
+            })
+            .collect();
+        val_w = val_w.max(w);
+        rows.push((SharedString::from(k.to_string()), icon, segs));
+    }
+    let key_w = key_indent + key_w + px(20.);
+    let width = key_w + val_w + px(10.);
+    let row_h = font_size * LINE_HEIGHT_RATIO + px(8.);
+    let height = row_h * rows.len() as f32;
+    PropPanel {
+        rows,
+        key_w,
+        width,
+        row_h,
+        height,
+        icon_sz,
+        key_indent,
+        key_color,
+        value_color,
+        hover_border: key_color,
+    }
+}
+
+/// Horizontal padding inside a value pill, and the gap after it.
+const PILL_PAD_X: f32 = 6.;
+const PILL_GAP: f32 = 4.;
+
+/// Window-space bounds of each clickable pill in a property panel at `origin` —
+/// the same x-advance `paint_prop_panel` uses. Prepaint inserts a pointer-cursor
+/// hitbox per bound; paint records the matching click target.
+fn prop_pill_bounds(
+    p: &PropPanel,
+    origin: Point<Pixels>,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> Vec<Bounds<Pixels>> {
+    let line_h = font_size * LINE_HEIGHT_RATIO;
+    let pad = px(10.);
+    let mut out = Vec::new();
+    for (ri, (_key, _icon, segs)) in p.rows.iter().enumerate() {
+        let row_top = origin.y + p.row_h * ri as f32;
+        let mut x = origin.x + p.key_w + pad;
+        for seg in segs {
+            match seg {
+                PanelSeg::Plain(t) => x += measure_width(window, t, font, font_size),
+                PanelSeg::Pill { text, .. } => {
+                    let tw = measure_width(window, text, font, font_size);
+                    let ph = line_h + px(2.);
+                    out.push(Bounds::new(
+                        point(x, row_top + (p.row_h - ph) / 2.),
+                        size(tw + px(PILL_PAD_X * 2.), ph),
+                    ));
+                    x += tw + px(PILL_PAD_X * 2. + PILL_GAP);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Paint a property panel (`Block::Properties`): no grid lines — a muted key
+/// column and the value rendered as plain text + colored pills (tags/wiki-links)
+/// on each clean row. The row under the pointer gets a rounded hover border, and
+/// each pill's bounds + target are recorded (`pill_rects`) so a click can open
+/// it; every row's bounds go to `row_rects` for hover change-detection.
+#[allow(clippy::too_many_arguments)]
+fn paint_prop_panel(
+    p: &PropPanel,
+    origin: Point<Pixels>,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+    pill_rects: &mut Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)>,
+    row_rects: &mut Vec<Bounds<Pixels>>,
+) {
+    let line_h = font_size * LINE_HEIGHT_RATIO;
+    let pad = px(10.);
+    let mouse = window.mouse_position();
+    for (ri, (key, icon, segs)) in p.rows.iter().enumerate() {
+        let row_top = origin.y + p.row_h * ri as f32;
+        let row_bounds = Bounds::new(point(origin.x, row_top), size(p.width, p.row_h));
+        row_rects.push(row_bounds);
+        // Whole-row hover border (Obsidian-style).
+        if row_bounds.contains(&mouse) {
+            window.paint_quad(PaintQuad {
+                bounds: row_bounds,
+                corner_radii: Corners::all(px(6.)),
+                background: gpui::transparent_black().into(),
+                border_widths: Edges::all(px(1.)),
+                border_color: p.hover_border,
+                border_style: BorderStyle::Solid,
+            });
+        }
+        let ty = row_top + (p.row_h - line_h) / 2.;
+        // Optional key icon (host-resolved), then the muted key name inset past it.
+        if let Some(path) = icon {
+            let ib = Bounds::new(
+                point(origin.x + pad, row_top + (p.row_h - p.icon_sz) / 2.),
+                size(p.icon_sz, p.icon_sz),
+            );
+            let _ = window.paint_svg(
+                ib,
+                path.clone(),
+                None,
+                gpui::TransformationMatrix::unit(),
+                p.key_color,
+                cx,
+            );
+        }
+        let krun = TextRun {
+            len: key.len(),
+            font: font.clone(),
+            color: p.key_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let ks = window
+            .text_system()
+            .shape_line(key.clone(), font_size, &[krun], None);
+        let _ = ks.paint(
+            point(origin.x + pad + p.key_indent, ty),
+            line_h,
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+        // Value: plain runs painted inline, links as rounded (clickable) pills.
+        let mut x = origin.x + p.key_w + pad;
+        for seg in segs {
+            let (text, color, target) = match seg {
+                PanelSeg::Plain(t) => (t, p.value_color, None),
+                PanelSeg::Pill {
+                    text,
+                    color,
+                    target,
+                } => (text, *color, Some(target)),
+            };
+            let run = TextRun {
+                len: text.len(),
+                font: font.clone(),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window
+                .text_system()
+                .shape_line(text.clone(), font_size, &[run], None);
+            let tw = shaped.width();
+            if let Some(target) = target {
+                let mut bg = color;
+                bg.a = 0.16;
+                let ph = line_h + px(2.);
+                let pb = Bounds::new(
+                    point(x, row_top + (p.row_h - ph) / 2.),
+                    size(tw + px(PILL_PAD_X * 2.), ph),
+                );
+                window.paint_quad(fill(pb, bg).corner_radii(Corners::all(px(6.))));
+                let _ = shaped.paint(
+                    point(x + px(PILL_PAD_X), ty),
+                    line_h,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                pill_rects.push((pb, target.clone()));
+                x += tw + px(PILL_PAD_X * 2. + PILL_GAP);
+            } else {
+                let _ = shaped.paint(
+                    point(x, ty),
+                    line_h,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                x += tw;
+            }
+        }
+    }
 }
 
 /// Paint a file chip — a rounded, bordered button with a flat document icon +
@@ -5659,9 +6215,14 @@ struct PrepaintState {
     /// grips' resize cursor). Set in paint via `set_cursor_style`.
     checkbox_grips: Vec<(usize, Hitbox)>,
     chip_grips: Vec<(usize, Hitbox)>,
+    /// Pointer-cursor hitboxes over foldable-callout chevrons, keyed by line.
+    alert_fold_grips: Vec<(usize, Hitbox)>,
     /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
     /// `[text](url)`), so hovering a clickable link shows a hand.
     link_grips: Vec<Hitbox>,
+    /// Pointer-cursor hitboxes over clickable property-panel pills, so hovering
+    /// a pill shows a hand (like `link_grips`).
+    prop_pill_grips: Vec<Hitbox>,
     /// Pointer-cursor hitboxes over inline images (they open a preview on
     /// click, so hovering shows a hand rather than the text caret).
     inline_image_grips: Vec<Hitbox>,
@@ -5948,6 +6509,7 @@ impl Element for EditorElement {
         // by line so paint sets the cursor on each (see `set_cursor_style`).
         let mut checkbox_grips = Vec::new();
         let mut chip_grips = Vec::new();
+        let mut alert_fold_grips = Vec::new();
         for (i, lh) in line_heights.iter().enumerate() {
             if let Some(LineMark::Check { bullet_x, .. }) = marks.get(i).copied().flatten() {
                 let sz = font_size * 0.78;
@@ -5959,6 +6521,23 @@ impl Element for EditorElement {
                     size(sz + pad * 2., sz + pad * 2.),
                 );
                 checkbox_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+            if let Some(LineMark::Alert {
+                fold: Some(_),
+                chevron_x,
+                ..
+            }) = marks.get(i).copied().flatten()
+            {
+                // A generous box around the chevron (its glyph is ~an em wide).
+                let pad = px(4.);
+                let hit = Bounds::new(
+                    point(
+                        bounds.origin.x + chevron_x - pad,
+                        bounds.origin.y + line_tops[i],
+                    ),
+                    size(font_size + pad * 2., *lh),
+                );
+                alert_fold_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
             }
             if matches!(
                 widgets.get(i).and_then(Option::as_ref),
@@ -6046,6 +6625,19 @@ impl Element for EditorElement {
                         );
                         inline_image_grips.push(window.insert_hitbox(hit, HitboxBehavior::Normal));
                     }
+                }
+            }
+        }
+
+        // Pointer cursor over property-panel pills: a panel is a widget on its
+        // region's first line, so measure each pill (the same x-advance paint
+        // uses) and insert a hitbox — the cursor is set during paint.
+        let mut prop_pill_grips = Vec::new();
+        for (i, w) in widgets.iter().enumerate() {
+            if let Some(Block::Properties(p)) = w.as_ref() {
+                let origin = point(bounds.origin.x, bounds.origin.y + line_tops[i]);
+                for b in prop_pill_bounds(p, origin, &font, font_size, window) {
+                    prop_pill_grips.push(window.insert_hitbox(b, HitboxBehavior::Normal));
                 }
             }
         }
@@ -6358,7 +6950,9 @@ impl Element for EditorElement {
             image_grips,
             checkbox_grips,
             chip_grips,
+            alert_fold_grips,
             link_grips,
+            prop_pill_grips,
             inline_image_grips,
             alert_icons: editor
                 .markdown_style
@@ -6413,6 +7007,10 @@ impl Element for EditorElement {
         // Window-space bounds of each inline `$…$` formula + its absolute range and LaTeX, for
         // the next frame's click-to-edit hit-testing + seating the structural editor.
         let mut inline_math_rects: Vec<(Range<usize>, SharedString, Bounds<Pixels>)> = Vec::new();
+        // Property-panel pill bounds + targets (click-to-open) and row bounds
+        // (hover change-detection), committed for the next frame's handlers.
+        let mut prop_pill_rects: Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)> = Vec::new();
+        let mut prop_row_rects: Vec<Bounds<Pixels>> = Vec::new();
         // The span being structurally edited (if any): skip painting its raster — the seated
         // editor overlays its spot.
         let editing_inline = self
@@ -6424,6 +7022,9 @@ impl Element for EditorElement {
         // Window-space box bounds of each painted task checkbox + its line, for the
         // next frame's click-to-toggle hit-testing (committed below).
         let mut checkbox_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
+        // A foldable callout's chevron bounds (from this paint), so a click can
+        // flip its fold char — the checkbox-toggle pattern.
+        let mut alert_fold_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
         // Logseq-style list nesting guides: `outline` holds the bullet x of each
         // active ancestor level, so a faint vertical line can drop from each down
         // through its descendants. Popped on dedent, reset off the list.
@@ -6492,10 +7093,51 @@ impl Element for EditorElement {
             // Alert marker line: the colored bar plus a bold label ("Note", …)
             // where the hidden `[!NOTE]` marker was.
             if let Some(LineMark::Alert {
-                bar, label, kind, ..
+                bar,
+                label,
+                kind,
+                fold,
+                chevron_x,
+                ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
                 window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), bar));
+                // Foldable callout: a chevron after the label; clicking it flips
+                // the `-`/`+` in the source (rects committed for on_mouse_down).
+                if let Some(folded) = fold {
+                    let glyph: SharedString = if folded { "▸" } else { "▾" }.into();
+                    let run = TextRun {
+                        len: glyph.len(),
+                        font: font.clone(),
+                        color: bar,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let shaped = window
+                        .text_system()
+                        .shape_line(glyph, font_size, &[run], None);
+                    let cx0 = origin.x + chevron_x;
+                    let _ = shaped.paint(
+                        point(cx0, origin.y),
+                        *lh,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    alert_fold_rects.push((
+                        i,
+                        Bounds::new(point(cx0, origin.y), size(shaped.width(), *lh)),
+                    ));
+                    if let Some(hb) = prepaint
+                        .alert_fold_grips
+                        .iter()
+                        .find_map(|(l, hb)| (*l == i).then_some(hb))
+                    {
+                        window.set_cursor_style(CursorStyle::PointingHand, hb);
+                    }
+                }
                 // Icon (when the host supplies asset paths), then the bold label.
                 let mut label_x = origin.x + px(QUOTE_INSET);
                 if let Some(icons) = &prepaint.alert_icons {
@@ -6719,6 +7361,19 @@ impl Element for EditorElement {
                 {
                     window.set_cursor_style(CursorStyle::PointingHand, hb);
                 }
+            } else if let Some(Block::Properties(p)) =
+                prepaint.widgets.get(i).and_then(Option::as_ref)
+            {
+                paint_prop_panel(
+                    p,
+                    origin,
+                    &font,
+                    font_size,
+                    window,
+                    cx,
+                    &mut prop_pill_rects,
+                    &mut prop_row_rects,
+                );
             } else {
                 // Code blocks + gutter marks inset their text (kept in sync with
                 // `EditorState::line_inset` / the fresh prepaint inset).
@@ -6845,6 +7500,9 @@ impl Element for EditorElement {
         for hb in &prepaint.link_grips {
             window.set_cursor_style(CursorStyle::PointingHand, hb);
         }
+        for hb in &prepaint.prop_pill_grips {
+            window.set_cursor_style(CursorStyle::PointingHand, hb);
+        }
         for hb in &prepaint.inline_image_grips {
             window.set_cursor_style(CursorStyle::PointingHand, hb);
         }
@@ -6859,7 +7517,10 @@ impl Element for EditorElement {
             editor.table_rows = table_rows;
             editor.image_rects = image_rects;
             editor.inline_math_rects = inline_math_rects;
+            editor.prop_pill_rects = prop_pill_rects;
+            editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
+            editor.alert_fold_rects = alert_fold_rects;
             editor.table_row_add_rects = table_row_add_rects;
             editor.table_col_add_rects = table_col_add_rects;
             editor.table_hover_zones = table_hover_zones;

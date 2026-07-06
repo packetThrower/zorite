@@ -64,6 +64,112 @@ const ALERT_OCTAGON: &[u8] = include_bytes!("../assets/icons/octagon-alert.svg")
 // Sidebar "All pages" browser button.
 const LAYOUT_LIST: &[u8] = include_bytes!("../assets/icons/layout-list.svg");
 const WAYPOINTS: &[u8] = include_bytes!("../assets/icons/waypoints.svg");
+// Property-key icons: ONE list drives both the picker's choices and the
+// embedded bytes, so a face offered on the Properties page can never be
+// missing from a release build (the on-disk lucide set is dev-only — a
+// choices/embeds drift already broke CI once). Every name here must have its
+// SVG committed under `assets/icons/` (NOT the gitignored `lucide/` dir).
+macro_rules! property_icons {
+    ($($name:literal),* $(,)?) => {
+        /// The curated faces the Properties page's icon picker offers, in
+        /// display order.
+        pub(crate) const PROPERTY_ICON_CHOICES: &[&str] = &[$($name),*];
+
+        /// The embedded bytes behind `icons/<name>.svg` for each choice.
+        fn property_icon_bytes(path: &str) -> Option<&'static [u8]> {
+            match path {
+                $(concat!("icons/", $name, ".svg") =>
+                    Some(include_bytes!(concat!("../assets/icons/", $name, ".svg"))),)*
+                _ => None,
+            }
+        }
+    };
+}
+
+property_icons![
+    // Text / structure
+    "align-left",
+    "text",
+    "list",
+    "hash",
+    "tag",
+    "bookmark",
+    "arrow-up-right",
+    "link",
+    "shapes",
+    "code",
+    "terminal",
+    "database",
+    // Time
+    "calendar",
+    "clock",
+    "alarm-clock",
+    "timer",
+    // People
+    "user",
+    "users",
+    "smile",
+    "brain",
+    "eye",
+    // Places / travel
+    "map-pin",
+    "map",
+    "compass",
+    "globe",
+    "home",
+    "building",
+    "car",
+    "plane",
+    // Communication
+    "mail",
+    "phone",
+    "message-square",
+    "send",
+    // Work / study
+    "briefcase",
+    "folder",
+    "graduation-cap",
+    "book",
+    "book-open",
+    "newspaper",
+    "wrench",
+    "target",
+    "circle-check",
+    "flag",
+    "trophy",
+    "rocket",
+    // Money
+    "dollar-sign",
+    "banknote",
+    "credit-card",
+    "package",
+    // Life / leisure
+    "star",
+    "heart",
+    "bell",
+    "gift",
+    "coffee",
+    "utensils",
+    "pill",
+    "dumbbell",
+    "gamepad-2",
+    "palette",
+    "music",
+    "camera",
+    "film",
+    "mic",
+    "paw-print",
+    "key",
+    "lock",
+    "shield",
+    // Nature
+    "sun",
+    "moon",
+    "cloud",
+    "umbrella",
+    "leaf",
+    "bug",
+];
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -78,7 +184,7 @@ impl AssetSource for Assets {
             "icons/octagon-alert.svg" => Some(ALERT_OCTAGON),
             "icons/layout-list.svg" => Some(LAYOUT_LIST),
             "icons/waypoints.svg" => Some(WAYPOINTS),
-            _ => None,
+            _ => property_icon_bytes(path),
         };
         if let Some(bytes) = custom {
             return Ok(Some(Cow::Borrowed(bytes)));

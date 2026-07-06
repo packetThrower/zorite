@@ -176,6 +176,9 @@ pub fn text_secondary() -> Hsla {
 pub fn text_tertiary() -> Hsla {
     get().text_tertiary
 }
+pub fn tag() -> Hsla {
+    get().tag
+}
 
 /// Styling for the markdown reading view (the `gpui-markdown` crate),
 /// mapped from the active palette.
@@ -187,6 +190,72 @@ const ALERT_ICON_TIP: &str = "icons/lightbulb.svg";
 const ALERT_ICON_IMPORTANT: &str = "icons/message-square-warning.svg";
 const ALERT_ICON_WARNING: &str = "icons/triangle-alert.svg";
 const ALERT_ICON_CAUTION: &str = "icons/octagon-alert.svg";
+
+thread_local! {
+    /// User icon overrides for property keys (lowercased key → icon name),
+    /// loaded from the `property_icons` setting at startup and edited from the
+    /// Properties page. Checked before the built-in map.
+    static PROPERTY_ICON_OVERRIDES: RefCell<std::collections::HashMap<String, String>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Replace the property-icon overrides (parsed from the `property_icons`
+/// setting's JSON map). Called at startup and after every edit.
+pub(crate) fn set_property_icon_overrides(map: std::collections::HashMap<String, String>) {
+    PROPERTY_ICON_OVERRIDES.with(|m| *m.borrow_mut() = map);
+}
+
+/// A copy of the current overrides (lowercased key → icon name), for the
+/// Properties page to edit and persist.
+pub(crate) fn property_icon_overrides() -> std::collections::HashMap<String, String> {
+    PROPERTY_ICON_OVERRIDES.with(|m| m.borrow().clone())
+}
+
+/// The icon shown before a property key in the property panel: a user override
+/// (set on the Properties page) when present, else a small built-in map of
+/// well-known keys (case-insensitive), with a generic text-field icon as the
+/// fallback so every property gets one (Obsidian-style). Paths are lucide
+/// assets bundled under `assets/icons/lucide`.
+pub(crate) fn property_icon(key: &str) -> Option<gpui::SharedString> {
+    let lower = key.trim().to_ascii_lowercase();
+    if let Some(name) = PROPERTY_ICON_OVERRIDES.with(|m| m.borrow().get(&lower).cloned()) {
+        return Some(format!("icons/{name}.svg").into());
+    }
+    let name = builtin_property_icon(&lower);
+    Some(format!("icons/{name}.svg").into())
+}
+
+/// The built-in icon name for a (lowercased) property key.
+pub(crate) fn builtin_property_icon(lower: &str) -> &'static str {
+    match lower {
+        "alias" | "aliases" => "arrow-up-right",
+        "tag" | "tags" => "tag",
+        "date" | "due" | "created" | "updated" | "modified" => "calendar",
+        "time" => "clock",
+        "attendee" | "attendees" | "people" | "author" | "owner" | "assignee" => "user",
+        "status" | "priority" => "list",
+        "location" | "place" => "map-pin",
+        "link" | "url" | "source" => "link",
+        "project" | "projects" => "folder",
+        "type" | "kind" | "category" => "shapes",
+        "email" | "mail" => "mail",
+        "phone" => "phone",
+        "rating" | "score" | "stars" => "star",
+        "price" | "cost" | "budget" => "dollar-sign",
+        "deadline" => "alarm-clock",
+        "done" | "complete" | "completed" => "circle-check",
+        "goal" | "target" => "target",
+        "topic" | "subject" => "bookmark",
+        "company" | "org" | "organization" | "client" | "vendor" => "building",
+        "id" | "number" | "version" => "hash",
+        "description" | "summary" | "notes" => "text",
+        "book" | "reading" => "book",
+        "mood" => "smile",
+        "weather" => "cloud",
+        "repo" | "code" => "code",
+        _ => "align-left", // generic (text-field look)
+    }
+}
 
 /// Per-OS monospace family for code. An unknown name falls back to the default
 /// font, so this is safe everywhere.
@@ -248,6 +317,7 @@ pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown:
             warning: ALERT_ICON_WARNING.into(),
             caution: ALERT_ICON_CAUTION.into(),
         }),
+        property_icon: Some(std::rc::Rc::new(property_icon)),
     }
 }
 
@@ -274,6 +344,7 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
             warning: ALERT_ICON_WARNING.into(),
             caution: ALERT_ICON_CAUTION.into(),
         }),
+        property_icon: Some(std::rc::Rc::new(property_icon)),
         rule: p.divider,
         mark_bg: gpui::rgba(0xFFD60066).into(),
         popover_bg: p.bg_sidebar,

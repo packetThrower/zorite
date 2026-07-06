@@ -9,6 +9,36 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Added
+
+- **Properties** — `key:: value` metadata lines (Obsidian/Logseq-style
+  "properties"), written anywhere on a page, now render as a clean two-column
+  panel in both the reading view and the live editor: a per-key icon, the key,
+  and the value with `#tags` and `[[wiki-links]]` shown as clickable pills, with
+  the row highlighting on hover. This generalizes the old alias-only handling —
+  any key works (`attendees::`, `status::`, `time::`, …), and the panel reads the
+  same whether you're viewing or editing.
+- **In-place property editor** — clicking a property panel, or arrowing the
+  caret into it, opens an editor seated right in the note that mirrors the
+  rendered panel (icons, muted keys, value pills — the value you're editing
+  reveals as raw text under the caret). Edit keys and values in place with a
+  dropdown of properties already used across your notes, add or remove rows, and
+  move between fields entirely from the keyboard (arrows step within and between
+  fields, Tab/Shift-Tab jump field to field). Clicking away writes the
+  `key:: value` lines back.
+- **Properties page** — All pages → Properties lists every property key in your
+  vault with its icon, page count, and values; expand a key to see each value
+  and the pages carrying it (click through to open). From the same page you can
+  override any key's icon from a picker (or map an icon to a key before its
+  first use), and rename a key across every page at once.
+- **Foldable callouts** — an Obsidian-style fold char on an alert marker makes
+  it collapsible: `> [!NOTE]-` starts folded (only the title shows), `> [!NOTE]+`
+  starts open, and a plain `> [!NOTE]` stays as-is. A chevron joins the title in
+  both views; clicking it folds/unfolds and persists the state in the note
+  (the `-`/`+` flips in the source, like ticking a task checkbox). In the live
+  editor, arrowing the caret into a folded callout reveals it while you edit and
+  it folds back when you leave.
+
 ## [0.5.1] - 2026-07-03
 
 Two fixes, one urgent: Windows users could be locked out of an encrypted

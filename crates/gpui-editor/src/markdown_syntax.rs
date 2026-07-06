@@ -64,7 +64,15 @@ pub struct SyntaxStyle {
     pub popover_divider: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
+    /// Resolves a property key (`tags`, `status`, …) to an icon shown before it
+    /// in the property panel. Host-provided (asset path through the host's
+    /// `AssetSource`) so the crate stays asset-agnostic; `None` = no icons.
+    pub property_icon: Option<PropertyIconFn>,
 }
+
+/// Maps a property key to an icon asset path the host serves, or `None` for no
+/// icon. Host-provided so the crate makes no assumption about which assets exist.
+pub type PropertyIconFn = std::rc::Rc<dyn Fn(&str) -> Option<gpui::SharedString>>;
 
 /// Styling a scanned span adds on top of the editor's base run.
 #[derive(Clone, Default)]
@@ -402,7 +410,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         // A GitHub alert's `[!NOTE]`-style marker hides with the quote prefix —
         // the paint draws a bold colored label in its place (LineMark::Alert).
-        if let Some((_, mlen)) = alert_prefix(&text[p..end]) {
+        if let Some((_, mlen, _)) = alert_prefix(&text[p..end]) {
             p += mlen;
         }
         marker(out, start..p, st.marker);
@@ -779,7 +787,39 @@ impl SyntaxStyle {
 /// The alert kind if `body` — a blockquote line's text after its `>` prefix —
 /// starts with an alert marker (see [`gpui_markdown::syntax::alert_prefix`]).
 pub(crate) fn alert_kind(body: &str) -> Option<AlertKind> {
-    alert_prefix(body).map(|(kind, _)| kind)
+    alert_prefix(body).map(|(kind, ..)| kind)
+}
+
+/// Foldable-callout regions: for each alert whose marker carries a fold char
+/// (`> [!NOTE]-` / `+`), the line range it spans (marker + its `>` continuation
+/// lines, ending at a blank/non-quote line or the next alert marker) and
+/// whether it's folded (`-`). Body lines of a folded region collapse in the
+/// WYSIWYG view unless the caret is inside (reveal-on-caret).
+pub(crate) fn alert_fold_regions(content: &str) -> Vec<(Range<usize>, bool)> {
+    // `Some(fold)` when the line is an alert marker; fold = its fold char.
+    fn marker_fold(line: &str) -> Option<Option<bool>> {
+        let p = blockquote_prefix(line)?;
+        alert_prefix(&line[p..]).map(|(_, _, fold)| fold)
+    }
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(Some(folded)) = marker_fold(lines[i]) {
+            let start = i;
+            i += 1;
+            while i < lines.len()
+                && blockquote_prefix(lines[i]).is_some()
+                && marker_fold(lines[i]).is_none()
+            {
+                i += 1;
+            }
+            out.push((start..i, folded));
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 pub(crate) fn blockquote_prefix(line: &str) -> Option<usize> {
@@ -1453,6 +1493,40 @@ pub(crate) fn is_table_row(line: &str) -> bool {
     line.trim_start().starts_with('|')
 }
 
+/// Contiguous runs of `key:: value` property lines (Obsidian/Logseq-style
+/// metadata) — each renders as a two-column panel, the WYSIWYG twin of the
+/// reader's `render_property_table`. A run is one or more adjacent property
+/// lines; any non-property line ends it. Fenced code is skipped so a
+/// `Type::method()` code line isn't mistaken for a property. Returns line-index
+/// ranges in order.
+pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
+    let lines: Vec<&str> = content.split('\n').collect();
+    let mut out = Vec::new();
+    let mut in_fence = false;
+    let mut i = 0;
+    while i < lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            i += 1;
+            continue;
+        }
+        if !in_fence && gpui_markdown::syntax::property(lines[i]).is_some() {
+            let start = i;
+            i += 1;
+            while i < lines.len()
+                && !lines[i].trim_start().starts_with("```")
+                && gpui_markdown::syntax::property(lines[i]).is_some()
+            {
+                i += 1;
+            }
+            out.push(start..i);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Split a `| a | b |` row into trimmed cell strings (the bounding pipes drop the
 /// empty leading/trailing cells they'd otherwise create).
 pub(crate) fn table_cells(line: &str) -> Vec<&str> {
@@ -1872,6 +1946,7 @@ mod tests {
             popover_hover: c,
             popover_divider: c,
             mono: gpui::font("monospace"),
+            property_icon: None,
         }
     }
 
@@ -2143,5 +2218,24 @@ mod tests {
             Some("  - [x] nested")
         );
         assert_eq!(toggle_task_checkbox("- plain"), None);
+    }
+
+    #[test]
+    fn alert_fold_regions_span_the_quote_block() {
+        let src = "> [!NOTE]- hidden\n> body\n> more\nprose\n> [!TIP]+ open\n> b\n> [!NOTE] plain";
+        let r = alert_fold_regions(src);
+        // Folded NOTE spans its quote lines; open TIP's region ends at the
+        // plain (non-foldable) alert marker, which starts no region itself.
+        assert_eq!(r, vec![(0..3, true), (4..6, false)]);
+    }
+
+    #[test]
+    fn property_regions_group_and_skip_code() {
+        // Two adjacent property lines form one region; prose breaks it.
+        let r = property_regions("attendees:: Bob\ntime:: 3pm\n\nprose\nowner:: Sue");
+        assert_eq!(r, vec![0..2, 4..5]);
+        // A `Type::method()` line inside a code fence isn't a property.
+        let r2 = property_regions("```rust\nFoo::bar()\n```\nkey:: v");
+        assert_eq!(r2, vec![3..4]);
     }
 }

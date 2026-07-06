@@ -62,7 +62,15 @@ pub struct MarkdownStyle {
     /// `AssetSource`. `None` (the default) renders the title without an icon,
     /// keeping the crate asset-free.
     pub alert_icons: Option<AlertIcons>,
+    /// Resolves a property key (`tags`, `status`, …) to an icon shown before it
+    /// in the property panel. Host-provided (asset path through the host's
+    /// `AssetSource`) so the crate stays asset-agnostic; `None` = no icons.
+    pub property_icon: Option<PropertyIconFn>,
 }
+
+/// Maps a property key to an icon asset path the host serves, or `None` for no
+/// icon. Host-provided so the crate makes no assumption about which assets exist.
+pub type PropertyIconFn = Rc<dyn Fn(&str) -> Option<SharedString>>;
 
 /// Per-kind SVG asset paths for the alert title icons.
 #[derive(Clone)]
@@ -95,6 +103,7 @@ impl Default for MarkdownStyle {
             mono_font: "monospace".into(),
             alerts: AlertColors::default(),
             alert_icons: None,
+            property_icon: None,
         }
     }
 }
@@ -156,13 +165,23 @@ impl AlertKindExt for AlertKind {
 /// Public so other renderers of the same construct (e.g. a PDF exporter)
 /// share the exact recognition.
 pub fn alert_children(b: &mdast::Blockquote) -> Option<(AlertKind, Vec<mdast::Node>)> {
+    alert_parts(b).map(|(kind, _, _, children)| (kind, children))
+}
+
+/// [`alert_children`] plus the callout's fold state (`Some(true)` = folded)
+/// and the marker's source byte offset — what a foldable callout's chevron
+/// click reports so the host can flip the `-`/`+` in the source.
+pub fn alert_parts(
+    b: &mdast::Blockquote,
+) -> Option<(AlertKind, Option<bool>, usize, Vec<mdast::Node>)> {
     let Some(mdast::Node::Paragraph(p)) = b.children.first() else {
         return None;
     };
     let Some(mdast::Node::Text(t)) = p.children.first() else {
         return None;
     };
-    let (kind, strip) = alert_marker(&t.value)?;
+    let marker_offset = t.position.as_ref().map_or(0, |p| p.start.offset);
+    let (kind, strip, fold) = alert_marker(&t.value)?;
     let mut children = b.children.clone();
     if let Some(mdast::Node::Paragraph(p)) = children.first_mut() {
         if strip >= t.value.len() {
@@ -182,7 +201,7 @@ pub fn alert_children(b: &mdast::Blockquote) -> Option<(AlertKind, Vec<mdast::No
             }
         }
     }
-    Some((kind, children))
+    Some((kind, fold, marker_offset, children))
 }
 
 /// An authoring snippet for a markdown construct: a label, the text to
@@ -423,6 +442,7 @@ pub struct MarkdownView {
     on_image_preview: Option<ImagePreviewHandler>,
     /// Click a task checkbox to toggle it (the host applies + persists).
     on_task_toggle: Option<TaskToggleHandler>,
+    on_alert_toggle: Option<TaskToggleHandler>,
 }
 
 impl MarkdownView {
@@ -446,6 +466,7 @@ impl MarkdownView {
             on_click_source: None,
             on_image_preview: None,
             on_task_toggle: None,
+            on_alert_toggle: None,
         }
     }
 
@@ -543,6 +564,15 @@ impl MarkdownView {
         self.on_task_toggle = Some(handler);
         self
     }
+
+    /// Called when a foldable callout's title is clicked, with the marker's
+    /// source byte offset — the host flips the `-`/`+` fold char (see
+    /// [`crate::syntax::toggle_alert_fold_at`]) and persists, like a task
+    /// checkbox toggle.
+    pub fn on_alert_toggle(mut self, handler: TaskToggleHandler) -> Self {
+        self.on_alert_toggle = Some(handler);
+        self
+    }
 }
 
 /// Content-keyed parse cache. The host's journal feed re-renders every
@@ -606,6 +636,7 @@ impl RenderOnce for MarkdownView {
         let block_scroll = self.block_scroll;
         let root_id: SharedString = format!("{}-md-root", self.id_base).into();
         let mut ctx = Ctx {
+            source: source.clone(),
             style: self.style,
             on_wiki_link: self.on_wiki_link,
             on_image: self.on_image,
@@ -623,6 +654,7 @@ impl RenderOnce for MarkdownView {
             on_click_source: self.on_click_source,
             on_image_preview: self.on_image_preview,
             on_task_toggle: self.on_task_toggle,
+            on_alert_toggle: self.on_alert_toggle,
             suppress_heading_top: false,
         };
 
@@ -679,6 +711,9 @@ impl RenderOnce for MarkdownView {
 }
 
 struct Ctx {
+    /// The full markdown source — property blocks slice it by node position to
+    /// recover each `key:: value` line and its precise click-to-source offset.
+    source: SharedString,
     style: MarkdownStyle,
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
@@ -701,6 +736,7 @@ struct Ctx {
     on_click_source: Option<ClickSourceHandler>,
     on_image_preview: Option<ImagePreviewHandler>,
     on_task_toggle: Option<TaskToggleHandler>,
+    on_alert_toggle: Option<TaskToggleHandler>,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
@@ -712,6 +748,11 @@ struct Ctx {
 fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Option<AnyElement> {
     match node {
         mdast::Node::Paragraph(p) => {
+            // A block of `key:: value` lines renders as a property panel.
+            if let Some(rows) = property_rows(p, &ctx.source.clone()) {
+                ctx.counter += 1;
+                return Some(render_property_table(rows, ctx, ctx.counter));
+            }
             // A paragraph that *starts* with `![alt](src)` (optionally
             // `{width=N}`) renders as a real image via the host. Any text that
             // follows on the same line (a caption typed right under it) renders
@@ -849,8 +890,12 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
         }
         mdast::Node::Blockquote(b) => {
             // A GitHub alert (`> [!NOTE]` …): colored border + bold title, body
-            // in the normal text color (unlike a plain quote's muted tone).
-            if let Some((kind, children)) = alert_children(b) {
+            // in the normal text color (unlike a plain quote's muted tone). An
+            // Obsidian fold char (`[!NOTE]-`/`+`) makes it a foldable callout:
+            // a chevron joins the title, clicking flips the `-`/`+` in the
+            // source (via the host's handler), and a folded callout shows only
+            // its title.
+            if let Some((kind, fold, marker_offset, children)) = alert_parts(b) {
                 let color = kind.color(&ctx.style.alerts);
                 let mut title = div()
                     .flex()
@@ -871,6 +916,32 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     );
                 }
                 title = title.child(kind.label());
+                let folded = fold == Some(true);
+                let mut title = title.into_any_element();
+                if fold.is_some() {
+                    let chevron = if folded { "▸" } else { "▾" };
+                    ctx.counter += 1;
+                    let mut row = div()
+                        .id(ElementId::Name(
+                            format!("{}-fold-{}", ctx.id_base, ctx.counter).into(),
+                        ))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(title)
+                        .child(div().text_color(color).child(chevron));
+                    if let Some(toggle) = ctx.on_alert_toggle.clone() {
+                        row = row.cursor_pointer().on_mouse_down(
+                            MouseButton::Left,
+                            move |_: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                toggle(marker_offset, window, cx);
+                            },
+                        );
+                    }
+                    title = row.into_any_element();
+                }
                 let mut q = div()
                     .border_l_2()
                     .border_color(color)
@@ -879,9 +950,11 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     .flex_col()
                     .gap(px(6.0))
                     .child(title);
-                for child in &children {
-                    if let Some(el) = render_block(child, ctx, window) {
-                        q = q.child(el);
+                if !folded {
+                    for child in &children {
+                        if let Some(el) = render_block(child, ctx, window) {
+                            q = q.child(el);
+                        }
                     }
                 }
                 return Some(q.into_any_element());
@@ -1705,6 +1778,141 @@ fn collect_definitions(node: &mdast::Node, out: &mut HashMap<String, String>) {
 /// Per-table visual style, from a `<!-- table:STYLE -->` marker comment on the
 /// line above the table (mirrors the editor; the style names are the shared
 /// contract). `Grid` is the default (no marker).
+/// If every line of paragraph `p` is a `key:: value` property, return the rows
+/// as `(key, value, value_offset)` — `value_offset` is the source byte offset
+/// where the value text begins, so a click on it maps back precisely. `None`
+/// (mixed or ordinary prose) falls through to normal paragraph rendering.
+fn property_rows(p: &mdast::Paragraph, source: &str) -> Option<Vec<(String, String, usize)>> {
+    let pos = p.position.as_ref()?;
+    let raw = source.get(pos.start.offset..pos.end.offset)?;
+    let mut rows = Vec::new();
+    let mut line_start = pos.start.offset;
+    for line in raw.split_inclusive('\n') {
+        let (key, value) = crate::syntax::property(line)?;
+        // Offset of the (trimmed) value within the source, past `key::` + any
+        // leading whitespace, so click-to-edit lands on the value.
+        let idx = line.find("::").unwrap_or(0) + 2;
+        let lead = line[idx..].len() - line[idx..].trim_start().len();
+        rows.push((key.to_string(), value.to_string(), line_start + idx + lead));
+        line_start += line.len();
+    }
+    (!rows.is_empty()).then_some(rows)
+}
+
+/// Renders a run of `key:: value` properties as a two-column panel: a muted key
+/// column and the value rendered inline (wiki-links/tags stay live), each row
+/// highlighting on hover.
+fn render_property_table(
+    rows: Vec<(String, String, usize)>,
+    ctx: &mut Ctx,
+    id: usize,
+) -> AnyElement {
+    let key_col = ctx.style.muted_color;
+    let tag_c = ctx.style.tag_color;
+    let link_c = ctx.style.link_color;
+    let hover_border = ctx.style.muted_color;
+    let mut panel = div()
+        .id(SharedString::from(format!("{}-props-{id}", ctx.id_base)))
+        .flex()
+        .flex_col();
+    for (key, value, _v_off) in rows.into_iter() {
+        // Value: plain runs, plus tags/wiki-links as clickable pills.
+        let mut val = div()
+            .flex()
+            .flex_wrap()
+            .items_center()
+            .gap(px(5.0))
+            .flex_1()
+            .px(px(8.0))
+            .py(px(3.0));
+        for seg in crate::syntax::property_value_segments(&value) {
+            match seg {
+                crate::syntax::PropSeg::Text(t) => {
+                    if !t.trim().is_empty() {
+                        val = val.child(SharedString::from(t.trim().to_string()));
+                    }
+                }
+                crate::syntax::PropSeg::Pill {
+                    label,
+                    target,
+                    is_tag,
+                } => {
+                    let color = if is_tag { tag_c } else { link_c };
+                    let mut bg = color;
+                    bg.a = 0.16;
+                    let on_wiki = ctx.on_wiki_link.clone();
+                    val = val.child(
+                        div()
+                            .px(px(7.0))
+                            .py(px(1.0))
+                            .rounded(px(6.0))
+                            .bg(bg)
+                            .text_color(color)
+                            .cursor_pointer()
+                            .child(SharedString::from(label))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                move |_: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    match &target {
+                                        crate::syntax::LinkHit::Page(t) => {
+                                            if let Some(h) = &on_wiki {
+                                                h(t.clone().into(), window, cx);
+                                            }
+                                        }
+                                        crate::syntax::LinkHit::Url(u) => cx.open_url(u),
+                                    }
+                                },
+                            ),
+                    );
+                }
+            }
+        }
+        // Key cell: an optional host-resolved icon, then the muted key name.
+        let icon_path = ctx.style.property_icon.as_ref().and_then(|f| f(&key));
+        let mut key_cell = div()
+            .w(px(140.0))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .py(px(3.0))
+            .text_color(key_col);
+        if let Some(path) = icon_path {
+            let sz = px(f32::from(ctx.style.text_size));
+            key_cell = key_cell.child(
+                svg()
+                    .path(path)
+                    .text_color(key_col)
+                    .w(sz)
+                    .h(sz)
+                    .flex_shrink_0(),
+            );
+        }
+        key_cell = key_cell.child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(SharedString::from(key)),
+        );
+        // A clean row (no grid lines); the whole row shows a rounded border on
+        // hover (Obsidian-style). A reserved transparent border keeps the layout
+        // from shifting when it appears.
+        panel = panel.child(
+            div()
+                .flex()
+                .items_center()
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(gpui::transparent_black())
+                .hover(|s| s.border_color(hover_border))
+                .child(key_cell)
+                .child(val),
+        );
+    }
+    panel.into_any_element()
+}
+
 fn render_table(
     table: &mdast::Table,
     ctx: &mut Ctx,
@@ -2356,6 +2564,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn property_block_detected_with_value_offsets() {
+        let src = "attendees:: Bob\ntime:: 3pm";
+        let mdast::Node::Root(r) = parse_cached(src).unwrap().as_ref().clone() else {
+            panic!("root");
+        };
+        let mdast::Node::Paragraph(p) = &r.children[0] else {
+            panic!("paragraph");
+        };
+        let rows = property_rows(p, src).expect("all lines are properties");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, "attendees");
+        assert_eq!(rows[0].1, "Bob");
+        // Value offset points at the value text in the source, not the key.
+        assert_eq!(&src[rows[0].2..rows[0].2 + 3], "Bob");
+        assert_eq!(&src[rows[1].2..rows[1].2 + 3], "3pm");
+
+        // A paragraph with a non-property line is not a property block.
+        let mdast::Node::Root(r2) = parse_cached("k:: v\njust prose").unwrap().as_ref().clone()
+        else {
+            panic!("root");
+        };
+        let mdast::Node::Paragraph(p2) = &r2.children[0] else {
+            panic!("paragraph");
+        };
+        assert!(property_rows(p2, "k:: v\njust prose").is_none());
+    }
+
+    #[test]
     fn parse_cache_hits_and_evicts() {
         // Same source → the same cached tree (pointer-equal Arc).
         let a1 = parse_cached("# cache me\n\n- item").unwrap();
@@ -2384,16 +2620,16 @@ mod tests {
     fn alert_marker_and_strip() {
         assert!(matches!(
             alert_marker("[!NOTE]\nbody"),
-            Some((AlertKind::Note, 8))
+            Some((AlertKind::Note, 8, None))
         ));
         assert!(matches!(
             alert_marker("[!WARNING]"),
-            Some((AlertKind::Warning, 10))
+            Some((AlertKind::Warning, 10, None))
         ));
         // Lenient form: body text on the marker line (strip includes the space).
         assert!(matches!(
             alert_marker("[!NOTE] trailing"),
-            Some((AlertKind::Note, 8))
+            Some((AlertKind::Note, 8, None))
         ));
         // Wrong case / glued text → plain blockquote.
         assert!(alert_marker("[!note]\nbody").is_none());

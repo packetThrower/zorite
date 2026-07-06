@@ -261,25 +261,54 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 )
                 .child(
                     div()
-                        .id("open-graph")
                         .flex()
                         .flex_row()
                         .items_center()
                         .gap(px(6.0))
-                        .px(px(10.0))
-                        .py(px(4.0))
-                        .rounded(px(6.0))
-                        .cursor_pointer()
-                        .text_size(px(12.0))
-                        .text_color(theme::text_secondary())
-                        .hover(|s| s.bg(theme::hover()).text_color(theme::text_primary()))
-                        .on_click(
-                            cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
-                                this.open_graph(window, cx);
-                            }),
+                        .child(
+                            div()
+                                .id("open-properties")
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .px(px(10.0))
+                                .py(px(4.0))
+                                .rounded(px(6.0))
+                                .cursor_pointer()
+                                .text_size(px(12.0))
+                                .text_color(theme::text_secondary())
+                                .hover(|s| s.bg(theme::hover()).text_color(theme::text_primary()))
+                                .on_click(cx.listener(
+                                    |this: &mut AppView, _: &ClickEvent, window, cx| {
+                                        this.open_properties(window, cx);
+                                    },
+                                ))
+                                .child(Icon::empty().path("icons/list.svg").size_4())
+                                .child("Properties"),
                         )
-                        .child(Icon::empty().path("icons/waypoints.svg").size_4())
-                        .child("Graph"),
+                        .child(
+                            div()
+                                .id("open-graph")
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .px(px(10.0))
+                                .py(px(4.0))
+                                .rounded(px(6.0))
+                                .cursor_pointer()
+                                .text_size(px(12.0))
+                                .text_color(theme::text_secondary())
+                                .hover(|s| s.bg(theme::hover()).text_color(theme::text_primary()))
+                                .on_click(cx.listener(
+                                    |this: &mut AppView, _: &ClickEvent, window, cx| {
+                                        this.open_graph(window, cx);
+                                    },
+                                ))
+                                .child(Icon::empty().path("icons/waypoints.svg").size_4())
+                                .child("Graph"),
+                        ),
                 ),
         )
         .child(strip)

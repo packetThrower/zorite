@@ -232,6 +232,9 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         let toggle_weak = cx.entity().downgrade();
         let toggle_content = content.to_string();
         let toggle_page_id = pe.id;
+        let fold_weak = cx.entity().downgrade();
+        let fold_content = content.to_string();
+        let fold_page_id = pe.id;
         let mut md = gpui_markdown::MarkdownView::new("page-md", content)
             .style(theme::markdown_style(app.list_indent(), app.text_size()))
             // Track block bounds so find can scroll the active match into view.
@@ -270,6 +273,17 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
                 if let Some(new) = gpui_markdown::toggle_task_at(&toggle_content, offset) {
                     let _ = toggle_weak.update(cx, |this, cx| {
                         this.save_page_content(toggle_page_id, &new, cx);
+                        this.signal_doc_changed(cx);
+                    });
+                }
+            }))
+            // Click a foldable callout's title → flip its `-`/`+` in the source.
+            .on_alert_toggle(std::rc::Rc::new(move |offset, _window, cx| {
+                if let Some(new) =
+                    gpui_markdown::syntax::toggle_alert_fold_at(&fold_content, offset)
+                {
+                    let _ = fold_weak.update(cx, |this, cx| {
+                        this.save_page_content(fold_page_id, &new, cx);
                         this.signal_doc_changed(cx);
                     });
                 }

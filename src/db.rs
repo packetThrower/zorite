@@ -92,6 +92,21 @@ pub struct Db {
     conn: Connection,
 }
 
+/// One property key across the vault, for the Properties page: how many pages
+/// use it and every distinct value with the pages carrying it.
+pub struct PropKeyInfo {
+    pub key: String,
+    pub page_count: usize,
+    pub values: Vec<PropValueInfo>,
+}
+
+/// One distinct value of a property key and the pages `(id, title)` that
+/// carry it.
+pub struct PropValueInfo {
+    pub value: String,
+    pub pages: Vec<(i64, String)>,
+}
+
 /// The newest schema version [`Db::migrate`] upgrades to. Bump this with each new
 /// migration step so [`Db::open`] knows when a pre-migration backup is warranted.
 const SCHEMA_VERSION: i64 = 7;
@@ -922,6 +937,141 @@ impl Db {
         )
     }
 
+    /// Every property key (`key:: value`) used across all pages, mapped to the
+    /// distinct values seen for it (keys and values both sorted). Fenced code is
+    /// skipped so a `Type::method()` line isn't counted. Powers the property
+    /// editor's key dropdown + value suggestions (and a future Properties page).
+    pub fn property_index(&self) -> rusqlite::Result<Vec<(String, Vec<String>)>> {
+        let mut stmt = self.conn.prepare("SELECT content FROM pages")?;
+        let contents: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut map: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+            std::collections::BTreeMap::new();
+        for content in &contents {
+            let mut in_fence = false;
+            for line in content.lines() {
+                if line.trim_start().starts_with("```") {
+                    in_fence = !in_fence;
+                    continue;
+                }
+                if in_fence {
+                    continue;
+                }
+                if let Some((k, v)) = gpui_markdown::syntax::property(line) {
+                    let vals = map.entry(k.to_string()).or_default();
+                    if !v.is_empty() {
+                        vals.insert(v.to_string());
+                    }
+                }
+            }
+        }
+        Ok(map
+            .into_iter()
+            .map(|(k, vs)| (k, vs.into_iter().collect()))
+            .collect())
+    }
+
+    /// [`property_index`](Self::property_index) with the pages behind each
+    /// value, for the Properties page's drill-down: every key, its distinct
+    /// values, and which pages carry each value (keys/values/titles sorted;
+    /// fenced code skipped).
+    pub fn property_index_detailed(&self) -> rusqlite::Result<Vec<PropKeyInfo>> {
+        let mut stmt = self.conn.prepare("SELECT id, title, content FROM pages")?;
+        let pages: Vec<(i64, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        // key → value → set of (title, id); BTree everywhere for sorted output.
+        type ValueMap =
+            std::collections::BTreeMap<String, std::collections::BTreeSet<(String, i64)>>;
+        let mut map: std::collections::BTreeMap<String, ValueMap> =
+            std::collections::BTreeMap::new();
+        for (id, title, content) in &pages {
+            let mut in_fence = false;
+            for line in content.lines() {
+                if line.trim_start().starts_with("```") {
+                    in_fence = !in_fence;
+                    continue;
+                }
+                if in_fence {
+                    continue;
+                }
+                if let Some((k, v)) = gpui_markdown::syntax::property(line) {
+                    map.entry(k.to_string())
+                        .or_default()
+                        .entry(v.to_string())
+                        .or_default()
+                        .insert((title.clone(), *id));
+                }
+            }
+        }
+        Ok(map
+            .into_iter()
+            .map(|(key, values)| {
+                let mut page_ids = std::collections::BTreeSet::new();
+                let values = values
+                    .into_iter()
+                    .map(|(value, pages)| {
+                        let pages: Vec<(i64, String)> = pages
+                            .into_iter()
+                            .map(|(title, id)| {
+                                page_ids.insert(id);
+                                (id, title)
+                            })
+                            .collect();
+                        PropValueInfo { value, pages }
+                    })
+                    .collect();
+                PropKeyInfo {
+                    key,
+                    page_count: page_ids.len(),
+                    values,
+                }
+            })
+            .collect())
+    }
+
+    /// Rename a property key across every page: each `old:: value` line becomes
+    /// `new:: value` (exact key match, indentation + value untouched, fenced
+    /// code skipped). Returns the ids of the pages that changed — the caller
+    /// signals the cross-window refresh.
+    pub fn rename_property_key(&self, old: &str, new: &str) -> rusqlite::Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare("SELECT id, content FROM pages")?;
+        let pages: Vec<(i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut changed = Vec::new();
+        for (id, content) in &pages {
+            let mut in_fence = false;
+            let mut dirty = false;
+            let lines: Vec<String> = content
+                .lines()
+                .map(|line| {
+                    if line.trim_start().starts_with("```") {
+                        in_fence = !in_fence;
+                    } else if !in_fence
+                        && let Some((k, _)) = gpui_markdown::syntax::property(line)
+                        && k == old
+                    {
+                        // The key starts right after the indentation and is
+                        // exactly `old` (the shared grammar trims + matched).
+                        let ws = line.len() - line.trim_start().len();
+                        dirty = true;
+                        return format!("{}{new}{}", &line[..ws], &line[ws + old.len()..]);
+                    }
+                    line.to_string()
+                })
+                .collect();
+            if dirty {
+                // `lines()` drops a trailing newline; none of the app's saves
+                // rely on one, so a plain join is faithful enough.
+                self.set_page_content(*id, &lines.join("\n"))?;
+                changed.push(*id);
+            }
+        }
+        Ok(changed)
+    }
+
     /// Every journal-day page (id + title only), for the graph view's
     /// Journals toggle.
     pub fn list_journal_pages(&self) -> rusqlite::Result<Vec<Page>> {
@@ -1412,6 +1562,71 @@ mod tests {
         assert!(db.content_references("photo-1.png").unwrap());
         assert!(db.content_references("board-bg.webp").unwrap());
         assert!(!db.content_references("unused.png").unwrap());
+    }
+
+    #[test]
+    fn property_index_collects_keys_values_and_skips_code() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.get_or_create_page("A").unwrap();
+        db.set_page_content(
+            a.id,
+            "attendees:: Bob\nstatus:: active\n```\nFoo::bar()\n```",
+        )
+        .unwrap();
+        let b = db.get_or_create_page("B").unwrap();
+        db.set_page_content(b.id, "status:: done\njust prose")
+            .unwrap();
+        let idx: std::collections::HashMap<String, Vec<String>> =
+            db.property_index().unwrap().into_iter().collect();
+        assert_eq!(idx.get("attendees").unwrap(), &vec!["Bob".to_string()]);
+        // Distinct values across pages, sorted.
+        assert_eq!(
+            idx.get("status").unwrap(),
+            &vec!["active".to_string(), "done".to_string()]
+        );
+        // A `Foo::bar()` line inside a code fence isn't a property key.
+        assert!(!idx.contains_key("Foo"));
+    }
+
+    #[test]
+    fn property_index_detailed_maps_values_to_pages() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.get_or_create_page("A").unwrap();
+        db.set_page_content(a.id, "status:: active\nowner:: Will")
+            .unwrap();
+        let b = db.get_or_create_page("B").unwrap();
+        db.set_page_content(b.id, "status:: active\nstatus:: done")
+            .unwrap();
+        let idx = db.property_index_detailed().unwrap();
+        let status = idx.iter().find(|k| k.key == "status").unwrap();
+        assert_eq!(status.page_count, 2);
+        let active = status.values.iter().find(|v| v.value == "active").unwrap();
+        let titles: Vec<&str> = active.pages.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(titles, vec!["A", "B"]);
+        let done = status.values.iter().find(|v| v.value == "done").unwrap();
+        assert_eq!(done.pages.len(), 1);
+        let owner = idx.iter().find(|k| k.key == "owner").unwrap();
+        assert_eq!(owner.page_count, 1);
+    }
+
+    #[test]
+    fn rename_property_key_rewrites_exact_matches_only() {
+        let db = Db::open_in_memory().unwrap();
+        let a = db.get_or_create_page("A").unwrap();
+        db.set_page_content(
+            a.id,
+            "status:: active\n  status:: indented\nstatusx:: keep\n```\nstatus:: code\n```\nprose",
+        )
+        .unwrap();
+        let b = db.get_or_create_page("B").unwrap();
+        db.set_page_content(b.id, "no properties here").unwrap();
+        let changed = db.rename_property_key("status", "state").unwrap();
+        assert_eq!(changed, vec![a.id]);
+        let content = db.get_page(a.id).unwrap().unwrap().content;
+        assert_eq!(
+            content,
+            "state:: active\n  state:: indented\nstatusx:: keep\n```\nstatus:: code\n```\nprose"
+        );
     }
 
     #[test]
