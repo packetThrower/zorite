@@ -485,6 +485,10 @@ pub struct AppView {
     // Highlighted code blocks, cached by (lang, content); both views' code
     // highlighter callbacks read it. See `highlight::HighlightStore`.
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
+    /// Resolved `![[target]]` transclusions for the WYSIWYG overlay: one view
+    /// per target + the row height to reserve. Filled by
+    /// `ensure_content_embeds`, read by the editors' embed providers.
+    embed_store: Rc<RefCell<crate::ui::embed::EmbedStore>>,
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
@@ -682,6 +686,9 @@ impl AppView {
             window,
             |this: &mut AppView, _sig, _ev: &DocChanged, window, cx| {
                 this.apply_external_edit(window, cx);
+                // Embeds transclude OTHER pages — re-resolve them so editing a
+                // source page updates every box embedding it.
+                this.refresh_embed_store(cx);
             },
         );
 
@@ -771,6 +778,7 @@ impl AppView {
             auto_link_titles: Rc::new(RefCell::new(Default::default())),
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
+            embed_store: Rc::new(RefCell::new(Default::default())),
             mermaid_lightbox: None,
             lightbox_focus: cx.focus_handle(),
             math_edit: None,
@@ -940,6 +948,7 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.embed_store.clone(),
             self.auto_link_titles.clone(),
             self.auto_link.clone(),
             window,
@@ -948,6 +957,7 @@ impl AppView {
         self.ensure_content_images(&content, cx);
         self.ensure_content_mermaid(&content, cx);
         self.ensure_content_math(&content, cx);
+        self.ensure_content_embeds(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -966,6 +976,7 @@ impl AppView {
                         this.ensure_content_images(&value, cx);
                         this.ensure_content_mermaid(&value, cx);
                         this.ensure_content_math(&value, cx);
+                        this.ensure_content_embeds(&value, cx);
                     }
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -1697,6 +1708,7 @@ impl AppView {
                         self.ensure_content_images(&content, cx);
                         self.ensure_content_mermaid(&content, cx);
                         self.ensure_content_math(&content, cx);
+                        self.ensure_content_embeds(&content, cx);
                     }
                 }
             }
@@ -1950,6 +1962,7 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.embed_store.clone(),
             self.auto_link_titles.clone(),
             self.auto_link.clone(),
             window,
@@ -1958,6 +1971,7 @@ impl AppView {
         self.ensure_content_images(&page.content, cx);
         self.ensure_content_mermaid(&page.content, cx);
         self.ensure_content_math(&page.content, cx);
+        self.ensure_content_embeds(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -1973,6 +1987,7 @@ impl AppView {
                         this.ensure_content_images(&value, cx);
                         this.ensure_content_mermaid(&value, cx);
                         this.ensure_content_math(&value, cx);
+                        this.ensure_content_embeds(&value, cx);
                     }
                     this.update_slash(SlashTarget::Page(pid), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -2580,6 +2595,7 @@ impl AppView {
         self.ensure_content_images(&new, cx);
         self.ensure_content_mermaid(&new, cx);
         self.ensure_content_math(&new, cx);
+        self.ensure_content_embeds(&new, cx);
         cx.notify();
     }
 
@@ -3101,6 +3117,7 @@ impl AppView {
                 .update(cx, |e, cx| e.replace_range(range, &replacement, cx));
             let new = edit.source.read(cx).text().to_string();
             self.ensure_content_math(&new, cx);
+            self.ensure_content_embeds(&new, cx);
             match &edit.target {
                 SlashTarget::Day(key) => self.save_journal(key, &new, cx),
                 SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
@@ -3135,6 +3152,7 @@ impl AppView {
         // Rasterize the edited formula into the shared store, or the block-math provider
         // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
         self.ensure_content_math(&new, cx);
+        self.ensure_content_embeds(&new, cx);
         match &edit.target {
             SlashTarget::Day(key) => self.save_journal(key, &new, cx),
             SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
@@ -3287,6 +3305,94 @@ impl AppView {
     /// Kick off the off-thread typeset of every `$$…$$` block in `content`, so an editor
     /// in WYSIWYG mode can render them as equations. Idempotent; a finished render
     /// notifies → repaint → the editor's math provider finds the bitmap.
+    /// Resolve every `![[target]]` embed in `content` into the shared store the
+    /// editors' overlay provider reads: one `EmbedView` per target plus the row
+    /// height to reserve — estimated from the embedded content's line count and
+    /// capped (long content scrolls inside the view). A target that no longer
+    /// resolves drops out, falling back to the chip.
+    fn ensure_content_embeds(&mut self, content: &str, cx: &mut Context<Self>) {
+        for inner in gpui_markdown::syntax::embed_targets(content) {
+            self.upsert_embed(inner, cx);
+        }
+    }
+
+    /// Re-resolve every target already in the embed store against the database.
+    /// Runs on each (debounced) doc change, so an embed live-updates when its
+    /// SOURCE page is edited — the embedding page's own ensure-pass only runs
+    /// when that page reloads.
+    pub(crate) fn refresh_embed_store(&mut self, cx: &mut Context<Self>) {
+        let targets: Vec<String> = self.embed_store.borrow().keys().cloned().collect();
+        for inner in targets {
+            self.upsert_embed(inner, cx);
+        }
+    }
+
+    /// Scroll the active tab's content surface by `delta_y` — the wheel
+    /// hand-off from an embed that can't scroll any further itself (its
+    /// occluding overlay blocks the surface's own wheel handling while the
+    /// pointer is over it).
+    pub(crate) fn scroll_active_surface(&mut self, delta_y: Pixels, cx: &mut Context<Self>) {
+        let handle = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Journal) => &self.feed_scroll,
+            Some(TabKind::Page(_)) => &self.page_scroll,
+            _ => return,
+        };
+        let mut o = handle.offset();
+        // Upward overshoot clamps here; the downward limit clamps on layout.
+        o.y = (o.y + delta_y).min(px(0.0));
+        handle.set_offset(o);
+        cx.notify();
+    }
+
+    /// Resolve one embed target into the store: create or update its view and
+    /// recompute the reserved height. A target that no longer resolves drops
+    /// out (the editor falls back to the chip).
+    fn upsert_embed(&mut self, inner: String, cx: &mut Context<Self>) {
+        let Some((label, body)) = self.resolve_embed(&inner) else {
+            self.embed_store.borrow_mut().remove(&inner);
+            return;
+        };
+        let lh = f32::from(self.text_size()) * 1.45;
+        let lines = body.lines().count().max(1) as f32;
+        let height = (40.0 + lines * (lh + 6.0)).clamp(64.0, 340.0);
+        let nav_target: SharedString = gpui_markdown::syntax::wiki_target_display(&inner)
+            .0
+            .to_string()
+            .into();
+        let text_size = self.text_size();
+        let list_indent = self.list_indent();
+        let existing = self.embed_store.borrow().get(&inner).cloned();
+        match existing {
+            Some((view, _)) => {
+                view.update(cx, |v, cx| {
+                    if v.content != body || v.label != label || v.text_size != text_size {
+                        v.content = body;
+                        v.label = label;
+                        v.nav_target = nav_target;
+                        v.text_size = text_size;
+                        v.list_indent = list_indent;
+                        cx.notify();
+                    }
+                });
+                self.embed_store.borrow_mut().insert(inner, (view, height));
+            }
+            None => {
+                let app = cx.entity().downgrade();
+                let view = cx.new(|_| crate::ui::embed::EmbedView {
+                    nav_target,
+                    label,
+                    content: body,
+                    text_size,
+                    list_indent,
+                    app,
+                    scroll: gpui::ScrollHandle::new(),
+                    hovered: false,
+                });
+                self.embed_store.borrow_mut().insert(inner, (view, height));
+            }
+        }
+    }
+
     fn ensure_content_math(&mut self, content: &str, cx: &mut Context<Self>) {
         for source in gpui_editor::math_sources(content) {
             self.ensure_math_loaded(source, cx);
@@ -7676,6 +7782,7 @@ fn make_editor(
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     math_store: Rc<RefCell<crate::math::MathStore>>,
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
+    embed_store: Rc<RefCell<crate::ui::embed::EmbedStore>>,
     auto_link_titles: Rc<RefCell<std::collections::HashMap<String, String>>>,
     auto_link: Rc<std::cell::Cell<bool>>,
     window: &mut Window,
@@ -7693,6 +7800,15 @@ fn make_editor(
         editor.set_block_image_provider(move |src| image_store.borrow().get(src));
         // A `![](file.pdf)` renders as a clickable chip (label = file name) that
         // opens the PDF viewer on click — matching the reading view.
+        // A standalone `![[target]]` renders the resolved transclusion in the
+        // gap its line reserves (see `ensure_content_embeds`); unresolved
+        // targets fall back to the chip below.
+        editor.set_embed_provider(move |inner| {
+            embed_store
+                .borrow()
+                .get(inner)
+                .map(|(v, h)| (v.clone().into(), px(*h)))
+        });
         editor.set_block_chip_provider(|src| {
             crate::pdf::is_pdf(src).then(|| {
                 crate::pdf::resolve_path(src)

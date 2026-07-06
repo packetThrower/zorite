@@ -377,6 +377,12 @@ type BlockImageFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
 /// clickable chip (left-click emits [`EditorEvent::OpenLink`]).
 type BlockChipFn = Box<dyn Fn(&str) -> Option<SharedString>>;
 
+/// Resolves a standalone `![[target]]` embed line to the host view that renders
+/// the transclusion, plus the row height to reserve for it (the host estimates
+/// and caps it; long content scrolls inside the view). `None` falls back to the
+/// embed chip.
+type EmbedViewFn = Box<dyn Fn(&str) -> Option<(gpui::AnyView, Pixels)>>;
+
 /// Resolves a ` ```mermaid ` block's source to a rendered diagram bitmap plus its
 /// **logical** (display) px size — supplied by the host for the same reason as
 /// [`BlockMathFn`]. Set via [`EditorState::set_block_mermaid_provider`]; the host
@@ -553,6 +559,7 @@ pub struct EditorState {
     /// Classifies an `![](src)` as a file chip (e.g. a PDF) + its label; set by
     /// the host via [`Self::set_block_chip_provider`].
     block_chip: Option<BlockChipFn>,
+    embed_view: Option<EmbedViewFn>,
     /// Resolves a ` ```mermaid ` block's source to a rendered diagram; set by the
     /// host via [`Self::set_block_mermaid_provider`].
     block_mermaid: Option<BlockMermaidFn>,
@@ -669,6 +676,7 @@ impl EditorState {
             suggest: None,
             block_image: None,
             block_chip: None,
+            embed_view: None,
             block_mermaid: None,
             block_math: None,
             block_math_em: None,
@@ -803,6 +811,17 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<SharedString> + 'static,
     ) {
         self.block_chip = Some(Box::new(provider));
+    }
+
+    /// Install the provider that resolves a standalone `![[target]]` line to a
+    /// host view rendering the transclusion + the height to reserve for it.
+    /// With it, such lines show the embedded content in place (raw on caret);
+    /// without (or when it returns `None`) they fall back to a clickable chip.
+    pub fn set_embed_provider(
+        &mut self,
+        provider: impl Fn(&str) -> Option<(gpui::AnyView, Pixels)> + 'static,
+    ) {
+        self.embed_view = Some(Box::new(provider));
     }
 
     /// Install the provider that resolves a ` ```mermaid ` block's source to a
@@ -1049,6 +1068,50 @@ impl EditorState {
             Some(&s) => &self.content[s..self.line_end(row)],
             None => "",
         }
+    }
+
+    /// The host-supplied embed views, each positioned in the gap its
+    /// `![[target]]` line reserved (from the last paint's line tops) — the
+    /// editing-block overlay generalized to N transclusions. Absolute children
+    /// of the editor's `relative` root, so they scroll with the content; the
+    /// caret's own line shows raw source instead (its gap wasn't reserved).
+    fn embed_overlays(&self, window: &Window) -> Vec<gpui::Div> {
+        let Some(provider) = &self.embed_view else {
+            return Vec::new();
+        };
+        if self.markdown_style.is_none() {
+            return Vec::new();
+        }
+        let caret_row = self
+            .focus_handle
+            .is_focused(window)
+            .then(|| self.row_col(self.cursor_offset()).0);
+        let mut out = Vec::new();
+        for (row, line) in self.content.split('\n').enumerate() {
+            if caret_row == Some(row) {
+                continue;
+            }
+            let Some(inner) = gpui_markdown::syntax::embed_line(line) else {
+                continue;
+            };
+            let (Some(top), Some((view, height))) = (self.line_tops.get(row), provider(inner))
+            else {
+                continue;
+            };
+            out.push(
+                div()
+                    .absolute()
+                    .top(*top)
+                    .left(px(0.))
+                    .w_full()
+                    .h(height)
+                    // Clicks/wheel belong to the embed (it may scroll its own
+                    // content), not the text layer underneath.
+                    .occlude()
+                    .child(view),
+            );
+        }
+        out
     }
 
     /// The host-supplied editor view for an in-line math edit, positioned in the gap its
@@ -3610,7 +3673,7 @@ impl Focusable for EditorState {
 impl EventEmitter<EditorEvent> for EditorState {}
 
 impl Render for EditorState {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .relative()
             // While a `$$` block OR an inline `$…$` formula is being edited, the hosted math
@@ -3664,6 +3727,7 @@ impl Render for EditorState {
             .child(EditorElement {
                 editor: cx.entity(),
             })
+            .children(self.embed_overlays(window))
             .children(self.editing_block_overlay())
             .children(self.editing_inline_overlay())
             // Right-click suggestions menu, absolutely positioned over the
@@ -4459,6 +4523,7 @@ fn shape_document(
     caret_row: Option<usize>,
     block_image: Option<&BlockImageFn>,
     block_chip: Option<&BlockChipFn>,
+    embed_view: Option<&EmbedViewFn>,
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
     code_highlight: Option<&CodeHighlightFn>,
@@ -4769,6 +4834,37 @@ fn shape_document(
             inline_maths.push(Vec::new());
             line_start = line_end + 1;
             alert_run = None;
+            continue;
+        }
+
+        // A standalone `![[target]]` transclusion the host can render reserves
+        // a gap the height the host asked for — the embed view overlays it
+        // (see `embed_overlays`). Raw on caret; an unresolved target falls
+        // through to the chip below.
+        if md.is_some()
+            && caret_row != Some(idx)
+            && let Some(inner) = gpui_markdown::syntax::embed_line(line)
+            && let Some(h) = embed_view.and_then(|f| f(inner).map(|(_, h)| h))
+        {
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(None);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
             continue;
         }
 
@@ -6250,6 +6346,7 @@ impl Element for EditorElement {
                     caret_row,
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
+                    editor.embed_view.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
                     editor.code_highlight.as_ref(),
@@ -6366,6 +6463,7 @@ impl Element for EditorElement {
                     caret_row,
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
+                    editor.embed_view.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
                     editor.code_highlight.as_ref(),
