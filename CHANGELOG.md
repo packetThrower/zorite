@@ -26,6 +26,11 @@ log: <https://github.com/packetThrower/zorite/releases>.
   move between fields entirely from the keyboard (arrows step within and between
   fields, Tab/Shift-Tab jump field to field). Clicking away writes the
   `key:: value` lines back.
+- **Properties page** — All pages → Properties lists every property key in your
+  vault with its icon, page count, and values; expand a key to see each value
+  and the pages carrying it (click through to open). From the same page you can
+  override any key's icon from a picker (or map an icon to a key before its
+  first use), and rename a key across every page at once.
 
 ## [0.5.1] - 2026-07-03
 
