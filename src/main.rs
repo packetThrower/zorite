@@ -64,29 +64,112 @@ const ALERT_OCTAGON: &[u8] = include_bytes!("../assets/icons/octagon-alert.svg")
 // Sidebar "All pages" browser button.
 const LAYOUT_LIST: &[u8] = include_bytes!("../assets/icons/layout-list.svg");
 const WAYPOINTS: &[u8] = include_bytes!("../assets/icons/waypoints.svg");
-// Property-panel key icons (the Lucide faces gpui-component doesn't bundle;
-// `calendar` + `user` delegate to it). See `theme::property_icon`.
-const PROP_ARROW_UP_RIGHT: &[u8] = include_bytes!("../assets/icons/arrow-up-right.svg");
-const PROP_TAG: &[u8] = include_bytes!("../assets/icons/tag.svg");
-const PROP_CLOCK: &[u8] = include_bytes!("../assets/icons/clock.svg");
-const PROP_LIST: &[u8] = include_bytes!("../assets/icons/list.svg");
-const PROP_MAP_PIN: &[u8] = include_bytes!("../assets/icons/map-pin.svg");
-const PROP_LINK: &[u8] = include_bytes!("../assets/icons/link.svg");
-const PROP_ALIGN_LEFT: &[u8] = include_bytes!("../assets/icons/align-left.svg");
-const PROP_SHAPES: &[u8] = include_bytes!("../assets/icons/shapes.svg");
-const PROP_MAIL: &[u8] = include_bytes!("../assets/icons/mail.svg");
-const PROP_PHONE: &[u8] = include_bytes!("../assets/icons/phone.svg");
-const PROP_DOLLAR_SIGN: &[u8] = include_bytes!("../assets/icons/dollar-sign.svg");
-const PROP_ALARM_CLOCK: &[u8] = include_bytes!("../assets/icons/alarm-clock.svg");
-const PROP_TARGET: &[u8] = include_bytes!("../assets/icons/target.svg");
-const PROP_BOOKMARK: &[u8] = include_bytes!("../assets/icons/bookmark.svg");
-const PROP_BUILDING: &[u8] = include_bytes!("../assets/icons/building.svg");
-const PROP_HASH: &[u8] = include_bytes!("../assets/icons/hash.svg");
-const PROP_TEXT: &[u8] = include_bytes!("../assets/icons/text.svg");
-const PROP_BOOK: &[u8] = include_bytes!("../assets/icons/book.svg");
-const PROP_SMILE: &[u8] = include_bytes!("../assets/icons/smile.svg");
-const PROP_CLOUD: &[u8] = include_bytes!("../assets/icons/cloud.svg");
-const PROP_CODE: &[u8] = include_bytes!("../assets/icons/code.svg");
+// Property-key icons: ONE list drives both the picker's choices and the
+// embedded bytes, so a face offered on the Properties page can never be
+// missing from a release build (the on-disk lucide set is dev-only — a
+// choices/embeds drift already broke CI once). Every name here must have its
+// SVG committed under `assets/icons/` (NOT the gitignored `lucide/` dir).
+macro_rules! property_icons {
+    ($($name:literal),* $(,)?) => {
+        /// The curated faces the Properties page's icon picker offers, in
+        /// display order.
+        pub(crate) const PROPERTY_ICON_CHOICES: &[&str] = &[$($name),*];
+
+        /// The embedded bytes behind `icons/<name>.svg` for each choice.
+        fn property_icon_bytes(path: &str) -> Option<&'static [u8]> {
+            match path {
+                $(concat!("icons/", $name, ".svg") =>
+                    Some(include_bytes!(concat!("../assets/icons/", $name, ".svg"))),)*
+                _ => None,
+            }
+        }
+    };
+}
+
+property_icons![
+    // Text / structure
+    "align-left",
+    "text",
+    "list",
+    "hash",
+    "tag",
+    "bookmark",
+    "arrow-up-right",
+    "link",
+    "shapes",
+    "code",
+    "terminal",
+    "database",
+    // Time
+    "calendar",
+    "clock",
+    "alarm-clock",
+    "timer",
+    // People
+    "user",
+    "users",
+    "smile",
+    "brain",
+    "eye",
+    // Places / travel
+    "map-pin",
+    "map",
+    "compass",
+    "globe",
+    "home",
+    "building",
+    "car",
+    "plane",
+    // Communication
+    "mail",
+    "phone",
+    "message-square",
+    "send",
+    // Work / study
+    "briefcase",
+    "folder",
+    "graduation-cap",
+    "book",
+    "book-open",
+    "newspaper",
+    "wrench",
+    "target",
+    "circle-check",
+    "flag",
+    "trophy",
+    "rocket",
+    // Money
+    "dollar-sign",
+    "banknote",
+    "credit-card",
+    "package",
+    // Life / leisure
+    "star",
+    "heart",
+    "bell",
+    "gift",
+    "coffee",
+    "utensils",
+    "pill",
+    "dumbbell",
+    "gamepad-2",
+    "palette",
+    "music",
+    "camera",
+    "film",
+    "mic",
+    "paw-print",
+    "key",
+    "lock",
+    "shield",
+    // Nature
+    "sun",
+    "moon",
+    "cloud",
+    "umbrella",
+    "leaf",
+    "bug",
+];
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -101,28 +184,7 @@ impl AssetSource for Assets {
             "icons/octagon-alert.svg" => Some(ALERT_OCTAGON),
             "icons/layout-list.svg" => Some(LAYOUT_LIST),
             "icons/waypoints.svg" => Some(WAYPOINTS),
-            "icons/arrow-up-right.svg" => Some(PROP_ARROW_UP_RIGHT),
-            "icons/tag.svg" => Some(PROP_TAG),
-            "icons/clock.svg" => Some(PROP_CLOCK),
-            "icons/list.svg" => Some(PROP_LIST),
-            "icons/map-pin.svg" => Some(PROP_MAP_PIN),
-            "icons/link.svg" => Some(PROP_LINK),
-            "icons/align-left.svg" => Some(PROP_ALIGN_LEFT),
-            "icons/shapes.svg" => Some(PROP_SHAPES),
-            "icons/mail.svg" => Some(PROP_MAIL),
-            "icons/phone.svg" => Some(PROP_PHONE),
-            "icons/dollar-sign.svg" => Some(PROP_DOLLAR_SIGN),
-            "icons/alarm-clock.svg" => Some(PROP_ALARM_CLOCK),
-            "icons/target.svg" => Some(PROP_TARGET),
-            "icons/bookmark.svg" => Some(PROP_BOOKMARK),
-            "icons/building.svg" => Some(PROP_BUILDING),
-            "icons/hash.svg" => Some(PROP_HASH),
-            "icons/text.svg" => Some(PROP_TEXT),
-            "icons/book.svg" => Some(PROP_BOOK),
-            "icons/smile.svg" => Some(PROP_SMILE),
-            "icons/cloud.svg" => Some(PROP_CLOUD),
-            "icons/code.svg" => Some(PROP_CODE),
-            _ => None,
+            _ => property_icon_bytes(path),
         };
         if let Some(bytes) = custom {
             return Ok(Some(Cow::Borrowed(bytes)));

@@ -211,37 +211,6 @@ pub(crate) fn property_icon_overrides() -> std::collections::HashMap<String, Str
     PROPERTY_ICON_OVERRIDES.with(|m| m.borrow().clone())
 }
 
-/// The curated icon names the Properties page's picker offers — every face the
-/// built-in map uses (all embedded or bundled, so release builds serve them).
-pub(crate) const PROPERTY_ICON_CHOICES: &[&str] = &[
-    "align-left",
-    "arrow-up-right",
-    "tag",
-    "calendar",
-    "clock",
-    "user",
-    "list",
-    "map-pin",
-    "link",
-    "folder",
-    "shapes",
-    "mail",
-    "phone",
-    "star",
-    "dollar-sign",
-    "alarm-clock",
-    "circle-check",
-    "target",
-    "bookmark",
-    "building",
-    "hash",
-    "text",
-    "book",
-    "smile",
-    "cloud",
-    "code",
-];
-
 /// The icon shown before a property key in the property panel: a user override
 /// (set on the Properties page) when present, else a small built-in map of
 /// well-known keys (case-insensitive), with a generic text-field icon as the

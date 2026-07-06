@@ -29,6 +29,8 @@ pub struct PropsPageState {
     /// Focused while an icon picker is open, so Esc dismisses it (the lightbox
     /// recipe — no global binding to clash with the editor's Escape).
     picker_focus: gpui::FocusHandle,
+    /// Scroll state of the icon picker's grid (it caps its height + scrolls).
+    picker_scroll: gpui::ScrollHandle,
     _rename_sub: gpui::Subscription,
 }
 
@@ -57,6 +59,7 @@ impl PropsPageState {
             rename_input,
             new_key_input,
             picker_focus: cx.focus_handle(),
+            picker_scroll: gpui::ScrollHandle::new(),
             _rename_sub: rename_sub,
         }
     }
@@ -151,6 +154,7 @@ pub fn render(app: &AppView, cx: &mut gpui::Context<AppView>) -> impl IntoElemen
             state.icon_menu.as_deref() == Some(""),
             true,
             state.picker_focus.clone(),
+            state.picker_scroll.clone(),
             cx,
         ));
 
@@ -339,6 +343,7 @@ fn key_row(
                     state.icon_menu.as_deref() == Some(info.key.as_str()),
                     false,
                     state.picker_focus.clone(),
+                    state.picker_scroll.clone(),
                     cx,
                 ))
                 .children(overridden.then(|| {
@@ -414,6 +419,7 @@ fn icon_button(
     open: bool,
     drop_up: bool,
     picker_focus: gpui::FocusHandle,
+    picker_scroll: gpui::ScrollHandle,
     cx: &mut gpui::Context<AppView>,
 ) -> gpui::AnyElement {
     let toggle_key = key.clone();
@@ -456,7 +462,7 @@ fn icon_button(
             div().absolute().top_full().right_0().mt(px(2.0))
         };
         let panel = div()
-            .w(px(232.0))
+            .w(px(268.0))
             .occlude()
             .track_focus(&picker_focus)
             .on_key_down(
@@ -504,32 +510,74 @@ fn icon_button(
                     }),
             )
             .child({
-                let mut grid = div().flex().flex_row().flex_wrap().gap(px(4.0));
-                for name in theme::PROPERTY_ICON_CHOICES {
-                    let key = key.clone();
-                    grid = grid.child(
-                        div()
-                            .id(*name)
-                            .p(px(6.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme::hover()))
-                            .child(
-                                svg()
-                                    .path(format!("icons/{name}.svg"))
-                                    .w(px(16.0))
-                                    .h(px(16.0))
-                                    .text_color(theme::text_primary()),
-                            )
-                            .on_click(cx.listener(
-                                move |this: &mut AppView, _: &ClickEvent, _w, cx| {
-                                    cx.stop_propagation();
-                                    this.set_property_icon(&key, Some(name), cx);
-                                },
-                            )),
-                    );
+                // Fixed 8-per-row rows (28px cells + 4px gaps) so the content
+                // height — and the scrollbar thumb math — is deterministic; the
+                // viewport caps at ~6 rows and scrolls.
+                const PER_ROW: usize = 8;
+                const CELL: f32 = 28.0;
+                const GAP: f32 = 4.0;
+                const MAX_H: f32 = 188.0;
+                let names = crate::PROPERTY_ICON_CHOICES;
+                let mut rows = div().flex().flex_col().gap(px(GAP));
+                for chunk in names.chunks(PER_ROW) {
+                    let mut row = div().flex().flex_row().flex_shrink_0().gap(px(GAP));
+                    for name in chunk {
+                        let key = key.clone();
+                        row = row.child(
+                            div()
+                                .id(*name)
+                                .p(px(6.0))
+                                .rounded(px(4.0))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme::hover()))
+                                .child(
+                                    svg()
+                                        .path(format!("icons/{name}.svg"))
+                                        .w(px(16.0))
+                                        .h(px(16.0))
+                                        .text_color(theme::text_primary()),
+                                )
+                                .on_click(cx.listener(
+                                    move |this: &mut AppView, _: &ClickEvent, _w, cx| {
+                                        cx.stop_propagation();
+                                        this.set_property_icon(&key, Some(name), cx);
+                                    },
+                                )),
+                        );
+                    }
+                    rows = rows.child(row);
                 }
-                grid
+                let n_rows = names.len().div_ceil(PER_ROW);
+                let rows_h = n_rows as f32 * (CELL + GAP) - GAP;
+                // Scrollbar thumb, sized from the content height + positioned
+                // from the live scroll offset (the key-dropdown recipe).
+                let thumb = (rows_h > MAX_H).then(|| {
+                    let scrolled =
+                        (-f32::from(picker_scroll.offset().y)).clamp(0.0, rows_h - MAX_H);
+                    let thumb_h = (MAX_H * MAX_H / rows_h).max(24.0);
+                    let thumb_top = scrolled / (rows_h - MAX_H) * (MAX_H - thumb_h);
+                    let mut c = theme::text_tertiary();
+                    c.a = 0.5;
+                    div()
+                        .absolute()
+                        .top(px(thumb_top))
+                        .right(px(0.0))
+                        .w(px(6.0))
+                        .h(px(thumb_h))
+                        .rounded(px(3.0))
+                        .bg(c)
+                });
+                div()
+                    .relative()
+                    .child(
+                        div()
+                            .id("props-icon-grid")
+                            .max_h(px(MAX_H))
+                            .overflow_y_scroll()
+                            .track_scroll(&picker_scroll)
+                            .child(rows),
+                    )
+                    .children(thumb)
             });
         root = root.child(
             wrapper.child(gpui::deferred(
