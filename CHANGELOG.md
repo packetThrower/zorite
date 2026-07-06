@@ -60,6 +60,17 @@ log: <https://github.com/packetThrower/zorite/releases>.
   (the `-`/`+` flips in the source, like ticking a task checkbox). In the live
   editor, arrowing the caret into a folded callout reveals it while you edit and
   it folds back when you leave.
+- **Import from Obsidian** — File → Import from Obsidian reads a vault folder:
+  folders become `::` namespaces (or flatten, your choice), links and aliases
+  resolve, callouts map to Zorite's alerts, frontmatter feeds aliases/tags/
+  properties, `YYYY-MM-DD` notes become journal days, and images/PDFs copy into
+  the managed stores. `^block-id` anchors, `[[Note#Heading]]` / `[[Note#^id]]`
+  links, and `![[Note]]` transclusions come across as-is — they all work in
+  Zorite now. **Canvas boards import too**: each `.canvas` becomes a
+  Zorite whiteboard — text cards as labeled boxes, note cards as clickable page
+  cards, image cards placed, groups as outlines, and edges as arrows with their
+  labels. Anything that can't map 1:1 is downgraded and noted in the import
+  summary.
 
 ## [0.5.1] - 2026-07-03
 

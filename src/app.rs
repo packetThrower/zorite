@@ -34,9 +34,9 @@ use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
     CloseTab, DeletePage, ExportActivePdf, ExportPdf, FindInPage, FitImages, GlobalSearch,
-    ImportLogseq, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenInNewTab,
-    OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel,
-    SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    ImportLogseq, ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab,
+    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
+    SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -6724,6 +6724,145 @@ impl AppView {
         .detach();
     }
 
+    /// `ImportObsidian` handler: pick a vault folder, then confirm options.
+    fn on_import_obsidian(
+        &mut self,
+        _: &ImportObsidian,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(root) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.show_obsidian_options(root, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Confirm how a vault's folders map, then run the import.
+    fn show_obsidian_options(
+        &mut self,
+        root: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let (root_ns, root_flat, root_ok) = (root.clone(), root.clone(), root.clone());
+            let (weak_ns, weak_flat, weak_ok) = (weak.clone(), weak.clone(), weak.clone());
+            dialog
+                .title("Import from Obsidian")
+                .w(px(500.0))
+                // Enter runs the primary action (namespaces), like the button.
+                .on_ok(move |_, window, cx| {
+                    window.close_dialog(cx);
+                    let root = root_ok.clone();
+                    let _ = weak_ok.update(cx, |this, cx| {
+                        this.run_obsidian_import(root, true, window, cx)
+                    });
+                    false
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(12.0))
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .child(format!("Importing \u{201c}{}\u{201d}.", root.display())),
+                        )
+                        .child(div().text_color(theme::text_secondary()).child(
+                            "Obsidian folders can become Zorite namespaces. \u{201c}Preserve \
+                             folders\u{201d} turns Projects/Tasks.md into the page \
+                             Projects::Tasks (links resolve to it); \u{201c}Flatten\u{201d} \
+                             uses just the note name.",
+                        ))
+                        .child(
+                            DialogFooter::new()
+                                .child(
+                                    Button::new("ob-import-cancel")
+                                        .label("Cancel")
+                                        .on_click(|_, window, cx| window.close_dialog(cx)),
+                                )
+                                .child(Button::new("ob-import-flat").label("Flatten").on_click(
+                                    move |_, window, cx| {
+                                        window.close_dialog(cx);
+                                        let root = root_flat.clone();
+                                        let _ = weak_flat.update(cx, |this, cx| {
+                                            this.run_obsidian_import(root, false, window, cx)
+                                        });
+                                    },
+                                ))
+                                .child(
+                                    Button::new("ob-import-ns")
+                                        .primary()
+                                        .label("Preserve folders")
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            let root = root_ns.clone();
+                                            let _ = weak_ns.update(cx, |this, cx| {
+                                                this.run_obsidian_import(root, true, window, cx)
+                                            });
+                                        }),
+                                ),
+                        ),
+                )
+        });
+    }
+
+    fn run_obsidian_import(
+        &mut self,
+        root: PathBuf,
+        namespaces: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.open_dialog(cx, |dialog, _window, _cx| {
+            dialog
+                .title("Importing from Obsidian\u{2026}")
+                .w(px(400.0))
+                .child(
+                    div()
+                        .text_color(theme::text_secondary())
+                        .child("Copying notes and assets \u{2014} this may take a minute."),
+                )
+                .on_ok(|_, _window, _cx| false)
+                .on_cancel(|_, _window, _cx| true)
+        });
+        let data_dir = crate::paths::data_dir();
+        let task = cx.background_executor().spawn(async move {
+            let key = crate::security::session_key();
+            let db =
+                Db::open(key.as_deref()).map_err(|e| format!("open database: {}", e.source))?;
+            let opts = crate::import::obsidian::Options { namespaces };
+            let bundle = crate::import::obsidian::read_vault(&root, &opts)?;
+            crate::import::write_bundle(&db, &data_dir, bundle, |_, _| {})
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                window.close_dialog(cx);
+                this.refresh_sidebar();
+                this.signal_doc_changed(cx);
+                this.show_import_summary("Obsidian", result, window, cx);
+            });
+        })
+        .detach();
+    }
+
     /// Ask how Logseq's all-bullets outline should convert, then run the import.
     fn show_logseq_options(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
@@ -6834,15 +6973,16 @@ impl AppView {
                 this.refresh_sidebar();
                 // Reload journal days / the open page from the DB everywhere.
                 this.signal_doc_changed(cx);
-                this.show_logseq_summary(result, window, cx);
+                this.show_import_summary("Logseq", result, window, cx);
             });
         })
         .detach();
     }
 
     /// Post-import summary (or failure) dialog.
-    fn show_logseq_summary(
+    fn show_import_summary(
         &mut self,
+        source: &'static str,
         result: Result<crate::import::Summary, String>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -6877,9 +7017,9 @@ impl AppView {
                     if !s.warnings.is_empty() {
                         lines.push(format!("Warnings: {}", sample(&s.warnings, 6)));
                     }
-                    ("Logseq import complete", lines)
+                    (format!("{source} import complete"), lines)
                 }
-                Err(e) => ("Logseq import failed", vec![e.clone()]),
+                Err(e) => (format!("{source} import failed"), vec![e.clone()]),
             };
             dialog
                 .title(title)
@@ -7508,6 +7648,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_new_sub_page))
             .on_action(cx.listener(Self::on_new_whiteboard))
             .on_action(cx.listener(Self::on_import_logseq))
+            .on_action(cx.listener(Self::on_import_obsidian))
             .on_action(cx.listener(Self::on_fit_images))
             .on_action(cx.listener(Self::on_insert_tab))
             .on_action(cx.listener(Self::on_outdent))
