@@ -4047,16 +4047,21 @@ impl AppView {
         &mut self,
         key: &str,
         icon: Option<&str>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let key = if key.is_empty() {
             let Some(state) = &self.props_page else {
                 return;
             };
-            let typed = state.new_key_input.read(cx).value().trim().to_string();
+            let input = state.new_key_input.clone();
+            let typed = input.read(cx).value().trim().to_string();
             if !crate::ui::properties_page::valid_key(&typed) {
                 return;
             }
+            // The mapping is saved — clear the box so the row appearing below
+            // reads as the result.
+            input.update(cx, |s, cx| s.set_value("", window, cx));
             typed
         } else {
             key.to_string()

@@ -37,7 +37,8 @@ log: <https://github.com/packetThrower/zorite/releases>.
   vault with its icon, page count, and values; expand a key to see each value
   and the pages carrying it (click through to open). From the same page you can
   override any key's icon from a picker (or map an icon to a key before its
-  first use), and rename a key across every page at once.
+  first use — the mapping shows as its own row until the key appears on a
+  page), and rename a key across every page at once.
 - **Embeds (transclusion)** — a line holding just `![[Note]]` renders that
   note's content right there, in a quoted box with a clickable source label;
   `![[Note#^id]]` embeds a single block and `![[Note#Heading]]` a whole section

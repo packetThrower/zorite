@@ -132,6 +132,30 @@ pub fn render(app: &AppView, cx: &mut gpui::Context<AppView>) -> impl IntoElemen
             list = list.child(value_list(info, cx));
         }
     }
+    // Keys mapped before first use (an icon override with no `key::` line on
+    // any page yet) get rows too — picking an icon in the footer IS the save,
+    // and without these the new mapping would land invisibly. The icon
+    // applies the moment the key is first used in a note.
+    let mut unused: Vec<PropKeyInfo> = overrides
+        .keys()
+        .filter(|k| !state.index.iter().any(|i| i.key.eq_ignore_ascii_case(k)))
+        .map(|k| PropKeyInfo {
+            key: k.clone(),
+            page_count: 0,
+            values: Vec::new(),
+        })
+        .collect();
+    unused.sort_by(|a, b| a.key.cmp(&b.key));
+    for (j, info) in unused.iter().enumerate() {
+        list = list.child(key_row(
+            app,
+            state,
+            &overrides,
+            state.index.len() + j,
+            info,
+            cx,
+        ));
+    }
 
     // Add a mapping for a key that isn't used yet: type the key, pick its icon.
     let add_row = div()
@@ -212,7 +236,9 @@ fn key_row(
         .collect::<Vec<_>>()
         .join(", ");
     let more = info.values.len().saturating_sub(4);
-    let preview = if more > 0 {
+    let preview = if info.page_count == 0 {
+        "mapped — not used on any page yet".to_string()
+    } else if more > 0 {
         format!("{preview}, +{more} more")
     } else {
         preview
@@ -503,9 +529,9 @@ fn icon_button(
                     .child("Default (built-in)")
                     .on_click({
                         let key = key.clone();
-                        cx.listener(move |this: &mut AppView, _: &ClickEvent, _w, cx| {
+                        cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
                             cx.stop_propagation();
-                            this.set_property_icon(&key, None, cx);
+                            this.set_property_icon(&key, None, window, cx);
                         })
                     }),
             )
@@ -538,9 +564,9 @@ fn icon_button(
                                         .text_color(theme::text_primary()),
                                 )
                                 .on_click(cx.listener(
-                                    move |this: &mut AppView, _: &ClickEvent, _w, cx| {
+                                    move |this: &mut AppView, _: &ClickEvent, window, cx| {
                                         cx.stop_propagation();
-                                        this.set_property_icon(&key, Some(name), cx);
+                                        this.set_property_icon(&key, Some(name), window, cx);
                                     },
                                 )),
                         );
