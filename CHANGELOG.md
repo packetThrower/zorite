@@ -9,6 +9,18 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Added
+
+- **Import from Obsidian** — File → Import from Obsidian reads a vault folder:
+  folders become `::` namespaces (or flatten, your choice), links and aliases
+  resolve, callouts map to Zorite's alerts, frontmatter feeds aliases/tags/
+  properties, `YYYY-MM-DD` notes become journal days, and images/PDFs copy into
+  the managed stores. **Canvas boards import too**: each `.canvas` becomes a
+  Zorite whiteboard — text cards as labeled boxes, note cards as clickable page
+  cards, image cards placed, groups as outlines, and edges as arrows with their
+  labels. Anything that can't map 1:1 is downgraded and noted in the import
+  summary.
+
 ## [0.5.1] - 2026-07-03
 
 Two fixes, one urgent: Windows users could be locked out of an encrypted

@@ -24,9 +24,18 @@
 //!   folder, if any) becomes a journal day.
 //! - **Assets** — images copied to `images/`, PDFs referenced as `pdf/…`
 //!   chips; attachments are resolved by filename anywhere in the vault.
+//! - **Canvases** — each `.canvas` board becomes a Zorite whiteboard: text
+//!   cards → labeled boxes, note cards → clickable page cards, image cards →
+//!   placed images, links/other files → named boxes, groups → outlines, and
+//!   edges → arrows/lines with their labels as midpoint text (see
+//!   [`convert_canvas`] for the exact downgrades).
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use gpui_whiteboard::{
+    BoxGeom, Element, ElementKind, EmbedGeom, ImageGeom, Scene, SegGeom, TextGeom,
+};
 
 use super::{AssetCopy, ImportBundle, ImportDay, ImportPage};
 
@@ -73,7 +82,8 @@ pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
     let mut md_files: Vec<PathBuf> = Vec::new();
     // Every non-md file, indexed by lowercase basename, for attachment lookup.
     let mut assets: HashMap<String, PathBuf> = HashMap::new();
-    walk(root, &mut md_files, &mut assets);
+    let mut canvas_files: Vec<PathBuf> = Vec::new();
+    walk(root, &mut md_files, &mut canvas_files, &mut assets);
     if md_files.is_empty() {
         return Err(format!(
             "{} doesn't contain any Markdown notes",
@@ -144,6 +154,31 @@ pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
             }),
         }
     }
+    // Canvas boards → Zorite whiteboards (best-effort; see `convert_canvas`).
+    for path in &canvas_files {
+        let title = {
+            let rel = rel_no_ext(root, path);
+            if opts.namespaces {
+                rel.replace('/', SEP)
+            } else {
+                rel.rsplit('/').next().unwrap_or(&rel).to_string()
+            }
+        };
+        let Ok(json) = std::fs::read_to_string(path) else {
+            conv.warnings
+                .push(format!("{}: unreadable", path.display()));
+            continue;
+        };
+        match convert_canvas(&json, &title, &mut conv) {
+            Some(scene_json) => bundle
+                .whiteboards
+                .push(super::ImportWhiteboard { title, scene_json }),
+            None => conv.warnings.push(format!(
+                "canvas {}: malformed JSON, skipped",
+                path.display()
+            )),
+        }
+    }
     bundle.assets = conv
         .copies
         .into_iter()
@@ -153,9 +188,14 @@ pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
     Ok(bundle)
 }
 
-/// Recursively collect `.md` paths and index every other file by basename.
-/// Skips Obsidian's config/trash dirs and dotfolders.
-fn walk(dir: &Path, md: &mut Vec<PathBuf>, assets: &mut HashMap<String, PathBuf>) {
+/// Recursively collect `.md` paths, `.canvas` boards, and index every other
+/// file by basename. Skips Obsidian's config/trash dirs and dotfolders.
+fn walk(
+    dir: &Path,
+    md: &mut Vec<PathBuf>,
+    canvases: &mut Vec<PathBuf>,
+    assets: &mut HashMap<String, PathBuf>,
+) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -166,9 +206,11 @@ fn walk(dir: &Path, md: &mut Vec<PathBuf>, assets: &mut HashMap<String, PathBuf>
             continue; // .obsidian, .trash, .git, …
         }
         if path.is_dir() {
-            walk(&path, md, assets);
+            walk(&path, md, canvases, assets);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             md.push(path);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("canvas") {
+            canvases.push(path);
         } else {
             assets.entry(name.to_lowercase()).or_insert(path);
         }
@@ -517,6 +559,347 @@ impl Converter<'_> {
     }
 }
 
+// --- Canvas (`.canvas` → Zorite whiteboard) ---
+
+/// One JSON-Canvas node (<https://jsoncanvas.org>). Unknown fields ignored.
+#[derive(serde::Deserialize)]
+struct CanvasNode {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    x: f32,
+    #[serde(default)]
+    y: f32,
+    #[serde(default)]
+    width: f32,
+    #[serde(default)]
+    height: f32,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    file: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+/// One JSON-Canvas edge. Unknown fields ignored.
+#[derive(serde::Deserialize)]
+struct CanvasEdge {
+    #[serde(rename = "fromNode", default)]
+    from_node: String,
+    #[serde(rename = "fromSide", default)]
+    from_side: Option<String>,
+    #[serde(rename = "fromEnd", default)]
+    from_end: Option<String>,
+    #[serde(rename = "toNode", default)]
+    to_node: String,
+    #[serde(rename = "toSide", default)]
+    to_side: Option<String>,
+    #[serde(rename = "toEnd", default)]
+    to_end: Option<String>,
+    #[serde(default)]
+    color: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CanvasData {
+    #[serde(default)]
+    nodes: Vec<CanvasNode>,
+    #[serde(default)]
+    edges: Vec<CanvasEdge>,
+}
+
+/// Convert one JSON-Canvas board into a Zorite whiteboard scene, best-effort:
+///
+/// - text cards → rounded, labeled boxes (markdown inside shows literally);
+/// - note-file cards → page cards (their `page_id` is a placeholder the writer
+///   resolves once pages exist — see `write_bundle`);
+/// - image-file cards → placed images (asset copied); other files → a labeled
+///   box naming the file;
+/// - link cards → a labeled box showing the URL;
+/// - groups → unfilled outlines painted below everything;
+/// - edges → arrows/lines between node-side midpoints, labels as midpoint text.
+///
+/// `None` = unparseable JSON (the caller warns and skips the board).
+fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<String> {
+    let data: CanvasData = serde_json::from_str(json).ok()?;
+    let mut next_id = 1u64;
+    let mut id = || {
+        next_id += 1;
+        next_id - 1
+    };
+    // Node id → bounds, for edge endpoints.
+    let bounds: HashMap<&str, (f32, f32, f32, f32)> = data
+        .nodes
+        .iter()
+        .map(|n| (n.id.as_str(), (n.x, n.y, n.width, n.height)))
+        .collect();
+
+    // Paint order: groups (backdrops) first, then edges, then cards.
+    let mut groups: Vec<Element> = Vec::new();
+    let mut edges: Vec<Element> = Vec::new();
+    let mut cards: Vec<Element> = Vec::new();
+    let mut skipped = 0usize;
+
+    for n in &data.nodes {
+        let color = n.color.as_deref().and_then(canvas_color);
+        let geom = BoxGeom {
+            x: n.x,
+            y: n.y,
+            w: n.width,
+            h: n.height,
+            width: 2.0,
+            rotation: 0.0,
+        };
+        let boxed = |kind: ElementKind, label: Option<String>, id: u64| Element {
+            id,
+            kind,
+            stroke: color,
+            // A translucent tint like Obsidian's cards; `None` stays outline.
+            fill: color.map(|c| (c & 0xFFFF_FF00) | 0x22),
+            label,
+            label_color: color,
+            styles: Vec::new(),
+        };
+        match n.kind.as_str() {
+            "text" => {
+                let text = n.text.clone().unwrap_or_default();
+                cards.push(boxed(ElementKind::RoundRect(geom), Some(text), id()));
+            }
+            "file" => {
+                let file = n.file.clone().unwrap_or_default();
+                let base = file.rsplit('/').next().unwrap_or(&file).to_string();
+                let ext = base.rsplit('.').next().unwrap_or("").to_lowercase();
+                if IMAGE_EXTS.contains(&ext.as_str()) {
+                    if let Some(managed) = conv.copy_asset(&base, "images") {
+                        cards.push(Element {
+                            id: id(),
+                            kind: ElementKind::Image(ImageGeom {
+                                src: managed,
+                                x: n.x,
+                                y: n.y,
+                                w: n.width,
+                                h: n.height,
+                                rotation: 0.0,
+                            }),
+                            stroke: None,
+                            fill: None,
+                            label: None,
+                            label_color: None,
+                            styles: Vec::new(),
+                        });
+                    } else {
+                        conv.warnings
+                            .push(format!("canvas \"{title}\": missing image {base}"));
+                        cards.push(boxed(ElementKind::RoundRect(geom), Some(base), id()));
+                    }
+                } else if ext == "md" || !base.contains('.') {
+                    // A note card → a real page card; the writer fills the
+                    // page id in once pages exist (placeholder 0).
+                    let note = conv.resolve(file.trim_end_matches(".md"));
+                    cards.push(Element {
+                        id: id(),
+                        kind: ElementKind::Embed(EmbedGeom {
+                            page_id: 0,
+                            title: note,
+                            x: n.x,
+                            y: n.y,
+                            w: n.width,
+                            h: n.height,
+                        }),
+                        stroke: color,
+                        fill: None,
+                        label: None,
+                        label_color: None,
+                        styles: Vec::new(),
+                    });
+                } else {
+                    // PDFs, nested .canvas boards, audio, … — a named box.
+                    skipped += 1;
+                    cards.push(boxed(ElementKind::RoundRect(geom), Some(base), id()));
+                }
+            }
+            "link" => {
+                let url = n.url.clone().unwrap_or_default();
+                cards.push(boxed(ElementKind::RoundRect(geom), Some(url), id()));
+            }
+            "group" => {
+                groups.push(Element {
+                    id: id(),
+                    kind: ElementKind::Rect(geom),
+                    stroke: color,
+                    fill: None,
+                    label: n.label.clone(),
+                    label_color: color,
+                    styles: Vec::new(),
+                });
+            }
+            other => {
+                skipped += 1;
+                conv.warnings.push(format!(
+                    "canvas \"{title}\": unsupported node type '{other}'"
+                ));
+            }
+        }
+    }
+
+    for e in &data.edges {
+        let (Some(from), Some(to)) = (
+            bounds.get(e.from_node.as_str()),
+            bounds.get(e.to_node.as_str()),
+        ) else {
+            skipped += 1;
+            continue;
+        };
+        let (x1, y1) = side_point(*from, e.from_side.as_deref(), *to);
+        let (x2, y2) = side_point(*to, e.to_side.as_deref(), *from);
+        // Zorite arrows are single-headed (at the segment's end). Obsidian's
+        // default is an arrowhead at `to`; a from-only arrow flips direction.
+        let color = e.color.as_deref().and_then(canvas_color);
+        let to_arrow = e.to_end.as_deref() != Some("none");
+        let from_arrow = e.from_end.as_deref() == Some("arrow");
+        let seg = if to_arrow || !from_arrow {
+            SegGeom {
+                x1,
+                y1,
+                x2,
+                y2,
+                width: 2.0,
+            }
+        } else {
+            SegGeom {
+                x1: x2,
+                y1: y2,
+                x2: x1,
+                y2: y1,
+                width: 2.0,
+            }
+        };
+        let kind = if to_arrow || from_arrow {
+            ElementKind::Arrow(seg)
+        } else {
+            ElementKind::Line(seg)
+        };
+        edges.push(Element {
+            id: id(),
+            kind,
+            stroke: color,
+            fill: None,
+            label: None,
+            label_color: None,
+            styles: Vec::new(),
+        });
+        if let Some(label) = e.label.clone().filter(|l| !l.trim().is_empty()) {
+            edges.push(Element {
+                id: id(),
+                kind: ElementKind::Text(TextGeom {
+                    x: (x1 + x2) / 2.0,
+                    y: (y1 + y2) / 2.0,
+                    content: label,
+                    size: 14.0,
+                    rotation: 0.0,
+                    measured_w: 0.0,
+                    measured_h: 0.0,
+                }),
+                stroke: color,
+                fill: None,
+                label: None,
+                label_color: None,
+                styles: Vec::new(),
+            });
+        }
+    }
+
+    if skipped > 0 {
+        conv.warnings.push(format!(
+            "canvas \"{title}\": {skipped} item(s) downgraded or skipped"
+        ));
+    }
+    let mut elements = groups;
+    elements.extend(edges);
+    elements.extend(cards);
+    // Open on the content: camera at the bounding box's top-left, padded.
+    let (mut cam_x, mut cam_y) = (0.0f32, 0.0f32);
+    if let Some(min_x) = data.nodes.iter().map(|n| n.x).reduce(f32::min) {
+        let min_y = data
+            .nodes
+            .iter()
+            .map(|n| n.y)
+            .reduce(f32::min)
+            .unwrap_or(0.0);
+        cam_x = min_x - 60.0;
+        cam_y = min_y - 60.0;
+    }
+    let scene = Scene {
+        camera: gpui_whiteboard::Camera {
+            x: cam_x,
+            y: cam_y,
+            zoom: 1.0,
+        },
+        elements,
+    };
+    Some(scene.to_json())
+}
+
+/// The midpoint of a node side for an edge endpoint. A missing side picks the
+/// one facing the `other` node's center (Obsidian omits sides on auto-routed
+/// edges).
+fn side_point(
+    (x, y, w, h): (f32, f32, f32, f32),
+    side: Option<&str>,
+    other: (f32, f32, f32, f32),
+) -> (f32, f32) {
+    let side = match side {
+        Some(s) => s.to_string(),
+        None => {
+            let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+            let (ox, oy) = (other.0 + other.2 / 2.0, other.1 + other.3 / 2.0);
+            let (dx, dy) = (ox - cx, oy - cy);
+            if dx.abs() > dy.abs() {
+                if dx > 0.0 { "right" } else { "left" }.to_string()
+            } else if dy > 0.0 {
+                "bottom".to_string()
+            } else {
+                "top".to_string()
+            }
+        }
+    };
+    match side.as_str() {
+        "top" => (x + w / 2.0, y),
+        "bottom" => (x + w / 2.0, y + h),
+        "left" => (x, y + h / 2.0),
+        _ => (x + w, y + h / 2.0),
+    }
+}
+
+/// A canvas color — a preset digit (`"1"`–`"6"`, Obsidian's palette) or a
+/// `#RRGGBB` hex — as Zorite's packed `0xRRGGBBAA`.
+fn canvas_color(c: &str) -> Option<u32> {
+    match c {
+        "1" => Some(0xFB46_4CFF), // red
+        "2" => Some(0xE997_3FFF), // orange
+        "3" => Some(0xE0DE_71FF), // yellow
+        "4" => Some(0x44CF_6EFF), // green
+        "5" => Some(0x53DF_DDFF), // cyan
+        "6" => Some(0xA882_FFFF), // purple
+        hex => {
+            let hex = hex.strip_prefix('#')?;
+            if hex.len() != 6 {
+                return None;
+            }
+            u32::from_str_radix(hex, 16).ok().map(|v| (v << 8) | 0xFF)
+        }
+    }
+}
+
 /// `> [!type] title` → `> [!ZORITE] title`. `None` if the line isn't a
 /// callout header.
 fn convert_callout(line: &str) -> Option<String> {
@@ -728,6 +1111,99 @@ mod tests {
             copies: Vec::new(),
             warnings: Vec::new(),
         }
+    }
+
+    #[test]
+    fn canvas_converts_nodes_and_edges() {
+        let mut c = conv();
+        c.assets
+            .insert("pic.png".into(), PathBuf::from("/vault/pic.png"));
+        let json = r##"{
+            "nodes": [
+                {"id":"a","type":"text","x":0,"y":0,"width":200,"height":80,"text":"hello **md**","color":"4"},
+                {"id":"b","type":"file","x":300,"y":0,"width":200,"height":80,"file":"Projects/Tasks.md"},
+                {"id":"c","type":"file","x":0,"y":200,"width":120,"height":90,"file":"assets/pic.png"},
+                {"id":"d","type":"link","x":300,"y":200,"width":200,"height":60,"url":"https://example.com","color":"#112233"},
+                {"id":"g","type":"group","x":-40,"y":-40,"width":700,"height":420,"label":"Everything"},
+                {"id":"z","type":"mystery","x":0,"y":0,"width":1,"height":1}
+            ],
+            "edges": [
+                {"id":"e1","fromNode":"a","fromSide":"right","toNode":"b","toSide":"left","label":"leads to"},
+                {"id":"e2","fromNode":"c","toNode":"d","toEnd":"none"}
+            ]
+        }"##;
+        let scene_json = convert_canvas(json, "Board", &mut c).unwrap();
+        let scene = Scene::from_json(&scene_json);
+
+        // Group first (backdrop), then edges (+ label text), then cards.
+        assert!(matches!(scene.elements[0].kind, ElementKind::Rect(_)));
+        assert_eq!(scene.elements[0].label.as_deref(), Some("Everything"));
+        let arrows = scene
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Arrow(_)))
+            .count();
+        let lines = scene
+            .elements
+            .iter()
+            .filter(|e| matches!(e.kind, ElementKind::Line(_)))
+            .count();
+        assert_eq!((arrows, lines), (1, 1)); // default toEnd=arrow; e2 explicit none
+        // The edge label lands as midpoint text.
+        assert!(
+            scene
+                .elements
+                .iter()
+                .any(|e| matches!(&e.kind, ElementKind::Text(t) if t.content == "leads to"))
+        );
+        // The e1 arrow runs right-side of a → left-side of b.
+        let seg = scene
+            .elements
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Arrow(s) => Some(*s),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!((seg.x1, seg.y1, seg.x2, seg.y2), (200.0, 40.0, 300.0, 40.0));
+        // Text card: rounded box, literal markdown label, preset-4 green.
+        let card = scene
+            .elements
+            .iter()
+            .find(|e| {
+                matches!(e.kind, ElementKind::RoundRect(_))
+                    && e.label.as_deref() == Some("hello **md**")
+            })
+            .unwrap();
+        assert_eq!(card.stroke, Some(0x44CF_6EFF));
+        // Note card: a page card with the placeholder id + resolved title.
+        let embed = scene
+            .elements
+            .iter()
+            .find_map(|e| match &e.kind {
+                ElementKind::Embed(g) => Some(g.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(embed.page_id, 0);
+        assert_eq!(embed.title, "Projects::Tasks");
+        // Image card: copied into the managed store.
+        assert!(
+            scene
+                .elements
+                .iter()
+                .any(|e| matches!(&e.kind, ElementKind::Image(g) if g.src == "images/pic.png"))
+        );
+        assert!(c.copies.iter().any(|(_, m)| m == "images/pic.png"));
+        // Link card keeps its hex color; the mystery node warned.
+        assert!(
+            scene
+                .elements
+                .iter()
+                .any(|e| e.label.as_deref() == Some("https://example.com")
+                    && e.stroke == Some(0x1122_33FF))
+        );
+        assert!(c.warnings.iter().any(|w| w.contains("mystery")));
     }
 
     #[test]

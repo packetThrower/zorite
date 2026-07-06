@@ -180,9 +180,28 @@ pub fn write_bundle(
     }
 
     // Whiteboards: create each converted board (named, deduped). Done before
-    // favorites so a favorited whiteboard can resolve to it by title.
+    // favorites so a favorited whiteboard can resolve to it by title — and
+    // after pages, so a page card's placeholder id (0, from a canvas import's
+    // note node) can resolve to the now-written page.
     for wb in &bundle.whiteboards {
-        match db.create_whiteboard_with(&wb.title, &wb.scene_json) {
+        let mut scene_json = wb.scene_json.clone();
+        if scene_json.contains("\"page_id\":0") {
+            let mut scene = gpui_whiteboard::Scene::from_json(&scene_json);
+            for el in &mut scene.elements {
+                if let gpui_whiteboard::ElementKind::Embed(g) = &mut el.kind
+                    && g.page_id == 0
+                {
+                    match db.get_or_create_page(&g.title) {
+                        Ok(p) => g.page_id = p.id,
+                        Err(e) => summary
+                            .warnings
+                            .push(format!("canvas page card {}: {e}", g.title)),
+                    }
+                }
+            }
+            scene_json = scene.to_json();
+        }
+        match db.create_whiteboard_with(&wb.title, &scene_json) {
             Ok(_) => summary.whiteboards += 1,
             Err(e) => summary
                 .warnings
@@ -372,6 +391,56 @@ mod tests {
         let page = db.get_page_by_title("Projects::Lab").unwrap().unwrap();
         assert!(page.content.ends_with("\n\nmore"));
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn canvas_page_cards_resolve_to_real_ids() {
+        // A canvas import's note card carries `page_id: 0`; the writer must
+        // resolve it to the (now-created) page's real id.
+        let scene = gpui_whiteboard::Scene {
+            camera: Default::default(),
+            elements: vec![gpui_whiteboard::Element {
+                id: 1,
+                kind: gpui_whiteboard::ElementKind::Embed(gpui_whiteboard::EmbedGeom {
+                    page_id: 0,
+                    title: "Projects::Tasks".into(),
+                    x: 0.0,
+                    y: 0.0,
+                    w: 200.0,
+                    h: 80.0,
+                }),
+                stroke: None,
+                fill: None,
+                label: None,
+                label_color: None,
+                styles: Vec::new(),
+            }],
+        };
+        let bundle = ImportBundle {
+            pages: vec![ImportPage {
+                title: "Projects::Tasks".into(),
+                content: "the tasks".into(),
+                aliases: vec![],
+                is_highlights: false,
+            }],
+            whiteboards: vec![ImportWhiteboard {
+                title: "Board".into(),
+                scene_json: scene.to_json(),
+            }],
+            ..ImportBundle::default()
+        };
+        let dir = std::env::temp_dir().join("zorite-import-canvas-test");
+        let _ = std::fs::create_dir_all(&dir);
+        let db = Db::open_in_memory().unwrap();
+        write_bundle(&db, &dir, bundle, |_, _| {}).unwrap();
+        let page = db.get_page_by_title("Projects::Tasks").unwrap().unwrap();
+        let board = db.get_whiteboard_by_title("Board").unwrap().unwrap();
+        let written = gpui_whiteboard::Scene::from_json(&board.content);
+        match &written.elements[0].kind {
+            gpui_whiteboard::ElementKind::Embed(g) => assert_eq!(g.page_id, page.id),
+            other => panic!("expected an Embed card, got {other:?}"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
