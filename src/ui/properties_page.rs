@@ -9,6 +9,7 @@ use gpui::{
     StatefulInteractiveElement, Styled, Window, div, px, svg,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::tooltip::Tooltip;
 
 use crate::app::AppView;
 use crate::db::PropKeyInfo;
@@ -527,6 +528,13 @@ fn icon_button(
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::hover()))
                     .child("Default (built-in)")
+                    .tooltip(|window, cx| {
+                        Tooltip::new(
+                            "Remove this key's custom icon. A key that isn't used on \
+                             any page yet loses its row here too.",
+                        )
+                        .build(window, cx)
+                    })
                     .on_click({
                         let key = key.clone();
                         cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
