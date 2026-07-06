@@ -205,6 +205,23 @@ pub(crate) fn property_icon(key: &str) -> Option<gpui::SharedString> {
         "status" | "priority" => "list",
         "location" | "place" => "map-pin",
         "link" | "url" | "source" => "link",
+        "project" | "projects" => "folder",
+        "type" | "kind" | "category" => "shapes",
+        "email" | "mail" => "mail",
+        "phone" => "phone",
+        "rating" | "score" | "stars" => "star",
+        "price" | "cost" | "budget" => "dollar-sign",
+        "deadline" => "alarm-clock",
+        "done" | "complete" | "completed" => "circle-check",
+        "goal" | "target" => "target",
+        "topic" | "subject" => "bookmark",
+        "company" | "org" | "organization" | "client" | "vendor" => "building",
+        "id" | "number" | "version" => "hash",
+        "description" | "summary" | "notes" => "text",
+        "book" | "reading" => "book",
+        "mood" => "smile",
+        "weather" => "cloud",
+        "repo" | "code" => "code",
         _ => "align-left", // generic (text-field look)
     };
     Some(format!("icons/{name}.svg").into())

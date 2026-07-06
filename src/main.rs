@@ -73,6 +73,20 @@ const PROP_LIST: &[u8] = include_bytes!("../assets/icons/lucide/list.svg");
 const PROP_MAP_PIN: &[u8] = include_bytes!("../assets/icons/lucide/map-pin.svg");
 const PROP_LINK: &[u8] = include_bytes!("../assets/icons/lucide/link.svg");
 const PROP_ALIGN_LEFT: &[u8] = include_bytes!("../assets/icons/lucide/align-left.svg");
+const PROP_SHAPES: &[u8] = include_bytes!("../assets/icons/lucide/shapes.svg");
+const PROP_MAIL: &[u8] = include_bytes!("../assets/icons/lucide/mail.svg");
+const PROP_PHONE: &[u8] = include_bytes!("../assets/icons/lucide/phone.svg");
+const PROP_DOLLAR_SIGN: &[u8] = include_bytes!("../assets/icons/lucide/dollar-sign.svg");
+const PROP_ALARM_CLOCK: &[u8] = include_bytes!("../assets/icons/lucide/alarm-clock.svg");
+const PROP_TARGET: &[u8] = include_bytes!("../assets/icons/lucide/target.svg");
+const PROP_BOOKMARK: &[u8] = include_bytes!("../assets/icons/lucide/bookmark.svg");
+const PROP_BUILDING: &[u8] = include_bytes!("../assets/icons/lucide/building.svg");
+const PROP_HASH: &[u8] = include_bytes!("../assets/icons/lucide/hash.svg");
+const PROP_TEXT: &[u8] = include_bytes!("../assets/icons/lucide/text.svg");
+const PROP_BOOK: &[u8] = include_bytes!("../assets/icons/lucide/book.svg");
+const PROP_SMILE: &[u8] = include_bytes!("../assets/icons/lucide/smile.svg");
+const PROP_CLOUD: &[u8] = include_bytes!("../assets/icons/lucide/cloud.svg");
+const PROP_CODE: &[u8] = include_bytes!("../assets/icons/lucide/code.svg");
 
 impl AssetSource for Assets {
     fn load(&self, path: &str) -> Result<Option<Cow<'static, [u8]>>> {
@@ -94,6 +108,20 @@ impl AssetSource for Assets {
             "icons/map-pin.svg" => Some(PROP_MAP_PIN),
             "icons/link.svg" => Some(PROP_LINK),
             "icons/align-left.svg" => Some(PROP_ALIGN_LEFT),
+            "icons/shapes.svg" => Some(PROP_SHAPES),
+            "icons/mail.svg" => Some(PROP_MAIL),
+            "icons/phone.svg" => Some(PROP_PHONE),
+            "icons/dollar-sign.svg" => Some(PROP_DOLLAR_SIGN),
+            "icons/alarm-clock.svg" => Some(PROP_ALARM_CLOCK),
+            "icons/target.svg" => Some(PROP_TARGET),
+            "icons/bookmark.svg" => Some(PROP_BOOKMARK),
+            "icons/building.svg" => Some(PROP_BUILDING),
+            "icons/hash.svg" => Some(PROP_HASH),
+            "icons/text.svg" => Some(PROP_TEXT),
+            "icons/book.svg" => Some(PROP_BOOK),
+            "icons/smile.svg" => Some(PROP_SMILE),
+            "icons/cloud.svg" => Some(PROP_CLOUD),
+            "icons/code.svg" => Some(PROP_CODE),
             _ => None,
         };
         if let Some(bytes) = custom {
