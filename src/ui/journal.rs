@@ -186,6 +186,7 @@ fn rendered_day(
         let toggle_date = d.clone();
         let fold_weak = cx.entity().downgrade();
         let fold_content = content.to_string();
+        let embeds = app.build_embed_map(&content);
         let fold_date = d.clone();
         let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
             .style(theme::markdown_style(app.list_indent(), app.text_size()))
@@ -238,7 +239,12 @@ fn rendered_day(
                         this.signal_doc_changed(cx);
                     });
                 }
-            }));
+            }))
+            // Standalone `![[target]]` lines render their target inline;
+            // images inside them go through the read-only renderer (a resize
+            // would rewrite the wrong page).
+            .on_embed(std::rc::Rc::new(move |target| embeds.get(target).cloned()))
+            .on_embed_image(crate::ui::image::embed_renderer(app, cx));
         // Track the markdown root's bounds — click-to-caret's scroll anchor.
         if let Some(de) = app.day_editors.get(date) {
             md = md.track_blocks(de.md_scroll.clone());

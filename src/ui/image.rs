@@ -44,6 +44,51 @@ pub fn renderer(
     })
 }
 
+/// Read-only variant for transcluded content: renders images (and PDF chips)
+/// exactly like [`renderer`] but with no resize grip — an embed's source
+/// ranges belong to ANOTHER page, so a resize would rewrite the wrong one.
+pub fn embed_renderer(app: &AppView, cx: &mut gpui::Context<AppView>) -> ImageRenderer {
+    let store = app.image_store();
+    let weak = cx.entity().downgrade();
+    Rc::new(move |info: ImageInfo| build_readonly(info, store.clone(), weak.clone()))
+}
+
+fn build_readonly(
+    info: ImageInfo,
+    store: Rc<RefCell<ImageStore>>,
+    weak: WeakEntity<AppView>,
+) -> AnyElement {
+    if crate::pdf::is_pdf(&info.src) {
+        return pdf_chip(&info, weak);
+    }
+    let source = if info.src.starts_with("http://") || info.src.starts_with("https://") {
+        ImageSource::from(SharedUri::from(info.src.to_string()))
+    } else {
+        match local_source(&info, &store, &weak) {
+            LocalImage::Ready(source) => source,
+            LocalImage::Placeholder(el) => return el,
+            LocalImage::Missing => return fallback(&info),
+        }
+    };
+    let mut image = img(source).rounded(px(4.0));
+    match info.width {
+        Some(w) => image = image.w(px(w)),
+        None => image = image.max_w(relative(1.0)),
+    }
+    div()
+        .py(px(4.0))
+        .child(
+            div()
+                .id(("embed-img", info.attr_target.start))
+                .w_full()
+                .overflow_x_scroll()
+                .flex()
+                .items_start()
+                .child(div().flex_shrink_0().child(image)),
+        )
+        .into_any_element()
+}
+
 /// The renderer handed to `MarkdownView::on_inline_image`: a decoded local
 /// image's raster + a size that flows inline (height capped so it doesn't
 /// tower over the text; width capped so a wide image doesn't blow out the

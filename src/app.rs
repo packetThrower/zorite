@@ -485,6 +485,10 @@ pub struct AppView {
     // Highlighted code blocks, cached by (lang, content); both views' code
     // highlighter callbacks read it. See `highlight::HighlightStore`.
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
+    /// Resolved `![[target]]` transclusions for the WYSIWYG overlay: one view
+    /// per target + the row height to reserve. Filled by
+    /// `ensure_content_embeds`, read by the editors' embed providers.
+    embed_store: Rc<RefCell<crate::ui::embed::EmbedStore>>,
     // The source of the mermaid diagram currently expanded in the lightbox overlay
     // (click a diagram to open it large + scrollable). `None` = closed.
     mermaid_lightbox: Option<SharedString>,
@@ -684,6 +688,9 @@ impl AppView {
             window,
             |this: &mut AppView, _sig, _ev: &DocChanged, window, cx| {
                 this.apply_external_edit(window, cx);
+                // Embeds transclude OTHER pages — re-resolve them so editing a
+                // source page updates every box embedding it.
+                this.refresh_embed_store(cx);
             },
         );
 
@@ -773,6 +780,7 @@ impl AppView {
             auto_link_titles: Rc::new(RefCell::new(Default::default())),
             auto_link: Rc::new(std::cell::Cell::new(false)),
             highlight_store: Rc::new(RefCell::new(Default::default())),
+            embed_store: Rc::new(RefCell::new(Default::default())),
             mermaid_lightbox: None,
             image_lightbox: None,
             lightbox_focus: cx.focus_handle(),
@@ -943,6 +951,7 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.embed_store.clone(),
             self.auto_link_titles.clone(),
             self.auto_link.clone(),
             window,
@@ -951,6 +960,7 @@ impl AppView {
         self.ensure_content_images(&content, cx);
         self.ensure_content_mermaid(&content, cx);
         self.ensure_content_math(&content, cx);
+        self.ensure_content_embeds(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -969,6 +979,7 @@ impl AppView {
                         this.ensure_content_images(&value, cx);
                         this.ensure_content_mermaid(&value, cx);
                         this.ensure_content_math(&value, cx);
+                        this.ensure_content_embeds(&value, cx);
                     }
                     this.update_slash(SlashTarget::Day(key.clone()), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -1248,6 +1259,10 @@ impl AppView {
     }
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A `[[Note#^block-id]]` link targets a block: open the note, then seat
+        // the caret at (and scroll to) the line carrying the `^block-id` anchor.
+        // Only the `#^` form is an anchor — a bare `#` stays part of the title.
+        let (title, block) = gpui_markdown::syntax::split_block_anchor(title);
         // A `[[file.pdf]]` link opens the PDF viewer instead of a page; a `#pN`
         // fragment (`[[file.pdf#p12]]`) also jumps to page N when it's already loaded.
         let (base, target_page) = match title.split_once('#') {
@@ -1273,9 +1288,45 @@ impl AppView {
             self.open_whiteboard(board.id, window, cx);
             return;
         }
+        // A `[[Note#Heading]]` link jumps to the heading — unless a page with
+        // the literal `#` title exists (Zorite titles may contain `#`, unlike
+        // Obsidian's), which wins so such pages keep working.
+        let (title, heading) = if block.is_none()
+            && title.contains('#')
+            && !matches!(self.db.get_page_by_title(title), Ok(Some(_)))
+        {
+            gpui_markdown::syntax::split_heading_anchor(title)
+        } else {
+            (title, None)
+        };
         match self.db.get_or_create_page(title) {
             Ok(page) => {
+                // An anchor seats the caret at (and scrolls to) its line — a
+                // block's `^id` or the matching heading — once the page's
+                // editor is up (deferred past this render pass). A stale
+                // anchor just opens the page.
+                let seat = (!page.is_journal)
+                    .then(|| {
+                        block
+                            .and_then(|id| {
+                                gpui_markdown::syntax::find_block_line(&page.content, id)
+                            })
+                            .or_else(|| {
+                                heading.and_then(|h| {
+                                    gpui_markdown::syntax::find_heading_line(&page.content, h)
+                                })
+                            })
+                    })
+                    .flatten();
                 self.open_page_foreground(page, window, cx);
+                if let Some(offset) = seat {
+                    let weak = cx.entity().downgrade();
+                    window.defer(cx, move |window, cx| {
+                        let _ = weak.update(cx, |this, cx| {
+                            this.edit_page_at_offset(offset, px(160.0), window, cx);
+                        });
+                    });
+                }
                 // The page may be newly created (via the New-page dialog or a
                 // [[link]]), so refresh the sidebar to show it — and tell other
                 // windows so their sidebars pick up the new page too.
@@ -1284,6 +1335,83 @@ impl AppView {
             }
             Err(e) => log::error!("open page '{title}': {e}"),
         }
+    }
+
+    /// Resolve every `![[target]]` embed in `content` — and, recursively, in
+    /// the embedded content itself (depth-capped) — to `(label, content)`, for
+    /// the reader's embed provider. Providers can't query mid-render, so hosts
+    /// build this map up front.
+    pub(crate) fn build_embed_map(
+        &self,
+        content: &str,
+    ) -> std::rc::Rc<HashMap<String, (SharedString, SharedString)>> {
+        let mut map = HashMap::new();
+        let mut queue: Vec<(String, usize)> = gpui_markdown::syntax::embed_targets(content)
+            .into_iter()
+            .map(|t| (t, 0usize))
+            .collect();
+        while let Some((target, depth)) = queue.pop() {
+            if depth >= 3 || map.contains_key(&target) {
+                continue;
+            }
+            if let Some((label, body)) = self.resolve_embed(&target) {
+                for t in gpui_markdown::syntax::embed_targets(&body) {
+                    queue.push((t, depth + 1));
+                }
+                map.insert(target, (label, body));
+            }
+        }
+        std::rc::Rc::new(map)
+    }
+
+    /// Resolve one embed target to `(source label, content)`: a whole page, a
+    /// `#^id` block's line, or a `#Heading` section — with the same rules as
+    /// navigation (a literal `#`-titled page wins; PDFs and whiteboards don't
+    /// embed). `None` leaves the `![[…]]` line rendering as plain text.
+    fn resolve_embed(&self, inner: &str) -> Option<(SharedString, SharedString)> {
+        use gpui_markdown::syntax::{
+            extract_block, extract_section, split_block_anchor, split_heading_anchor,
+            wiki_target_display,
+        };
+        let (target, display) = wiki_target_display(inner);
+        let (page_t, block) = split_block_anchor(target);
+        let (page_t, heading) = if block.is_none() {
+            if matches!(self.db.get_page_by_title(target), Ok(Some(_))) {
+                (target, None)
+            } else {
+                split_heading_anchor(target)
+            }
+        } else {
+            (page_t, None)
+        };
+        if crate::pdf::is_pdf(page_t)
+            || matches!(self.db.get_whiteboard_by_title(page_t), Ok(Some(_)))
+        {
+            return None;
+        }
+        let page = self
+            .db
+            .get_page_by_title(page_t)
+            .ok()
+            .flatten()
+            .or_else(|| self.db.get_page_by_alias(page_t).ok().flatten())?;
+        let range = if let Some(id) = block {
+            extract_block(&page.content, id)?
+        } else if let Some(h) = heading {
+            extract_section(&page.content, h)?
+        } else {
+            0..page.content.len()
+        };
+        let label = if display != target {
+            display.to_string()
+        } else if let Some(id) = block {
+            format!("{page_t} → {id}")
+        } else if let Some(h) = heading {
+            format!("{page_t} → {}", h.trim())
+        } else {
+            page.title.clone()
+        };
+        Some((label.into(), page.content[range].to_string().into()))
     }
 
     /// Toggle the jump-to-date calendar overlay (the sidebar calendar icon).
@@ -1586,6 +1714,7 @@ impl AppView {
                         self.ensure_content_images(&content, cx);
                         self.ensure_content_mermaid(&content, cx);
                         self.ensure_content_math(&content, cx);
+                        self.ensure_content_embeds(&content, cx);
                     }
                 }
             }
@@ -1839,6 +1968,7 @@ impl AppView {
             self.mermaid_store(),
             self.math_store(),
             self.highlight_store.clone(),
+            self.embed_store.clone(),
             self.auto_link_titles.clone(),
             self.auto_link.clone(),
             window,
@@ -1847,6 +1977,7 @@ impl AppView {
         self.ensure_content_images(&page.content, cx);
         self.ensure_content_mermaid(&page.content, cx);
         self.ensure_content_math(&page.content, cx);
+        self.ensure_content_embeds(&page.content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -1862,6 +1993,7 @@ impl AppView {
                         this.ensure_content_images(&value, cx);
                         this.ensure_content_mermaid(&value, cx);
                         this.ensure_content_math(&value, cx);
+                        this.ensure_content_embeds(&value, cx);
                     }
                     this.update_slash(SlashTarget::Page(pid), cx);
                     this.schedule_spellcheck(st.clone(), cx);
@@ -2472,6 +2604,7 @@ impl AppView {
         self.ensure_content_images(&new, cx);
         self.ensure_content_mermaid(&new, cx);
         self.ensure_content_math(&new, cx);
+        self.ensure_content_embeds(&new, cx);
         cx.notify();
     }
 
@@ -3010,6 +3143,7 @@ impl AppView {
                 .update(cx, |e, cx| e.replace_range(range, &replacement, cx));
             let new = edit.source.read(cx).text().to_string();
             self.ensure_content_math(&new, cx);
+            self.ensure_content_embeds(&new, cx);
             match &edit.target {
                 SlashTarget::Day(key) => self.save_journal(key, &new, cx),
                 SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
@@ -3044,6 +3178,7 @@ impl AppView {
         // Rasterize the edited formula into the shared store, or the block-math provider
         // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
         self.ensure_content_math(&new, cx);
+        self.ensure_content_embeds(&new, cx);
         match &edit.target {
             SlashTarget::Day(key) => self.save_journal(key, &new, cx),
             SlashTarget::Page(pid) => self.save_page_content(*pid, &new, cx),
@@ -3197,6 +3332,121 @@ impl AppView {
     /// Kick off the off-thread typeset of every `$$…$$` block in `content`, so an editor
     /// in WYSIWYG mode can render them as equations. Idempotent; a finished render
     /// notifies → repaint → the editor's math provider finds the bitmap.
+    /// Resolve every `![[target]]` embed in `content` into the shared store the
+    /// editors' overlay provider reads: one `EmbedView` per target plus the row
+    /// height to reserve — estimated from the embedded content's line count and
+    /// capped (long content scrolls inside the view). A target that no longer
+    /// resolves drops out, falling back to the chip.
+    fn ensure_content_embeds(&mut self, content: &str, cx: &mut Context<Self>) {
+        for inner in gpui_markdown::syntax::embed_targets(content) {
+            self.upsert_embed(inner, cx);
+        }
+    }
+
+    /// Re-resolve every target already in the embed store against the database.
+    /// Runs on each (debounced) doc change, so an embed live-updates when its
+    /// SOURCE page is edited — the embedding page's own ensure-pass only runs
+    /// when that page reloads.
+    pub(crate) fn refresh_embed_store(&mut self, cx: &mut Context<Self>) {
+        let targets: Vec<String> = self.embed_store.borrow().keys().cloned().collect();
+        for inner in targets {
+            self.upsert_embed(inner, cx);
+        }
+    }
+
+    /// Scroll the active tab's content surface by `delta_y` — the wheel
+    /// hand-off from an embed that can't scroll any further itself (its
+    /// occluding overlay blocks the surface's own wheel handling while the
+    /// pointer is over it).
+    pub(crate) fn scroll_active_surface(&mut self, delta_y: Pixels, cx: &mut Context<Self>) {
+        let handle = match self.tabs.get(self.active).map(|t| &t.kind) {
+            Some(TabKind::Journal) => &self.feed_scroll,
+            Some(TabKind::Page(_)) => &self.page_scroll,
+            _ => return,
+        };
+        let mut o = handle.offset();
+        // Upward overshoot clamps here; the downward limit clamps on layout.
+        o.y = (o.y + delta_y).min(px(0.0));
+        handle.set_offset(o);
+        cx.notify();
+    }
+
+    /// Resolve one embed target into the store: create or update its view and
+    /// recompute the reserved height. A target that no longer resolves drops
+    /// out (the editor falls back to the chip).
+    fn upsert_embed(&mut self, inner: String, cx: &mut Context<Self>) {
+        let Some((label, body)) = self.resolve_embed(&inner) else {
+            self.embed_store.borrow_mut().remove(&inner);
+            return;
+        };
+        // Rasterize/decode the embedded content's constructs into the shared
+        // stores (images, mermaid, math), so the box renders them like the
+        // note they came from — both here and in the reader's embeds.
+        self.ensure_content_images(&body, cx);
+        self.ensure_content_mermaid(&body, cx);
+        self.ensure_content_math(&body, cx);
+        let lh = f32::from(self.text_size()) * 1.45;
+        let lines = body.lines().count().max(1) as f32;
+        let height = (40.0 + lines * (lh + 6.0)).clamp(64.0, 340.0);
+        let nav_target: SharedString = gpui_markdown::syntax::wiki_target_display(&inner)
+            .0
+            .to_string()
+            .into();
+        let text_size = self.text_size();
+        let list_indent = self.list_indent();
+        // Fresh renderers + nested-embed map each upsert: they're cheap Rc
+        // closures over the shared stores, and the nested map tracks the
+        // (possibly changed) body.
+        let image = crate::ui::image::embed_renderer(self, cx);
+        let mermaid = crate::ui::mermaid::renderer(self, cx);
+        let math = crate::ui::math::renderer(self, cx);
+        let inline_math = crate::ui::math::inline_renderer(self);
+        let highlight = self.highlighter_fn();
+        let nested = self.build_embed_map(&body);
+        let existing = self.embed_store.borrow().get(&inner).cloned();
+        match existing {
+            Some((view, _)) => {
+                view.update(cx, |v, cx| {
+                    if v.content != body || v.label != label || v.text_size != text_size {
+                        v.content = body;
+                        v.label = label;
+                        v.nav_target = nav_target;
+                        v.text_size = text_size;
+                        v.list_indent = list_indent;
+                        cx.notify();
+                    }
+                    v.image = image;
+                    v.mermaid = mermaid;
+                    v.math = math;
+                    v.inline_math = inline_math;
+                    v.highlight = highlight;
+                    v.nested = nested;
+                });
+                self.embed_store.borrow_mut().insert(inner, (view, height));
+            }
+            None => {
+                let app = cx.entity().downgrade();
+                let view = cx.new(|_| crate::ui::embed::EmbedView {
+                    nav_target,
+                    label,
+                    content: body,
+                    text_size,
+                    list_indent,
+                    app,
+                    scroll: gpui::ScrollHandle::new(),
+                    hovered: false,
+                    image,
+                    mermaid,
+                    math,
+                    inline_math,
+                    highlight,
+                    nested,
+                });
+                self.embed_store.borrow_mut().insert(inner, (view, height));
+            }
+        }
+    }
+
     fn ensure_content_math(&mut self, content: &str, cx: &mut Context<Self>) {
         for source in gpui_editor::math_sources(content) {
             self.ensure_math_loaded(source, cx);
@@ -7653,6 +7903,7 @@ fn make_editor(
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
     math_store: Rc<RefCell<crate::math::MathStore>>,
     highlight_store: Rc<RefCell<crate::highlight::HighlightStore>>,
+    embed_store: Rc<RefCell<crate::ui::embed::EmbedStore>>,
     auto_link_titles: Rc<RefCell<std::collections::HashMap<String, String>>>,
     auto_link: Rc<std::cell::Cell<bool>>,
     window: &mut Window,
@@ -7670,6 +7921,15 @@ fn make_editor(
         editor.set_block_image_provider(move |src| image_store.borrow().get(src));
         // A `![](file.pdf)` renders as a clickable chip (label = file name) that
         // opens the PDF viewer on click — matching the reading view.
+        // A standalone `![[target]]` renders the resolved transclusion in the
+        // gap its line reserves (see `ensure_content_embeds`); unresolved
+        // targets fall back to the chip below.
+        editor.set_embed_provider(move |inner| {
+            embed_store
+                .borrow()
+                .get(inner)
+                .map(|(v, h)| (v.clone().into(), px(*h)))
+        });
         editor.set_block_chip_provider(|src| {
             crate::pdf::is_pdf(src).then(|| {
                 crate::pdf::resolve_path(src)

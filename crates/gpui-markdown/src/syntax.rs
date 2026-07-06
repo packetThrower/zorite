@@ -384,6 +384,149 @@ pub fn link_at(line: &str, col: usize) -> Option<LinkHit> {
         .map(|(_, hit)| hit)
 }
 
+/// The Obsidian block-id anchor at the end of `line` (` ^some-id`): the byte
+/// where its leading space starts (so renderers can hide the whole tail) and
+/// the id itself. The id must be non-empty, made of word chars / `-`, and sit
+/// at the line's end (trailing whitespace tolerated).
+pub fn block_id(line: &str) -> Option<(usize, &str)> {
+    let trimmed = line.trim_end();
+    let (before, id) = trimmed.rsplit_once(" ^")?;
+    if id.is_empty() || !id.bytes().all(|b| is_word_char(b) || b == b'-') {
+        return None;
+    }
+    Some((before.len(), id))
+}
+
+/// Split a wiki-link target into `(page, block id)`: `Note#^id` links to the
+/// block carrying `^id` on the page `Note`; anything else is a plain page
+/// target. Only the `#^` form is an anchor — a bare `#` stays part of the
+/// title (page names may contain it, and `file.pdf#p3` has its own meaning).
+pub fn split_block_anchor(target: &str) -> (&str, Option<&str>) {
+    match target.split_once("#^") {
+        Some((page, id)) if !page.is_empty() && !id.is_empty() => (page, Some(id)),
+        _ => (target, None),
+    }
+}
+
+/// Split a wiki-link target into `(page, heading)`: `Note#My Heading` links to
+/// the heading on the page `Note`. Splits at the first `#` when both sides are
+/// non-empty and the page part isn't a PDF (`file.pdf#p3` keeps its page-jump
+/// meaning). Block anchors (`#^`) are the caller's first check —
+/// [`split_block_anchor`] — and a Zorite page title may itself contain `#`, so
+/// navigation should prefer an existing literal-titled page before splitting.
+pub fn split_heading_anchor(target: &str) -> (&str, Option<&str>) {
+    match target.split_once('#') {
+        Some((page, heading))
+            if !page.is_empty()
+                && !heading.trim().is_empty()
+                && !heading.starts_with('^')
+                && !page.to_ascii_lowercase().ends_with(".pdf") =>
+        {
+            (page, Some(heading))
+        }
+        _ => (target, None),
+    }
+}
+
+/// The byte offset of the start of the line carrying the ATX heading whose
+/// text matches `heading` (case-insensitive, trimmed; fenced code skipped),
+/// searching top to bottom. Drives navigation for `[[Note#Heading]]` links.
+pub fn find_heading_line(content: &str, heading: &str) -> Option<usize> {
+    let want = heading.trim().to_lowercase();
+    let mut start = 0;
+    let mut in_fence = false;
+    for line in content.split('\n') {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            let t = line.trim_start();
+            let level = t.bytes().take_while(|&b| b == b'#').count();
+            if (1..=6).contains(&level)
+                && let Some(text) = t[level..].strip_prefix(' ')
+                && text.trim().to_lowercase() == want
+            {
+                return Some(start);
+            }
+        }
+        start += line.len() + 1;
+    }
+    None
+}
+
+/// The byte offset of the start of the line carrying the block anchor `^id`,
+/// searching top to bottom. Drives navigation for `[[Note#^id]]` links.
+pub fn find_block_line(content: &str, id: &str) -> Option<usize> {
+    let mut start = 0;
+    for line in content.split('\n') {
+        if block_id(line).is_some_and(|(_, i)| i == id) {
+            return Some(start);
+        }
+        start += line.len() + 1;
+    }
+    None
+}
+
+/// The embed target when `line` is a standalone transclusion — exactly
+/// `![[target]]` (Obsidian's embed syntax) and nothing else on the line.
+/// Mid-text embeds don't count; they render as plain links.
+pub fn embed_line(line: &str) -> Option<&str> {
+    let t = line.trim();
+    let inner = t.strip_prefix("![[")?.strip_suffix("]]")?;
+    (!inner.trim().is_empty() && !inner.contains("]]")).then(|| inner.trim())
+}
+
+/// Every standalone embed target in `content`, in order — what a host
+/// pre-resolves before rendering (recursing into resolved content itself for
+/// nested embeds).
+pub fn embed_targets(content: &str) -> Vec<String> {
+    content
+        .split('\n')
+        .filter_map(embed_line)
+        .map(str::to_string)
+        .collect()
+}
+
+/// The source range of the block carrying the anchor `^id` — its whole line —
+/// for embedding (`![[Note#^id]]`).
+pub fn extract_block(content: &str, id: &str) -> Option<std::ops::Range<usize>> {
+    let start = find_block_line(content, id)?;
+    let end = content[start..]
+        .find('\n')
+        .map_or(content.len(), |p| start + p);
+    Some(start..end)
+}
+
+/// The source range of the section under `heading` — the heading line through
+/// the line before the next heading of the same or higher level (fenced code
+/// skipped) — for embedding (`![[Note#Heading]]`).
+pub fn extract_section(content: &str, heading: &str) -> Option<std::ops::Range<usize>> {
+    let start = find_heading_line(content, heading)?;
+    let level = content[start..]
+        .trim_start()
+        .bytes()
+        .take_while(|&b| b == b'#')
+        .count();
+    let mut pos = content[start..]
+        .find('\n')
+        .map_or(content.len(), |p| start + p + 1);
+    let mut in_fence = false;
+    while pos < content.len() {
+        let line_end = content[pos..].find('\n').map_or(content.len(), |p| pos + p);
+        let line = &content[pos..line_end];
+        let t = line.trim_start();
+        if t.starts_with("```") {
+            in_fence = !in_fence;
+        } else if !in_fence {
+            let l = t.bytes().take_while(|&b| b == b'#').count();
+            if (1..=level).contains(&l) && t[l..].starts_with(' ') {
+                return Some(start..pos.saturating_sub(1).max(start));
+            }
+        }
+        pos = line_end + 1;
+    }
+    Some(start..content.len())
+}
+
 /// Split a `key:: value` property line into `(key, value)`. The key must look
 /// like an identifier (starts with a letter; letters/digits/`-_.` after) so
 /// prose containing `::` — Zorite `[[wiki]]` links, `C++::method` — isn't
@@ -520,6 +663,72 @@ mod tests {
         let back = toggle_alert_fold_at(&toggled, 10).unwrap();
         assert_eq!(back, src);
         assert!(toggle_alert_fold_at("plain text", 2).is_none());
+    }
+
+    #[test]
+    fn block_ids_and_anchor_links() {
+        assert_eq!(
+            block_id("Decision made. ^decision1"),
+            Some((14, "decision1"))
+        );
+        assert_eq!(block_id("trailing space ^id  "), Some((14, "id")));
+        assert_eq!(block_id("no anchor"), None);
+        assert_eq!(block_id("mid ^id not at end"), None);
+        assert_eq!(block_id("bad chars ^a b"), None);
+
+        assert_eq!(split_block_anchor("Note#^id"), ("Note", Some("id")));
+        assert_eq!(split_block_anchor("Note"), ("Note", None));
+        // A bare `#` is part of the title, not an anchor.
+        assert_eq!(split_block_anchor("C# Notes"), ("C# Notes", None));
+        assert_eq!(split_block_anchor("file.pdf#p3"), ("file.pdf#p3", None));
+
+        let src = "intro\nthe fact ^fact-1\nmore";
+        assert_eq!(find_block_line(src, "fact-1"), Some(6));
+        assert_eq!(find_block_line(src, "nope"), None);
+    }
+
+    #[test]
+    fn embeds_and_extraction() {
+        assert_eq!(embed_line("![[Note]]"), Some("Note"));
+        assert_eq!(embed_line("  ![[Note#^id]]  "), Some("Note#^id"));
+        assert_eq!(embed_line("text ![[Note]]"), None); // not standalone
+        assert_eq!(embed_line("![[]]"), None);
+        assert_eq!(embed_line("[[Note]]"), None);
+
+        let src = "pre\nthe block ^b1\n## Sec\nbody\nmore\n### Sub\ndeep\n## Next\nafter";
+        assert_eq!(&src[extract_block(src, "b1").unwrap()], "the block ^b1");
+        // A section runs through its subsections, stopping at the next
+        // same-or-higher heading.
+        assert_eq!(
+            &src[extract_section(src, "Sec").unwrap()],
+            "## Sec\nbody\nmore\n### Sub\ndeep"
+        );
+        assert_eq!(
+            &src[extract_section(src, "Next").unwrap()],
+            "## Next\nafter"
+        );
+        assert!(extract_section(src, "missing").is_none());
+    }
+
+    #[test]
+    fn heading_anchors() {
+        assert_eq!(
+            split_heading_anchor("Note#My Heading"),
+            ("Note", Some("My Heading"))
+        );
+        assert_eq!(split_heading_anchor("Note"), ("Note", None));
+        // Block anchors, PDFs, and empty sides don't split as headings.
+        assert_eq!(split_heading_anchor("Note#^id"), ("Note#^id", None));
+        assert_eq!(split_heading_anchor("file.pdf#p3"), ("file.pdf#p3", None));
+        assert_eq!(split_heading_anchor("#Heading"), ("#Heading", None));
+        assert_eq!(split_heading_anchor("Note#"), ("Note#", None));
+
+        let src = "intro\n## My Heading\nbody\n```\n# not a heading\n```\n### Deep One";
+        // Case-insensitive, trimmed; fences skipped.
+        assert_eq!(find_heading_line(src, "my heading"), Some(6));
+        assert_eq!(find_heading_line(src, " Deep One "), Some(49));
+        assert_eq!(find_heading_line(src, "not a heading"), None);
+        assert_eq!(find_heading_line(src, "missing"), None);
     }
 
     #[test]

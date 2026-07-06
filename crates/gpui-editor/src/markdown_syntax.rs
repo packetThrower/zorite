@@ -86,6 +86,10 @@ struct Style {
     /// A syntax marker (`**`, `#`, `[`, …) — dimmed when shown, and removed
     /// entirely when the line's markers are hidden (W6, reveal-on-caret).
     hide: bool,
+    /// What a hidden marker paints in its place (e.g. a block link's `#^`
+    /// shows ` → `): every replacement byte maps back to the span's start, so
+    /// the display↔source maps stay consistent. `None` = plain removal.
+    replace: Option<&'static str>,
 }
 
 struct Span {
@@ -261,14 +265,16 @@ pub(crate) fn hidden_runs(
     // per-construct reveal). Empty range when the caret is in plain text / absent.
     let reveal = caret_col.map_or(0..0, |c| construct_at(&spans, c));
 
-    // The visible segments (markers dropped), each a source byte range + style.
-    // A visible segment is copied verbatim, so source↔display is 1:1 within it —
-    // which lets a diagnostic (source coords) map straight onto the display.
-    let mut segs: Vec<(Range<usize>, Option<&Style>)> = Vec::new();
+    // The visible segments (markers dropped), each a source byte range + style
+    // (+ a replacement string when a hidden marker paints something in its
+    // place). A visible segment is copied verbatim, so source↔display is 1:1
+    // within it — which lets a diagnostic (source coords) map straight onto
+    // the display.
+    let mut segs: Vec<(Range<usize>, Option<&Style>, Option<&'static str>)> = Vec::new();
     let mut pos = 0;
     for span in &spans {
         if span.range.start > pos {
-            segs.push((pos..span.range.start, None));
+            segs.push((pos..span.range.start, None, None));
         }
         // A marker is shown when it's inside the caret's construct OR within the
         // revealed line-level prefix (e.g. a blockquote's `>` while the caret is
@@ -278,12 +284,14 @@ pub(crate) fn hidden_runs(
         let force = span.range.end <= hide_prefix;
         let hidden = span.style.hide && (force || (!reveal_inline && !in_construct && !in_prefix));
         if !hidden {
-            segs.push((span.range.clone(), Some(&span.style)));
+            segs.push((span.range.clone(), Some(&span.style), None));
+        } else if let Some(rep) = span.style.replace {
+            segs.push((span.range.clone(), Some(&span.style), Some(rep)));
         }
         pos = span.range.end;
     }
     if pos < line.len() {
-        segs.push((pos..line.len(), None));
+        segs.push((pos..line.len(), None, None));
     }
 
     let squiggle = UnderlineStyle {
@@ -294,7 +302,23 @@ pub(crate) fn hidden_runs(
     let mut display = String::with_capacity(line.len());
     let mut runs: Vec<TextRun> = Vec::new();
     let mut map: Vec<usize> = Vec::with_capacity(line.len() + 1);
-    for (src, style) in &segs {
+    for (src, style, replace) in &segs {
+        // A replacement paints in the hidden marker's place: its bytes all map
+        // back to the span's start (so caret/click math lands on the marker),
+        // and it takes one run in the marker's own style.
+        if let Some(rep) = replace {
+            display.push_str(rep);
+            map.extend(std::iter::repeat_n(src.start, rep.len()));
+            runs.push(run_for(
+                rep.len(),
+                *style,
+                base_font,
+                base_color,
+                Some(md),
+                None,
+            ));
+            continue;
+        }
         display.push_str(&line[src.clone()]);
         map.extend(src.clone());
         // Split the segment at any diagnostic edges falling inside it, so the
@@ -396,6 +420,11 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
     let b = text.as_bytes();
     if apply_heading(text, start, end, st, out) {
         return;
+    }
+    // An Obsidian block-id anchor at the line's end (` ^some-id`) is addressing,
+    // not content: a marker span dims it and W6 hides it (reveal-on-caret).
+    if let Some((at, _)) = gpui_markdown::syntax::block_id(&text[start..end]) {
+        marker(out, start + at..end, st.marker);
     }
     // Blockquote: leading `>` (GFM nesting) + optional spaces. Hide the markers;
     // the body keeps inline styling over a muted base color (set by the caller).
@@ -541,14 +570,45 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && let Some(close) = find2(b, i + 2, end, b']', b']')
         {
             marker(out, i..i + 2, st.marker);
-            push(
-                out,
-                i + 2..close,
-                Style {
-                    color: Some(st.link),
-                    ..Default::default()
-                },
-            );
+            let link = Style {
+                color: Some(st.link),
+                ..Default::default()
+            };
+            // An anchor in the target — a block ref (`[[Note#^id]]`) or a
+            // heading (`[[Note#My Heading]]`) — renders its `#^`/`#` as ` → `
+            // (the reader does the same), keeping the anchor text readable:
+            // `Note → id`. Raw form comes back on caret like any marker; a PDF
+            // page jump (`file.pdf#p3`) keeps its literal `#`. Any `|alias`
+            // after it keeps the link color.
+            let inner = &text[i + 2..close];
+            let target_end = inner.find('|').unwrap_or(inner.len());
+            let anchor = match inner[..target_end].find('#') {
+                Some(a) if !inner[..a].to_ascii_lowercase().ends_with(".pdf") => {
+                    let alen = if inner[a + 1..target_end].starts_with('^') {
+                        2
+                    } else {
+                        1
+                    };
+                    Some((a, alen))
+                }
+                _ => None,
+            };
+            match anchor {
+                Some((a, alen)) if a > 0 && a + alen < target_end => {
+                    push(out, i + 2..i + 2 + a, link.clone());
+                    out.push(Span {
+                        range: i + 2 + a..i + 2 + a + alen,
+                        style: Style {
+                            color: Some(st.marker),
+                            hide: true,
+                            replace: Some(" → "),
+                            ..Default::default()
+                        },
+                    });
+                    push(out, i + 2 + a + alen..close, link);
+                }
+                _ => push(out, i + 2..close, link),
+            }
             marker(out, close..close + 2, st.marker);
             i = close + 2;
             continue;

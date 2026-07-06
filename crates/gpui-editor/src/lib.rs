@@ -380,6 +380,12 @@ type BlockImageFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
 /// clickable chip (left-click emits [`EditorEvent::OpenLink`]).
 type BlockChipFn = Box<dyn Fn(&str) -> Option<SharedString>>;
 
+/// Resolves a standalone `![[target]]` embed line to the host view that renders
+/// the transclusion, plus the row height to reserve for it (the host estimates
+/// and caps it; long content scrolls inside the view). `None` falls back to the
+/// embed chip.
+type EmbedViewFn = Box<dyn Fn(&str) -> Option<(gpui::AnyView, Pixels)>>;
+
 /// Resolves a ` ```mermaid ` block's source to a rendered diagram bitmap plus its
 /// **logical** (display) px size — supplied by the host for the same reason as
 /// [`BlockMathFn`]. Set via [`EditorState::set_block_mermaid_provider`]; the host
@@ -556,6 +562,7 @@ pub struct EditorState {
     /// Classifies an `![](src)` as a file chip (e.g. a PDF) + its label; set by
     /// the host via [`Self::set_block_chip_provider`].
     block_chip: Option<BlockChipFn>,
+    embed_view: Option<EmbedViewFn>,
     /// Resolves a ` ```mermaid ` block's source to a rendered diagram; set by the
     /// host via [`Self::set_block_mermaid_provider`].
     block_mermaid: Option<BlockMermaidFn>,
@@ -577,7 +584,7 @@ pub struct EditorState {
     block_math_em: Option<f32>,
     /// Per-logical-line `src` for rows painted as a file chip (from the last
     /// paint), so a left-click can open it and a right-click can edit it.
-    chip_rows: Vec<Option<SharedString>>,
+    chip_rows: Vec<Option<(SharedString, bool)>>,
     /// Window-space painted bounds of each inline image, with its logical line
     /// index (from the last paint), so a press near a corner can start a resize
     /// and know which `![](src)` line to rewrite. One entry per rendered image.
@@ -672,6 +679,7 @@ impl EditorState {
             suggest: None,
             block_image: None,
             block_chip: None,
+            embed_view: None,
             block_mermaid: None,
             block_math: None,
             block_math_em: None,
@@ -806,6 +814,17 @@ impl EditorState {
         provider: impl Fn(&str) -> Option<SharedString> + 'static,
     ) {
         self.block_chip = Some(Box::new(provider));
+    }
+
+    /// Install the provider that resolves a standalone `![[target]]` line to a
+    /// host view rendering the transclusion + the height to reserve for it.
+    /// With it, such lines show the embedded content in place (raw on caret);
+    /// without (or when it returns `None`) they fall back to a clickable chip.
+    pub fn set_embed_provider(
+        &mut self,
+        provider: impl Fn(&str) -> Option<(gpui::AnyView, Pixels)> + 'static,
+    ) {
+        self.embed_view = Some(Box::new(provider));
     }
 
     /// Install the provider that resolves a ` ```mermaid ` block's source to a
@@ -1052,6 +1071,50 @@ impl EditorState {
             Some(&s) => &self.content[s..self.line_end(row)],
             None => "",
         }
+    }
+
+    /// The host-supplied embed views, each positioned in the gap its
+    /// `![[target]]` line reserved (from the last paint's line tops) — the
+    /// editing-block overlay generalized to N transclusions. Absolute children
+    /// of the editor's `relative` root, so they scroll with the content; the
+    /// caret's own line shows raw source instead (its gap wasn't reserved).
+    fn embed_overlays(&self, window: &Window) -> Vec<gpui::Div> {
+        let Some(provider) = &self.embed_view else {
+            return Vec::new();
+        };
+        if self.markdown_style.is_none() {
+            return Vec::new();
+        }
+        let caret_row = self
+            .focus_handle
+            .is_focused(window)
+            .then(|| self.row_col(self.cursor_offset()).0);
+        let mut out = Vec::new();
+        for (row, line) in self.content.split('\n').enumerate() {
+            if caret_row == Some(row) {
+                continue;
+            }
+            let Some(inner) = gpui_markdown::syntax::embed_line(line) else {
+                continue;
+            };
+            let (Some(top), Some((view, height))) = (self.line_tops.get(row), provider(inner))
+            else {
+                continue;
+            };
+            out.push(
+                div()
+                    .absolute()
+                    .top(*top)
+                    .left(px(0.))
+                    .w_full()
+                    .h(height)
+                    // Clicks/wheel belong to the embed (it may scroll its own
+                    // content), not the text layer underneath.
+                    .occlude()
+                    .child(view),
+            );
+        }
+        out
     }
 
     /// The host-supplied editor view for an in-line math edit, positioned in the gap its
@@ -1943,8 +2006,12 @@ impl EditorState {
         }
         // Left-click a file chip (e.g. a PDF embed) opens it rather than editing —
         // the host handles the link. Right-click edits (see on_right_mouse_down).
-        if let Some(src) = self.chip_at(event.position) {
-            cx.emit(EditorEvent::OpenLink(src));
+        if let Some((src, wiki)) = self.chip_at(event.position) {
+            cx.emit(if wiki {
+                EditorEvent::OpenWikiLink(src)
+            } else {
+                EditorEvent::OpenLink(src)
+            });
             return;
         }
         // Left-click an inline `$…$` formula opens its structural editor at the formula's spot
@@ -2662,7 +2729,7 @@ impl EditorState {
 
     /// The `src` of a file chip on the row at window `position`, if that row is a
     /// chip (from the last paint) — left-click opens it, right-click edits.
-    fn chip_at(&self, position: Point<Pixels>) -> Option<SharedString> {
+    fn chip_at(&self, position: Point<Pixels>) -> Option<(SharedString, bool)> {
         if self.wrapped.is_empty() || self.chip_rows.iter().all(Option::is_none) {
             return None;
         }
@@ -3632,7 +3699,7 @@ impl Focusable for EditorState {
 impl EventEmitter<EditorEvent> for EditorState {}
 
 impl Render for EditorState {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .relative()
             // While a `$$` block OR an inline `$…$` formula is being edited, the hosted math
@@ -3686,6 +3753,7 @@ impl Render for EditorState {
             .child(EditorElement {
                 editor: cx.entity(),
             })
+            .children(self.embed_overlays(window))
             .children(self.editing_block_overlay())
             .children(self.editing_inline_overlay())
             // Right-click suggestions menu, absolutely positioned over the
@@ -4082,6 +4150,9 @@ enum Block {
         bg: Hsla,
         border: Hsla,
         height: Pixels,
+        /// `src` is a wiki target (an `![[embed]]` chip → OpenWikiLink, which
+        /// navigates + jumps to any anchor) vs a file path (→ OpenLink).
+        wiki: bool,
     },
     /// A run of `key:: value` properties as a two-column panel (the reader's
     /// `render_property_table` twin). Painted on the region's first line; the
@@ -4555,6 +4626,7 @@ fn shape_document(
     caret_row: Option<usize>,
     block_image: Option<&BlockImageFn>,
     block_chip: Option<&BlockChipFn>,
+    embed_view: Option<&EmbedViewFn>,
     block_mermaid: Option<&BlockMermaidFn>,
     block_math: Option<&BlockMathFn>,
     code_highlight: Option<&CodeHighlightFn>,
@@ -4868,6 +4940,37 @@ fn shape_document(
             continue;
         }
 
+        // A standalone `![[target]]` transclusion the host can render reserves
+        // a gap the height the host asked for — the embed view overlays it
+        // (see `embed_overlays`). Raw on caret; an unresolved target falls
+        // through to the chip below.
+        if md.is_some()
+            && caret_row != Some(idx)
+            && let Some(inner) = gpui_markdown::syntax::embed_line(line)
+            && let Some(h) = embed_view.and_then(|f| f(inner).map(|(_, h)| h))
+        {
+            let wl = shape_runs(
+                window,
+                &SharedString::default(),
+                base_font_size,
+                &[],
+                wrap_width,
+            )
+            .into_iter()
+            .next()
+            .expect("a line always shapes to one wrapped line");
+            wrapped.push(wl);
+            heights.push(h);
+            widgets.push(None);
+            backgrounds.push(None);
+            tables.push(None);
+            maps.push(None);
+            marks.push(None);
+            inline_maths.push(Vec::new());
+            line_start = line_end + 1;
+            continue;
+        }
+
         // A folded callout's body lines collapse (height 0); its marker line
         // falls through to normal handling, painting the label + chevron. The
         // caret entering the region reveals it (filtered above).
@@ -5012,7 +5115,25 @@ fn shape_document(
             }
             _ => px(0.),
         };
-        let widget: Option<Block> = if let Some(st) = md
+        let widget: Option<Block> = if let Some(st) = md.filter(|_| !is_code)
+            && let Some(inner) = gpui_markdown::syntax::embed_line(line)
+        {
+            // A standalone `![[target]]` transclusion renders as a clickable
+            // chip (`⧉ Note → anchor`) that opens/jumps to the source — the
+            // reading view renders the full embedded content; nesting live
+            // views inside the editor isn't feasible. Raw on caret, like a
+            // file chip.
+            let (target, _) = gpui_markdown::syntax::wiki_target_display(inner);
+            (Some(idx) != caret_row).then(|| Block::Chip {
+                src: target.to_string().into(),
+                label: embed_chip_label(inner).into(),
+                link: st.link,
+                bg: st.code_bg,
+                border: st.marker,
+                height: fs * LINE_HEIGHT_RATIO + px(CHIP_PAD * 2.),
+                wiki: true,
+            })
+        } else if let Some(st) = md
             && let Some((src, w_attr, _)) = img_row
         {
             if let Some(label) = block_chip.and_then(|f| f(src)) {
@@ -5025,6 +5146,7 @@ fn shape_document(
                     bg: st.code_bg,
                     border: st.marker,
                     height: fs * LINE_HEIGHT_RATIO + px(CHIP_PAD * 2.),
+                    wiki: false,
                 })
             } else {
                 // An image renders even on the caret's own row — a Word-style
@@ -5732,6 +5854,25 @@ fn paint_prop_panel(
     }
 }
 
+/// The label of an `![[target]]` embed chip: an alias verbatim, else the
+/// anchor-link display (`Note → id` / `Note → Heading`), else the page name —
+/// each behind a transclusion glyph.
+fn embed_chip_label(inner: &str) -> String {
+    let (target, display) = gpui_markdown::syntax::wiki_target_display(inner);
+    if display != target {
+        return format!("⧉ {display}");
+    }
+    let (page, block) = gpui_markdown::syntax::split_block_anchor(target);
+    if let Some(id) = block {
+        return format!("⧉ {page} → {id}");
+    }
+    let (page, heading) = gpui_markdown::syntax::split_heading_anchor(target);
+    match heading {
+        Some(h) => format!("⧉ {page} → {}", h.trim()),
+        None => format!("⧉ {page}"),
+    }
+}
+
 /// Paint a file chip — a rounded, bordered button with a flat document icon +
 /// `label` — filling the row (sized in `shape_document` to include vertical
 /// padding), its width fit to the label. Left-click opens it, right-click edits
@@ -6322,6 +6463,7 @@ impl Element for EditorElement {
                     caret_row,
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
+                    editor.embed_view.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
                     editor.code_highlight.as_ref(),
@@ -6438,6 +6580,7 @@ impl Element for EditorElement {
                     caret_row,
                     editor.block_image.as_ref(),
                     editor.block_chip.as_ref(),
+                    editor.embed_view.as_ref(),
                     editor.block_mermaid.as_ref(),
                     editor.block_math.as_ref(),
                     editor.code_highlight.as_ref(),
@@ -7487,11 +7630,11 @@ impl Element for EditorElement {
             .zip(prepaint.marks.iter())
             .map(|(bg, mark)| row_inset(*bg, *mark))
             .collect();
-        let chip_rows: Vec<Option<SharedString>> = prepaint
+        let chip_rows: Vec<Option<(SharedString, bool)>> = prepaint
             .widgets
             .iter()
             .map(|w| match w {
-                Some(Block::Chip { src, .. }) => Some(src.clone()),
+                Some(Block::Chip { src, wiki, .. }) => Some((src.clone(), *wiki)),
                 _ => None,
             })
             .collect();

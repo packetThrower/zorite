@@ -31,6 +31,28 @@ log: <https://github.com/packetThrower/zorite/releases>.
   and the pages carrying it (click through to open). From the same page you can
   override any key's icon from a picker (or map an icon to a key before its
   first use), and rename a key across every page at once.
+- **Embeds (transclusion)** — a line holding just `![[Note]]` renders that
+  note's content right there, in a quoted box with a clickable source label;
+  `![[Note#^id]]` embeds a single block and `![[Note#Heading]]` a whole section
+  (an `|alias` renames the label). Both views render the real content — in the
+  live editor the box sits in place of the line, shows a scrollbar on hover
+  when the content overflows, and hands the wheel back to the page at its
+  edges; put the caret on the line to edit the raw `![[…]]` text. Editing the
+  source page updates every box embedding it, live. An unresolved target shows
+  a compact `⧉` chip in the editor and stays literal text in the reading view.
+- **Anchor links no longer spawn junk pages** — linking to `[[Note#^id]]` or
+  `[[Note#Heading]]` used to auto-create a page literally named `Note#…` when
+  links were indexed; the index now targets the real page (an existing page
+  whose title genuinely contains `#` still wins).
+- **Block references and heading links** — end a line with ` ^some-id` to give
+  it an address, then link to it from anywhere with `[[Note#^some-id]]`; or link
+  straight to a heading with `[[Note#My Heading]]` (case-insensitive). Clicking
+  opens the note and jumps to that line. Either link reads as `Note → anchor` in
+  both views (an `|alias` still overrides), and the `^id` anchor itself stays
+  out of the way — hidden in the reading view, dimmed/hidden in the editor until
+  the caret is on its line. `file.pdf#p3` keeps its page-jump meaning, and a
+  page whose title literally contains `#` still opens by its full name.
+  Previously an anchor link created a page literally named `Note#…`.
 - **Foldable callouts** — an Obsidian-style fold char on an alert marker makes
   it collapsible: `> [!NOTE]-` starts folded (only the title shows), `> [!NOTE]+`
   starts open, and a plain `> [!NOTE]` stays as-is. A chevron joins the title in

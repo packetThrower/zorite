@@ -880,6 +880,19 @@ impl Db {
             params![source_page_id],
         )?;
         for title in target_titles {
+            // An anchor link (`Note#^id` / `Note#Heading`) targets the page,
+            // not a literal `#`-title — index (and auto-create) the page.
+            // Navigation's rule applies: an EXISTING literal `#`-titled page
+            // wins; otherwise the anchor splits off. Without this, every
+            // anchor link spawned a junk page named `Note#…`.
+            let (base, block) = gpui_markdown::syntax::split_block_anchor(title);
+            let title = if block.is_some() {
+                base
+            } else if title.contains('#') && !matches!(self.get_page_by_title(title), Ok(Some(_))) {
+                gpui_markdown::syntax::split_heading_anchor(title).0
+            } else {
+                title
+            };
             let target = self.get_or_create_page(title)?;
             if target.id != source_page_id {
                 self.conn.execute(
@@ -1586,6 +1599,36 @@ mod tests {
         );
         // A `Foo::bar()` line inside a code fence isn't a property key.
         assert!(!idx.contains_key("Foo"));
+    }
+
+    #[test]
+    fn link_reindex_strips_anchors() {
+        let db = Db::open_in_memory().unwrap();
+        let src = db.get_or_create_page("Source").unwrap();
+        db.rebuild_page_links(
+            src.id,
+            &[
+                "Note#^block-1".to_string(),
+                "Note#My Heading".to_string(),
+                "Plain".to_string(),
+            ],
+        )
+        .unwrap();
+        // Anchor links index (and auto-create) the base page — no junk
+        // `Note#…` pages.
+        assert!(db.get_page_by_title("Note").unwrap().is_some());
+        assert!(db.get_page_by_title("Note#^block-1").unwrap().is_none());
+        assert!(db.get_page_by_title("Note#My Heading").unwrap().is_none());
+        assert!(db.get_page_by_title("Plain").unwrap().is_some());
+        // An EXISTING literal `#`-titled page still wins.
+        let literal = db.get_or_create_page("C# Notes").unwrap();
+        db.rebuild_page_links(src.id, &["C# Notes".to_string()])
+            .unwrap();
+        assert_eq!(
+            db.get_page_by_title("C# Notes").unwrap().unwrap().id,
+            literal.id
+        );
+        assert!(db.get_page_by_title("C").unwrap().is_none());
     }
 
     #[test]

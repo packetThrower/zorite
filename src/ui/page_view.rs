@@ -234,6 +234,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         let toggle_page_id = pe.id;
         let fold_weak = cx.entity().downgrade();
         let fold_content = content.to_string();
+        let embeds = app.build_embed_map(&content);
         let fold_page_id = pe.id;
         let mut md = gpui_markdown::MarkdownView::new("page-md", content)
             .style(theme::markdown_style(app.list_indent(), app.text_size()))
@@ -287,7 +288,12 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
                         this.signal_doc_changed(cx);
                     });
                 }
-            }));
+            }))
+            // Standalone `![[target]]` lines render their target inline;
+            // images inside them go through the read-only renderer (a resize
+            // would rewrite the wrong page).
+            .on_embed(std::rc::Rc::new(move |target| embeds.get(target).cloned()))
+            .on_embed_image(crate::ui::image::embed_renderer(app, cx));
         // Paint in-page find matches (⌘F) when the bar is open.
         if let Some(pf) = app.page_find.as_ref() {
             md = md.search(pf.query.clone(), pf.current);
