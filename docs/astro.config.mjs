@@ -119,7 +119,13 @@ export default defineConfig({
 										{ label: 'API reference', slug: 'reference/crates/os-spellcheck-api' },
 									],
 								},
-								{ label: 'ratex-gpui', slug: 'reference/crates/ratex-gpui' },
+								{
+									label: 'ratex-gpui',
+									items: [
+										{ label: 'Overview', slug: 'reference/crates/ratex-gpui' },
+										{ label: 'API reference', slug: 'reference/crates/ratex-gpui-api' },
+									],
+								},
 							],
 						},
 					],
