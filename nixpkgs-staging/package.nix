@@ -9,9 +9,7 @@
   vulkan-loader,
   fontconfig,
   freetype,
-  libX11,
-  libxcb,
-  xcbutil,
+  xorg,
   nix-update-script,
 }:
 
@@ -41,9 +39,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     libxkbcommon
     fontconfig
     freetype
-    libX11
-    libxcb
-    xcbutil
+    xorg.libX11
+    xorg.libxcb
+    xorg.xcbutil
   ];
 
   postFixup = ''
@@ -82,6 +80,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     license = lib.licenses.gpl3Plus;
     maintainers = with lib.maintainers; [ packetThrower ];
     mainProgram = "zorite";
-    platforms = [ "x86_64-linux" "aarch64-linux" ];
+    platforms = [
+      "x86_64-linux"
+      "aarch64-linux"
+    ];
   };
 })
