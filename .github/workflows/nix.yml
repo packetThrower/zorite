@@ -1,0 +1,30 @@
+# Builds the Nix flake on Linux so it can't rot silently — and, while the
+# cargoLock.outputHashes are placeholders, the failure log is where the real
+# hashes come from (nix prints "got: sha256-…" for each git dependency).
+#
+# Runs only when the build inputs change; not a required check.
+name: Nix
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - flake.nix
+      - flake.lock
+      - Cargo.lock
+      - Cargo.toml
+      - "src/**"
+      - "crates/**"
+      - .github/workflows/nix.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
+      - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Build the flake
+        run: nix build .# --print-build-logs
+      - name: Smoke-check the binary
+        run: test -x result/bin/zorite && ldd result/bin/zorite | head -20
