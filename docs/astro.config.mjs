@@ -104,7 +104,13 @@ export default defineConfig({
 							items: [
 								{ label: 'gpui-editor', slug: 'reference/crates/gpui-editor' },
 								{ label: 'gpui-markdown', slug: 'reference/crates/gpui-markdown' },
-								{ label: 'gpui-pdf', slug: 'reference/crates/gpui-pdf' },
+								{
+									label: 'gpui-pdf',
+									items: [
+										{ label: 'Overview', slug: 'reference/crates/gpui-pdf' },
+										{ label: 'API reference', slug: 'reference/crates/gpui-pdf-api' },
+									],
+								},
 								{ label: 'gpui-whiteboard', slug: 'reference/crates/gpui-whiteboard' },
 								{
 									label: 'os-spellcheck',
