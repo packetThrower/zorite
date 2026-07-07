@@ -139,11 +139,14 @@ findings worth fixing rather than just documenting):
 
 Ideas worth keeping, not yet committed to.
 
-- [ ] **Upstream Zorite to nixpkgs** — the repo flake ships (2026-07-07);
-  a nixpkgs submission needs the same derivation with explicit
-  `outputHashes` per git source (builtin fetchGit isn't allowed there), a
-  `pkgs/by-name/zo/zorite` PR, and signing up as maintainer (a version
-  bump each release). Do it once the flake has proven itself.
+- [ ] **nixpkgs submission IN REVIEW** — NixOS/nixpkgs#539400 (opened
+  2026-07-07): `pkgs/by-name/zo/zorite` at 0.6.0, single `cargoHash`
+  (fetchCargoVendor covers the git deps — NOT per-source outputHashes),
+  `nix-update-script` so r-ryantm auto-bumps releases, maintainer entry
+  for packetThrower, AI-policy disclosure included. Both platforms
+  CI-verified pre-submission. When it MERGES: delete `nixpkgs-staging/`
+  + the temporary `nixpkgs-staging` CI job from nix.yml, and respond to
+  reviewer feedback in the meantime.
 
 - [ ] **MCP server** — let Claude (Desktop / Code) read and eventually write the
   journal. An external agent's draft prompt proposed a standalone binary doing
