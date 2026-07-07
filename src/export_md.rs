@@ -553,6 +553,12 @@ fn yaml_quote(s: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Stringify an export-relative path OS-independently (Windows renders
+    /// PathBuf separators as `\`; the assertions speak `/`).
+    fn path_str(p: &std::path::Path) -> String {
+        p.to_string_lossy().replace('\\', "/")
+    }
+
     fn page(title: &str, content: &str) -> ExportPage {
         ExportPage {
             title: title.into(),
@@ -612,11 +618,7 @@ mod tests {
         let plan = plan_export(&[day, aliased, clash_a, clash_b, wb]);
         assert_eq!(plan.days, 1);
         assert_eq!(plan.pages, 3);
-        let paths: Vec<String> = plan
-            .files
-            .iter()
-            .map(|(p, _)| p.to_string_lossy().into_owned())
-            .collect();
+        let paths: Vec<String> = plan.files.iter().map(|(p, _)| path_str(p)).collect();
         assert!(paths.contains(&"journals/2026-07-06.md".to_string()));
         assert!(paths.contains(&"Foo-.md".to_string()));
         assert!(paths.contains(&"Foo- 2.md".to_string()), "{paths:?}");
@@ -806,7 +808,7 @@ mod tests {
         let canvas = &plan
             .files
             .iter()
-            .find(|(p, _)| p.to_string_lossy() == "Test Board.canvas")
+            .find(|(p, _)| path_str(p) == "Test Board.canvas")
             .expect("canvas file")
             .1;
         let v: serde_json::Value = serde_json::from_str(canvas).unwrap();
