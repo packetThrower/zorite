@@ -59,7 +59,7 @@ pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
 #[cfg(feature = "forms")]
 mod forms;
 #[cfg(feature = "forms")]
-pub use forms::normalize_form_appearances;
+pub use forms::{FieldKind, FormField, form_fields, normalize_form_appearances, set_form_value};
 
 // ─────────────────────────────── Low-level primitives ───────────────────────────────
 

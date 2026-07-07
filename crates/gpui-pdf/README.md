@@ -105,8 +105,13 @@ annotation appearance streams; this feature normalizes the two shapes it can't
 draw — checkbox/radio state-dictionary appearances (resolved through `/AS`) and
 valued text fields with no appearance at all (the `NeedAppearances` case, given
 a synthesized one) — by rewriting the bytes with `lopdf` before parsing. It
-happens automatically inside `parse`. Filling forms *in* the viewer is a
-planned follow-up.
+happens automatically inside `parse`.
+
+The same feature carries the **form-filling primitives** a host UI builds on:
+`form_fields` enumerates every widget (name, kind, page, rect, value, options)
+and `set_form_value` writes a value back with a regenerated appearance, so the
+output renders in any viewer. A `forms_check` example reports any PDF's widget
+shapes. Interactive filling *in* `PdfView` is a planned follow-up.
 
 ## Status
 

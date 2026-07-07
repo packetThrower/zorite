@@ -122,4 +122,13 @@ fn main() {
         }
         None => println!("normalize: no changes"),
     }
+
+    let fields = gpui_pdf::form_fields(&bytes);
+    println!("form_fields: {} fields", fields.len());
+    for f in fields.iter().take(8) {
+        println!(
+            "  {:?} {:?} p{} v={:?} opts={:?}",
+            f.name, f.kind, f.page, f.value, f.options
+        );
+    }
 }

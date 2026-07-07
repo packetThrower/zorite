@@ -17,6 +17,10 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`LoadError`](#enum-loaderror) | enum | — | `Locked \| Other(String)` | Why loading a PDF failed |
 | [`parse`](#parse) | fn | — | `fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, LoadError>` | Parse PDF bytes once, reuse per page |
 | [`normalize_form_appearances`](#normalize_form_appearances) | fn | `forms` | `fn normalize_form_appearances(bytes: &[u8]) -> Option<Vec<u8>>` | Rewrite form-widget appearances so they render |
+| [`form_fields`](#form_fields) | fn | `forms` | `fn form_fields(bytes: &[u8]) -> Vec<FormField>` | Every form widget: name, kind, page, rect, value |
+| [`set_form_value`](#set_form_value) | fn | `forms` | `fn set_form_value(bytes: &[u8], name: &str, value: &str) -> Option<Vec<u8>>` | Write a field's value + regenerate its appearance |
+| [`FormField`](#struct-formfield) | struct | `forms` | — | One widget, described for a host UI |
+| [`FieldKind`](#enum-fieldkind) | enum | `forms` | `Text \| Checkbox \| Radio \| Choice \| Signature` | What input a field takes |
 | [`parse_with_password`](#parse_with_password) | fn | — | `fn parse_with_password(bytes: Arc<Vec<u8>>, password: &str) -> Result<Arc<Document>, LoadError>` | Parse an encrypted PDF |
 | [`page_dims`](#page_dims) | fn | — | `fn page_dims(doc: &Document) -> Vec<(f32, f32)>` | Per-page `(w, h)` in points, no rasterization |
 | [`render_page`](#render_page) | fn | — | `fn render_page(doc: &Document, idx: usize, scale: f32) -> Result<Arc<RenderImage>, String>` | Rasterize one page to a BGRA bitmap |
@@ -247,6 +251,111 @@ or bytes lopdf can't parse).
 **Cost** — a full lopdf parse + serialize when changes are made (one-time, at
 load). A document with no `/Subtype /Widget` objects short-circuits after the
 parse.
+
+---
+
+## `form_fields`
+
+*Feature: `forms`.*
+
+```rust
+pub fn form_fields(bytes: &[u8]) -> Vec<FormField>
+```
+
+Every form-field widget in the document, in page order — what a host needs to
+overlay inputs on the viewer.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `bytes` | `&[u8]` | The whole file's bytes. |
+
+**Returns** — one [`FormField`](#struct-formfield) per *widget* (a radio group
+is one field name across several widgets, each reported with its own rect and
+on-state). Pushbuttons carry no value and are skipped.
+
+**Guarantees & edge cases**
+
+- An encrypted or unparseable file yields an empty `Vec` — never an error.
+- `rect` is in PDF points with a bottom-left origin, corners normalized
+  (`x0 < x1`, `y0 < y1`); to overlay on a rendered page, flip y against the
+  page height and multiply by the render scale.
+- Names are fully qualified (`/T` joined root-first with `.` up the `/Parent`
+  chain) — exactly the key [`set_form_value`](#set_form_value) expects.
+- `/FT`, `/V`, `/Ff`, and `/Opt` resolve through field inheritance.
+
+---
+
+## `set_form_value`
+
+*Feature: `forms`.*
+
+```rust
+pub fn set_form_value(bytes: &[u8], name: &str, value: &str) -> Option<Vec<u8>>
+```
+
+Set the field named `name` and **regenerate its appearance stream**, so the
+written file renders correctly in every viewer — not just this crate's.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `bytes` | `&[u8]` | The whole file's bytes. |
+| `name` | `&str` | A fully-qualified name from [`form_fields`](#form_fields). |
+| `value` | `&str` | `Text`/`Choice`: the literal text. `Checkbox`/`Radio`: an on-state from [`FormField::options`](#struct-formfield), or `"Off"` to clear. |
+
+**Returns** — `Some(rewritten_bytes)` on success; `None` when nothing matched
+(unknown name, read-only or signature field, encrypted/unparseable file).
+
+**Guarantees & edge cases**
+
+- `/V` is written on the dict that owns `/FT` (the parent for split
+  field/widget pairs), so sibling widgets stay consistent; a radio group's
+  every widget gets its `/AS` set (`value` where that widget carries the
+  state, `Off` elsewhere).
+- Text appearances are regenerated with the same synthesis as
+  [`normalize_form_appearances`](#normalize_form_appearances) — same ceilings
+  (single-line, WinAnsi-lossy).
+- Read-only fields (`/Ff` bit 1) and signature fields are refused.
+- The caller owns persistence: write the returned bytes wherever the document
+  lives, and re-[`parse`](#parse) to refresh a viewer.
+
+---
+
+## `struct FormField`
+
+*Feature: `forms`.*
+
+```rust
+pub struct FormField {
+    pub name: String,           // fully-qualified field name (the set_form_value key)
+    pub kind: FieldKind,
+    pub page: usize,            // 0-based page index
+    pub rect: (f32, f32, f32, f32), // PDF points, bottom-left origin, corners ordered
+    pub value: String,          // text, or the on-state name / "Off" for buttons
+    pub read_only: bool,        // /Ff bit 1
+    pub options: Vec<String>,   // Choice: /Opt entries; Checkbox/Radio: on-state names
+}
+```
+
+One widget, described for a host UI. See [`form_fields`](#form_fields) for the
+coordinate and naming contracts.
+
+---
+
+## `enum FieldKind`
+
+*Feature: `forms`.*
+
+```rust
+pub enum FieldKind { Text, Checkbox, Radio, Choice, Signature }
+```
+
+What input a field takes. `Radio` is one widget of a group (same `name`,
+several widgets). `Signature` is display-only — [`set_form_value`](#set_form_value)
+refuses it. Pushbuttons never appear (no value to hold).
 
 ---
 

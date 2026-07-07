@@ -109,13 +109,14 @@ per-notebook settings sync.
   a lopdf normalization pass before parse resolves checkbox/radio state-dict
   `/AP` through `/AS` and synthesizes appearances for valued text fields with
   none (`NeedAppearances`) — form PDFs now *display* correctly, read-only,
-  end-to-end render-tested. Remaining: **M2** `form_fields(doc)` enumeration
-  (name/kind/page/rect/value/flags via hayro-syntax, the outline.rs pattern);
-  **M3** fillable UI — interactive overlays at field rects in `PdfView`,
-  write-back via lopdf (`/V` + `/AS` + regenerated `/AP`, `NeedAppearances`
-  cleared so output renders in every viewer), host-owned save flow. Since we
-  generate `/AP` on every write, our output never depends on hayro's gaps.
-  Also worth filing the two gaps upstream with hayro.
+  end-to-end render-tested. **M2 SHIPPED**: `form_fields(bytes)` enumerates
+  every widget (qualified name, kind, page, rect, value, options; verified on
+  a real 54-field government form) and `set_form_value(bytes, name, value)`
+  writes `/V` (+ per-widget `/AS` for button groups) with a regenerated
+  appearance, so output renders in every viewer. Remaining: **M3** fillable
+  UI — interactive overlays at field rects in `PdfView` (host-seated inputs,
+  the password-prompt pattern keeps gpui-pdf component-free), host-owned save
+  flow. Also worth filing the two hayro gaps upstream.
 
 ## Crates
 Crate-internal defects and API hygiene, mostly surfaced by the 2026-07-06
