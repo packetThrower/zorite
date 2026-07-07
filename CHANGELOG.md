@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [Unreleased]
+
+### Added
+
+- **PDF forms display correctly** — AcroForm PDFs now show what they carry:
+  filled text-field values render even when the file left drawing to the
+  viewer (the `NeedAppearances` case), and checkboxes/radios show their
+  checked state (their state-dictionary appearances previously didn't draw at
+  all). Read-only for now — filling forms in the viewer is the planned
+  follow-up.
+
 ## [0.6.0] - 2026-07-06
 
 The Obsidian-parity release: `key:: value` properties with an in-place editor

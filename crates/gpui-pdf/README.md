@@ -50,7 +50,8 @@ gpui-pdf = { path = "../gpui-pdf" }
 # Optional features:
 #   markup — text layer + quote-anchored highlights (adds only `kurbo`)
 #   search — find-in-PDF bar; implies markup
-gpui-pdf = { path = "../gpui-pdf", features = ["search"] }
+#   forms  — AcroForm values/checkboxes display correctly (adds `lopdf`)
+gpui-pdf = { path = "../gpui-pdf", features = ["search", "forms"] }
 ```
 
 ## Quick start
@@ -96,12 +97,23 @@ for clicks and drag-to-create (with a color picker). Coordinates are normalized,
 highlights track zoom and DPI for free. `search` builds a browser-style find-in-PDF
 bar (⌘F, match highlighting, next/prev) on the same text layer.
 
+## Forms (optional feature)
+
+`forms` makes **AcroForm PDFs display correctly**: filled values, checked
+checkboxes, and radio states render read-only. hayro already composites
+annotation appearance streams; this feature normalizes the two shapes it can't
+draw — checkbox/radio state-dictionary appearances (resolved through `/AS`) and
+valued text fields with no appearance at all (the `NeedAppearances` case, given
+a synthesized one) — by rewriting the bytes with `lopdf` before parsing. It
+happens automatically inside `parse`. Filling forms *in* the viewer is a
+planned follow-up.
+
 ## Status
 
 Early, but solid for scroll-to-read viewing. Password-protected PDFs open behind a
-host-rendered prompt. Markup and find-in-PDF are available behind their features.
-Roadmap: area highlights for pages with no text layer. Not yet published to
-crates.io.
+host-rendered prompt. Markup, find-in-PDF, and form display are available behind
+their features. Roadmap: area highlights for pages with no text layer; fillable
+forms. Not yet published to crates.io.
 
 ## License
 

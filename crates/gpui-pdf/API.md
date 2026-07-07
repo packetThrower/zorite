@@ -16,6 +16,7 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`Document`](#type-document) | type alias | — | `type Document = hayro::Pdf` | A parsed PDF, shared via `Arc` |
 | [`LoadError`](#enum-loaderror) | enum | — | `Locked \| Other(String)` | Why loading a PDF failed |
 | [`parse`](#parse) | fn | — | `fn parse(bytes: Arc<Vec<u8>>) -> Result<Arc<Document>, LoadError>` | Parse PDF bytes once, reuse per page |
+| [`normalize_form_appearances`](#normalize_form_appearances) | fn | `forms` | `fn normalize_form_appearances(bytes: &[u8]) -> Option<Vec<u8>>` | Rewrite form-widget appearances so they render |
 | [`parse_with_password`](#parse_with_password) | fn | — | `fn parse_with_password(bytes: Arc<Vec<u8>>, password: &str) -> Result<Arc<Document>, LoadError>` | Parse an encrypted PDF |
 | [`page_dims`](#page_dims) | fn | — | `fn page_dims(doc: &Document) -> Vec<(f32, f32)>` | Per-page `(w, h)` in points, no rasterization |
 | [`render_page`](#render_page) | fn | — | `fn render_page(doc: &Document, idx: usize, scale: f32) -> Result<Arc<RenderImage>, String>` | Rasterize one page to a BGRA bitmap |
@@ -181,6 +182,10 @@ otherwise.
 - Anything else — public-key / certificate handlers (`/Filter` ≠ `/Standard`), any
   non-standard crypt filter — surfaces as `Err(Other)`, **not** `Locked`: don't show
   a password prompt for it.
+- With the `forms` feature, the bytes first pass through
+  [`normalize_form_appearances`](#normalize_form_appearances) (both here and in
+  [`parse`](#parse)) so form values and checkbox states display; an encrypted or
+  form-free file passes through untouched.
 - Never panics.
 
 **Example**
@@ -192,6 +197,56 @@ match gpui_pdf::parse_with_password(bytes, password) {
     Err(gpui_pdf::LoadError::Other(e)) => { /* malformed / unsupported encryption */ }
 }
 ```
+
+---
+
+## `normalize_form_appearances`
+
+*Feature: `forms`.*
+
+```rust
+pub fn normalize_form_appearances(bytes: &[u8]) -> Option<Vec<u8>>
+```
+
+Rewrite a document's bytes so every AcroForm widget has a directly-renderable
+appearance stream. hayro composites annotation `/AP /N` streams but (a) skips a
+checkbox/radio whose `/N` is a **dictionary of states** selected by `/AS`, and
+(b) never **synthesizes** an appearance for a valued text field that has none
+(the `NeedAppearances` case). This pass fixes both at the byte level — resolve
+`/N` through `/AS`; synthesize a Helvetica appearance for the field's `/V` —
+so form PDFs *display* what they carry. [`parse`](#parse) /
+[`parse_with_password`](#parse_with_password) call it automatically under this
+feature; it's public for hosts that manage bytes themselves.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `bytes` | `&[u8]` | The whole file's bytes. |
+
+**Returns** — `Some(rewritten_bytes)` **only when something changed**; `None`
+means keep the originals (no form widgets, nothing to fix, an encrypted file,
+or bytes lopdf can't parse).
+
+**Guarantees & edge cases**
+
+- Idempotent: running it on its own output returns `None`.
+- Encrypted documents are left untouched (`None`) — hayro decrypts on its own;
+  rewriting would need the password.
+- `/FT` and `/V` are resolved up the `/Parent` chain (split field/widget
+  pairs), bounded against cyclic chains.
+- Synthesized text is single-line, left-aligned, ~12 pt Helvetica
+  (WinAnsi-lossy: characters outside Latin-1 become `?`), clipped to the
+  widget rect by the XObject's BBox. `/DA` fonts, `/Q` quadding, comb fields,
+  multiline layout, and rich-text values are **not** honored — this is display
+  correctness, not a form engine.
+- Only `/AP /N` (the normal appearance) is touched; `/D`/`/R` states and
+  non-widget annotations pass through unchanged.
+- Never panics; any structural surprise inside a widget just skips that widget.
+
+**Cost** — a full lopdf parse + serialize when changes are made (one-time, at
+load). A document with no `/Subtype /Widget` objects short-circuits after the
+parse.
 
 ---
 

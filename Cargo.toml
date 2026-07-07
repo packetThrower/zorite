@@ -60,8 +60,9 @@ resvg = { version = "0.45", default-features = false, features = ["text", "syste
 ratex-gpui = { path = "crates/ratex-gpui", features = ["editor"] }
 
 # Our own page-virtualized PDF viewer (pure-Rust hayro), a workspace crate.
-# `markup` adds the text-extraction layer + highlight rendering (Logseq-style).
-gpui-pdf = { path = "crates/gpui-pdf", features = ["markup", "search"] }
+# `markup` adds the text-extraction layer + highlight rendering (Logseq-style);
+# `forms` normalizes AcroForm appearances so form values/checkboxes display.
+gpui-pdf = { path = "crates/gpui-pdf", features = ["markup", "search", "forms"] }
 
 # Our own infinite-canvas whiteboard, a host-agnostic workspace crate.
 gpui-whiteboard = { path = "crates/gpui-whiteboard" }

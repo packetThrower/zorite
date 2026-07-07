@@ -22,6 +22,10 @@ log = "0.4"
 # version hayro uses so `Affine`/`BezPath` unify with hayro's `Device` trait.
 kurbo = { version = "0.13", optional = true }
 
+# PDF *writing* for the forms feature only: normalize form-field appearance
+# streams before hayro renders (hayro reads; lopdf rewrites). Pure Rust, MIT.
+lopdf = { version = "0.43", optional = true, default-features = false }
+
 [features]
 default = []
 # Text-anchored markup substrate: extract a page's text + per-glyph rectangles by
@@ -37,8 +41,20 @@ markup = ["dep:kurbo"]
 # enables `markup`. Off by default.
 search = ["markup"]
 
+# AcroForm display correctness: normalize form-field appearances before
+# rendering — resolve checkbox/radio state-dict `/AP` through `/AS` into the
+# direct stream hayro can draw, and synthesize an appearance for a valued text
+# field that has none (the NeedAppearances case). Pulls `lopdf`. Off by default.
+forms = ["dep:lopdf"]
+
 # Verification helper: `cargo run -p gpui-pdf --example extract_text --features markup
 # -- <file.pdf> [page]` prints a page's extracted text.
 [[example]]
 name = "extract_text"
 required-features = ["markup"]
+
+# Verification helper: reports a PDF's form-widget shapes + whether the forms
+# normalization pass changes anything.
+[[example]]
+name = "forms_check"
+required-features = ["forms"]

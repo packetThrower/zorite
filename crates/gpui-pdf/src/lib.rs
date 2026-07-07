@@ -56,6 +56,11 @@ pub use text::{NormPoint, NormRect, PageText, Selection, extract_page_text};
 mod outline;
 pub use outline::{LinkTarget, OutlineItem, PdfLink, outline, page_links};
 
+#[cfg(feature = "forms")]
+mod forms;
+#[cfg(feature = "forms")]
+pub use forms::normalize_form_appearances;
+
 // ─────────────────────────────── Low-level primitives ───────────────────────────────
 
 /// A parsed PDF. Parse once (not per page) — re-parsing a large file for every page
@@ -88,6 +93,13 @@ pub fn parse_with_password(
     bytes: Arc<Vec<u8>>,
     password: &str,
 ) -> Result<Arc<Document>, LoadError> {
+    // Form display correctness: give every form widget a directly-renderable
+    // appearance stream before hayro sees the bytes (see `forms`). A no-op
+    // (or an encrypted/unparseable file) keeps the original bytes.
+    #[cfg(feature = "forms")]
+    let bytes = normalize_form_appearances(&bytes)
+        .map(Arc::new)
+        .unwrap_or(bytes);
     match Pdf::new_with_password(bytes, password) {
         Ok(pdf) => Ok(Arc::new(pdf)),
         Err(LoadPdfError::Decryption(DecryptionError::PasswordProtected)) => Err(LoadError::Locked),

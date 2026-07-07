@@ -102,7 +102,20 @@ per-notebook settings sync.
 - [ ] PDF: **graceful fallback for unsupported files** — encrypted PDFs now open behind a password prompt (RC4 / AES-128 / AES-256), but hayro can still fail on an *unsupported* encryption algorithm (e.g. a public-key / certificate handler) or exotic transparency / blend modes; on such a load/parse failure, show an "Open in default app" affordance (hand off to the OS viewer) instead of a blank pane
 - [ ] PDF: **a failed load is silent and permanent** (found in the 2026-07-06 API audit) — an unreadable file or malformed PDF only `log::error!`s and `PdfView` sits on the "Loading PDF…" placeholder forever, with no error state, event, or retry; and a retry-unlock failing with `LoadError::Other` (e.g. unsupported encryption discovered at unlock time) is logged but **eventless**, so the password prompt gets no signal. Both want an explicit error state + `PdfEvent`; overlaps with the graceful-fallback item above
 - [ ] PDF: `is_pdf` misses query-string refs (`report.pdf?v=2`) — it only checks `ends_with(".pdf")` after trimming trailing whitespace (API audit)
-- [ ] PDF: **AcroForm + annotations** — no pure-Rust crate does a full interactive forms/annotation engine. Heavy options reintroduce a native dep: `pdfium-render` (PDFium — full forms/annotations/render, permissive license) or `mupdf-rs` (full, but AGPL + native). Pure-Rust path: a targeted subset on `lopdf` — read `/AcroForm /Fields`, fill text fields/checkboxes via `/V` (+ `/NeedAppearances`), and render existing annotation appearance streams (`/AP /N`, which are XObjects hayro may already rasterize). First check whether hayro already composites `/AP` streams
+- [ ] PDF: **AcroForm + annotations** — the 2026-07-06 spike settled the scope:
+  hayro **already composites** annotation `/AP /N` appearance streams (on by
+  default, verified empirically), so annotations and pre-rendered form values
+  displayed all along. **M1 SHIPPED** (`forms` feature, `gpui_pdf::forms`):
+  a lopdf normalization pass before parse resolves checkbox/radio state-dict
+  `/AP` through `/AS` and synthesizes appearances for valued text fields with
+  none (`NeedAppearances`) — form PDFs now *display* correctly, read-only,
+  end-to-end render-tested. Remaining: **M2** `form_fields(doc)` enumeration
+  (name/kind/page/rect/value/flags via hayro-syntax, the outline.rs pattern);
+  **M3** fillable UI — interactive overlays at field rects in `PdfView`,
+  write-back via lopdf (`/V` + `/AS` + regenerated `/AP`, `NeedAppearances`
+  cleared so output renders in every viewer), host-owned save flow. Since we
+  generate `/AP` on every write, our output never depends on hayro's gaps.
+  Also worth filing the two gaps upstream with hayro.
 
 ## Crates
 Crate-internal defects and API hygiene, mostly surfaced by the 2026-07-06
