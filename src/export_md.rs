@@ -581,11 +581,7 @@ mod tests {
             ),
         ];
         let plan = plan_export(&pages);
-        let paths: Vec<String> = plan
-            .files
-            .iter()
-            .map(|(p, _)| p.to_string_lossy().into_owned())
-            .collect();
+        let paths: Vec<String> = plan.files.iter().map(|(p, _)| path_str(p)).collect();
         assert!(
             paths.contains(&"Projects/Tasks.md".to_string()),
             "{paths:?}"
