@@ -33,9 +33,9 @@ use gpui_component::{
 use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, DeletePage, ExportActivePdf, ExportPdf, FindInPage, FitImages, GlobalSearch,
-    ImportLogseq, ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab,
-    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
+    CloseTab, DeletePage, ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages,
+    GlobalSearch, ImportLogseq, ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard,
+    NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
     SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
@@ -7075,6 +7075,88 @@ impl AppView {
         });
     }
 
+    /// File → Export → Notebook as Markdown…: pick an empty folder, then lay
+    /// the whole notebook out as portable markdown + assets (see `export_md`).
+    fn on_export_notebook(
+        &mut self,
+        _: &ExportNotebook,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Export here".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(dest) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.run_notebook_export(dest, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn run_notebook_export(&mut self, dest: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let data_dir = crate::paths::data_dir();
+        let task = cx.background_executor().spawn(async move {
+            let key = crate::security::session_key();
+            let db =
+                Db::open(key.as_deref()).map_err(|e| format!("open database: {}", e.source))?;
+            let pages = db.export_pages().map_err(|e| format!("read pages: {e}"))?;
+            let plan = crate::export_md::plan_export(&pages);
+            crate::export_md::write_export(&data_dir, &dest, plan)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.show_export_summary(result, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    /// The completion dialog for a notebook export: counts, or the error.
+    fn show_export_summary(
+        &mut self,
+        result: Result<crate::export_md::ExportSummary, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = dialog.w(px(460.0)).on_ok(|_, _, _| true);
+            match &result {
+                Ok(s) => {
+                    let mut lines = vec![format!(
+                        "{} pages, {} journal days, and {} asset file{} written.",
+                        s.pages,
+                        s.days,
+                        s.assets,
+                        if s.assets == 1 { "" } else { "s" }
+                    )];
+                    lines.extend(s.warnings.iter().cloned());
+                    dialog.title("Export complete").child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(6.0))
+                            .text_color(theme::text_secondary())
+                            .children(lines),
+                    )
+                }
+                Err(e) => dialog
+                    .title("Export failed")
+                    .child(div().text_color(theme::text_secondary()).child(e.clone())),
+            }
+        });
+    }
+
     fn run_obsidian_import(
         &mut self,
         root: PathBuf,
@@ -7969,6 +8051,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_new_whiteboard))
             .on_action(cx.listener(Self::on_import_logseq))
             .on_action(cx.listener(Self::on_import_obsidian))
+            .on_action(cx.listener(Self::on_export_notebook))
             .on_action(cx.listener(Self::on_fit_images))
             .on_action(cx.listener(Self::on_insert_tab))
             .on_action(cx.listener(Self::on_outdent))

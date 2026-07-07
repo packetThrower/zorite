@@ -15,6 +15,7 @@ mod app;
 mod dates;
 mod db;
 mod export;
+mod export_md;
 mod hierarchy;
 mod highlight;
 mod images;

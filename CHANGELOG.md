@@ -11,6 +11,15 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
+- **Export Notebook as Markdown** — File → Export Notebook as Markdown… lays
+  your whole notebook out as a folder of plain, portable markdown + assets for
+  any other app (not just Obsidian): `Foo::Bar` namespaces become folders with
+  every `[[link]]` and `![[embed]]` rewritten to match (anchors and `|alias`
+  labels preserved, code fences untouched), journal days become
+  `journals/YYYY-MM-DD.md`, aliases become YAML frontmatter, and referenced
+  images/PDFs copy alongside. Tags, properties, callouts, block ids, and math
+  pass through as-is. The export only ever writes into an empty folder, and a
+  summary reports counts plus anything skipped (whiteboards, for now).
 - **Fill PDF forms in the viewer** — AcroForm PDFs are now fillable: click a
   checkbox or radio to toggle it, click a text field for an in-place input
   seated under the field (Enter or click away saves, Esc cancels, Tab /

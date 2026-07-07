@@ -86,7 +86,7 @@ export default defineConfig({
 						{ label: 'PDF & images', slug: 'usage/pdf' },
 						{ label: 'Search', slug: 'usage/search' },
 						{ label: 'Password & encryption', slug: 'usage/security' },
-						{ label: 'Import your notes', slug: 'usage/import' },
+						{ label: 'Import & export', slug: 'usage/import' },
 						{ label: 'Keyboard shortcuts', slug: 'usage/shortcuts' },
 					],
 				},

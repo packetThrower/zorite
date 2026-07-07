@@ -54,6 +54,9 @@ actions!(
         // File menu: import a Logseq graph folder (no keybinding).
         ImportLogseq,
         ImportObsidian,
+        // File menu: export the notebook to a folder of plain markdown +
+        // assets (no keybinding).
+        ExportNotebook,
         // Shrink any image wider than the content area back to fit the view.
         FitImages,
         // The custom property editor's Tab / Shift+Tab field stepping (bound in
@@ -173,6 +176,7 @@ fn build_app_menus() -> Vec<Menu> {
                 MenuItem::separator(),
                 MenuItem::action("Import from Logseq…", ImportLogseq),
                 MenuItem::action("Import from Obsidian…", ImportObsidian),
+                MenuItem::action("Export Notebook as Markdown…", ExportNotebook),
                 MenuItem::action("Export as PDF…", ExportActivePdf),
                 MenuItem::separator(),
                 MenuItem::action("Close Tab", CloseTab),

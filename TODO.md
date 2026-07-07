@@ -95,7 +95,8 @@ per-notebook settings sync.
 - [ ] Use small versions of components
 
 ## Import & export
-- [ ] **Exporter — migrate Zorite data OUT to another app.** Reverse of the importers: write pages/journals/aliases/assets to a portable on-disk format so users aren't locked in. Likeliest target is an **Obsidian-flavored vault** (plain `.md` tree, YAML frontmatter for aliases/tags, attachments copied out, `[[wiki-links]]` mostly passthrough) since it's the lingua franca other apps also import; a generic **CommonMark + assets** dump is the fallback. Decisions when scoping: namespace `::` → folders or literal titles; journals → a `journals/`-style folder or dated files; `<mark>`/alerts → Obsidian equivalents or leave as-is. Menu: File → Export → Vault…
+- [ ] Exporter follow-up: **whiteboards** — Scene → `.canvas` (reverse of the
+  canvas importer) so boards survive a round trip; skipped-and-warned today.
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
 - [ ] PDF: **fit-width / fit-page** zoom modes (zoom is free-scale only today)
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
@@ -204,6 +205,18 @@ Ideas worth keeping, not yet committed to.
 - [x] **Collapsible headings** (a8da34c) — hover a heading → chevron; click folds its section (to the next same-or-higher heading, fence-aware) in both views. Session-local view state (markdown has no fold syntax); keyed by heading text (self-heals on rename; duplicate headings fold together — known ceiling); editor reveals a folded section while the caret is inside its body
 - [x] **Inline (in-flow) images** (PR #30) — an image that doesn't lead its line renders as a small in-flow thumbnail (height-capped, width-capped) instead of vanishing, in BOTH views; click opens a full-size preview, hover shows a hand
 - [x] **Obsidian importer** (PR #31) — File → Import from Obsidian… reads a vault: folders → `::` namespaces (or flatten), links + aliases resolve through a name→title map, ~13 callout types → Zorite's 5 alerts, frontmatter → aliases/tags/`key:: value` properties, `YYYY-MM-DD` notes → journal days, assets copied into the managed stores. Block ids, `#Heading`/`#^id` anchors, and `![[embeds]]` come across **as-is** (they all work in Zorite now). **`.canvas` boards → whiteboards**: text cards as labeled boxes (colors mapped), note cards as clickable page cards (ids resolved at write time), image cards placed, groups as outlines, edges as arrows with labels; every 1:1 gap is warned in the import summary
+
+### Export (unreleased)
+- [x] **Export Notebook as Markdown** (2026-07-06) — `src/export_md.rs`, the
+  importers' mirror: a pure `plan_export` (paths sanitized + case-insensitively
+  uniquified, `::` → folders, map-driven link/embed rewriting preserving
+  anchors + aliases, fence-aware; frontmatter aliases YAML-quoted; referenced
+  assets collected via `all_image_srcs` + pdf-chip links) and a `write_export`
+  that refuses non-empty destinations. Kept deliberately portable: `<mark>`,
+  `{width=N}`, properties, callouts, block ids all pass through — no
+  Obsidian-only conversions. Round-trip tested through our own Obsidian
+  importer (`import(export(x)) ≈ x`); live-verified against a seeded coverage
+  page. Whiteboards skipped + warned (follow-up above).
 
 ### PDF forms (unreleased)
 - [x] **AcroForm display + filling** (2026-07-06, spike -> M1 -> M2 -> M3 in a day) —

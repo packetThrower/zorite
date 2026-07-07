@@ -1,6 +1,6 @@
 ---
-title: Import from Obsidian or Logseq
-description: 'Bring an Obsidian vault or a Logseq graph into Zorite — pages, journals, assets, namespaces, properties, aliases, embeds, block references, canvas boards / whiteboards, and favorites — with a non-destructive collision policy.'
+title: Import & export
+description: 'Bring an Obsidian vault or a Logseq graph into Zorite — and export your whole notebook back out as plain, portable markdown + assets.'
 ---
 
 Already keep your notes in Obsidian or Logseq? **File → Import from Obsidian…**
@@ -52,3 +52,22 @@ Both importers are **non-destructive**. Existing content is kept — if a page
 with the same name already exists, the import **appends** to it rather than
 overwriting. Run one as often as you like — it won't clobber notes you've
 already written.
+
+## Export your notebook
+
+**File → Export Notebook as Markdown…** writes everything out as a folder of
+plain markdown plus your images and PDFs — portable to Obsidian, Logseq, or
+anything else that reads markdown files:
+
+| In Zorite | In the export |
+|---|---|
+| `Foo::Bar` namespaces | `Foo/Bar.md` folders, with every `[[link]]` / `![[embed]]` rewritten to match (anchors and `\|alias` labels kept) |
+| Journal days | `journals/YYYY-MM-DD.md` |
+| Page aliases | YAML frontmatter `aliases:` |
+| `#tags`, `key:: value` properties, callouts, `^block-ids`, math, mermaid | Unchanged — they're already portable |
+| Referenced images and PDFs | Copied to `images/` / `pdf/`, references untouched |
+| Whiteboards | Skipped for now (noted in the summary) |
+
+The export **only writes into an empty folder** — it never merges into or
+overwrites an existing one — and finishes with a summary of what was written
+and anything skipped.

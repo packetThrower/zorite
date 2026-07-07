@@ -107,6 +107,17 @@ pub struct PropValueInfo {
     pub pages: Vec<(i64, String)>,
 }
 
+/// One page as the markdown exporter sees it (see [`Db::export_pages`]).
+pub struct ExportPage {
+    pub title: String,
+    pub content: String,
+    /// `Some(YYYY-MM-DD)` for a journal day.
+    pub journal_date: Option<String>,
+    /// `page` or `whiteboard` (whiteboards are skipped by the exporter).
+    pub kind: String,
+    pub aliases: Vec<String>,
+}
+
 /// The newest schema version [`Db::migrate`] upgrades to. Bump this with each new
 /// migration step so [`Db::open`] knows when a pre-migration backup is warranted.
 const SCHEMA_VERSION: i64 = 7;
@@ -691,6 +702,36 @@ impl Db {
                 content: String::new(),
                 created_at: row.get(4)?,
                 updated_at: row.get(5)?,
+            })
+        })?
+        .collect()
+    }
+
+    /// Everything the markdown exporter needs, loaded in bulk: every page —
+    /// all kinds, journal days included — with its content and aliases.
+    pub fn export_pages(&self) -> rusqlite::Result<Vec<ExportPage>> {
+        let mut aliases: std::collections::HashMap<i64, Vec<String>> = Default::default();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT page_id, alias FROM page_aliases ORDER BY alias COLLATE NOCASE")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })?;
+        for row in rows {
+            let (id, alias) = row?;
+            aliases.entry(id).or_default().push(alias);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, content, journal_date, kind FROM pages \
+             ORDER BY title COLLATE NOCASE",
+        )?;
+        stmt.query_map([], |row| {
+            Ok(ExportPage {
+                title: row.get(1)?,
+                content: row.get(2)?,
+                journal_date: row.get(3)?,
+                kind: row.get(4)?,
+                aliases: aliases.remove(&row.get::<_, i64>(0)?).unwrap_or_default(),
             })
         })?
         .collect()
