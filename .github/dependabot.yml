@@ -15,6 +15,14 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # gpui pins these internally (resvg via gpui itself, sha2 via its
+    # http_client); bumping our copy past gpui's compiles TWO versions into
+    # the binary. They move only in lockstep with a gpui upgrade.
+    ignore:
+      - dependency-name: "resvg"
+      - dependency-name: "sha2"
+      - dependency-name: "gpui"
+      - dependency-name: "gpui-component"
     groups:
       # One PR for the routine patch/minor sweep instead of a dozen; majors
       # still come through individually so they get a proper look.
