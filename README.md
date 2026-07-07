@@ -226,6 +226,11 @@ scoop install zorite                                # stable
 scoop install zorite-prerelease                     # pre-release
 ```
 
+```sh
+# NixOS / Nix (Linux) — builds from source via the repo flake
+nix run github:packetThrower/zorite
+```
+
 winget carries **stable only**; for pre-release builds on Windows use Scoop or
 the [Releases](https://github.com/packetThrower/zorite/releases) page directly.
 Linux users grab the matching `.deb` / `.rpm` / `.AppImage` / `.pkg.tar.zst`

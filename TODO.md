@@ -139,6 +139,12 @@ findings worth fixing rather than just documenting):
 
 Ideas worth keeping, not yet committed to.
 
+- [ ] **Upstream Zorite to nixpkgs** — the repo flake ships (2026-07-07);
+  a nixpkgs submission needs the same derivation with explicit
+  `outputHashes` per git source (builtin fetchGit isn't allowed there), a
+  `pkgs/by-name/zo/zorite` PR, and signing up as maintainer (a version
+  bump each release). Do it once the flake has proven itself.
+
 - [ ] **MCP server** — let Claude (Desktop / Code) read and eventually write the
   journal. An external agent's draft prompt proposed a standalone binary doing
   direct SQLite writes — analyzed 2026-07-06 and rejected as-written: the app

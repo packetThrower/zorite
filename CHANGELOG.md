@@ -11,6 +11,10 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
+- **Nix flake** — `nix run github:packetThrower/zorite` builds and launches
+  Zorite from source on NixOS and other Linux systems with Nix, desktop entry
+  and icon included; `nix develop` gives a ready dev shell. A CI job keeps the
+  flake building.
 - **Export Notebook as Markdown** — File → Export Notebook as Markdown… lays
   your whole notebook out as a folder of plain, portable markdown + assets for
   any other app (not just Obsidian): `Foo::Bar` namespaces become folders with
