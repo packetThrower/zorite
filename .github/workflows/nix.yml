@@ -49,6 +49,6 @@ jobs:
       - name: Build the nixpkgs package
         run: |
           nix build --impure --print-build-logs --expr \
-            '((builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.x86_64-linux.callPackage ./nixpkgs-staging/package.nix { })'
+            '((builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.callPackage ./nixpkgs-staging/package.nix { })'
       - name: Smoke-check
         run: test -x result/bin/zorite && ldd result/bin/zorite | head -5
