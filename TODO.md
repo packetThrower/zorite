@@ -12,6 +12,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [Settings window](#settings-window)
 - [Import & export](#import--export)
 - [Crates](#crates)
+- [Maybe](#maybe)
 - [Completed](#completed)
 
 ## Notes & navigation
@@ -134,6 +135,64 @@ findings worth fixing rather than just documenting):
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize
 - [ ] Publish to crates.io once the API is stable
 - [ ] **Split the reusable crates (`gpui-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: the crates use the workspace's pinned gpui rev (`[workspace.dependencies]`, one spec byte-for-byte); in separate repos each picks its own rev, and a mismatch puts two gpui versions in one consumer's build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
+
+## Maybe
+
+Ideas worth keeping, not yet committed to.
+
+- [ ] **MCP server** — let Claude (Desktop / Code) read and eventually write the
+  journal. An external agent's draft prompt proposed a standalone binary doing
+  direct SQLite writes — analyzed 2026-07-06 and rejected as-written: the app
+  autosaves per keystroke from an in-memory copy, so an external write to an
+  open day is silently clobbered (no conflict detection; `DocSignal` is
+  in-process); external writes also skip the `page_links` reindex, alias/
+  collision handling, and the `kind` column; a SQLCipher-encrypted DB can't be
+  opened at all; and hardcoded platform paths ignore `data_location.json` +
+  `ZORITE_DATA`. The FTS index alone would survive (trigger-maintained).
+  **Phase 1 (safe): read-only sidecar.** **Phase 2: writes only via the running
+  app** (in-process MCP endpoint or a stdio shim over a local socket, so saves
+  run `save_page_content` → link reindex → `DocSignal`). Corrected prompt for
+  Phase 1:
+
+  > Add a `zorite-mcp` binary to the Zorite workspace (a new workspace member
+  > following AGENTS.md — fmt/clippy `-D warnings`/test gate, cross-platform,
+  > no native deps): a **read-only** MCP server over **stdio** using the
+  > official Rust SDK (`rmcp` — modelcontextprotocol/rust-sdk) and `rusqlite`.
+  >
+  > Open the database read-only (`mode=ro`, `busy_timeout`); WAL makes
+  > cross-process reads safe (the app itself opens one connection per window).
+  > Resolve the data dir exactly like `src/paths.rs`: `ZORITE_DATA` env →
+  > the `data_location.json` pointer in the OS-default dir → platform default.
+  > If the file starts with the SQLCipher header (not `SQLite format 3\0`),
+  > return a clear "database is encrypted — the MCP server can't read it"
+  > error; likewise clean JSON-RPC errors for a missing file.
+  >
+  > Use the real schema (see `src/db.rs`, schema v9): `pages(id, title,
+  > is_journal, journal_date, content, created_at, updated_at, kind)`,
+  > `page_links(source_id, target_id)`, `page_aliases`, and the
+  > external-content trigram FTS5 table `pages_fts`. No placeholders.
+  >
+  > Tools (all read-only):
+  > - `list_pages` — id/title/kind/updated_at only (never bodies); filter
+  >   `kind = 'page'` by default, flag whiteboards.
+  > - `get_page` — body by title (case-insensitive, alias-aware via
+  >   `page_aliases`) or by `journal_date` for a day; label whiteboard JSON
+  >   rather than returning it as markdown.
+  > - `search` — `pages_fts` MATCH for queries ≥ 3 chars (trigram minimum),
+  >   `LIKE` fallback below that, exactly like the app's `search_pages`.
+  > - `get_backlinks` — join `page_links` (the indexed table, not a markdown
+  >   scan); note it reflects the last app-side save.
+  >
+  > Resources: `journal://today` (and `journal://YYYY-MM-DD`) → that day's
+  > markdown; `journal://tags` → distinct `#tags` extracted from content with
+  > the shared `gpui_markdown::syntax::links` grammar (tags are inline, not
+  > "properties").
+  >
+  > **No write tools in this phase** — writes are unsafe while the app runs
+  > (per-keystroke autosave clobbers external edits) and belong to a later
+  > in-app MCP endpoint. Ship with compile instructions plus
+  > `claude_desktop_config.json` / `claude mcp add` snippets, and a README +
+  > API.md per the crate-docs convention.
 
 ## Completed
 
