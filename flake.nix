@@ -34,16 +34,13 @@
 
           cargoLock = {
             lockFile = ./Cargo.lock;
-            # Nix builds are network-isolated: every git dependency in
-            # Cargo.lock needs a pinned content hash. These change whenever a
-            # git rev bumps (CI's nix job then reports the expected hash).
-            outputHashes = {
-              "gpui-0.2.2" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-              "gpui-component-0.5.2" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-              "heic_decoder-0.1.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-              "mermaid-rs-renderer-0.2.2" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-              "rav1d-1.1.0" = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-            };
+            # Every git dependency in Cargo.lock (gpui + zed siblings, wgpu's
+            # naga, gpui-component, mermaid-rs-renderer, heic-decoder + its
+            # rav1d fork, …) is fetched with Nix's builtin git fetcher — pure
+            # without per-source hashes because the lock pins exact revs. An
+            # eventual nixpkgs submission would need explicit outputHashes
+            # instead (builtin fetchGit isn't allowed there).
+            allowBuiltinFetchGit = true;
           };
 
           nativeBuildInputs = with pkgs; [ pkg-config ];
