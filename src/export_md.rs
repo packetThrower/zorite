@@ -20,7 +20,11 @@
 //!   Pandoc-style attributes are more portable than any app dialect.
 //! - Referenced `images/…` and `pdf/…` files copy to same-named folders at
 //!   the export root, so relative references keep working.
-//! - Whiteboards are skipped (warned) — no portable format yet.
+//! - Whiteboards → JSON Canvas `.canvas` files (jsoncanvas.org, the reverse
+//!   of the canvas importer): boxes flatten to text cards, page cards become
+//!   file nodes pointing at the exported page, images become file nodes,
+//!   lines/arrows become edges when both ends land on nodes. Freehand strokes
+//!   and unanchored lines can't map and are counted in the summary.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -36,12 +40,14 @@ pub struct ExportPlan {
     pub warnings: Vec<String>,
     pub pages: usize,
     pub days: usize,
+    pub boards: usize,
 }
 
 /// Counts for the completion dialog.
 pub struct ExportSummary {
     pub pages: usize,
     pub days: usize,
+    pub boards: usize,
     pub assets: usize,
     pub warnings: Vec<String>,
 }
@@ -54,21 +60,19 @@ pub fn plan_export(pages: &[ExportPage]) -> ExportPlan {
         warnings: Vec::new(),
         pages: 0,
         days: 0,
+        boards: 0,
     };
 
     // Pass 1: assign every page a path, and build the link-rewrite map
     // (lowercased title → export link target). Journal days keep their date
-    // name; whiteboards are skipped; everything else maps `::` → folders with
-    // sanitized, case-insensitively uniquified segments.
+    // name; whiteboards become `.canvas` files; everything else maps `::` →
+    // folders with sanitized, case-insensitively uniquified segments.
     let mut used: HashSet<String> = HashSet::new(); // lowercased paths
     let mut targets: HashMap<String, String> = HashMap::new(); // title(lc) → link target
     let mut placed: Vec<(&ExportPage, PathBuf)> = Vec::new();
-    let mut whiteboards = 0usize;
     for page in pages {
-        if page.kind == "whiteboard" {
-            whiteboards += 1;
-            continue;
-        }
+        let board = page.kind == "whiteboard";
+        let ext = if board { "canvas" } else { "md" };
         let rel = if let Some(date) = &page.journal_date {
             PathBuf::from("journals").join(format!("{}.md", sanitize_segment(date)))
         } else {
@@ -82,30 +86,36 @@ pub fn plan_export(pages: &[ExportPage]) -> ExportPlan {
                 segs.push("untitled".into());
             }
             let mut rel: PathBuf = segs.iter().take(segs.len() - 1).collect();
-            rel.push(format!("{}.md", segs.last().expect("non-empty")));
+            rel.push(format!("{}.{ext}", segs.last().expect("non-empty")));
             rel
         };
         let rel = uniquify(rel, &mut used);
-        // The link target: the path without `.md`, `/`-separated.
-        let target = rel
-            .with_extension("")
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
+        // The link target: `.md` drops its extension; a `.canvas` keeps it
+        // (that's how canvas files are wiki-linked).
+        let target = if board {
+            rel.to_string_lossy().replace('\\', "/")
+        } else {
+            rel.with_extension("")
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        };
         targets.insert(page.title.to_lowercase(), target);
         placed.push((page, rel));
     }
-    if whiteboards > 0 {
-        plan.warnings.push(format!(
-            "{whiteboards} whiteboard{} skipped — no portable whiteboard format yet",
-            if whiteboards == 1 { "" } else { "s" }
-        ));
-    }
 
-    // Pass 2: emit each file — frontmatter aliases + link-rewritten body —
-    // and collect its asset references.
+    // Pass 2: emit each file — markdown pages get frontmatter aliases + a
+    // link-rewritten body; whiteboards convert to JSON Canvas.
+    let mut board_stats = BoardStats::default();
     for (page, rel) in placed {
+        if page.kind == "whiteboard" {
+            let scene = gpui_whiteboard::Scene::from_json(&page.content);
+            let json = board_to_canvas(&scene, &targets, &mut board_stats, &mut plan.assets);
+            plan.boards += 1;
+            plan.files.push((rel, json));
+            continue;
+        }
         let body = rewrite_links(&page.content, &targets);
         collect_assets(&page.content, &mut plan.assets);
         let text = if page.aliases.is_empty() {
@@ -125,6 +135,7 @@ pub fn plan_export(pages: &[ExportPage]) -> ExportPlan {
         }
         plan.files.push((rel, text));
     }
+    board_stats.warn_into(&mut plan.warnings);
     plan
 }
 
@@ -171,9 +182,216 @@ pub fn write_export(
     Ok(ExportSummary {
         pages: plan.pages,
         days: plan.days,
+        boards: plan.boards,
         assets: copied,
         warnings,
     })
+}
+
+/// Cross-board counters for the summary — one warning line per degradation
+/// kind, not one per element.
+#[derive(Default)]
+struct BoardStats {
+    strokes: usize,
+    unanchored: usize,
+    missing_cards: usize,
+}
+
+impl BoardStats {
+    fn warn_into(self, warnings: &mut Vec<String>) {
+        if self.strokes > 0 {
+            warnings.push(format!(
+                "{} freehand stroke{} skipped — canvas files have no freehand",
+                self.strokes,
+                if self.strokes == 1 { "" } else { "s" }
+            ));
+        }
+        if self.unanchored > 0 {
+            warnings.push(format!(
+                "{} line{} not connecting two cards skipped (canvas edges need endpoints)",
+                self.unanchored,
+                if self.unanchored == 1 { "" } else { "s" }
+            ));
+        }
+        if self.missing_cards > 0 {
+            warnings.push(format!(
+                "{} page card{} pointing at a deleted page exported as text",
+                self.missing_cards,
+                if self.missing_cards == 1 { "" } else { "s" }
+            ));
+        }
+    }
+}
+
+/// A whiteboard [`Scene`] → a JSON Canvas document (jsoncanvas.org) — the
+/// reverse of the canvas importer. Canvas has no shapes: every box-like
+/// element flattens to a text card at its position (label as the text, stroke
+/// color kept as `#RRGGBB`); page cards become `file` nodes pointing at the
+/// exported page; images become `file` nodes (asset copied); lines and arrows
+/// become edges when both endpoints land on (or within 24 px of) a node.
+fn board_to_canvas(
+    scene: &gpui_whiteboard::Scene,
+    targets: &HashMap<String, String>,
+    stats: &mut BoardStats,
+    assets: &mut BTreeSet<String>,
+) -> String {
+    use gpui_whiteboard::ElementKind as K;
+    use serde_json::json;
+
+    let id_of = |id: u64| format!("{id:016x}");
+    let color_of = |stroke: Option<u32>| stroke.map(|c| format!("#{:06X}", c >> 8));
+
+    // Pass 1: nodes, remembering each node's bounds for edge anchoring.
+    let mut nodes = Vec::new();
+    let mut bounds: Vec<(String, f32, f32, f32, f32)> = Vec::new();
+    for el in &scene.elements {
+        let id = id_of(el.id);
+        let mut push = |node: serde_json::Value, b: (f32, f32, f32, f32)| {
+            nodes.push(node);
+            bounds.push((id.clone(), b.0, b.1, b.2, b.3));
+        };
+        match &el.kind {
+            K::Rect(b)
+            | K::Ellipse(b)
+            | K::Diamond(b)
+            | K::Triangle(b)
+            | K::RoundRect(b)
+            | K::Star(b)
+            | K::Hexagon(b) => {
+                let mut node = json!({
+                    "id": id, "type": "text",
+                    "text": el.label.clone().unwrap_or_default(),
+                    "x": b.x, "y": b.y, "width": b.w, "height": b.h,
+                });
+                if let Some(c) = color_of(el.stroke) {
+                    node["color"] = json!(c);
+                }
+                push(node, (b.x, b.y, b.w, b.h));
+            }
+            K::Text(t) => {
+                // The measured extent is a render-time cache; a never-painted
+                // board falls back to a size-based estimate.
+                let w = if t.measured_w > 0.0 {
+                    t.measured_w
+                } else {
+                    (t.content.len() as f32 * t.size * 0.55).clamp(80.0, 600.0)
+                };
+                let h = if t.measured_h > 0.0 {
+                    t.measured_h
+                } else {
+                    t.size * 1.5
+                };
+                let mut node = json!({
+                    "id": id, "type": "text", "text": t.content,
+                    "x": t.x, "y": t.y, "width": w, "height": h,
+                });
+                if let Some(c) = color_of(el.stroke) {
+                    node["color"] = json!(c);
+                }
+                push(node, (t.x, t.y, w, h));
+            }
+            K::Embed(e) => {
+                let node = match targets.get(&e.title.to_lowercase()) {
+                    // A card can point at another board — its target already
+                    // carries the `.canvas` extension.
+                    Some(path) => json!({
+                        "id": id, "type": "file",
+                        "file": if path.ends_with(".canvas") {
+                            path.clone()
+                        } else {
+                            format!("{path}.md")
+                        },
+                        "x": e.x, "y": e.y, "width": e.w, "height": e.h,
+                    }),
+                    None => {
+                        stats.missing_cards += 1;
+                        json!({
+                            "id": id, "type": "text", "text": e.title,
+                            "x": e.x, "y": e.y, "width": e.w, "height": e.h,
+                        })
+                    }
+                };
+                push(node, (e.x, e.y, e.w, e.h));
+            }
+            K::Image(img) => {
+                assets.insert(img.src.clone());
+                let node = json!({
+                    "id": id, "type": "file", "file": img.src,
+                    "x": img.x, "y": img.y, "width": img.w, "height": img.h,
+                });
+                push(node, (img.x, img.y, img.w, img.h));
+            }
+            K::Draw(_) => stats.strokes += 1,
+            K::Line(_) | K::Arrow(_) => {} // pass 2
+        }
+    }
+
+    // Pass 2: edges from lines/arrows whose endpoints land on nodes.
+    let mut edges = Vec::new();
+    for el in &scene.elements {
+        let (seg, arrow) = match &el.kind {
+            K::Line(s) => (s, false),
+            K::Arrow(s) => (s, true),
+            _ => continue,
+        };
+        let (Some((from, from_side)), Some((to, to_side))) = (
+            anchor_node(&bounds, seg.x1, seg.y1),
+            anchor_node(&bounds, seg.x2, seg.y2),
+        ) else {
+            stats.unanchored += 1;
+            continue;
+        };
+        if from == to {
+            stats.unanchored += 1;
+            continue;
+        }
+        let mut edge = json!({
+            "id": id_of(el.id),
+            "fromNode": from, "fromSide": from_side,
+            "toNode": to, "toSide": to_side,
+        });
+        if !arrow {
+            edge["toEnd"] = json!("none");
+        }
+        edges.push(edge);
+    }
+
+    serde_json::to_string_pretty(&json!({ "nodes": nodes, "edges": edges }))
+        .unwrap_or_else(|_| "{\"nodes\":[],\"edges\":[]}".into())
+}
+
+/// The node an endpoint attaches to: inside (or within 24 px of) its bounds,
+/// nearest center wins; the side is whichever edge the endpoint leans toward.
+fn anchor_node(
+    bounds: &[(String, f32, f32, f32, f32)],
+    px: f32,
+    py: f32,
+) -> Option<(String, &'static str)> {
+    const SNAP: f32 = 24.0;
+    let mut best: Option<(&String, f32, f32, f32, f32, f32)> = None; // id, dist², x,y,w,h
+    for (id, x, y, w, h) in bounds {
+        if px < x - SNAP || px > x + w + SNAP || py < y - SNAP || py > y + h + SNAP {
+            continue;
+        }
+        let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+        let d = (px - cx).powi(2) + (py - cy).powi(2);
+        if best.is_none_or(|(_, bd, ..)| d < bd) {
+            best = Some((id, d, *x, *y, *w, *h));
+        }
+    }
+    let (id, _, x, y, w, h) = best?;
+    let (dx, dy) = (
+        (px - (x + w / 2.0)) / (w / 2.0).max(1.0),
+        (py - (y + h / 2.0)) / (h / 2.0).max(1.0),
+    );
+    let side = if dx.abs() > dy.abs() {
+        if dx < 0.0 { "left" } else { "right" }
+    } else if dy < 0.0 {
+        "top"
+    } else {
+        "bottom"
+    };
+    Some((id.clone(), side))
 }
 
 /// Rewrite `[[target]]` / `![[target]]` page targets to their export paths
@@ -412,7 +630,7 @@ mod tests {
             chicken
                 .starts_with("---\naliases:\n  - \"hen\"\n  - \"a \\\"quoted\\\" bird\"\n---\n\n")
         );
-        assert!(plan.warnings.iter().any(|w| w.contains("whiteboard")));
+        assert!(paths.contains(&"Board.canvas".to_string()), "{paths:?}");
     }
 
     #[test]
@@ -476,6 +694,155 @@ mod tests {
             .unwrap()
             .content;
         assert!(tasks.contains("^t1"), "block id survives: {tasks}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn boards_export_as_json_canvas() {
+        use gpui_whiteboard::{
+            BoxGeom, Element, ElementKind, EmbedGeom, ImageGeom, Scene, SegGeom, Stroke, TextGeom,
+        };
+        let el = |id: u64, kind: ElementKind| Element {
+            id,
+            kind,
+            stroke: Some(0x33CC33FF),
+            fill: None,
+            label: None,
+            label_color: None,
+            styles: Vec::new(),
+        };
+        let mut labeled = el(
+            1,
+            ElementKind::RoundRect(BoxGeom {
+                x: 0.0,
+                y: 0.0,
+                w: 200.0,
+                h: 100.0,
+                width: 2.0,
+                rotation: 0.0,
+            }),
+        );
+        labeled.label = Some("hello box".into());
+        let scene = Scene {
+            camera: Default::default(),
+            elements: vec![
+                labeled,
+                el(
+                    2,
+                    ElementKind::Embed(EmbedGeom {
+                        page_id: 1,
+                        title: "Projects::Tasks".into(),
+                        x: 400.0,
+                        y: 0.0,
+                        w: 200.0,
+                        h: 100.0,
+                    }),
+                ),
+                el(
+                    3,
+                    ElementKind::Image(ImageGeom {
+                        src: "images/pic.png".into(),
+                        x: 0.0,
+                        y: 300.0,
+                        w: 100.0,
+                        h: 100.0,
+                        rotation: 0.0,
+                    }),
+                ),
+                // Arrow from the box's right edge to the card's left edge.
+                el(
+                    4,
+                    ElementKind::Arrow(SegGeom {
+                        x1: 205.0,
+                        y1: 50.0,
+                        x2: 395.0,
+                        y2: 50.0,
+                        width: 2.0,
+                    }),
+                ),
+                // A line into empty space: unanchored, skipped + counted.
+                el(
+                    5,
+                    ElementKind::Line(SegGeom {
+                        x1: 1000.0,
+                        y1: 1000.0,
+                        x2: 1200.0,
+                        y2: 1000.0,
+                        width: 2.0,
+                    }),
+                ),
+                // Freehand: no canvas equivalent.
+                el(
+                    6,
+                    ElementKind::Draw(Stroke {
+                        points: vec![[0.0, 0.0], [10.0, 10.0]],
+                        width: 2.0,
+                    }),
+                ),
+                el(
+                    7,
+                    ElementKind::Text(TextGeom {
+                        x: 0.0,
+                        y: 500.0,
+                        content: "free text".into(),
+                        size: 16.0,
+                        rotation: 0.0,
+                        measured_w: 0.0,
+                        measured_h: 0.0,
+                    }),
+                ),
+            ],
+        };
+        let board = ExportPage {
+            title: "Test Board".into(),
+            content: scene.to_json(),
+            journal_date: None,
+            kind: "whiteboard".into(),
+            aliases: Vec::new(),
+        };
+        let pages = vec![board, page("Projects::Tasks", "the tasks")];
+        let plan = plan_export(&pages);
+        assert_eq!(plan.boards, 1);
+        let canvas = &plan
+            .files
+            .iter()
+            .find(|(p, _)| p.to_string_lossy() == "Test Board.canvas")
+            .expect("canvas file")
+            .1;
+        let v: serde_json::Value = serde_json::from_str(canvas).unwrap();
+        let nodes = v["nodes"].as_array().unwrap();
+        let edges = v["edges"].as_array().unwrap();
+        assert_eq!(nodes.len(), 4, "{canvas}");
+        assert!(
+            nodes
+                .iter()
+                .any(|n| n["text"] == "hello box" && n["color"] == "#33CC33")
+        );
+        assert!(nodes.iter().any(|n| n["file"] == "Projects/Tasks.md"));
+        assert!(nodes.iter().any(|n| n["file"] == "images/pic.png"));
+        assert!(nodes.iter().any(|n| n["text"] == "free text"));
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["fromSide"], "right");
+        assert_eq!(edges[0]["toSide"], "left");
+        assert!(edges[0].get("toEnd").is_none(), "arrow keeps its head");
+        assert!(plan.assets.contains("images/pic.png"));
+        assert!(plan.warnings.iter().any(|w| w.contains("freehand")));
+        assert!(plan.warnings.iter().any(|w| w.contains("not connecting")));
+
+        // Round-trip: our canvas importer reads the exported board back.
+        let dir = std::env::temp_dir().join(format!("zorite-canvas-rt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_export(Path::new("/nonexistent"), &dir, plan_export(&pages)).unwrap();
+        let opts = crate::import::obsidian::Options { namespaces: true };
+        let bundle = crate::import::obsidian::read_vault(&dir, &opts).unwrap();
+        let wb = bundle
+            .whiteboards
+            .iter()
+            .find(|w| w.title == "Test Board")
+            .expect("board round-trips");
+        let scene = gpui_whiteboard::Scene::from_json(&wb.scene_json);
+        assert!(scene.elements.len() >= 4, "{}", wb.scene_json);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

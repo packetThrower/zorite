@@ -95,8 +95,6 @@ per-notebook settings sync.
 - [ ] Use small versions of components
 
 ## Import & export
-- [ ] Exporter follow-up: **whiteboards** — Scene → `.canvas` (reverse of the
-  canvas importer) so boards survive a round trip; skipped-and-warned today.
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
 - [ ] PDF: **fit-width / fit-page** zoom modes (zoom is free-scale only today)
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
@@ -216,7 +214,14 @@ Ideas worth keeping, not yet committed to.
   `{width=N}`, properties, callouts, block ids all pass through — no
   Obsidian-only conversions. Round-trip tested through our own Obsidian
   importer (`import(export(x)) ≈ x`); live-verified against a seeded coverage
-  page. Whiteboards skipped + warned (follow-up above).
+  page.
+- [x] **Whiteboards → `.canvas`** (2026-07-06) — the canvas importer's reverse:
+  box shapes flatten to text cards (stroke color kept), page cards → file
+  nodes at the exported note's path (board-to-board cards keep `.canvas`),
+  images → file nodes (assets copied), lines/arrows → edges anchored to the
+  nearest node side (24 px snap; arrowheads honored via `toEnd`). Freehand
+  strokes and unanchored lines are counted in the summary. Round-trip tested
+  back through `read_vault`.
 
 ### PDF forms (unreleased)
 - [x] **AcroForm display + filling** (2026-07-06, spike -> M1 -> M2 -> M3 in a day) —

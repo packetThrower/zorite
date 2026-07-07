@@ -7134,9 +7134,11 @@ impl AppView {
             match &result {
                 Ok(s) => {
                     let mut lines = vec![format!(
-                        "{} pages, {} journal days, and {} asset file{} written.",
+                        "{} pages, {} journal days, {} whiteboard{}, and {} asset file{} written.",
                         s.pages,
                         s.days,
+                        s.boards,
+                        if s.boards == 1 { "" } else { "s" },
                         s.assets,
                         if s.assets == 1 { "" } else { "s" }
                     )];

@@ -18,8 +18,12 @@ log: <https://github.com/packetThrower/zorite/releases>.
   labels preserved, code fences untouched), journal days become
   `journals/YYYY-MM-DD.md`, aliases become YAML frontmatter, and referenced
   images/PDFs copy alongside. Tags, properties, callouts, block ids, and math
-  pass through as-is. The export only ever writes into an empty folder, and a
-  summary reports counts plus anything skipped (whiteboards, for now).
+  pass through as-is. **Whiteboards export too** — each becomes a JSON Canvas
+  `.canvas` file (the format Obsidian Canvas reads): shapes flatten to text
+  cards, page cards point at the exported note, images come along, and
+  arrows/lines between cards become edges (freehand strokes have no canvas
+  equivalent and are counted in the summary). The export only ever writes into
+  an empty folder, and a summary reports counts plus anything skipped.
 - **Fill PDF forms in the viewer** — AcroForm PDFs are now fillable: click a
   checkbox or radio to toggle it, click a text field for an in-place input
   seated under the field (Enter or click away saves, Esc cancels, Tab /

@@ -66,7 +66,7 @@ anything else that reads markdown files:
 | Page aliases | YAML frontmatter `aliases:` |
 | `#tags`, `key:: value` properties, callouts, `^block-ids`, math, mermaid | Unchanged — they're already portable |
 | Referenced images and PDFs | Copied to `images/` / `pdf/`, references untouched |
-| Whiteboards | Skipped for now (noted in the summary) |
+| Whiteboards | JSON Canvas `.canvas` files — shapes flatten to text cards, page cards and images become file nodes, connecting arrows become edges (freehand can't map and is counted) |
 
 The export **only writes into an empty folder** — it never merges into or
 overwrites an existing one — and finishes with a summary of what was written
