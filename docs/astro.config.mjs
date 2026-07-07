@@ -102,7 +102,13 @@ export default defineConfig({
 						{
 							label: 'Crates',
 							items: [
-								{ label: 'gpui-editor', slug: 'reference/crates/gpui-editor' },
+								{
+									label: 'gpui-editor',
+									items: [
+										{ label: 'Overview', slug: 'reference/crates/gpui-editor' },
+										{ label: 'API reference', slug: 'reference/crates/gpui-editor-api' },
+									],
+								},
 								{ label: 'gpui-markdown', slug: 'reference/crates/gpui-markdown' },
 								{
 									label: 'gpui-pdf',
