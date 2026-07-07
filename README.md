@@ -55,122 +55,90 @@ Developed in close collaboration with Claude (Anthropic).
 
 ## Highlights
 
-- **Daily journal feed** — an infinite, reverse-chronological stream of days
-  (today on top, older days lazy-loaded as you scroll). Each day is a single
-  Markdown document; click in (or right-click → **Edit**) to edit the raw text,
-  click away and it re-renders. No "filling out a form" feel — every line is just
-  editable text, and clicking the rendered page drops the caret where you clicked.
-- **`[[wiki-links]]`, `#tags`, and backlinks** — clickable in the rendered view,
-  they navigate to (and auto-create) pages and power a "Linked References" panel.
-  Name a page `Projects::Tasks` to nest it with `::`; the sidebar shows the
-  namespace tree, each page lists its sub-pages, and a child page carries a
-  clickable **breadcrumb** back up. Renaming a namespace **cascades** — children
-  and their `[[links]]` follow — and right-click → **New sub-page** starts a
-  page under it. A subdued `alias::` field takes alternate names, so `[[hen]]`
-  can resolve to your `chicken` page.
-- **Properties** — Obsidian/Logseq-style `key:: value` lines anywhere in a note
-  render as a clean two-column panel (a per-key icon, values with clickable
-  `#tag` / `[[link]]` pills) in both the reading view and the live editor —
-  click the panel to edit keys and values **in place**, with a dropdown of
-  every key you already use. A **Properties page** (All pages → Properties)
-  indexes every key across your notes: browse values and the pages carrying
-  them, override any key's icon, and rename a key everywhere at once.
-- **Block references, heading anchors & embeds** — end a line with
-  ` ^some-id` to give it an address, then link to it from anywhere with
-  `[[Note#^some-id]]`, or link straight to a heading with `[[Note#My Heading]]`
-  — clicking jumps to that line, and either link reads as `Note → anchor`. A
-  line holding just `![[Note]]` (or `![[Note#Heading]]` / `![[Note#^id]]`)
-  **transcludes** the target's content right there — a quoted box with a
-  clickable source label that live-updates as the source page changes, in both
-  views.
-- **All pages & a graph view** — an **All pages** browser (A–Z strip, kind
-  filters, created/updated columns) indexes every page, whiteboard, and PDF;
-  from it, a Logseq-style **graph view** lays out your pages and links as an
-  interactive map (drag, zoom, search, journal/orphan filters). The sidebar
-  calendar **dots the days that have entries**.
-- **Whiteboards** — a freeform infinite canvas alongside the text journal: a
-  freehand pen, shapes (rectangle, ellipse, line, arrow, diamond, triangle,
-  rounded-rectangle, star, hexagon), on-canvas text, dropped/pasted images, and
-  **page-card embeds** that link back to notes. Select/move/resize/rotate one
-  element or a group; per-element colour, fill, gradient, and opacity; z-order;
-  snap-to-grid; copy/paste across boards; and **reusable templates**. Boards are
-  first-class pages with their own sidebar section, searchable by title.
-- **`/` command palette** — a compact menu: pick **Markdown** (headings, lists,
-  to-dos, quotes, code blocks, **tables**, **math**, dividers, inline formatting) or
-  a **Template**, or insert the current date/time with `/date` / `/time`. Typing
-  filters across everything; click an item or press Enter to insert it.
-- **As-you-type completion** — `[[` suggests pages and whiteboards (and offers
-  to create one), `#` suggests tags, `{{` suggests template placeholders;
-  brackets and quotes auto-pair (prose-aware, so `don't` is left alone). An
-  opt-in **auto-link** setting wraps existing page titles as you type them.
-- **Edit in place** — tables behave like a small spreadsheet (arrow keys move
-  cell-to-cell keeping your column, Enter drops to the next row; hover or
-  right-click for row/column handles, alignment, and delete); lists and to-dos
-  continue on Enter and exit on an empty item; `⌘B` / `⌘I` / `⌘E` toggle bold,
-  italic, and inline code; and to-do checkboxes toggle with a click.
-- **Full-text search**, **type-aware** — a trigram FTS5 index over titles and
-  content, with results that also include the PDF and image *files* and the
-  whiteboards referenced in your notes. Filter by a `pdf:` / `img:` / `wb:` /
-  `page:` prefix or a results-pane chip (each with a live count).
-- **Password & encryption** — optionally encrypt the whole database with a
-  password (SQLCipher, AES-256): an unlock screen at launch, **Remember on this
-  device** via the OS keychain, idle **auto-lock**, and a Lock now action. The
-  password itself is never stored; without it the file on disk is unreadable.
-- **Tabs & multiple windows** — open pages, PDFs, and boards in tabs (the journal
-  is the pinned first tab). **Drag a tab** to reorder it, drop it on another
-  window to move it there, or release it on empty space to **tear it off into a
-  new window**. Every window is independent and edits **sync live** across all of
-  them.
-- **Inline images** — `![](path-or-url)` images render for real (now including
-  **HEIC/HEIF and AVIF** — iPhone photos); identical imports are **deduped**, and
-  Settings can sweep **unused images** to the trash; **paste** or **drag-and-drop** a file
-  to add one (copied into the data dir's `images/`), and drag the corner handle to
-  resize (saved as `{width=N}`). An image **mid-sentence** flows with the text
-  as a small thumbnail — click it for a full-size preview.
-- **PDF viewer** — link a PDF with `[[file.pdf]]` / `![](file.pdf)` or drop one
-  onto a note to open it in a dedicated **page-virtualized** viewer tab (only
-  pages near the viewport are rasterized; scrolled-away pages free their memory
-  *and* GPU texture, so an 800-page document stays light). Zoom, page navigation,
-  DPI-aware rendering, a TOC, **drag-to-highlight** markup with note↔PDF jump
-  links, and **password-protected** PDFs (RC4 / AES). Pure-Rust
-  [`hayro`](https://crates.io/crates/hayro), no native dependencies — the
-  reusable [`gpui-pdf`](crates/gpui-pdf/README.md) crate.
-- **Markdown rendering** — CommonMark + GFM (headings, bold/italic/code, lists,
-  quotes, tables, strikethrough, `<mark>` highlights), **GitHub alerts**
-  (`> [!NOTE]` … `[!CAUTION]`, themeable colors + icons — Obsidian's
-  **foldable** `> [!NOTE]-` form collapses to its title), **collapsible
-  headings** (hover a heading → a chevron folds its whole section),
-  **syntax-highlighted code blocks** (tree-sitter, ~20 languages), and
-  **Mermaid diagrams** (flowchart / sequence / class, rendered pure-Rust and
-  themed to your skin; click one to expand it) — via the
-  [`gpui-markdown`](crates/gpui-markdown/README.md)
-  crate. **Find in page** searches the rendered text with highlight and count.
-- **Export to PDF** — right-click a tab or sidebar page, or press
-  `⌘P` / `Ctrl+P` for the active tab: a native save dialog, then a real PDF —
-  wrapped styled text, tables, images, alerts, typeset math, and mermaid
-  diagrams (pure-Rust `oxidize-pdf`; no browser, no native deps).
-- **Math** — write LaTeX inline (`$…$`) or as display blocks (`$$…$$`); both
-  typeset to crisp formulas (KaTeX-grade coverage). Click or arrow into one for a
-  **2-D structural editor** — edit fractions, roots, matrices, and ~100 symbols
-  *visually* via a palette + `\command` autocomplete (MathQuill / Casio-Natural-Display
-  style, not by hand-editing LaTeX). Per-formula left/center/right alignment, plus a
-  right-click menu to **copy LaTeX** or **export PNG / SVG** — via the reusable
-  [`ratex-gpui`](crates/ratex-gpui/README.md) crate.
-- **Import from Obsidian or Logseq** — `File → Import from Obsidian…` reads a
-  vault: folders become `::` namespaces (or flatten, your choice), links and
-  aliases resolve, callouts map to alerts, frontmatter feeds
-  aliases/tags/properties, daily notes become journal days, and block ids,
-  anchors, and `![[embeds]]` come across **as-is** — plus **`.canvas` boards →
-  native whiteboards**. `File → Import from Logseq…` brings in a graph's
-  pages, journals, and assets (namespaces, tasks, properties, aliases, embeds,
-  block-refs, and `hls__*` PDF-highlight pages all handled), plus its
-  **whiteboards** (tldraw boards → native Zorite boards, images and all) and
-  **favorites**.
-- **Sidebar** — collapses to a slim icon rail; a **Favorites** group (right-click
-  a page → *Add to favorites*), a calendar that jumps to any date, collapsible
-  sections, and a recently-viewed page tree with namespace nesting.
-- **Local SQLite** storage for notes; images and PDFs live beside it as files.
-  Everything stays on your machine.
+**At a glance** — an infinite daily-journal feed with Word-like, live-preview
+Markdown editing · `[[wiki-links]]`, backlinks, and a graph view · Obsidian-style
+properties, block references, and embeds · freeform whiteboards · a PDF viewer
+with highlights and **fillable forms** · typeset LaTeX math with a visual editor ·
+instant full-text search · optional whole-database encryption · everything in one
+local SQLite file, no cloud, no account.
+
+### Write
+
+- **A journal that edits like a document** — days stream newest-first, every line
+  is just text, and clicking anywhere drops the caret there. Live-preview
+  Markdown: markers hide until the caret lands on them.
+- **CommonMark + GFM and then some** — tables edited cell-by-cell like a small
+  spreadsheet, GitHub alerts (including Obsidian's foldable `> [!NOTE]-`),
+  **collapsible headings**, syntax-highlighted code, and Mermaid diagrams
+  rendered pure-Rust and themed to your skin.
+- **`/` palette & templates** — insert any construct or your own `{{date}}`-style
+  templates; `/date`, `/time`, and a table size picker included.
+- **Completion that stays out of the way** — `[[` suggests pages, `#` tags,
+  `{{` placeholders; brackets auto-pair prose-safely; an opt-in auto-linker wraps
+  existing page titles as you type.
+- **Math for real** — inline `$…$` and display `$$…$$` typeset crisply; click in
+  to edit fractions, roots, and matrices **visually** (MathQuill-style), with
+  copy-LaTeX and PNG/SVG export.
+
+*Details: [Journal & pages](https://packetthrower.github.io/zorite/usage/journal/)
+· [Math](https://packetthrower.github.io/zorite/usage/math/)*
+
+### Link & organize
+
+- **`[[wiki-links]]`, `#tags`, backlinks** — links auto-create pages, every page
+  lists what references it (plus unlinked mentions, one click to link), and
+  `Projects::Tasks` naming builds a namespace tree with cascade renames.
+- **Block references & embeds** — address any line with ` ^id`, link to it (or to
+  a heading) from anywhere, and transclude whole notes, sections, or blocks with
+  `![[Note]]` — live-updating, in both views.
+- **Properties** — `key:: value` lines render as tidy panels with icons and
+  clickable pills, edit in place, and roll up into a vault-wide Properties index.
+- **See everything** — an All-pages browser, a force-directed **graph view**, a
+  calendar dotted with entries, favorites, and tabs you can tear into
+  independent, live-syncing windows.
+
+*Details: [Journal & pages](https://packetthrower.github.io/zorite/usage/journal/)
+· [All pages & the graph](https://packetthrower.github.io/zorite/usage/navigate/)*
+
+### Files, PDFs & whiteboards
+
+- **Images just work** — paste or drop them in (HEIC/AVIF included), drag a corner
+  to resize, mid-sentence images flow as thumbnails, duplicates dedupe, and a
+  sweeper clears unused files.
+- **A real PDF viewer** — page-virtualized (800 pages stay light), with a TOC,
+  drag-to-highlight markup that links back to your notes, find-in-PDF, password
+  support — and **AcroForm filling**: click checkboxes, type into fields, Tab
+  through the form; saved files render correctly everywhere.
+- **Export any note to PDF** — `⌘P` produces a real, styled PDF (tables, images,
+  math, diagrams), pure-Rust, no browser.
+- **Whiteboards** — infinite pan/zoom canvases with shapes, arrows, freehand,
+  images, rich text, templates, and page-cards linking back to notes.
+
+*Details: [PDF & images](https://packetthrower.github.io/zorite/usage/pdf/)
+· [Whiteboards](https://packetthrower.github.io/zorite/usage/whiteboards/)*
+
+### Find
+
+- **Search everything, instantly** — a trigram full-text index answers per
+  keystroke at 50,000 pages; results are **type-aware** (pages, PDFs, images,
+  whiteboards, with filter chips), and `⌘F` finds within the rendered page.
+
+*Details: [Search](https://packetthrower.github.io/zorite/usage/search/)*
+
+### Yours
+
+- **Private by construction** — notes live in one local SQLite file (images and
+  PDFs beside it); optionally encrypt the whole database (SQLCipher, AES-256)
+  with an unlock screen, keychain remember, and idle auto-lock.
+- **Bring your notes** — importers for **Obsidian** (vault, links, properties,
+  callouts, canvas boards) and **Logseq** (graph, whiteboards, PDF highlights)
+  land everything as working notes, non-destructively.
+- **Make it look right** — built-in and JSON-file themes, light/dark/auto, any
+  font (installed or imported), and a 14–20 px text-size dial.
+
+*Details: [Password & encryption](https://packetthrower.github.io/zorite/usage/security/)
+· [Import your notes](https://packetthrower.github.io/zorite/usage/import/)
+· [Themes](https://packetthrower.github.io/zorite/customize/themes/)*
 
 ## Templates
 
