@@ -11,11 +11,20 @@ work is collected under [Completed](#completed) at the bottom.
 - [App & polish](#app--polish)
 - [Settings window](#settings-window)
 - [Import & export](#import--export)
-- [gpui-markdown crate](#gpui-markdown-crate)
+- [Crates](#crates)
 - [Completed](#completed)
 
 ## Notes & navigation
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
+- [ ] Block references: **"Copy block link"** — auto-generate a ` ^id` on a line
+  (right-click / command) and put `[[Page#^id]]` on the clipboard, so linking to
+  a block doesn't require inventing an id by hand
+- [ ] Embeds: the box **height estimate undershoots** for image/math/mermaid-heavy
+  content (it's a line-count heuristic — `ensure_content_embeds`), so those boxes
+  scroll more than they should; measure or estimate rendered heights instead
+- [ ] Properties: **typed values** (list / date / number) — today every value is
+  text; types would enable sorting/filtering on the Properties page and smarter
+  pills
 
 ## Notebooks (multiple data folders)
 
@@ -91,9 +100,31 @@ per-notebook settings sync.
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
 - [ ] PDF: **graceful fallback for unsupported files** — encrypted PDFs now open behind a password prompt (RC4 / AES-128 / AES-256), but hayro can still fail on an *unsupported* encryption algorithm (e.g. a public-key / certificate handler) or exotic transparency / blend modes; on such a load/parse failure, show an "Open in default app" affordance (hand off to the OS viewer) instead of a blank pane
+- [ ] PDF: **a failed load is silent and permanent** (found in the 2026-07-06 API audit) — an unreadable file or malformed PDF only `log::error!`s and `PdfView` sits on the "Loading PDF…" placeholder forever, with no error state, event, or retry; and a retry-unlock failing with `LoadError::Other` (e.g. unsupported encryption discovered at unlock time) is logged but **eventless**, so the password prompt gets no signal. Both want an explicit error state + `PdfEvent`; overlaps with the graceful-fallback item above
+- [ ] PDF: `is_pdf` misses query-string refs (`report.pdf?v=2`) — it only checks `ends_with(".pdf")` after trimming trailing whitespace (API audit)
 - [ ] PDF: **AcroForm + annotations** — no pure-Rust crate does a full interactive forms/annotation engine. Heavy options reintroduce a native dep: `pdfium-render` (PDFium — full forms/annotations/render, permissive license) or `mupdf-rs` (full, but AGPL + native). Pure-Rust path: a targeted subset on `lopdf` — read `/AcroForm /Fields`, fill text fields/checkboxes via `/V` (+ `/NeedAppearances`), and render existing annotation appearance streams (`/AP /N`, which are XObjects hayro may already rasterize). First check whether hayro already composites `/AP` streams
 
-## gpui-markdown crate
+## Crates
+Crate-internal defects and API hygiene, mostly surfaced by the 2026-07-06
+public-API audit (every crate now carries a complete `API.md`; these are the
+findings worth fixing rather than just documenting):
+- [ ] `ratex-gpui`: **duplicate `"angle"` command** in the `input.rs` `COMMANDS`
+  table — the ⟨⟩ delimiter pair shadows the `\angle` symbol entry (first-match
+  lookup), so the symbol is unreachable by name; rename one (e.g. `langle`
+  `rangle` for the delimiters, matching LaTeX)
+- [ ] `ratex-gpui`: `MathEditor` rasterizes at a **hard-coded `dpr: 2.0`**
+  (`view.rs` `with_root`) instead of the window's scale factor — slightly soft
+  on 1× displays, wasteful on 3×
+- [ ] `os-spellcheck`: the Windows backend creates its checker for a
+  **hardcoded `en-US`** — follow the system UI language
+  (`GetUserDefaultLocaleName`), falling back gracefully when unsupported
+- [ ] `gpui-whiteboard`: `Font::layout_wrapped` / `layout_styled` are `pub` but
+  return **crate-private types** (unnameable outside — `layout_styled` is
+  effectively uncallable externally); demote to `pub(crate)` or export the types
+- [ ] `gpui-whiteboard`: the `PasteFn` doc comment in `lib.rs` says keyboard ⌘V
+  is handled internally, but ⌘V actually routes through `on_paste` (with `None`
+  deliberately propagating so a clipboard image can paste) — fix the comment to
+  match `API.md`
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize
 - [ ] Publish to crates.io once the API is stable
 - [ ] **Split the reusable crates (`gpui-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: the crates use the workspace's pinned gpui rev (`[workspace.dependencies]`, one spec byte-for-byte); in separate repos each picks its own rev, and a mismatch puts two gpui versions in one consumer's build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
