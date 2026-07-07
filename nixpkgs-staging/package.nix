@@ -9,7 +9,9 @@
   vulkan-loader,
   fontconfig,
   freetype,
-  xorg,
+  libx11,
+  libxcb,
+  xcbutil,
   nix-update-script,
 }:
 
@@ -39,9 +41,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
     libxkbcommon
     fontconfig
     freetype
-    xorg.libX11
-    xorg.libxcb
-    xorg.xcbutil
+    libx11
+    libxcb
+    xcbutil
   ];
 
   postFixup = ''
