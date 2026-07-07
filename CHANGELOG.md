@@ -11,12 +11,16 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
-- **PDF forms display correctly** — AcroForm PDFs now show what they carry:
-  filled text-field values render even when the file left drawing to the
-  viewer (the `NeedAppearances` case), and checkboxes/radios show their
-  checked state (their state-dictionary appearances previously didn't draw at
-  all). Read-only for now — filling forms in the viewer is the planned
-  follow-up.
+- **Fill PDF forms in the viewer** — AcroForm PDFs are now fillable: click a
+  checkbox or radio to toggle it, click a text field for an in-place input
+  seated under the field (Enter or click away saves, Esc cancels, Tab /
+  Shift-Tab hops field to field, scrolling each into view). Edits write back
+  to the stored PDF with regenerated appearances, so the filled file renders
+  correctly in every other viewer too. Display also got honest: filled values
+  render even when the file left drawing to the viewer (the `NeedAppearances`
+  case), and checkboxes/radios show their checked state (their
+  state-dictionary appearances previously didn't draw at all). Signature and
+  read-only fields stay inert; choice fields edit as free text for now.
 
 ## [0.6.0] - 2026-07-06
 

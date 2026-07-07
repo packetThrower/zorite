@@ -35,10 +35,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, RenderImage,
-    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, img, point,
-    px,
+    AnyView, App, AppContext, Bounds, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Render,
+    RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla,
+    img, point, px,
 };
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
@@ -108,22 +108,36 @@ pub fn parse_with_password(
 }
 
 /// Everything [`PdfView`] needs to display a document: the parsed doc, per-page
-/// sizes, the outline, and per-page links.
-type Prepared = (
-    Arc<Document>,
-    Vec<(f32, f32)>,
-    Vec<OutlineItem>,
-    Vec<Vec<PdfLink>>,
-);
+/// sizes, the outline, per-page links — and, under `forms`, the form fields.
+struct Prepared {
+    doc: Arc<Document>,
+    dims: Vec<(f32, f32)>,
+    toc: Vec<OutlineItem>,
+    links: Vec<Vec<PdfLink>>,
+    /// Enumerated from the ORIGINAL bytes (not the display-normalized ones), so
+    /// values/rects match what [`set_form_value`] will rewrite on disk.
+    #[cfg(feature = "forms")]
+    fields: Vec<FormField>,
+}
 
 /// Parse `bytes` with `password` and measure it — the off-thread half of a load,
-/// shared by the initial open and a password [`PdfView::unlock`].
+/// shared by the initial open, a password [`PdfView::unlock`], and
+/// [`PdfView::replace_bytes`].
 fn prepare(bytes: Arc<Vec<u8>>, password: &str) -> Result<Prepared, LoadError> {
+    #[cfg(feature = "forms")]
+    let fields = form_fields(&bytes);
     let doc = parse_with_password(bytes, password)?;
     let dims = page_dims(&doc);
     let toc = crate::outline::outline(&doc);
     let links = crate::outline::page_links(&doc);
-    Ok((doc, dims, toc, links))
+    Ok(Prepared {
+        doc,
+        dims,
+        toc,
+        links,
+        #[cfg(feature = "forms")]
+        fields,
+    })
 }
 
 /// Each page's `(width, height)` in points — cheap to read (no rasterization), so a
@@ -435,6 +449,16 @@ struct SearchMatch {
 /// re-render. (Fired only on these transitions, not on every redraw.)
 pub enum PdfEvent {
     LockChanged,
+    /// A form-field widget was clicked (`forms` feature): the field's
+    /// description and its current window-space bounds — everything a host
+    /// needs to toggle a checkbox or seat a text input right over the widget,
+    /// write through [`set_form_value`], persist, and call
+    /// [`PdfView::replace_bytes`].
+    #[cfg(feature = "forms")]
+    FieldClicked {
+        field: FormField,
+        bounds: Bounds<Pixels>,
+    },
 }
 
 /// Construct with [`PdfView::new`] inside `cx.new`; it loads and measures the file
@@ -489,6 +513,11 @@ pub struct PdfView {
     /// Per-page clickable link annotations (internal page jumps + external URIs),
     /// extracted once on load. Overlaid as transparent click targets on each page.
     links: Vec<Vec<PdfLink>>,
+    /// Form-field widgets (`forms` feature), enumerated on load from the
+    /// original bytes. Overlaid like `links`; a click emits
+    /// [`PdfEvent::FieldClicked`].
+    #[cfg(feature = "forms")]
+    form_fields: Vec<FormField>,
     /// Highlights to draw (markup), provided by the host.
     #[cfg(feature = "markup")]
     highlights: Vec<Highlight>,
@@ -572,7 +601,7 @@ impl PdfView {
             let _ = this.update(cx, |this, cx| {
                 this.bytes = Some(bytes);
                 match prepared {
-                    Ok((doc, dims, toc, links)) => this.install_document(doc, dims, toc, links, cx),
+                    Ok(p) => this.install_document(p, cx),
                     // Encrypted: hold for the host to prompt + call `unlock`.
                     Err(LoadError::Locked) => {
                         this.locked = true;
@@ -607,6 +636,8 @@ impl PdfView {
             outline: Vec::new(),
             toc_open: false,
             links: Vec::new(),
+            #[cfg(feature = "forms")]
+            form_fields: Vec::new(),
             #[cfg(feature = "markup")]
             highlights: Vec::new(),
             #[cfg(feature = "markup")]
@@ -643,23 +674,39 @@ impl PdfView {
     }
 
     /// Store a freshly parsed document + its measurements and clear the lock — the
-    /// shared tail of the initial load and a successful [`PdfView::unlock`].
-    fn install_document(
-        &mut self,
-        doc: Arc<Document>,
-        dims: Vec<(f32, f32)>,
-        toc: Vec<OutlineItem>,
-        links: Vec<Vec<PdfLink>>,
-        cx: &mut Context<Self>,
-    ) {
-        let n = dims.len();
-        self.pdf = Some(doc);
-        self.dims = dims;
-        self.outline = toc;
-        self.links = links;
-        // Every page gets an empty slot; the next render's `ensure_window`
-        // rasterizes the visible window.
-        self.pages = vec![Slot::default(); n];
+    /// shared tail of the initial load, a successful [`PdfView::unlock`], and
+    /// [`PdfView::replace_bytes`].
+    fn install_document(&mut self, prepared: Prepared, cx: &mut Context<Self>) {
+        let n = prepared.dims.len();
+        self.pdf = Some(prepared.doc);
+        self.dims = prepared.dims;
+        self.outline = prepared.toc;
+        self.links = prepared.links;
+        #[cfg(feature = "forms")]
+        {
+            self.form_fields = prepared.fields;
+        }
+        // Page slots: on the initial load, empty ones (the next render's
+        // `ensure_window` rasterizes the visible window). On a replace_bytes
+        // reload, KEEP the old bitmaps and bump the generation instead — the
+        // stale page paints until its crisp replacement lands, the same
+        // no-blanking swap zoom and quality changes use (blanking every slot
+        // flashed the whole viewer black on each form-field write).
+        if self.pages.len() == n {
+            self.generation += 1;
+            for slot in &mut self.pages {
+                slot.loading = false;
+            }
+        } else {
+            for slot in std::mem::replace(&mut self.pages, vec![Slot::default(); n]) {
+                if let Some(arc) = slot.image {
+                    self.pending_drops.push(arc);
+                }
+            }
+        }
+        // Stale text layers would locate highlights against the old bytes.
+        #[cfg(feature = "markup")]
+        self.page_text.clear();
         self.locked = false;
         self.unlock_failed = false;
         cx.emit(PdfEvent::LockChanged);
@@ -669,6 +716,104 @@ impl PdfView {
         if let Some(p) = self.pending_reveal.take() {
             self.reveal_highlight(p, cx);
         }
+    }
+
+    /// A field's window-space bounds right now, from its page-normalized rect
+    /// — the inverse of `point_to_page`'s mapping (`bounds_for_item` is in the
+    /// scroll element's unscrolled frame; y shifts by the scroll offset).
+    /// `None` before the page has laid out. (`forms` feature.)
+    #[cfg(feature = "forms")]
+    fn field_screen_bounds(
+        &self,
+        page: usize,
+        nrect: (f32, f32, f32, f32),
+    ) -> Option<Bounds<Pixels>> {
+        let cb = self.scroll.bounds_for_item(page)?;
+        let (nx, ny, nw, nh) = nrect;
+        let w = f32::from(cb.size.width);
+        let h = f32::from(cb.size.height);
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        Some(Bounds::new(
+            point(
+                cb.origin.x + px(nx * w),
+                cb.origin.y + self.scroll.offset().y + px(ny * h),
+            ),
+            gpui::size(px(nw * w), px(nh * h)),
+        ))
+    }
+
+    /// The document's form fields, as enumerated at load — for a host driving
+    /// field-to-field navigation (Tab order is the enumeration order: page,
+    /// then document order). (`forms` feature.)
+    #[cfg(feature = "forms")]
+    pub fn form_fields(&self) -> &[FormField] {
+        &self.form_fields
+    }
+
+    /// Scroll so `field`'s widget is comfortably on-screen, then return its
+    /// fresh window-space bounds — what a host needs to seat an input on a
+    /// field reached by Tab rather than by click. `None` before layout.
+    /// (`forms` feature.)
+    #[cfg(feature = "forms")]
+    pub fn reveal_field(
+        &mut self,
+        field: &FormField,
+        cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let (pw, ph) = *self.dims.get(field.page)?;
+        if pw <= 0.0 || ph <= 0.0 {
+            return None;
+        }
+        let (x0, y0, x1, y1) = field.rect;
+        let nrect = (x0 / pw, 1.0 - y1 / ph, (x1 - x0) / pw, (y1 - y0) / ph);
+        let cb = self.scroll.bounds_for_item(field.page)?;
+        let vp = self.scroll.bounds();
+        // Window-space y of the field at the current offset (bounds_for_item is
+        // the unscrolled frame; window y = frame y + offset — see point_to_page).
+        let field_top = f32::from(cb.origin.y) + nrect.1 * f32::from(cb.size.height);
+        let field_h = nrect.3 * f32::from(cb.size.height);
+        let off = f32::from(self.scroll.offset().y);
+        let (vp_top, vp_bot) = (
+            f32::from(vp.origin.y),
+            f32::from(vp.origin.y) + f32::from(vp.size.height),
+        );
+        const MARGIN: f32 = 56.0;
+        let win_y = field_top + off;
+        let mut new_off = off;
+        if win_y < vp_top + MARGIN {
+            new_off = vp_top + MARGIN - field_top;
+        } else if win_y + field_h > vp_bot - MARGIN {
+            new_off = vp_bot - MARGIN - field_h - field_top;
+        }
+        let max = f32::from(self.scroll.max_offset().y);
+        let new_off = new_off.clamp(-max.max(0.0), 0.0);
+        if (new_off - off).abs() > 0.5 {
+            self.scroll
+                .set_offset(point(self.scroll.offset().x, px(new_off)));
+            cx.notify();
+        }
+        self.field_screen_bounds(field.page, nrect)
+    }
+
+    /// Swap in a new version of the document — e.g. after a form-field write
+    /// rewrote the file — keeping the scroll position, zoom, and view state.
+    /// Re-parses off-thread; pages re-render as they come back on screen.
+    pub fn replace_bytes(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
+        let bytes = Arc::new(bytes);
+        self.bytes = Some(bytes.clone());
+        cx.spawn(async move |this, cx| {
+            let prepared = cx
+                .background_executor()
+                .spawn(async move { prepare(bytes, "") })
+                .await;
+            let _ = this.update(cx, |this, cx| match prepared {
+                Ok(p) => this.install_document(p, cx),
+                Err(e) => log::error!("replace pdf bytes: {e:?}"),
+            });
+        })
+        .detach();
     }
 
     /// Whether the PDF is encrypted and awaiting a password — the host should show a
@@ -697,7 +842,7 @@ impl PdfView {
                 .spawn(async move { prepare(bytes, &password) })
                 .await;
             let _ = this.update(cx, |this, cx| match prepared {
-                Ok((doc, dims, toc, links)) => this.install_document(doc, dims, toc, links, cx),
+                Ok(p) => this.install_document(p, cx),
                 Err(LoadError::Locked) => {
                     this.unlock_failed = true;
                     cx.emit(PdfEvent::LockChanged);
@@ -1555,6 +1700,45 @@ impl Render for PdfView {
                             .on_click(cx.listener(move |this, _, _window, cx| match &target {
                                 LinkTarget::Page(p) => this.go_to_page(*p, cx),
                                 LinkTarget::Uri(u) => cx.open_url(u),
+                            })),
+                    );
+                }
+            }
+            // Form-field widgets (forms): transparent click targets like links,
+            // with a faint hover so a fillable field reads as interactive. A
+            // click emits FieldClicked with the widget's live window bounds —
+            // the host toggles/seats an input and writes via set_form_value.
+            #[cfg(feature = "forms")]
+            {
+                let (pw_pt, ph_pt) = self.dims[i];
+                for (fi, field) in self.form_fields.iter().enumerate() {
+                    if field.page != i || pw_pt <= 0.0 || ph_pt <= 0.0 {
+                        continue;
+                    }
+                    let (x0, y0, x1, y1) = field.rect;
+                    let (nx, ny) = (x0 / pw_pt, 1.0 - y1 / ph_pt);
+                    let (nw, nh) = ((x1 - x0) / pw_pt, (y1 - y0) / ph_pt);
+                    let f = field.clone();
+                    slot = slot.child(
+                        div()
+                            .id(SharedString::from(format!("pdf-field-{i}-{fi}")))
+                            .absolute()
+                            .left(px(nx * page_width))
+                            .top(px(ny * disp_h))
+                            .w(px(nw * page_width))
+                            .h(px(nh * disp_h))
+                            .rounded(px(2.0))
+                            .cursor_pointer()
+                            .hover(|h| h.bg(hsla(0.25, 0.8, 0.5, 0.12)))
+                            .on_click(cx.listener(move |this, _, _window, cx| {
+                                if let Some(bounds) =
+                                    this.field_screen_bounds(f.page, (nx, ny, nw, nh))
+                                {
+                                    cx.emit(PdfEvent::FieldClicked {
+                                        field: f.clone(),
+                                        bounds,
+                                    });
+                                }
                             })),
                     );
                 }

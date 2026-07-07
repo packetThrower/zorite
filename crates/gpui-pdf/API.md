@@ -21,6 +21,10 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`set_form_value`](#set_form_value) | fn | `forms` | `fn set_form_value(bytes: &[u8], name: &str, value: &str) -> Option<Vec<u8>>` | Write a field's value + regenerate its appearance |
 | [`FormField`](#struct-formfield) | struct | `forms` | — | One widget, described for a host UI |
 | [`FieldKind`](#enum-fieldkind) | enum | `forms` | `Text \| Checkbox \| Radio \| Choice \| Signature` | What input a field takes |
+| [`PdfView::form_fields`](#pdfviewform_fields) | method | `forms` | `fn form_fields(&self) -> &[FormField]` | The loaded document's fields (Tab order) |
+| [`PdfView::reveal_field`](#pdfviewreveal_field) | method | `forms` | `fn reveal_field(&mut self, field: &FormField, cx) -> Option<Bounds<Pixels>>` | Scroll a field on-screen, return its window bounds |
+| [`PdfView::replace_bytes`](#pdfviewreplace_bytes) | method | — | `fn replace_bytes(&mut self, bytes: Vec<u8>, cx)` | Hot-swap the document (scroll/zoom kept, no blanking) |
+| `PdfEvent::FieldClicked` | event variant | `forms` | `{ field: FormField, bounds: Bounds<Pixels> }` | A form widget was clicked — toggle or seat an input |
 | [`parse_with_password`](#parse_with_password) | fn | — | `fn parse_with_password(bytes: Arc<Vec<u8>>, password: &str) -> Result<Arc<Document>, LoadError>` | Parse an encrypted PDF |
 | [`page_dims`](#page_dims) | fn | — | `fn page_dims(doc: &Document) -> Vec<(f32, f32)>` | Per-page `(w, h)` in points, no rasterization |
 | [`render_page`](#render_page) | fn | — | `fn render_page(doc: &Document, idx: usize, scale: f32) -> Result<Arc<RenderImage>, String>` | Rasterize one page to a BGRA bitmap |
@@ -356,6 +360,54 @@ pub enum FieldKind { Text, Checkbox, Radio, Choice, Signature }
 What input a field takes. `Radio` is one widget of a group (same `name`,
 several widgets). `Signature` is display-only — [`set_form_value`](#set_form_value)
 refuses it. Pushbuttons never appear (no value to hold).
+
+---
+
+## `PdfView::form_fields`
+
+*Feature: `forms`.*
+
+```rust
+pub fn form_fields(&self) -> &[FormField]
+```
+
+The loaded document's form fields, enumerated at load from the original bytes
+(not the display-normalized ones) — for a host driving Tab navigation. The
+order is [`form_fields`](#form_fields)' page-then-document order. Empty before
+the load finishes and for form-free documents.
+
+---
+
+## `PdfView::reveal_field`
+
+*Feature: `forms`.*
+
+```rust
+pub fn reveal_field(&mut self, field: &FormField, cx: &mut Context<Self>) -> Option<Bounds<Pixels>>
+```
+
+Scroll so `field`'s widget sits comfortably on-screen (a 56 px margin), then
+return its fresh window-space bounds — what a host needs to seat an input on a
+field reached by Tab rather than by click. `None` before the first layout.
+Every form widget is rendered as a transparent overlay with a hover tint and a
+pointer cursor; clicking one emits `PdfEvent::FieldClicked` with the same
+bounds shape.
+
+---
+
+## `PdfView::replace_bytes`
+
+```rust
+pub fn replace_bytes(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>)
+```
+
+Swap in a new version of the document — e.g. after
+[`set_form_value`](#set_form_value) rewrote the file — keeping scroll, zoom,
+and view state. Re-parses off-thread. When the page count is unchanged, the
+old page bitmaps keep painting until their crisp replacements land (the same
+no-blanking swap as zoom/quality changes); a different page count resets the
+slots. Highlights' cached text layers are dropped and rebuilt lazily. A parse
+failure is logged and the old document stays.
 
 ---
 

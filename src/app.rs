@@ -368,6 +368,17 @@ struct MathEdit {
     _nav_sub: gpui::Subscription,
 }
 
+/// A PDF form text field under edit: which file and field, where the input
+/// seats (the widget's window bounds from the viewer), and the draft value.
+struct PdfFieldEdit {
+    path: PathBuf,
+    field: gpui_pdf::FormField,
+    bounds: Bounds<Pixels>,
+    input: Entity<InputState>,
+    /// Commits on Enter. Kept alive here.
+    _sub: gpui::Subscription,
+}
+
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -520,6 +531,11 @@ pub struct AppView {
     // page-virtualized `gpui_pdf::PdfView` (own scroll handle + bounded memory),
     // removed (and its GPU textures released) when the tab closes.
     pub pdf_views: HashMap<PathBuf, Entity<crate::pdf::PdfView>>,
+    /// A PDF form text field being edited: an input seated over the widget's
+    /// window bounds (the viewer reported them in `PdfEvent::FieldClicked`).
+    /// Enter or clicking away commits through `gpui_pdf::set_form_value`,
+    /// writing the file and reloading the viewer.
+    pdf_field_edit: Option<PdfFieldEdit>,
 
     // Open whiteboard canvases, keyed by board (page) id. Each is an independent
     // `gpui_whiteboard::WhiteboardView`; dropped when its tab closes. Reloaded
@@ -796,6 +812,7 @@ impl AppView {
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
             pdf_views: HashMap::new(),
+            pdf_field_edit: None,
             whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
             slash_scroll: ScrollHandle::new(),
@@ -2497,6 +2514,11 @@ impl AppView {
             self.confirm_slash(window, cx);
             return;
         }
+        // A seated PDF form field: Tab commits it and hops to the next one.
+        if self.pdf_field_edit.is_some() {
+            self.pdf_field_tab(true, window, cx);
+            return;
+        }
         let Some(target) = self.focused_editor_target() else {
             cx.propagate();
             return;
@@ -2524,6 +2546,11 @@ impl AppView {
     /// No-op when there's nothing to remove (so it doesn't shift focus).
     fn on_outdent(&mut self, _: &Outdent, window: &mut Window, cx: &mut Context<Self>) {
         if self.slash.is_some() {
+            return;
+        }
+        // A seated PDF form field: Shift-Tab commits and hops backward.
+        if self.pdf_field_edit.is_some() {
+            self.pdf_field_tab(false, window, cx);
             return;
         }
         let Some(target) = self.focused_editor_target() else {
@@ -3642,24 +3669,224 @@ impl AppView {
         // Re-render the surrounding UI on lock/unlock, so the password prompt
         // appears when an encrypted PDF loads and is replaced by the viewer once
         // it's unlocked; clear the password field once it's no longer needed.
+        // Form-field clicks route to the fill flow (toggle / seat an input).
+        let event_path = path.clone();
         cx.subscribe_in(
             &view,
             window,
-            |this, view, _ev: &crate::pdf::PdfEvent, window, cx| {
-                if view.read(cx).is_locked() {
-                    // Prompt just appeared (or a wrong password) — focus the field.
-                    this.pdf_password_input
-                        .update(cx, |s, cx| s.focus(window, cx));
-                } else {
-                    // Unlocked — clear the field so the secret isn't kept around.
-                    this.pdf_password_input
-                        .update(cx, |s, cx| s.set_value("", window, cx));
+            move |this, view, ev: &crate::pdf::PdfEvent, window, cx| match ev {
+                crate::pdf::PdfEvent::LockChanged => {
+                    if view.read(cx).is_locked() {
+                        // Prompt just appeared (or a wrong password) — focus the field.
+                        this.pdf_password_input
+                            .update(cx, |s, cx| s.focus(window, cx));
+                    } else {
+                        // Unlocked — clear the field so the secret isn't kept around.
+                        this.pdf_password_input
+                            .update(cx, |s, cx| s.set_value("", window, cx));
+                    }
+                    cx.notify();
                 }
-                cx.notify();
+                crate::pdf::PdfEvent::FieldClicked { field, bounds } => {
+                    this.on_pdf_field_clicked(
+                        event_path.clone(),
+                        field.clone(),
+                        *bounds,
+                        window,
+                        cx,
+                    );
+                }
             },
         )
         .detach();
         self.pdf_views.insert(path, view);
+    }
+
+    /// A form-field widget was clicked in a PDF viewer: toggle a checkbox /
+    /// radio immediately, or seat a text input over the widget for a text or
+    /// choice field. Read-only and signature fields are inert.
+    fn on_pdf_field_clicked(
+        &mut self,
+        path: PathBuf,
+        field: gpui_pdf::FormField,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_pdf::FieldKind;
+        if field.read_only || matches!(field.kind, FieldKind::Signature) {
+            return;
+        }
+        match field.kind {
+            FieldKind::Checkbox | FieldKind::Radio => {
+                let on = field
+                    .options
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "Yes".into());
+                // A checkbox toggles; a radio only selects (no untoggle).
+                let new = if field.kind == FieldKind::Checkbox && field.value == on {
+                    "Off".to_string()
+                } else {
+                    on
+                };
+                if new != field.value {
+                    self.write_pdf_field(&path, &field.name, &new, cx);
+                }
+            }
+            FieldKind::Text | FieldKind::Choice => {
+                self.seat_pdf_field_edit(path, field, bounds, window, cx);
+            }
+            FieldKind::Signature => {}
+        }
+    }
+
+    /// Seat the in-place input for a text/choice field at the widget's window
+    /// bounds (the overlay renders it just below, so the field stays visible).
+    fn seat_pdf_field_edit(
+        &mut self,
+        path: PathBuf,
+        field: gpui_pdf::FormField,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx));
+        input.update(cx, |s, cx| {
+            s.set_value(field.value.clone(), window, cx);
+            s.focus(window, cx);
+        });
+        let sub = cx.subscribe_in(
+            &input,
+            window,
+            |this: &mut AppView, _st, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::PressEnter { .. }) {
+                    this.commit_pdf_field_edit(window, cx);
+                }
+            },
+        );
+        self.pdf_field_edit = Some(PdfFieldEdit {
+            path,
+            field,
+            bounds,
+            input,
+            _sub: sub,
+        });
+        cx.notify();
+    }
+
+    /// Drop the seated PDF field input without writing (Escape).
+    pub(crate) fn cancel_pdf_field_edit(&mut self, cx: &mut Context<Self>) {
+        if self.pdf_field_edit.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Tab/Shift-Tab from the seated field: commit it, then seat the
+    /// next/previous writable text field (cyclic, in the viewer's enumeration
+    /// order), scrolling it into view.
+    pub(crate) fn pdf_field_tab(
+        &mut self,
+        forward: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_pdf::FieldKind;
+        let Some(edit) = self.pdf_field_edit.take() else {
+            return;
+        };
+        let value = edit.input.read(cx).value().trim_end().to_string();
+        if value != edit.field.value {
+            self.write_pdf_field(&edit.path, &edit.field.name, &value, cx);
+        }
+        let Some(view) = self.pdf_views.get(&edit.path).cloned() else {
+            cx.notify();
+            return;
+        };
+        // Navigation runs on the enumeration held by the viewer (a concurrent
+        // replace_bytes refresh only changes values, not the field list).
+        let fields: Vec<gpui_pdf::FormField> = view.read(cx).form_fields().to_vec();
+        let editable = |f: &gpui_pdf::FormField| {
+            matches!(f.kind, FieldKind::Text | FieldKind::Choice) && !f.read_only
+        };
+        let cur = fields
+            .iter()
+            .position(|f| f.name == edit.field.name && f.rect == edit.field.rect);
+        let Some(cur) = cur else {
+            cx.notify();
+            return;
+        };
+        let n = fields.len();
+        let step = |i: usize| {
+            if forward {
+                (i + 1) % n
+            } else {
+                (i + n - 1) % n
+            }
+        };
+        let mut i = step(cur);
+        while i != cur && !editable(&fields[i]) {
+            i = step(i);
+        }
+        if i == cur {
+            cx.notify();
+            return; // no other editable field
+        }
+        let mut next = fields[i].clone();
+        // The freshest value for the seat: prefer the just-reloaded list when
+        // the viewer has one (same name+rect), else what we enumerated.
+        if let Some(f) = view
+            .read(cx)
+            .form_fields()
+            .iter()
+            .find(|f| f.name == next.name && f.rect == next.rect)
+        {
+            next = f.clone();
+        }
+        let bounds = view.update(cx, |v, cx| v.reveal_field(&next, cx));
+        if let Some(bounds) = bounds {
+            self.seat_pdf_field_edit(edit.path, next, bounds, window, cx);
+        } else {
+            cx.notify();
+        }
+    }
+
+    /// Commit the seated PDF field input (Enter / click-away): write the value
+    /// if it changed, then drop the seat.
+    pub(crate) fn commit_pdf_field_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(edit) = self.pdf_field_edit.take() else {
+            return;
+        };
+        let value = edit.input.read(cx).value().trim_end().to_string();
+        if value != edit.field.value {
+            self.write_pdf_field(&edit.path, &edit.field.name, &value, cx);
+        }
+        cx.notify();
+    }
+
+    /// Write one form field: read the stored PDF, rewrite it through
+    /// `set_form_value` (value + regenerated appearance), save it back, and
+    /// hot-swap the open viewer's document (scroll/zoom preserved).
+    fn write_pdf_field(&mut self, path: &PathBuf, name: &str, value: &str, cx: &mut Context<Self>) {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                log::error!("read pdf for form write: {e}");
+                return;
+            }
+        };
+        let Some(new) = gpui_pdf::set_form_value(&bytes, name, value) else {
+            log::error!("form write refused: field {name:?}");
+            return;
+        };
+        if let Err(e) = std::fs::write(path, &new) {
+            log::error!("save pdf form write: {e}");
+            return;
+        }
+        if let Some(view) = self.pdf_views.get(path) {
+            view.update(cx, |v, cx| v.replace_bytes(new, cx));
+        }
+        cx.notify();
     }
 
     /// Open a whiteboard in its own canvas tab (focusing it if already open). A
@@ -7316,6 +7543,72 @@ impl Render for AppView {
             .into_any_element()
         });
 
+        // A PDF form text field under edit: an input seated just BELOW the
+        // widget's bounds (above when there's no room), so the field and its
+        // surrounding label stay readable, with a caption naming the field.
+        // Enter or clicking away commits, Escape cancels, Tab/Shift-Tab
+        // commits and hops to the next/previous text field (keys bubble here
+        // from the focused input); the seat swallows its own clicks.
+        let pdf_field_overlay = self.pdf_field_edit.as_ref().map(|e| {
+            let seat_w = e.bounds.size.width.clamp(px(220.0), px(460.0));
+            let seat_h = px(64.0);
+            let gap = px(6.0);
+            let below = e.bounds.origin.y + e.bounds.size.height + gap;
+            let win_h = window.viewport_size().height;
+            let top = if below + seat_h > win_h {
+                (e.bounds.origin.y - seat_h - gap).max(px(8.0))
+            } else {
+                below
+            };
+            let left = e
+                .bounds
+                .origin
+                .x
+                .min(window.viewport_size().width - seat_w - px(8.0))
+                .max(px(8.0));
+            gpui::deferred(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut AppView, _: &MouseDownEvent, window, cx| {
+                            this.commit_pdf_field_edit(window, cx);
+                        }),
+                    )
+                    .child(
+                        div()
+                            .absolute()
+                            .left(left)
+                            .top(top)
+                            .w(seat_w)
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .rounded(px(6.0))
+                            .bg(theme::elevated())
+                            .border_1()
+                            .border_color(theme::accent())
+                            .shadow_md()
+                            .p(px(4.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .child(
+                                div()
+                                    .px(px(4.0))
+                                    .text_size(px(10.0))
+                                    .text_color(theme::text_tertiary())
+                                    .truncate()
+                                    .child(format!(
+                                        "{}  —  ⏎ save · esc cancel · ⇥ next",
+                                        e.field.name
+                                    )),
+                            )
+                            .child(Input::new(&e.input)),
+                    ),
+            )
+            .into_any_element()
+        });
+
         // While resizing an image, a transparent full-window layer captures the
         // mouse so the drag continues even as the pointer leaves the handle.
         let drag_overlay = self.image_drag.as_ref().map(|_| {
@@ -7654,6 +7947,8 @@ impl Render for AppView {
                             cx.notify();
                         }
                         Some(_) => this.enter_slash_category(SlashLevel::Root, cx),
+                        // A seated PDF form field drops without writing.
+                        None if this.pdf_field_edit.is_some() => this.cancel_pdf_field_edit(cx),
                         // An open find bar takes Esc first (closes it).
                         None if this.page_find.is_some() => this.close_page_find(cx),
                         None if this.page_editing || this.editing_day.is_some() => window.blur(),
@@ -7834,6 +8129,7 @@ impl Render for AppView {
             )
             .children(overlay)
             .children(table_picker_overlay)
+            .children(pdf_field_overlay)
             .children(drag_overlay)
             .children(calendar_overlay)
             .children(mermaid_lightbox)

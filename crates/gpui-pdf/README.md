@@ -107,18 +107,22 @@ valued text fields with no appearance at all (the `NeedAppearances` case, given
 a synthesized one) — by rewriting the bytes with `lopdf` before parsing. It
 happens automatically inside `parse`.
 
-The same feature carries the **form-filling primitives** a host UI builds on:
-`form_fields` enumerates every widget (name, kind, page, rect, value, options)
-and `set_form_value` writes a value back with a regenerated appearance, so the
-output renders in any viewer. A `forms_check` example reports any PDF's widget
-shapes. Interactive filling *in* `PdfView` is a planned follow-up.
+The same feature makes forms **fillable through the viewer**: every widget
+renders as a hoverable click target, and a click emits
+`PdfEvent::FieldClicked` with the field's description + window bounds — the
+host toggles the checkbox or seats its own text input there (the same
+host-owns-the-input pattern as the password prompt), writes through
+`set_form_value` (value + regenerated appearance, so the file renders in any
+viewer), and hot-swaps the document with `PdfView::replace_bytes` (scroll and
+zoom kept, no blanking). `form_fields` / `reveal_field` drive Tab-through-the-
+form navigation. A `forms_check` example reports any PDF's widget shapes.
 
 ## Status
 
 Early, but solid for scroll-to-read viewing. Password-protected PDFs open behind a
-host-rendered prompt. Markup, find-in-PDF, and form display are available behind
-their features. Roadmap: area highlights for pages with no text layer; fillable
-forms. Not yet published to crates.io.
+host-rendered prompt. Markup, find-in-PDF, and forms (display + filling) are
+available behind their features. Roadmap: area highlights for pages with no
+text layer; choice-field dropdowns. Not yet published to crates.io.
 
 ## License
 

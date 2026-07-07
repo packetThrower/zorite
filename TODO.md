@@ -102,21 +102,13 @@ per-notebook settings sync.
 - [ ] PDF: **graceful fallback for unsupported files** — encrypted PDFs now open behind a password prompt (RC4 / AES-128 / AES-256), but hayro can still fail on an *unsupported* encryption algorithm (e.g. a public-key / certificate handler) or exotic transparency / blend modes; on such a load/parse failure, show an "Open in default app" affordance (hand off to the OS viewer) instead of a blank pane
 - [ ] PDF: **a failed load is silent and permanent** (found in the 2026-07-06 API audit) — an unreadable file or malformed PDF only `log::error!`s and `PdfView` sits on the "Loading PDF…" placeholder forever, with no error state, event, or retry; and a retry-unlock failing with `LoadError::Other` (e.g. unsupported encryption discovered at unlock time) is logged but **eventless**, so the password prompt gets no signal. Both want an explicit error state + `PdfEvent`; overlaps with the graceful-fallback item above
 - [ ] PDF: `is_pdf` misses query-string refs (`report.pdf?v=2`) — it only checks `ends_with(".pdf")` after trimming trailing whitespace (API audit)
-- [ ] PDF: **AcroForm + annotations** — the 2026-07-06 spike settled the scope:
-  hayro **already composites** annotation `/AP /N` appearance streams (on by
-  default, verified empirically), so annotations and pre-rendered form values
-  displayed all along. **M1 SHIPPED** (`forms` feature, `gpui_pdf::forms`):
-  a lopdf normalization pass before parse resolves checkbox/radio state-dict
-  `/AP` through `/AS` and synthesizes appearances for valued text fields with
-  none (`NeedAppearances`) — form PDFs now *display* correctly, read-only,
-  end-to-end render-tested. **M2 SHIPPED**: `form_fields(bytes)` enumerates
-  every widget (qualified name, kind, page, rect, value, options; verified on
-  a real 54-field government form) and `set_form_value(bytes, name, value)`
-  writes `/V` (+ per-widget `/AS` for button groups) with a regenerated
-  appearance, so output renders in every viewer. Remaining: **M3** fillable
-  UI — interactive overlays at field rects in `PdfView` (host-seated inputs,
-  the password-prompt pattern keeps gpui-pdf component-free), host-owned save
-  flow. Also worth filing the two hayro gaps upstream.
+- [ ] PDF forms, follow-ups — the AcroForm feature SHIPPED 2026-07-06 (see
+  Completed): remaining niceties are **choice-field dropdowns** (Ch fields
+  edit as free text today; `FormField::options` already carries `/Opt`),
+  synthesized-appearance fidelity (`/DA` fonts, `/Q` quadding, comb fields,
+  multiline), and **filing the two hayro gaps upstream** (state-dict `/AP /N`
+  selected by `/AS`; `NeedAppearances` synthesis) so the lopdf normalization
+  pass can eventually retire.
 
 ## Crates
 Crate-internal defects and API hygiene, mostly surfaced by the 2026-07-06
@@ -153,6 +145,27 @@ findings worth fixing rather than just documenting):
 - [x] **Collapsible headings** (a8da34c) — hover a heading → chevron; click folds its section (to the next same-or-higher heading, fence-aware) in both views. Session-local view state (markdown has no fold syntax); keyed by heading text (self-heals on rename; duplicate headings fold together — known ceiling); editor reveals a folded section while the caret is inside its body
 - [x] **Inline (in-flow) images** (PR #30) — an image that doesn't lead its line renders as a small in-flow thumbnail (height-capped, width-capped) instead of vanishing, in BOTH views; click opens a full-size preview, hover shows a hand
 - [x] **Obsidian importer** (PR #31) — File → Import from Obsidian… reads a vault: folders → `::` namespaces (or flatten), links + aliases resolve through a name→title map, ~13 callout types → Zorite's 5 alerts, frontmatter → aliases/tags/`key:: value` properties, `YYYY-MM-DD` notes → journal days, assets copied into the managed stores. Block ids, `#Heading`/`#^id` anchors, and `![[embeds]]` come across **as-is** (they all work in Zorite now). **`.canvas` boards → whiteboards**: text cards as labeled boxes (colors mapped), note cards as clickable page cards (ids resolved at write time), image cards placed, groups as outlines, edges as arrows with labels; every 1:1 gap is warned in the import summary
+
+### PDF forms (unreleased)
+- [x] **AcroForm display + filling** (2026-07-06, spike -> M1 -> M2 -> M3 in a day) —
+  the spike proved hayro already composites `/AP /N` appearance streams, leaving two
+  gaps: state-dict appearances (checkboxes/radios) and `NeedAppearances` fields.
+  **M1**: `forms` feature in gpui-pdf — a lopdf pass before parse resolves `/AS`
+  state dicts and synthesizes missing text appearances (idempotent, encrypted
+  files untouched, end-to-end render-tested). **M2**: `form_fields(bytes)`
+  (qualified names, kinds, pages, ordered rects, values, options — verified on a
+  real 54-field government form) + `set_form_value` (writes `/V` on the
+  /FT-owning dict, per-widget `/AS` for button groups, regenerated appearances
+  so output renders in every viewer; refuses read-only/signature). **M3**:
+  fillable in the viewer — widgets overlay like link annotations (hover tint,
+  pointer), `PdfEvent::FieldClicked` carries field + window bounds, checkboxes
+  toggle instantly, text fields seat an app-side input BELOW the widget (field
+  stays readable; caption with name + key hints), Enter/click-away commits, Esc
+  cancels, Tab/Shift-Tab hops fields with `reveal_field` scrolling; writes go
+  fs::read -> set_form_value -> fs::write -> `replace_bytes` (no-blanking hot
+  swap, the zoom-change pattern — blanking flashed the window black on every
+  toggle). Esc/Tab route through the app's existing Input-context actions
+  (SlashCancel / InsertTab / Outdent), the same mechanism as the property editor.
 
 ### Editor & rendering (0.5.x)
 - [x] **gpui-markdown becomes THE markdown crate; gpui-editor consumes it**
