@@ -43,7 +43,9 @@
             allowBuiltinFetchGit = true;
           };
 
-          nativeBuildInputs = with pkgs; [ pkg-config ];
+          # perl: rusqlite's bundled-sqlcipher-vendored-openssl builds OpenSSL
+          # from source, and OpenSSL's build system is perl.
+          nativeBuildInputs = with pkgs; [ pkg-config perl ];
           buildInputs = runtimeLibs;
 
           # The workspace tests are headless (CI runs them on bare runners).
