@@ -106,7 +106,13 @@ export default defineConfig({
 								{ label: 'gpui-markdown', slug: 'reference/crates/gpui-markdown' },
 								{ label: 'gpui-pdf', slug: 'reference/crates/gpui-pdf' },
 								{ label: 'gpui-whiteboard', slug: 'reference/crates/gpui-whiteboard' },
-								{ label: 'os-spellcheck', slug: 'reference/crates/os-spellcheck' },
+								{
+									label: 'os-spellcheck',
+									items: [
+										{ label: 'Overview', slug: 'reference/crates/os-spellcheck' },
+										{ label: 'API reference', slug: 'reference/crates/os-spellcheck-api' },
+									],
+								},
 								{ label: 'ratex-gpui', slug: 'reference/crates/ratex-gpui' },
 							],
 						},
