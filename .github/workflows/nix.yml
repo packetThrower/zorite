@@ -46,6 +46,10 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.1
       - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+      - name: Eval like nixpkgs CI (live master, aliases off)
+        run: |
+          nix eval --impure --raw --expr \
+            '((import (builtins.getFlake "github:NixOS/nixpkgs/master").outPath { system = builtins.currentSystem; config.allowAliases = false; }).callPackage ./nixpkgs-staging/package.nix { }).drvPath'
       - name: Build the nixpkgs package
         run: |
           nix build --impure --print-build-logs --expr \
