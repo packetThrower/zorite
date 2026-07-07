@@ -16,6 +16,8 @@
 }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
+  __structuredAttrs = true;
+
   pname = "zorite";
   version = "0.6.0";
 
