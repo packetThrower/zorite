@@ -1770,9 +1770,9 @@ checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
 name = "embed-resource"
-version = "3.0.9"
+version = "3.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c31a88c8d26de40ed18fe748c547845aa39de1db3afd958f8cb91579f3644bcb"
+checksum = "fbfdaacccebec3b28e4866b8973543c7647797db5ada1bdab552e48fe665fbbd"
 dependencies = [
  "cc",
  "memchr",
@@ -5147,9 +5147,9 @@ dependencies = [
 
 [[package]]
 name = "oxidize-pdf"
-version = "3.0.5"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d58962685fbd0f71157ce7ac24bcfdc40ab865d7f0d8105c41a76a59f0b61a4d"
+checksum = "3ddd05fa20a3f8ff53b5bbb6e31922cdbcd001b8b717e438f1ed16a8f06890be"
 dependencies = [
  "aes",
  "bitflags 2.11.1",
