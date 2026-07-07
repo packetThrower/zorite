@@ -11,7 +11,7 @@
   freetype,
   libx11,
   libxcb,
-  xcbutil,
+  libxcb-util,
   nix-update-script,
 }:
 
@@ -43,7 +43,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
     freetype
     libx11
     libxcb
-    xcbutil
+    libxcb-util
   ];
 
   postFixup = ''
