@@ -51,7 +51,9 @@ jobs:
           nix eval --impure --raw --expr \
             '((import (builtins.getFlake "github:NixOS/nixpkgs/master").outPath { system = builtins.currentSystem; config.allowAliases = false; }).callPackage ./nixpkgs-staging/package.nix { }).drvPath'
       - name: Build the nixpkgs package
+        # The ${…} is NIX syntax — single quotes keep the shell away from it.
         run: |
+          # shellcheck disable=SC2016
           nix build --impure --print-build-logs --expr \
             '((builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.callPackage ./nixpkgs-staging/package.nix { })'
       - name: Smoke-check
