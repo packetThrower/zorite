@@ -2419,6 +2419,7 @@ impl AppView {
             Enter(SlashLevel),
             Insert(String, usize),
             OpenPicker(SlashTarget, usize, gpui::Bounds<gpui::Pixels>),
+            Property(SlashTarget),
             Game,
         }
         let act = {
@@ -2431,6 +2432,7 @@ impl AppView {
                 ItemKind::Category(level) => Act::Enter(*level),
                 ItemKind::Insert { snippet, caret } => Act::Insert(snippet.clone(), *caret),
                 ItemKind::TablePicker => Act::OpenPicker(s.target.clone(), s.start, s.caret),
+                ItemKind::Property => Act::Property(s.target.clone()),
                 ItemKind::Game => Act::Game,
             }
         };
@@ -2442,6 +2444,12 @@ impl AppView {
                 self.open_game(window, cx);
             }
             Act::Insert(snippet, caret) => self.insert_slash(snippet, caret, window, cx),
+            Act::Property(target) => {
+                // Insert a placeholder property line, then open the in-place
+                // form on it with the key field ready to type/pick.
+                self.insert_slash("key:: ".to_string(), 0, window, cx);
+                self.open_new_property(target, window, cx);
+            }
             Act::OpenPicker(target, start, caret) => {
                 self.slash = None;
                 let rows_input = cx.new(|cx| InputState::new(window, cx).placeholder("rows"));
@@ -2643,6 +2651,36 @@ impl AppView {
         self.ensure_content_math(&new, cx);
         self.ensure_content_embeds(&new, cx);
         cx.notify();
+    }
+
+    /// The `/property` follow-through: the snippet insertion left the caret on a
+    /// fresh `key:: ` line — open the property form on its block, focused on the
+    /// inserted row's key field (placeholder cleared, autocomplete open). In raw
+    /// mode there's no property block (WYSIWYG-only, like `/math`), so the line
+    /// stays plain text.
+    fn open_new_property(
+        &mut self,
+        target: SlashTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self.editor_for(&target) else {
+            return;
+        };
+        let Some((range, block)) = editor.read(cx).property_block_at_caret() else {
+            return;
+        };
+        // The inserted line's row within the block — the block may have merged
+        // with property lines directly above.
+        let caret = editor.read(cx).cursor();
+        let row = block[..caret.saturating_sub(range.start).min(block.len())]
+            .matches('\n')
+            .count();
+        self.open_prop_edit(editor, target, range, block, false, Some(row), window, cx);
+        if let Some(pe) = &self.prop_edit {
+            pe.editor
+                .update(cx, |ed, cx| ed.focus_new_key(row, window, cx));
+        }
     }
 
     fn editor_for(&self, target: &SlashTarget) -> Option<Entity<EditorState>> {

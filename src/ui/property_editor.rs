@@ -166,6 +166,24 @@ impl PropertyEditor {
         cx.notify();
     }
 
+    /// Focus row `i`'s key field as a fresh entry — the `/property` flow. The
+    /// snippet's untouched `key` placeholder is cleared so the empty field shows
+    /// its hint and the autocomplete offers every existing key; anything else
+    /// (the user typed before the snippet, or an existing row) is kept.
+    pub fn focus_new_key(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(r) = self.rows.get_mut(i) {
+            if r.key.text == "key" {
+                r.key = Field::default();
+            } else {
+                r.key.caret = r.key.text.len();
+            }
+            self.active = Some((i, true));
+            self.dropdown_suppressed = false;
+        }
+        self.focus.focus(window, cx);
+        cx.notify();
+    }
+
     /// The current fields serialized back to `key:: value` lines (empty-key rows
     /// dropped). This is what the host writes over the source block on commit.
     pub fn to_source(&self, _cx: &App) -> String {

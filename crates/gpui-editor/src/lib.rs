@@ -1972,6 +1972,14 @@ impl EditorState {
         }
     }
 
+    /// The property block covering the caret's line, if any (WYSIWYG-only, like
+    /// [`Self::edit_math_at_caret`]) — so the host can open the property editor
+    /// on a freshly-inserted `/property` line instead of leaving raw source.
+    pub fn property_block_at_caret(&self) -> Option<(Range<usize>, SharedString)> {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.property_block_at(row)
+    }
+
     fn on_mouse_down(
         &mut self,
         event: &MouseDownEvent,
