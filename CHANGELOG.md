@@ -11,6 +11,10 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
+- **`/property`** — the `/` menu can now add a property: it inserts a fresh
+  row and opens the in-place property form on it, key field ready with the
+  autocomplete listing every key already in use. Escape without naming a key
+  and the row cleans itself up.
 - **Nix flake** — `nix run github:packetThrower/zorite` builds and launches
   Zorite from source on NixOS and other Linux systems with Nix, desktop entry
   and icon included; `nix develop` gives a ready dev shell. A CI job keeps the
@@ -38,6 +42,16 @@ log: <https://github.com/packetThrower/zorite/releases>.
   case), and checkboxes/radios show their checked state (their
   state-dictionary appearances previously didn't draw at all). Signature and
   read-only fields stay inert; choice fields edit as free text for now.
+
+### Fixed
+
+- **Properties** — three papercuts in the in-place property editor: an empty
+  value field (a template's blank `key::`) had no click target, so the caret
+  couldn't enter it; clicking a field always seated the caret at the end
+  instead of where you clicked (the rendered panel also always focused the
+  first row, whichever row you clicked); and typing `key::` when a page named
+  `key` exists auto-linked the key into `[[key]]` before the property could
+  form — auto-link-as-you-type no longer treats `:` as completing a word.
 
 ## [0.6.0] - 2026-07-06
 
