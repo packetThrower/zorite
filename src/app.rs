@@ -1030,6 +1030,7 @@ impl AppView {
                     range,
                     source,
                     at_end,
+                    row,
                 } => {
                     this.open_prop_edit(
                         st.clone(),
@@ -1037,6 +1038,7 @@ impl AppView {
                         range.clone(),
                         source.clone(),
                         *at_end,
+                        *row,
                         window,
                         cx,
                     );
@@ -2044,6 +2046,7 @@ impl AppView {
                     range,
                     source,
                     at_end,
+                    row,
                 } => {
                     this.open_prop_edit(
                         st.clone(),
@@ -2051,6 +2054,7 @@ impl AppView {
                         range.clone(),
                         source.clone(),
                         *at_end,
+                        *row,
                         window,
                         cx,
                     );
@@ -3217,6 +3221,7 @@ impl AppView {
         range: std::ops::Range<usize>,
         block: SharedString,
         at_end: bool,
+        row: Option<usize>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -3247,7 +3252,7 @@ impl AppView {
         source.update(cx, |e, cx| {
             e.set_editing_block(range, editor.clone().into(), height, cx)
         });
-        editor.update(cx, |ed, cx| ed.focus_end(at_end, window, cx));
+        editor.update(cx, |ed, cx| ed.focus_end(at_end, row, window, cx));
         // Commit when the form loses focus (guarded on identity, like math).
         let weak = cx.entity().downgrade();
         let editor_id = editor.entity_id();
