@@ -12,10 +12,12 @@
 //! segment as raw text), matched to the note's text size and the panel's
 //! content-fit column widths, so opening the editor doesn't visibly jump.
 
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
+
 use gpui::{
-    App, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
+    App, Bounds, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, deferred, div, px, svg,
+    StatefulInteractiveElement, Styled, Window, canvas, deferred, div, px, svg,
 };
 
 use crate::theme;
@@ -37,6 +39,9 @@ pub struct PropertyEditor {
     menu_scroll: gpui::ScrollHandle,
     /// The note's text size — the form matches the rendered panel's sizing.
     text_size: f32,
+    /// Each field's painted x origin (captured at paint), keyed by
+    /// `(row, is_key)` — lets a click map its x to a caret position.
+    field_origins: Rc<RefCell<HashMap<(usize, bool), Pixels>>>,
     focus: FocusHandle,
 }
 
@@ -126,21 +131,31 @@ impl PropertyEditor {
             dropdown_suppressed: false,
             menu_scroll: gpui::ScrollHandle::new(),
             text_size,
+            field_origins: Rc::new(RefCell::new(HashMap::new())),
             focus: cx.focus_handle(),
         }
     }
 
-    /// Focus a value field on open: the last row's when entered by arrowing up
-    /// from below (`at_end`), else the first — so the caret lands where it came
-    /// from.
-    pub fn focus_end(&mut self, at_end: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Focus a value field on open. A click passes `row` (the clicked property
+    /// line) and lands there, caret at the value's end; arrows pass `None` and
+    /// land on the last row when entered by arrowing up from below (`at_end`),
+    /// else the first — so the caret lands where it came from.
+    pub fn focus_end(
+        &mut self,
+        at_end: bool,
+        row: Option<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.rows.is_empty() {
             self.focus.focus(window, cx);
             return;
         }
-        let row = if at_end { self.rows.len() - 1 } else { 0 };
-        // Caret at the value's end when entering from below/right, else start.
-        let caret = if at_end {
+        let clicked = row.filter(|r| *r < self.rows.len());
+        let row = clicked.unwrap_or(if at_end { self.rows.len() - 1 } else { 0 });
+        // Caret at the value's end when clicked or entering from below/right,
+        // else start.
+        let caret = if at_end || clicked.is_some() {
             self.rows[row].value.text.len()
         } else {
             0
@@ -184,6 +199,37 @@ impl PropertyEditor {
     fn go(&mut self, row: usize, is_key: bool, caret_end: bool) {
         if let Some(f) = self.field_mut(row, is_key) {
             f.caret = if caret_end { f.text.len() } else { 0 };
+            self.active = Some((row, is_key));
+            self.dropdown_suppressed = false;
+        }
+    }
+
+    /// A click on a field: focus it with the caret at the character nearest the
+    /// click's x. The field is shaped as its raw text — for pill-y values that's
+    /// an approximation (pills render compressed), but the field reflows to
+    /// near-raw on activation anyway and arrows refine.
+    fn click_field(&mut self, row: usize, is_key: bool, x: Pixels, window: &mut Window) {
+        let origin = self.field_origins.borrow().get(&(row, is_key)).copied();
+        let caret = match (origin, self.field(row, is_key)) {
+            (Some(ox), Some(f)) if !f.text.is_empty() => {
+                let fs = px(self.text_size);
+                let run = gpui::TextRun {
+                    len: f.text.len(),
+                    font: window.text_style().font(),
+                    color: gpui::Hsla::default(),
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                window
+                    .text_system()
+                    .shape_line(SharedString::from(f.text.clone()), fs, &[run], None)
+                    .closest_index_for_x(x - ox)
+            }
+            _ => self.field(row, is_key).map_or(0, |f| f.text.len()),
+        };
+        if let Some(f) = self.field_mut(row, is_key) {
+            f.caret = caret;
             self.active = Some((row, is_key));
             self.dropdown_suppressed = false;
         }
@@ -483,13 +529,31 @@ impl PropertyEditor {
             return div().into_any_element();
         };
         let sz = self.text_size;
+        // Record where this field paints so a click can map its x to a caret
+        // position (out of flow — doesn't affect the flex layout).
+        let origins = self.field_origins.clone();
+        let grip = canvas(
+            move |bounds: Bounds<Pixels>, _window, _cx| {
+                origins.borrow_mut().insert((i, is_key), bounds.origin.x);
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+        // Full row height so an empty field (a template's blank value) is still
+        // a click target — its content alone would be zero-height.
         let mut cell = div()
             .id(("prop-field", i * 2 + usize::from(is_key)))
+            .relative()
+            .h_full()
+            .flex()
+            .items_center()
+            .child(grip)
             .cursor_text()
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |this, _: &MouseDownEvent, window, cx| {
-                    this.go(i, is_key, true);
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    this.click_field(i, is_key, ev.position.x, window);
                     this.focus.focus(window, cx);
                     cx.notify();
                 }),
@@ -502,9 +566,7 @@ impl PropertyEditor {
         if active && is_key {
             // Key: plain text split at the caret (keys aren't pills).
             let (before, after) = f.text.split_at(f.caret);
-            cell.flex()
-                .items_center()
-                .child(before.to_string())
+            cell.child(before.to_string())
                 .child(caret_bar(sz))
                 .child(after.to_string())
                 .into_any_element()

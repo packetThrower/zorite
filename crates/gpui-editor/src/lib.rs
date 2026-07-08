@@ -344,11 +344,14 @@ pub enum EditorEvent {
     /// property editor (via `set_editing_block`) and replace the block's text on
     /// commit — the same seat/commit pattern as [`EditorEvent::EditMath`] for a
     /// `$$` block. `at_end` seats focus on the last field (entered by arrowing up
-    /// from below) vs the first (click / arrowing down from above).
+    /// from below) vs the first (click / arrowing down from above). A click also
+    /// carries `row` — the property line's index within the block — so the host
+    /// focuses the row the user actually clicked; arrows pass `None`.
     EditProperties {
         range: Range<usize>,
         source: SharedString,
         at_end: bool,
+        row: Option<usize>,
     },
     /// An inline `![](src)` image was left-clicked — the host opens a full-size
     /// preview. The text is untouched.
@@ -1313,6 +1316,7 @@ impl EditorState {
                 range,
                 source,
                 at_end: true,
+                row: None,
             });
             return;
         }
@@ -1355,6 +1359,7 @@ impl EditorState {
                 range,
                 source,
                 at_end: false,
+                row: None,
             });
             return;
         }
@@ -1396,6 +1401,7 @@ impl EditorState {
                 range,
                 source,
                 at_end: true,
+                row: None,
             });
             return;
         }
@@ -1438,6 +1444,7 @@ impl EditorState {
                 range,
                 source,
                 at_end: false,
+                row: None,
             });
             return;
         }
@@ -2098,11 +2105,16 @@ impl EditorState {
         // editor too instead of seating the caret in (and revealing) the source.
         if event.click_count == 1 && !event.modifiers.shift && !event.modifiers.control {
             let offset = self.index_for_mouse_position(event.position);
-            if let Some((range, source)) = self.property_block_at(self.row_col(offset).0) {
+            let row = self.row_col(offset).0;
+            if let Some((range, source)) = self.property_block_at(row) {
+                // Which property line within the block was clicked — the host
+                // focuses that row's field instead of always the first.
+                let block_row = row - self.row_col(range.start).0;
                 cx.emit(EditorEvent::EditProperties {
                     range,
                     source,
                     at_end: false,
+                    row: Some(block_row),
                 });
                 return;
             }
@@ -3685,15 +3697,7 @@ impl EntityInputHandler for EditorState {
         // Keep unaffected diagnostics valid across the edit (shift those after
         // it, drop those it overlapped); the host recomputes the edited region.
         self.remap_diagnostics(&range, new_text.len());
-        // A single boundary character (space / punctuation / Enter, incl. a
-        // list continuation's leading newline) just completed a word — offer
-        // it to the host's auto-replace hook (e.g. page-title auto-linking).
-        let boundary_typed = match new_text.as_bytes() {
-            [c] => !c.is_ascii_alphanumeric() && !matches!(c, b'_' | b'-' | b'/' | b'#' | b'['),
-            [b'\n', ..] => true,
-            _ => false,
-        };
-        if boundary_typed {
+        if word_boundary_input(new_text) {
             self.apply_auto_replace(range.start);
         }
         cx.emit(EditorEvent::Changed);
@@ -7865,9 +7869,39 @@ impl Element for EditorElement {
     }
 }
 
+/// Whether a just-typed input completes a word: a single boundary character
+/// (space / punctuation / Enter, incl. a list continuation's leading newline)
+/// — the moment the host's auto-replace hook (page-title auto-linking) is
+/// offered the line. `:` is NOT a boundary, so a `key:: value` property can be
+/// typed on a key that happens to name a page — the first `:` must not wrap
+/// the key into `[[key]]`.
+fn word_boundary_input(new_text: &str) -> bool {
+    match new_text.as_bytes() {
+        [c] => !c.is_ascii_alphanumeric() && !matches!(c, b'_' | b'-' | b'/' | b'#' | b'[' | b':'),
+        [b'\n', ..] => true,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{display_col_in, set_image_width};
+    use super::{display_col_in, set_image_width, word_boundary_input};
+
+    #[test]
+    fn word_boundaries_offer_auto_replace_but_colon_never_does() {
+        // Space / punctuation / Enter (incl. a list continuation) complete a word.
+        assert!(word_boundary_input(" "));
+        assert!(word_boundary_input("."));
+        assert!(word_boundary_input("\n"));
+        assert!(word_boundary_input("\n- "));
+        // Word characters and syntax openers don't.
+        assert!(!word_boundary_input("a"));
+        assert!(!word_boundary_input("["));
+        assert!(!word_boundary_input("#"));
+        // `:` must not — typing `key::` on a page-title key would otherwise
+        // auto-link the key before the property can form.
+        assert!(!word_boundary_input(":"));
+    }
 
     #[test]
     fn display_col_leftmost_for_inline_math_spacer() {
