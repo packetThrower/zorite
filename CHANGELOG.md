@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.6.1] - 2026-07-07
+
+Properties polish from a day of real use, plus a caret that finally knows
+its size.
+
+### Added
+
+- **`/property`** — the `/` menu can now add a property: it inserts a fresh
+  row and opens the in-place property form on it, key field ready with the
+  autocomplete listing every key already in use. Escape without naming a key
+  and the row cleans itself up.
+
+### Fixed
+
+- **Properties** — three papercuts in the in-place property editor: an empty
+  value field (a template's blank `key::`) had no click target, so the caret
+  couldn't enter it; clicking a field always seated the caret at the end
+  instead of where you clicked (the rendered panel also always focused the
+  first row, whichever row you clicked); and typing `key::` when a page named
+  `key` exists auto-linked the key into `[[key]]` before the property could
+  form — auto-link-as-you-type no longer treats `:` as completing a word.
+- **Caret height** — on lines taller than their text (a bullet's breathing
+  room, or a line grown to fit an inline formula) the caret spanned the whole
+  line; it now matches the text height, vertically centered like the glyphs.
+  Headings keep their proportionally taller carets.
+
 ## [0.6.0] - 2026-07-06
 
 The Obsidian-parity release: `key:: value` properties with an in-place editor
@@ -552,6 +578,7 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
+[0.6.1]: https://github.com/packetThrower/zorite/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/packetThrower/zorite/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/packetThrower/zorite/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/packetThrower/zorite/compare/v0.4.2...v0.5.0
