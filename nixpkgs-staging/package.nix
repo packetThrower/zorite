@@ -19,13 +19,13 @@ rustPlatform.buildRustPackage (finalAttrs: {
   __structuredAttrs = true;
 
   pname = "zorite";
-  version = "0.6.0";
+  version = "0.6.1";
 
   src = fetchFromGitHub {
     owner = "packetThrower";
     repo = "zorite";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-QQ4NZylXAYu1yRLbJWgeilJ/iBDA8DkdIe4Yjo/rjKs=";
+    hash = "sha256-cWSXqjsU6rNwgeujHx6tMIEYbi9Uv37X0Wi+PXb9yaI=";
   };
 
   # Covers the crates.io and git dependencies (gpui and friends) in one hash.

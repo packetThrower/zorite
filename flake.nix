@@ -28,7 +28,7 @@
           pname = "zorite";
           # Releases are tagged (vX.Y.Z); Cargo.toml stays at 0.1.0 by design,
           # so the package version is maintained here.
-          version = "0.6.0";
+          version = "0.6.1";
 
           src = self;
 
