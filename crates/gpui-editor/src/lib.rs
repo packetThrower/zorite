@@ -7116,10 +7116,21 @@ impl Element for EditorElement {
                     .and_then(|l| l.position_for_index(disp_col(row, col), lh))
                     .unwrap_or_default();
                 let inset = code_inset(row);
+                // A row can be taller than its text — grown to fit an inline
+                // formula, or breathing like a list item (LIST_ROW_GAP) — with
+                // the glyphs centered in it. The caret matches the TEXT height
+                // (the row's shaped font size × the ratio, so headings keep
+                // their taller carets), centered the same way, not the row.
+                let text_lh = wrapped
+                    .get(row)
+                    .map_or(base_lh, |l| {
+                        l.unwrapped_layout.font_size * LINE_HEIGHT_RATIO
+                    })
+                    .min(lh);
                 let c = fill(
                     Bounds::new(
-                        to_screen(top, point(p.x + inset, p.y)),
-                        size(px(CARET_WIDTH), lh),
+                        to_screen(top, point(p.x + inset, p.y + (lh - text_lh) / 2.)),
+                        size(px(CARET_WIDTH), text_lh),
                     ),
                     text_color,
                 );
