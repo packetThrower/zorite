@@ -33,12 +33,13 @@
 
 Linux additionally needs a Vulkan-capable GPU with current Mesa drivers.
 
-A local-first, Logseq-style **daily journal** for the desktop — but with a
-**Word-like** typing experience rather than an outliner. Notes are Markdown in a
-local SQLite database; link them with `[[wiki-links]]`, embed and annotate PDFs,
-drop in images, sketch on freeform **whiteboards**, and search across
-everything. No cloud, no account — your notes stay on your machine. Built in Rust
-with [gpui](https://www.gpui.rs/) (Zed's GPU-accelerated UI framework) +
+Zorite is a daily-journal note app for the desktop, organized like Logseq but
+edited like an ordinary document rather than an outliner. Notes are Markdown in
+a local SQLite database. Pages link to each other with `[[wiki-links]]`, and
+the app also handles PDFs (viewing, annotating, form filling), images,
+whiteboards, and LaTeX math. There is no cloud and no account; everything stays
+on your machine. Written in Rust with [gpui](https://www.gpui.rs/) (Zed's UI
+framework) and
 [gpui-component](https://github.com/longbridge/gpui-component).
 
 Developed in close collaboration with Claude (Anthropic).
@@ -53,88 +54,86 @@ Developed in close collaboration with Claude (Anthropic).
 
 📝 [**Changelog**](CHANGELOG.md) · 🗺️ [**Roadmap**](TODO.md)
 
-## Highlights
+## Features
 
-**At a glance** — an infinite daily-journal feed with Word-like, live-preview
-Markdown editing · `[[wiki-links]]`, backlinks, and a graph view · Obsidian-style
-properties, block references, and embeds · freeform whiteboards · a PDF viewer
-with highlights and **fillable forms** · typeset LaTeX math with a visual editor ·
-instant full-text search · optional whole-database encryption · everything in one
-local SQLite file, no cloud, no account.
+### Writing
 
-### Write
-
-- **A journal that edits like a document** — days stream newest-first, every line
-  is just text, and clicking anywhere drops the caret there. Live-preview
-  Markdown: markers hide until the caret lands on them.
-- **CommonMark + GFM and then some** — tables edited cell-by-cell like a small
-  spreadsheet, GitHub alerts (including Obsidian's foldable `> [!NOTE]-`),
-  **collapsible headings**, syntax-highlighted code, and Mermaid diagrams
-  rendered pure-Rust and themed to your skin.
-- **`/` palette & templates** — insert any construct or your own `{{date}}`-style
-  templates; `/date`, `/time`, and a table size picker included.
-- **Completion that stays out of the way** — `[[` suggests pages, `#` tags,
-  `{{` placeholders; brackets auto-pair prose-safely; an opt-in auto-linker wraps
-  existing page titles as you type.
-- **Math for real** — inline `$…$` and display `$$…$$` typeset crisply; click in
-  to edit fractions, roots, and matrices **visually** (MathQuill-style), with
-  copy-LaTeX and PNG/SVG export.
+- The journal is a feed of days, newest first. Everything is plain text, and
+  clicking anywhere places the caret. Markdown renders as you type; the markers
+  reappear when the caret is on them.
+- CommonMark and GFM, plus a few extras: tables are edited cell by cell, GitHub
+  alerts work (including Obsidian's foldable `> [!NOTE]-` form), headings can be
+  collapsed, code blocks are syntax-highlighted, and Mermaid diagrams render in
+  the current theme's colors.
+- A `/` menu inserts Markdown constructs, the current date or time, a table via
+  a size picker, a property row, and your own templates (see below).
+- `[[` completes page names, `#` completes tags, and `{{` completes template
+  placeholders. Brackets auto-pair, and an optional auto-linker turns existing
+  page titles into links as you type.
+- Inline `$…$` and display `$$…$$` LaTeX render as typeset math. Clicking into
+  a formula opens a structural editor for fractions, roots, and matrices, in
+  the style of MathQuill; formulas can be copied as LaTeX or exported as
+  PNG/SVG.
 
 *Details: [Journal & pages](https://packetthrower.github.io/zorite/usage/journal/)
 · [Math](https://packetthrower.github.io/zorite/usage/math/)*
 
-### Link & organize
+### Linking and organization
 
-- **`[[wiki-links]]`, `#tags`, backlinks** — links auto-create pages, every page
-  lists what references it (plus unlinked mentions, one click to link), and
-  `Projects::Tasks` naming builds a namespace tree with cascade renames.
-- **Block references & embeds** — address any line with ` ^id`, link to it (or to
-  a heading) from anywhere, and transclude whole notes, sections, or blocks with
-  `![[Note]]` — live-updating, in both views.
-- **Properties** — `key:: value` lines render as tidy panels with icons and
-  clickable pills, edit in place, and roll up into a vault-wide Properties index.
-- **See everything** — an All-pages browser, a force-directed **graph view**, a
-  calendar dotted with entries, favorites, and tabs you can tear into
-  independent, live-syncing windows.
+- Wiki links create pages on first use. Every page lists its backlinks, plus
+  unlinked mentions that can be converted with a click. `Projects::Tasks`
+  titles form a namespace tree, and renaming a namespace renames its children.
+- Any line can be given a ` ^id` anchor and linked with `[[Note#^id]]`;
+  headings can be linked directly. `![[Note]]` embeds another note (or one of
+  its sections or blocks) and updates live when the source changes. Both the
+  reading view and the editor render all of this.
+- `key:: value` lines render as a properties panel with per-key icons; tags and
+  links in values are clickable. Panels are edited in place, and a Properties
+  page indexes every key and value across the database.
+- For navigation there's an all-pages list, a graph view, a calendar marking
+  days with entries, favorites, and tabs that can be torn off into separate
+  windows.
 
 *Details: [Journal & pages](https://packetthrower.github.io/zorite/usage/journal/)
 · [All pages & the graph](https://packetthrower.github.io/zorite/usage/navigate/)*
 
-### Files, PDFs & whiteboards
+### Files, PDFs, and whiteboards
 
-- **Images just work** — paste or drop them in (HEIC/AVIF included), drag a corner
-  to resize, mid-sentence images flow as thumbnails, duplicates dedupe, and a
-  sweeper clears unused files.
-- **A real PDF viewer** — page-virtualized (800 pages stay light), with a TOC,
-  drag-to-highlight markup that links back to your notes, find-in-PDF, password
-  support — and **AcroForm filling**: click checkboxes, type into fields, Tab
-  through the form; saved files render correctly everywhere.
-- **Export any note to PDF** — `⌘P` produces a real, styled PDF (tables, images,
-  math, diagrams), pure-Rust, no browser.
-- **Whiteboards** — infinite pan/zoom canvases with shapes, arrows, freehand,
-  images, rich text, templates, and page-cards linking back to notes.
+- Images can be pasted or dropped in (HEIC and AVIF included) and resized by
+  dragging a corner. An image in the middle of a sentence displays as a
+  thumbnail. Duplicate files are stored once, and unused files can be swept.
+- The PDF viewer virtualizes pages, so long documents open and scroll without
+  loading everything. It has a table of contents, text search, password
+  support, drag-to-highlight annotations that link back to notes, and AcroForm
+  form filling — checkboxes, text fields, Tab between fields — with saved files
+  that render correctly in other viewers.
+- `⌘P` exports the current note as a styled PDF, including tables, images,
+  math, and diagrams. No browser involved.
+- Whiteboards are infinite pan-and-zoom canvases with shapes, arrows, freehand
+  drawing, images, text, templates, and cards that link back to pages.
 
 *Details: [PDF & images](https://packetthrower.github.io/zorite/usage/pdf/)
 · [Whiteboards](https://packetthrower.github.io/zorite/usage/whiteboards/)*
 
-### Find
+### Search
 
-- **Search everything, instantly** — a trigram full-text index answers per
-  keystroke at 50,000 pages; results are **type-aware** (pages, PDFs, images,
-  whiteboards, with filter chips), and `⌘F` finds within the rendered page.
+- Full-text search runs on a trigram index and updates on every keystroke,
+  staying fast into the tens of thousands of pages (numbers below). Results are
+  grouped by type — pages, PDFs, images, whiteboards — with filter chips, and
+  `⌘F` searches within the open page.
 
 *Details: [Search](https://packetthrower.github.io/zorite/usage/search/)*
 
-### Yours
+### Privacy and customization
 
-- **Private by construction** — notes live in one local SQLite file (images and
-  PDFs beside it); optionally encrypt the whole database (SQLCipher, AES-256)
-  with an unlock screen, keychain remember, and idle auto-lock.
-- **Bring your notes** — importers for **Obsidian** (vault, links, properties,
-  callouts, canvas boards) and **Logseq** (graph, whiteboards, PDF highlights)
-  land everything as working notes, non-destructively.
-- **Make it look right** — built-in and JSON-file themes, light/dark/auto, any
-  font (installed or imported), and a 14–20 px text-size dial.
+- Notes live in one local SQLite file, with images and PDFs beside it. The
+  whole database can be encrypted (SQLCipher, AES-256), with an unlock screen,
+  optional keychain storage of the password, and an idle auto-lock.
+- Importers exist for Obsidian (vault, links, properties, callouts, canvas
+  boards) and Logseq (graph, whiteboards, PDF highlights). Imports don't touch
+  the source vault.
+- Appearance: built-in and JSON-file themes, light/dark/auto, any installed or
+  imported font, and an adjustable text size.
 
 *Details: [Password & encryption](https://packetthrower.github.io/zorite/usage/security/)
 · [Import your notes](https://packetthrower.github.io/zorite/usage/import/)
@@ -202,13 +201,11 @@ Tokens (each `#RRGGBB`): `bg_window`, `bg_sidebar`, `bg_content`, `fg` (text),
 
 ## Install
 
-> Installer packages land with the first **stable** release. Until then, grab a
-> build from the [Releases](https://github.com/packetThrower/zorite/releases)
-> page — every beta attaches `.dmg`, `.exe`/`.msi`, `.deb`, `.AppImage`, `.rpm`,
-> and `.pkg.tar.zst` artifacts plus `SHA256SUMS`.
-
-On macOS and Windows, the package managers track the latest stable tag and get
-you past the first-launch Gatekeeper / SmartScreen warnings.
+Every release attaches `.dmg`, `.exe`/`.msi`, `.deb`, `.AppImage`, `.rpm`, and
+`.pkg.tar.zst` artifacts plus `SHA256SUMS` on the
+[Releases](https://github.com/packetThrower/zorite/releases) page. On macOS and
+Windows, the package managers track the latest stable tag and get you past the
+first-launch Gatekeeper / SmartScreen warnings.
 
 ```sh
 # macOS — Homebrew (6.0.0+ requires trusting the tap before installing)
@@ -245,7 +242,7 @@ ad-hoc signed, so the first launch needs a right-click → **Open** (or
 
 ## Building from source
 
-A small Rust workspace (the app plus three reusable crates).
+The repo is a Rust workspace: the app plus six reusable crates.
 
 ```sh
 git clone git@github.com:packetThrower/zorite.git
@@ -293,7 +290,7 @@ Each crate is host-agnostic and carries its own README.
 
 ## Performance
 
-Zorite stays responsive with large note collections. The numbers below come from
+The numbers below come from
 synthetic databases built by [`scripts/gen_perf_db.py`](scripts/gen_perf_db.py)
 — a 3-level `Area::Topic::Note` namespace tree with `[[wiki-links]]`, inline
 images, and a couple weeks of journal days. `ZORITE_DB` points the app at a
@@ -313,20 +310,21 @@ ZORITE_DB=/tmp/zorite-perf.db cargo run
 | Backlinks for a page (indexed)           | 0.005 ms | 0.005 ms | 0.005 ms |
 | Seed the recent list (first launch only) | 0.1 ms   | 2.3 ms   | 12 ms    |
 
-`list_pages` loads only `id`/`title`, not page content — keeping it fast and
-memory flat. Search is a **trigram FTS5 index**, so it stays ~0.1 ms whether
-you have a thousand pages or fifty. **Memory** (resident set size):
+`list_pages` loads only `id`/`title`, not page content, which keeps it fast and
+memory flat. Search is a trigram FTS5 index, so it stays around 0.1 ms whether
+the database holds a thousand pages or fifty thousand. Memory (resident set
+size):
 
 | Metric                       | Empty DB | 10,000 pages | 50,000 pages |
 | ---------------------------- | -------- | ------------ | ------------ |
 | RAM (RSS)                    | ~86 MB   | ~135 MB      | ~138 MB      |
 | Database file (incl. index)  | 60 KB    | 48 MB        | 229 MB       |
 
-RAM barely moves from 10k to 50k: the page list holds only `id`/`title` (~2 MB at
-50k), not the note bodies — those load one page at a time as you open them. The
-database file grows mostly with the FTS trigram index. At 50,000 pages, launch,
-navigation, search, and scrolling all stay immediate, and the sidebar's cost is
-independent of the total (it's capped to recently-viewed pages).
+RAM barely moves from 10k to 50k pages: the page list holds only `id`/`title`
+(about 2 MB at 50k), not the note bodies, which load one page at a time as you
+open them. The database file grows mostly with the FTS trigram index. At 50,000
+pages, launch, navigation, search, and scrolling remain fast, and the sidebar's
+cost is independent of the total (it's capped to recently-viewed pages).
 
 ## License
 
