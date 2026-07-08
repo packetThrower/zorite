@@ -44,6 +44,8 @@ pub enum ItemKind {
     Insert { snippet: String, caret: usize },
     /// Open the rows×cols table-size picker (instead of inserting a fixed table).
     TablePicker,
+    /// Insert a `key:: ` property line and open the in-place property form on it.
+    Property,
     /// The hidden `/play` easter egg — only offered on that exact query.
     Game,
 }
@@ -260,6 +262,14 @@ fn markdown_items(q: &str, out: &mut Vec<PaletteItem>) {
                 kind,
             });
         }
+    }
+    // Properties are app-level (the form is the host's), not a gpui-markdown
+    // snippet — appended after the shared list.
+    if q.is_empty() || "property".contains(q) {
+        out.push(PaletteItem {
+            label: "Property".to_string(),
+            kind: ItemKind::Property,
+        });
     }
 }
 
@@ -727,6 +737,24 @@ mod tests {
             panic!("expected insert");
         };
         assert_eq!(snippet, "[[New]]");
+    }
+
+    #[test]
+    fn property_item_offered_from_markdown_and_query() {
+        let none: Vec<Template> = Vec::new();
+        // Listed in the Markdown submenu and matched by a root query.
+        for (level, q) in [(SlashLevel::Markdown, ""), (SlashLevel::Root, "prop")] {
+            let items = build_slash_items(level, q, &none, "T");
+            assert!(
+                items
+                    .iter()
+                    .any(|i| matches!(i.kind, ItemKind::Property) && i.label == "Property"),
+                "missing at {q:?}"
+            );
+        }
+        // An unrelated query filters it out.
+        let items = build_slash_items(SlashLevel::Root, "tab", &none, "T");
+        assert!(!items.iter().any(|i| matches!(i.kind, ItemKind::Property)));
     }
 
     #[test]
