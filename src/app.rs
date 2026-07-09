@@ -1206,6 +1206,29 @@ impl AppView {
                 self.load_page_editor(id, window, cx);
             }
         }
+        // A page deleted in another window closes its tabs here too — its
+        // ghost would otherwise stay open and editable, saving into a row
+        // that no longer exists. Only a definite `Ok(None)` counts; a DB
+        // error must not eat tabs. (The pinned Journal at 0 is never a page.)
+        let mut removed = false;
+        let mut i = self.tabs.len();
+        while i > 1 {
+            i -= 1;
+            if let TabKind::Page(pid) = self.tabs[i].kind
+                && matches!(self.db.get_page(pid), Ok(None))
+            {
+                self.tabs.remove(i);
+                if self.active > i {
+                    self.active -= 1;
+                } else if self.active == i {
+                    self.active = self.active.min(self.tabs.len() - 1);
+                }
+                removed = true;
+            }
+        }
+        if removed {
+            self.activate_tab(self.active, window, cx);
+        }
         // Refresh the active page's backlinks (another window may have edited a
         // page that links here) and the sidebar list (a page may have been
         // created / renamed / deleted elsewhere).
