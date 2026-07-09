@@ -93,7 +93,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             this.child(sub_pages_section(&pe.title, &children, cx))
                         })
                         .when(!pe.backlinks.is_empty(), |this| {
-                            this.child(backlinks_section(&pe.backlinks, cx))
+                            this.child(backlinks_section(&pe.backlinks, app, cx))
                         })
                         .when(!pe.unlinked.is_empty(), |this| {
                             this.child(unlinked_section(&pe.unlinked, cx))
@@ -511,7 +511,11 @@ fn sub_page_item(
         })
 }
 
-fn backlinks_section(backlinks: &[Backlink], cx: &mut Context<AppView>) -> impl IntoElement {
+fn backlinks_section(
+    backlinks: &[Backlink],
+    app: &AppView,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
     div()
         .mt(px(28.0))
         .pt_4()
@@ -531,7 +535,7 @@ fn backlinks_section(backlinks: &[Backlink], cx: &mut Context<AppView>) -> impl 
             backlinks
                 .iter()
                 .enumerate()
-                .map(|(i, bl)| backlink_row(i, bl, cx).into_any_element())
+                .map(|(i, bl)| backlink_row(i, bl, app, cx))
                 .collect::<Vec<_>>(),
         )
 }
@@ -624,9 +628,14 @@ fn unlinked_row(i: usize, bl: &Backlink, cx: &mut Context<AppView>) -> impl Into
         )
 }
 
-fn backlink_row(i: usize, bl: &Backlink, cx: &mut Context<AppView>) -> impl IntoElement {
+fn backlink_row(
+    i: usize,
+    bl: &Backlink,
+    app: &AppView,
+    cx: &mut Context<AppView>,
+) -> gpui::AnyElement {
     let page_id = bl.source_page_id;
-    div()
+    let row = div()
         .id(("bl", i))
         .px_3()
         .py_2()
@@ -653,5 +662,13 @@ fn backlink_row(i: usize, bl: &Backlink, cx: &mut Context<AppView>) -> impl Into
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.open_page_id(page_id, window, cx);
             }),
-        )
+        );
+    // The linked-reference rows carry the shared page menu too.
+    super::with_page_menu(
+        row,
+        page_id,
+        bl.source_page_title.clone().into(),
+        app.is_favorite(page_id),
+        cx,
+    )
 }

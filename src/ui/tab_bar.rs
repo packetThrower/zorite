@@ -10,8 +10,11 @@ use gpui_component::menu::ContextMenuExt;
 use gpui_component::tab::{Tab, TabBar};
 use gpui_component::tooltip::Tooltip;
 
-use crate::actions::OpenInNewWindow;
-use crate::app::{AppView, DraggingTab, GlobalDraggingTab, TabDrag};
+use crate::actions::{
+    CopyPageContents, CopyPageLink, DeletePage, NewSubPage, OpenInNewWindow, RenamePage,
+    ToggleFavorite,
+};
+use crate::app::{AppView, DraggingTab, GlobalDraggingTab, TabDrag, TabKind};
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -23,6 +26,12 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     for (i, tab) in app.tabs.iter().enumerate() {
         let kind = tab.kind.clone();
         let title = tab.title.clone();
+        let menu_title = title.clone();
+        let is_page = matches!(tab.kind, TabKind::Page(_));
+        let fav_label = match &tab.kind {
+            TabKind::Page(pid) if app.is_favorite(*pid) => "Remove from favorites",
+            _ => "Add to favorites",
+        };
         // Cap the label: a long name (e.g. a PDF filename) is ellipsized, with the
         // full title in a tooltip. A "(highlights)" tab keeps that suffix visible.
         let (display, truncated) = tab_label(&title);
@@ -44,6 +53,11 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 MouseButton::Right,
                 cx.listener(move |this: &mut AppView, _ev, _window, _cx| {
                     this.set_context_target(kind.clone());
+                    // A page tab also arms the shared page actions (copy /
+                    // favorite / rename / delete) with its page.
+                    if let TabKind::Page(pid) = kind {
+                        this.set_context_page(pid, menu_title.clone());
+                    }
                 }),
             );
         if truncated {
@@ -51,9 +65,24 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             overlay =
                 overlay.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
         }
-        let overlay = overlay.context_menu(|menu, _window, _cx| {
-            menu.menu("Open in new window", Box::new(OpenInNewWindow))
-                .menu("Export as PDF…", Box::new(crate::actions::ExportPdf))
+        let overlay = overlay.context_menu(move |menu, _window, _cx| {
+            let menu = menu
+                .menu("Open in new window", Box::new(OpenInNewWindow))
+                .menu("Export as PDF…", Box::new(crate::actions::ExportPdf));
+            // Page tabs grow the shared page verbs; the pinned Journal and
+            // PDF tabs keep the slim menu.
+            if !is_page {
+                return menu;
+            }
+            menu.separator()
+                .menu("Copy link", Box::new(CopyPageLink))
+                .menu("Copy contents", Box::new(CopyPageContents))
+                .separator()
+                .menu(fav_label, Box::new(ToggleFavorite))
+                .separator()
+                .menu("New sub-page", Box::new(NewSubPage))
+                .menu("Rename page", Box::new(RenamePage))
+                .menu("Delete page", Box::new(DeletePage))
         });
         let mut t = Tab::new()
             .label(display)

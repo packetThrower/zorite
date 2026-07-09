@@ -33,10 +33,11 @@ use gpui_component::{
 use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, DeletePage, ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages,
-    GlobalSearch, ImportLogseq, ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard,
-    NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
-    SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    CloseTab, CopyPageContents, CopyPageLink, DeletePage, ExportActivePdf, ExportNotebook,
+    ExportPdf, FindInPage, FitImages, GlobalSearch, ImportLogseq, ImportObsidian, InsertTab,
+    NewPage, NewSubPage, NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings,
+    Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
+    ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -6952,6 +6953,33 @@ impl AppView {
 
     /// Delete a named page and refresh the UI. Journals are never deleted
     /// (the DB guards this too). Any tabs showing the page are closed.
+    /// Shared page-menu "Copy link": put `[[Title]]` on the clipboard.
+    fn on_copy_page_link(&mut self, _: &CopyPageLink, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some((_, title)) = self.context_page.take() {
+            cx.write_to_clipboard(ClipboardItem::new_string(format!("[[{title}]]")));
+        }
+    }
+
+    /// Shared page-menu "Copy contents": the page's markdown body.
+    fn on_copy_page_contents(
+        &mut self,
+        _: &CopyPageContents,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((id, _)) = self.context_page.take() else {
+            return;
+        };
+        match self.db.get_page(id) {
+            Ok(Some(p)) => cx.write_to_clipboard(ClipboardItem::new_string(p.content)),
+            Ok(None) => {}
+            Err(e) => {
+                log::error!("copy page {id} contents: {e}");
+                self.show_error_dialog("Couldn’t copy", e.to_string(), window, cx);
+            }
+        }
+    }
+
     /// A one-button error dialog — the voice for user-initiated operations
     /// (rename, delete, export, form writes) whose failures used to be
     /// log-only. NOTE: `feat/notebooks` adds an identical helper; drop one
@@ -8089,9 +8117,9 @@ impl Render for AppView {
                 rows = rows.child(
                     div()
                         .id(("ctx-menu-row", action_id))
-                        .px(px(12.0))
-                        .py(px(5.0))
-                        .text_size(px(14.0))
+                        .px(px(10.0))
+                        .py(px(3.0))
+                        .text_size(px(13.0))
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::accent_tint()))
                         .on_mouse_down(
@@ -8246,6 +8274,8 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_export_pdf))
             .on_action(cx.listener(Self::on_export_active_pdf))
             .on_action(cx.listener(Self::on_rename_page))
+            .on_action(cx.listener(Self::on_copy_page_link))
+            .on_action(cx.listener(Self::on_copy_page_contents))
             .on_action(cx.listener(Self::on_toggle_favorite))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_new_sub_page))

@@ -555,6 +555,9 @@ pub struct EditorState {
     /// The open image right-click menu, if any: the image's logical line + the
     /// menu's anchor (window space). Offers Word-style object actions (Delete).
     image_menu: Option<(usize, Point<Pixels>)>,
+    /// Right-clicked property-panel row: its source line + click position
+    /// (anchors the Edit/Delete property menu).
+    prop_menu: Option<(usize, Point<Pixels>)>,
     /// Supplies replacement suggestions for a flagged word, fetched lazily when
     /// the user right-clicks it. Set by the host via [`Self::on_suggest`];
     /// without it, the right-click menu has nothing to offer.
@@ -617,7 +620,9 @@ pub struct EditorState {
     /// Painted bounds of each property-panel row (from the last paint), so
     /// `on_mouse_move` repaints when the hovered row changes (the panel's hover
     /// border reads the live pointer during paint).
-    prop_row_rects: Vec<Bounds<Pixels>>,
+    /// Each painted property-panel row's bounds + its source line (for
+    /// hover borders and the right-click property menu).
+    prop_row_rects: Vec<(Bounds<Pixels>, usize)>,
     /// The property row the pointer was last over — drives `on_mouse_move`'s
     /// repaint-on-change (like the table hover).
     prop_hover_row: Option<usize>,
@@ -694,6 +699,7 @@ impl EditorState {
             table_menu: None,
             table_menu_scroll: ScrollHandle::new(),
             image_menu: None,
+            prop_menu: None,
             suggest: None,
             block_image: None,
             block_chip: None,
@@ -2140,6 +2146,7 @@ impl EditorState {
             self.menu = None;
             self.table_menu = None;
             self.image_menu = None;
+            self.prop_menu = None;
             cx.notify();
             return;
         }
@@ -2359,6 +2366,7 @@ impl EditorState {
         self.menu = None;
         self.table_menu = None;
         self.image_menu = None;
+        self.prop_menu = None;
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
@@ -2491,7 +2499,7 @@ impl EditorState {
         let prow = self
             .prop_row_rects
             .iter()
-            .position(|b| b.contains(&event.position));
+            .position(|(b, _)| b.contains(&event.position));
         if prow != self.prop_hover_row {
             self.prop_hover_row = prow;
             cx.notify();
@@ -2563,6 +2571,18 @@ impl EditorState {
         Some(start..(end + 1).min(self.content.len()))
     }
 
+    /// Delete the `key:: value` line at `row` (+ its newline) — the panel's
+    /// right-click "Delete property". One undoable edit; deleting the last
+    /// property removes the panel.
+    fn delete_property_row(&mut self, row: usize, cx: &mut Context<Self>) {
+        let Some(&start) = self.line_starts().get(row) else {
+            return;
+        };
+        let end = (self.line_end(row) + 1).min(self.content.len());
+        self.replace_range(start..end, "", cx);
+        cx.emit(EditorEvent::Changed);
+    }
+
     /// Delete the image occupying logical line `row` — line + trailing newline,
     /// one undoable edit. Backs the right-click "Delete image" and the
     /// Word-style Backspace/Delete on an image row.
@@ -2596,6 +2616,21 @@ impl EditorState {
             self.table_menu = None;
             self.focus(window, cx);
             self.image_menu = Some((line, event.position));
+            cx.notify();
+            return;
+        }
+        // Right-click a property-panel row: Edit / Delete property menu — the
+        // panel renders as a widget, there's no text under the pointer.
+        if let Some(&(_, row)) = self
+            .prop_row_rects
+            .iter()
+            .find(|(rect, _)| rect.contains(&event.position))
+        {
+            self.menu = None;
+            self.table_menu = None;
+            self.image_menu = None;
+            self.focus(window, cx);
+            self.prop_menu = Some((row, event.position));
             cx.notify();
             return;
         }
@@ -2636,16 +2671,30 @@ impl EditorState {
         let offset = self.index_for_mouse_position(event.position);
         // Window-space — the popup renders on a `deferred`/`anchored` layer.
         let anchor = event.position;
-        let hit = self.diagnostic_at(offset).map(|d| d.range.clone());
-        self.menu = hit.and_then(|range| {
-            let word = self.content[range.clone()].to_string();
-            let suggestions = self.suggest.as_ref().map(|f| f(&word)).unwrap_or_default();
-            (!suggestions.is_empty()).then(|| DiagMenu {
-                anchor,
-                range,
-                suggestions: suggestions.into_iter().map(SharedString::from).collect(),
-                scroll: ScrollHandle::new(),
-            })
+        // A right-click outside the selection moves the caret there (so Paste
+        // lands under the pointer); inside it, the selection stays put — it's
+        // what Cut/Copy act on.
+        let sel = self.selected_range.clone();
+        let in_selection = !sel.is_empty() && offset >= sel.start && offset <= sel.end;
+        if !in_selection {
+            self.move_to(offset, cx);
+        }
+        self.focus(window, cx);
+        // Suggestions when the click lands on a flagged word; the clipboard
+        // verbs (Cut / Copy / Paste) ride along either way.
+        let (range, suggestions) = match self.diagnostic_at(offset).map(|d| d.range.clone()) {
+            Some(range) => {
+                let word = self.content[range.clone()].to_string();
+                let suggestions = self.suggest.as_ref().map(|f| f(&word)).unwrap_or_default();
+                (range, suggestions)
+            }
+            None => (offset..offset, Vec::new()),
+        };
+        self.menu = Some(DiagMenu {
+            anchor,
+            range,
+            suggestions: suggestions.into_iter().map(SharedString::from).collect(),
+            scroll: ScrollHandle::new(),
         });
         cx.notify();
     }
@@ -2662,6 +2711,7 @@ impl EditorState {
         if self.menu.take().is_some()
             || self.table_menu.take().is_some()
             || self.image_menu.take().is_some()
+            || self.prop_menu.take().is_some()
         {
             cx.notify();
         }
@@ -4029,8 +4079,8 @@ impl Render for EditorState {
                             // Don't let the scroll container's max-height squeeze
                             // the rows; they keep their height and overflow.
                             .flex_shrink_0()
-                            .px(px(12.))
-                            .py(px(5.))
+                            .px(px(10.))
+                            .py(px(3.))
                             // Highlight the row under the pointer.
                             .hover(move |s| s.bg(hover))
                             .child(sugg)
@@ -4054,7 +4104,7 @@ impl Render for EditorState {
                 // so the scroll affordance is visible. Sized from the row count
                 // (known now) and positioned from the live scroll offset — a
                 // wheel scroll calls window.refresh(), which re-renders this.
-                const ROW_H: f32 = 28.0;
+                const ROW_H: f32 = 24.0;
                 const PAD: f32 = 4.0;
                 const MAX_H: f32 = 180.0;
                 let rows_h = count as f32 * ROW_H;
@@ -4072,6 +4122,47 @@ impl Render for EditorState {
                         .rounded(px(3.))
                         .bg(thumb_c)
                 });
+
+                // Cut / Copy need a selection; Paste always applies (the caret
+                // was seated at the click when it landed outside the selection).
+                let has_sel = !self.selected_range.is_empty();
+                let clip_item = |id: &'static str, label: &'static str| {
+                    div()
+                        .id(id)
+                        .flex_shrink_0()
+                        .px(px(10.))
+                        .py(px(3.))
+                        .hover(move |s| s.bg(hover))
+                        .child(label)
+                };
+                let mut clipboard = div().flex().flex_col().py(px(4.));
+                if has_sel {
+                    clipboard = clipboard
+                        .child(clip_item("menu-cut", "Cut").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                editor.menu = None;
+                                editor.cut(&Cut, window, cx);
+                            }),
+                        ))
+                        .child(clip_item("menu-copy", "Copy").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                editor.menu = None;
+                                editor.copy(&Copy, window, cx);
+                            }),
+                        ));
+                }
+                let clipboard = clipboard.child(clip_item("menu-paste", "Paste").on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        editor.menu = None;
+                        editor.paste(&Paste, window, cx);
+                    }),
+                ));
 
                 // Deferred + anchored to a window-space top layer with `.occlude()`,
                 // so it renders above the page chrome and captures the wheel — else a
@@ -4092,13 +4183,13 @@ impl Render for EditorState {
                             // Clip rows + thumb to the rounded box.
                             .overflow_hidden()
                             .text_color(menu_fg)
-                            .text_size(px(14.))
+                            .text_size(px(13.))
                             // A click anywhere outside the menu dismisses it.
                             .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
                                 editor.menu = None;
                                 cx.notify();
                             }))
-                            .child(
+                            .children((count > 0).then(|| {
                                 // The scroll viewport: shows ~6 rows, the rest scroll.
                                 div()
                                     .id("suggestion-menu")
@@ -4108,8 +4199,10 @@ impl Render for EditorState {
                                     .flex()
                                     .flex_col()
                                     .py(px(PAD))
-                                    .children(rows),
-                            )
+                                    .children(rows)
+                            }))
+                            .children((count > 0).then(|| div().h(px(1.)).bg(menu_border)))
+                            .child(clipboard)
                             .children(thumb),
                     ),
                 )
@@ -4127,7 +4220,7 @@ impl Render for EditorState {
                 let divider = st.map_or(rgba(0xffffff2e).into(), |s| s.popover_divider);
                 let mut thumb_c = st.map_or(rgba(0xffffff66).into(), |s| s.marker);
                 thumb_c.a = 0.5;
-                const ROW_H: f32 = 28.0;
+                const ROW_H: f32 = 24.0;
                 const DIV_H: f32 = 9.0;
                 const PAD: f32 = 4.0;
                 const MAX_H: f32 = 240.0;
@@ -4150,8 +4243,8 @@ impl Render for EditorState {
                         div()
                             .id(("table-menu-row", i))
                             .flex_shrink_0()
-                            .px(px(12.))
-                            .py(px(5.))
+                            .px(px(10.))
+                            .py(px(3.))
                             .hover(move |s| s.bg(hover))
                             .child(SharedString::from(label))
                             .on_mouse_down(
@@ -4195,7 +4288,7 @@ impl Render for EditorState {
                             .rounded(px(6.))
                             .overflow_hidden()
                             .text_color(menu_fg)
-                            .text_size(px(14.))
+                            .text_size(px(13.))
                             .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
                                 editor.table_menu = None;
                                 cx.notify();
@@ -4221,6 +4314,65 @@ impl Render for EditorState {
             }))
             // The image right-click menu: Word-style object actions on an inline
             // image (Delete), anchored at the click. Chrome matches the table menu.
+            .children(self.prop_menu.map(|(row, anchor)| {
+                let st = self.markdown_style.as_ref();
+                let menu_bg = st.map_or(rgb(0x26262b).into(), |s| s.popover_bg);
+                let menu_border = st.map_or(rgb(0x45454c).into(), |s| s.popover_border);
+                let menu_fg = st.map_or(rgb(0xe6e6e6).into(), |s| s.popover_fg);
+                let hover = st.map_or(rgba(0x2f6fd628).into(), |s| s.popover_hover);
+                let item = |id: &'static str, label: &'static str| {
+                    div()
+                        .id(id)
+                        .px(px(10.))
+                        .py(px(3.))
+                        .hover(move |s| s.bg(hover))
+                        .child(label)
+                };
+                gpui::deferred(
+                    gpui::anchored().position(anchor).snap_to_window().child(
+                        div()
+                            .occlude()
+                            .min_w(px(160.))
+                            .cursor(CursorStyle::Arrow)
+                            .bg(menu_bg)
+                            .border_1()
+                            .border_color(menu_border)
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .text_color(menu_fg)
+                            .text_size(px(13.))
+                            .py(px(4.))
+                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                                editor.prop_menu = None;
+                                cx.notify();
+                            }))
+                            .child(item("prop-menu-edit", "Edit properties").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    editor.prop_menu = None;
+                                    if let Some((range, source)) = editor.property_block_at(row) {
+                                        let block_row = row - editor.row_col(range.start).0;
+                                        cx.emit(EditorEvent::EditProperties {
+                                            range,
+                                            source,
+                                            at_end: false,
+                                            row: Some(block_row),
+                                        });
+                                    }
+                                }),
+                            ))
+                            .child(item("prop-menu-delete", "Delete property").on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    editor.prop_menu = None;
+                                    editor.delete_property_row(row, cx);
+                                }),
+                            )),
+                    ),
+                )
+            }))
             .children(self.image_menu.map(|(line, anchor)| {
                 let st = self.markdown_style.as_ref();
                 let menu_bg = st.map_or(rgb(0x26262b).into(), |s| s.popover_bg);
@@ -4239,7 +4391,7 @@ impl Render for EditorState {
                             .rounded(px(6.))
                             .overflow_hidden()
                             .text_color(menu_fg)
-                            .text_size(px(14.))
+                            .text_size(px(13.))
                             .py(px(4.))
                             .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
                                 editor.image_menu = None;
@@ -4248,8 +4400,8 @@ impl Render for EditorState {
                             .child(
                                 div()
                                     .id("image-menu-delete")
-                                    .px(px(12.))
-                                    .py(px(5.))
+                                    .px(px(10.))
+                                    .py(px(3.))
                                     .hover(move |s| s.bg(hover))
                                     .child("Delete image")
                                     .on_mouse_down(
@@ -5996,7 +6148,8 @@ fn paint_prop_panel(
     window: &mut Window,
     cx: &mut App,
     pill_rects: &mut Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)>,
-    row_rects: &mut Vec<Bounds<Pixels>>,
+    row_rects: &mut Vec<(Bounds<Pixels>, usize)>,
+    base_row: usize,
 ) {
     let line_h = font_size * LINE_HEIGHT_RATIO;
     let pad = px(10.);
@@ -6004,7 +6157,7 @@ fn paint_prop_panel(
     for (ri, (key, icon, segs)) in p.rows.iter().enumerate() {
         let row_top = origin.y + p.row_h * ri as f32;
         let row_bounds = Bounds::new(point(origin.x, row_top), size(p.width, p.row_h));
-        row_rects.push(row_bounds);
+        row_rects.push((row_bounds, base_row + ri));
         // Whole-row hover border (Obsidian-style).
         if row_bounds.contains(&mouse) {
             window.paint_quad(PaintQuad {
@@ -7478,7 +7631,7 @@ impl Element for EditorElement {
         // Property-panel pill bounds + targets (click-to-open) and row bounds
         // (hover change-detection), committed for the next frame's handlers.
         let mut prop_pill_rects: Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)> = Vec::new();
-        let mut prop_row_rects: Vec<Bounds<Pixels>> = Vec::new();
+        let mut prop_row_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
         // The span being structurally edited (if any): skip painting its raster — the seated
         // editor overlays its spot.
         let editing_inline = self
@@ -7883,6 +8036,7 @@ impl Element for EditorElement {
                     cx,
                     &mut prop_pill_rects,
                     &mut prop_row_rects,
+                    i,
                 );
             } else {
                 // Code blocks + gutter marks inset their text (kept in sync with

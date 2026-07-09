@@ -62,7 +62,11 @@ actions!(
         // The custom property editor's Tab / Shift+Tab field stepping (bound in
         // its own key context so they override the default focus traversal).
         PropNextField,
-        PropPrevField
+        PropPrevField,
+        // The shared page context menu's copy verbs (`[[Title]]` / markdown
+        // body to the clipboard); no keybindings.
+        CopyPageLink,
+        CopyPageContents
     ]
 );
 

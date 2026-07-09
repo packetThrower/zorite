@@ -8,7 +8,7 @@ use gpui::{
 };
 
 use crate::app::AppView;
-use crate::search::{Filter, Hit, Kind};
+use crate::search::{Filter, Hit, Kind, Target};
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
@@ -16,7 +16,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let rows: Vec<_> = hits
         .iter()
         .enumerate()
-        .map(|(i, hit)| hit_row(i, hit, cx).into_any_element())
+        .map(|(i, hit)| hit_row(i, hit, app, cx))
         .collect();
 
     div()
@@ -121,7 +121,7 @@ fn chip_id(filter: Filter) -> &'static str {
     }
 }
 
-fn hit_row(i: usize, hit: &Hit, cx: &mut Context<AppView>) -> impl IntoElement {
+fn hit_row(i: usize, hit: &Hit, app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
     let target = hit.target.clone();
     // Flat marker for boards (matches the chip); the colored file/image emoji
     // are dropped — the subtitle already names the kind ("PDF · in …").
@@ -129,7 +129,7 @@ fn hit_row(i: usize, hit: &Hit, cx: &mut Context<AppView>) -> impl IntoElement {
         Kind::Whiteboard => "▦",
         Kind::Page | Kind::Pdf | Kind::Image => "",
     };
-    div()
+    let row = div()
         .id(("hit", i))
         .px_3()
         .py_2()
@@ -167,5 +167,12 @@ fn hit_row(i: usize, hit: &Hit, cx: &mut Context<AppView>) -> impl IntoElement {
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.open_search_hit(target.clone(), window, cx);
             }),
-        )
+        );
+    // Page-like hits carry the shared page menu; file hits are files.
+    match (&hit.kind, &hit.target) {
+        (Kind::Page | Kind::Whiteboard, Target::Page(id)) => {
+            super::with_page_menu(row, *id, hit.title.clone().into(), app.is_favorite(*id), cx)
+        }
+        _ => row.into_any_element(),
+    }
 }
