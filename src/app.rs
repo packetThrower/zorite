@@ -3768,6 +3768,9 @@ impl AppView {
                     }
                     cx.notify();
                 }
+                // Terminal load failure — the viewer renders the message
+                // itself; just repaint the chrome around it.
+                crate::pdf::PdfEvent::LoadFailed => cx.notify(),
                 crate::pdf::PdfEvent::FieldClicked { field, bounds } => {
                     this.on_pdf_field_clicked(
                         event_path.clone(),

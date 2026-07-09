@@ -176,7 +176,11 @@ pub fn render_page(doc: &Document, idx: usize, scale: f32) -> Result<Arc<RenderI
 
 /// True if a link/image `src` points at a PDF (by extension, case-insensitive).
 pub fn is_pdf(src: &str) -> bool {
-    src.to_lowercase().trim_end().ends_with(".pdf")
+    let src = src.trim_end();
+    // A URL query (`report.pdf?v=2`) doesn't change what the file is; `#`
+    // stays — it's the page-jump anchor (`file.pdf#p3`), stripped by callers.
+    let path = src.split('?').next().unwrap_or(src);
+    path.to_lowercase().ends_with(".pdf")
 }
 
 // ─────────────────────────────── Viewport virtualization ───────────────────────────────
@@ -449,6 +453,12 @@ struct SearchMatch {
 /// re-render. (Fired only on these transitions, not on every redraw.)
 pub enum PdfEvent {
     LockChanged,
+    /// The file couldn't be read or parsed (see [`PdfView::load_error`]) —
+    /// terminal for this view; the viewer shows the message in place of the
+    /// loading placeholder. Also fired when a retry-unlock fails with a
+    /// non-password error (e.g. an unsupported encryption handler discovered
+    /// at unlock time), so a password prompt knows to stand down.
+    LoadFailed,
     /// A form-field widget was clicked (`forms` feature): the field's
     /// description and its current window-space bounds — everything a host
     /// needs to toggle a checkbox or seat a text input right over the widget,
@@ -481,6 +491,9 @@ pub struct PdfView {
     /// The most recent [`PdfView::unlock`] used a wrong password — drives the
     /// prompt's "incorrect password" message; cleared on the next attempt.
     unlock_failed: bool,
+    /// A terminal read/parse failure — the viewer renders this message
+    /// instead of sitting on "Loading PDF…" forever.
+    load_error: Option<SharedString>,
     /// `(width, height)` in points per page — drives page-slot sizing.
     dims: Vec<(f32, f32)>,
     /// Per-page render state; only pages near the viewport hold a bitmap.
@@ -595,6 +608,9 @@ impl PdfView {
                 Ok(x) => x,
                 Err(e) => {
                     log::error!("read pdf: {e}");
+                    let _ = this.update(cx, |this, cx| {
+                        this.fail_load(format!("Couldn’t read the file: {e}"), cx);
+                    });
                     return;
                 }
             };
@@ -608,7 +624,10 @@ impl PdfView {
                         cx.emit(PdfEvent::LockChanged);
                         cx.notify();
                     }
-                    Err(LoadError::Other(e)) => log::error!("parse pdf: {e}"),
+                    Err(LoadError::Other(e)) => {
+                        log::error!("parse pdf: {e}");
+                        this.fail_load(format!("Couldn’t open the PDF: {e}"), cx);
+                    }
                 }
             });
         })
@@ -623,6 +642,7 @@ impl PdfView {
             bytes: None,
             locked: false,
             unlock_failed: false,
+            load_error: None,
             dims: Vec::new(),
             pages: Vec::new(),
             scroll: ScrollHandle::new(),
@@ -848,10 +868,31 @@ impl PdfView {
                     cx.emit(PdfEvent::LockChanged);
                     cx.notify();
                 }
-                Err(LoadError::Other(e)) => log::error!("unlock pdf: {e}"),
+                Err(LoadError::Other(e)) => {
+                    // Not a wrong password — e.g. an unsupported encryption
+                    // handler discovered at unlock time. Terminal: swap the
+                    // prompt for the error pane.
+                    log::error!("unlock pdf: {e}");
+                    this.locked = false;
+                    this.fail_load(format!("Couldn’t open the PDF: {e}"), cx);
+                    cx.emit(PdfEvent::LockChanged);
+                }
             });
         })
         .detach();
+    }
+
+    /// Record a terminal load failure (the message renders in the viewer) and
+    /// tell the host.
+    fn fail_load(&mut self, msg: String, cx: &mut Context<Self>) {
+        self.load_error = Some(msg.into());
+        cx.emit(PdfEvent::LoadFailed);
+        cx.notify();
+    }
+
+    /// The terminal read/parse failure shown in place of the viewer, if any.
+    pub fn load_error(&self) -> Option<&SharedString> {
+        self.load_error.as_ref()
     }
 
     /// Set the highlights to draw — the host derives these from its own store (e.g.
@@ -1547,6 +1588,9 @@ impl Render for PdfView {
         self.ensure_window(window, cx);
         let style = (self.style)();
 
+        if let Some(err) = &self.load_error {
+            return load_failed(style, err.clone()).into_any_element();
+        }
         if self.dims.is_empty() {
             return loading(style).into_any_element();
         }
@@ -2405,6 +2449,31 @@ impl Render for PdfView {
     }
 }
 
+/// The terminal-failure pane: the file name stays in the tab; the pane says
+/// why the viewer is empty (instead of an eternal "Loading PDF…").
+fn load_failed(style: PdfStyle, err: SharedString) -> impl IntoElement {
+    div()
+        .size_full()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .items_center()
+        .justify_center()
+        .bg(style.bg)
+        .child(
+            div()
+                .text_color(style.placeholder_fg)
+                .child("This PDF couldn’t be opened"),
+        )
+        .child(
+            div()
+                .text_size(px(12.))
+                .text_color(style.placeholder_fg)
+                .max_w(px(520.))
+                .child(err),
+        )
+}
+
 fn loading(style: PdfStyle) -> impl IntoElement {
     div()
         .size_full()
@@ -2447,6 +2516,15 @@ impl Render for Tip {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn is_pdf_sees_through_url_queries() {
+        assert!(super::is_pdf("report.pdf"));
+        assert!(super::is_pdf("Report.PDF "));
+        assert!(super::is_pdf("https://x.test/report.pdf?v=2"));
+        assert!(!super::is_pdf("report.pdf.png"));
+        assert!(!super::is_pdf("a.png?name=report.pdf"));
+    }
+
     use super::*;
 
     #[test]
