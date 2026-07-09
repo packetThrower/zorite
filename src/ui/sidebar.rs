@@ -121,7 +121,7 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                         ),
                 )
                 .child(
-                    Input::new(&app.search_input).prefix(
+                    Input::new(&app.search_input).small().prefix(
                         Icon::new(IconName::Search)
                             .size_4()
                             .text_color(theme::text_tertiary()),

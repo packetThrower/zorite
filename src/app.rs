@@ -25,7 +25,7 @@ use gpui::{
     WindowHandle, WindowOptions, div, point, px, size,
 };
 use gpui_component::{
-    Root, TitleBar, WindowExt,
+    Root, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
@@ -5144,7 +5144,7 @@ impl AppView {
                             .text_color(theme::text_primary())
                             .child("🔒 This PDF is password protected"),
                     )
-                    .child(Input::new(&self.pdf_password_input).mask_toggle())
+                    .child(Input::new(&self.pdf_password_input).small().mask_toggle())
                     .children(failed.then(|| {
                         div()
                             .text_size(px(12.0))
@@ -5154,6 +5154,7 @@ impl AppView {
                     .child(
                         div().flex().justify_end().child(
                             Button::new("pdf-unlock")
+                                .small()
                                 .label("Unlock")
                                 .primary()
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -7970,7 +7971,7 @@ impl Render for AppView {
                                         e.field.name
                                     )),
                             )
-                            .child(Input::new(&e.input)),
+                            .child(Input::new(&e.input).small()),
                     ),
             )
             .into_any_element()

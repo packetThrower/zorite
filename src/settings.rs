@@ -15,7 +15,7 @@ use gpui::{
     Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    Disableable, IndexPath, Root, TitleBar, WindowExt,
+    Disableable, IndexPath, Root, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants as _},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
@@ -1343,6 +1343,7 @@ impl SettingsView {
             .w(px(220.0))
             .child(
                 Input::new(&self.filter_input)
+                    .small()
                     .appearance(true)
                     .text_size(px(13.0)),
             )
@@ -1408,14 +1409,14 @@ impl Render for SettingsView {
             .map(|a| a.read(cx).wysiwyg())
             .unwrap_or(true);
         let wys_app = self.app.clone();
-        let wysiwyg_switch =
-            Switch::new("wysiwyg-toggle")
-                .checked(wys_on)
-                .on_click(move |checked, _window, cx| {
-                    if let Some(app) = wys_app.upgrade() {
-                        app.update(cx, |a, cx| a.set_wysiwyg(*checked, cx));
-                    }
-                });
+        let wysiwyg_switch = Switch::new("wysiwyg-toggle")
+            .small()
+            .checked(wys_on)
+            .on_click(move |checked, _window, cx| {
+                if let Some(app) = wys_app.upgrade() {
+                    app.update(cx, |a, cx| a.set_wysiwyg(*checked, cx));
+                }
+            });
 
         // Auto-link-as-you-type toggle (Markdown pane).
         let al_on = self
@@ -1424,14 +1425,14 @@ impl Render for SettingsView {
             .map(|a| a.read(cx).auto_link())
             .unwrap_or(false);
         let al_app = self.app.clone();
-        let auto_link_switch =
-            Switch::new("auto-link-toggle")
-                .checked(al_on)
-                .on_click(move |checked, _window, cx| {
-                    if let Some(app) = al_app.upgrade() {
-                        app.update(cx, |a, _cx| a.set_auto_link(*checked));
-                    }
-                });
+        let auto_link_switch = Switch::new("auto-link-toggle")
+            .small()
+            .checked(al_on)
+            .on_click(move |checked, _window, cx| {
+                if let Some(app) = al_app.upgrade() {
+                    app.update(cx, |a, _cx| a.set_auto_link(*checked));
+                }
+            });
 
         // Updates pane toggles — switches, like the WYSIWYG one. Controlled by
         // the persisted prefs; the click persists + (for pre-releases) re-checks.
@@ -1442,6 +1443,7 @@ impl Render for SettingsView {
             .unwrap_or(true);
         let check_app = self.app.clone();
         let check_updates_switch = Switch::new("check-updates-toggle")
+            .small()
             .checked(check_on)
             .on_click(move |checked, _window, cx| {
                 if let Some(app) = check_app.upgrade() {
@@ -1454,20 +1456,21 @@ impl Render for SettingsView {
             .map(|a| a.read(cx).include_prerelease())
             .unwrap_or(false);
         let pre_app = self.app.clone();
-        let prerelease_switch = Switch::new("prerelease-toggle").checked(pre_on).on_click(
-            move |checked, _window, cx| {
+        let prerelease_switch = Switch::new("prerelease-toggle")
+            .small()
+            .checked(pre_on)
+            .on_click(move |checked, _window, cx| {
                 if let Some(app) = pre_app.upgrade() {
                     app.update(cx, |a, cx| a.set_include_prerelease(*checked, cx));
                 }
-            },
-        );
+            });
 
         // Font card body: the family dropdown + an import button.
         let font_control = div()
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(Select::new(&self.font_select).w_full())
+            .child(Select::new(&self.font_select).small().w_full())
             .child(div().flex().flex_row().child(text_button(
                 "font-add",
                 "Add font file…",
@@ -1548,6 +1551,7 @@ impl Render for SettingsView {
         let window_bounds_switch = {
             let weak = cx.entity().downgrade();
             Switch::new("window-bounds")
+                .small()
                 .checked(crate::paths::window_bounds_enabled())
                 .on_click(move |on: &bool, _w, cx| {
                     if *on {
@@ -1633,6 +1637,7 @@ impl Render for SettingsView {
                 .gap(px(8.0))
                 .child(
                     Switch::new("sec-remember")
+                        .small()
                         .checked(encrypted && crate::security::is_remembered())
                         .disabled(!encrypted)
                         .on_click(move |on: &bool, _w, cx| {
@@ -1922,25 +1927,25 @@ impl Render for SettingsView {
                                     "Date format",
                                     "How /date and the {{date}} template placeholder are \
                                          inserted. Journal day headers are unaffected.",
-                                    Select::new(&self.date_format_select).w_full(),
+                                    Select::new(&self.date_format_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Time format",
                                     "How /time and the {{time}} template placeholder are \
                                          inserted.",
-                                    Select::new(&self.time_format_select).w_full(),
+                                    Select::new(&self.time_format_select).small().w_full(),
                                 )),
                             Tab::Appearance => content
                                 .child(self.section_card(
                                     "App Theme",
                                     "Pick a built-in theme or one of your own.",
-                                    Select::new(&self.theme_select).w_full(),
+                                    Select::new(&self.theme_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Appearance",
                                     "Light or dark variant of the active theme. Auto follows \
                                          your system.",
-                                    Select::new(&self.appearance_select).w_full(),
+                                    Select::new(&self.appearance_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Font",
@@ -1954,7 +1959,7 @@ impl Render for SettingsView {
                                     "Text size",
                                     "Size of note text when editing and reading. Headings and \
                                          inline math scale with it.",
-                                    Select::new(&self.text_size_select).w_full(),
+                                    Select::new(&self.text_size_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Installed themes",
@@ -1980,7 +1985,7 @@ impl Render for SettingsView {
                                     "List indentation",
                                     "Spaces per nesting level for Tab and bullet nesting. Editing \
                                      and the rendered view use the same width, so they line up.",
-                                    Select::new(&self.indent_select).w_full(),
+                                    Select::new(&self.indent_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Auto-link page titles",
@@ -2344,16 +2349,18 @@ fn text_button(
     cx: &mut Context<SettingsView>,
     on: impl Fn(&mut SettingsView, &mut Window, &mut Context<SettingsView>) + 'static,
 ) -> impl IntoElement {
+    // Sized to sit beside gpui-component's `.small()` controls (the cards'
+    // dropdowns/switches) — a notch above the per-notebook row buttons.
     div()
         .id(id)
-        .px(px(12.0))
-        .py(px(7.0))
-        .rounded(px(8.0))
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(7.0))
         .border_1()
         .border_color(theme::border_subtle())
         .bg(theme::glass())
         .text_color(theme::text_secondary())
-        .text_size(px(13.0))
+        .text_size(px(12.0))
         .cursor_pointer()
         .hover(|h| {
             h.bg(theme::glass_strong())

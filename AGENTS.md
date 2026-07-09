@@ -94,6 +94,11 @@ change must stay cross-platform.
   (e.g. `paths::desktop_dir()`) and gate platform code with `#[cfg(...)]`.
 - **Optional functionality sits behind a Cargo feature** so consumers can drop it
   (ratex-gpui's default-on `editor`; gpui-pdf's opt-in `markup`/`search`).
+- **Chrome controls are `.small()`.** gpui-component controls in app chrome —
+  settings cards, side panels, popovers, find bars, in-pane prompts — take
+  `Sizable::small()`, and the settings `text_button` matches that scale (its
+  per-row `nb_button` sits a notch below). Dialog bodies/footers and focal
+  surfaces (the unlock screen, the page-title field) keep the default size.
 
 ## Tests
 
