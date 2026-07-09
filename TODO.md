@@ -32,8 +32,8 @@ work is collected under [Completed](#completed) at the bottom.
 Obsidian-style multiple "vaults" — separate, self-contained data sets the user
 switches between (work / personal / a shared folder in Dropbox). **Not called
 vaults**; working name **Notebooks** (alternatives considered: Spaces,
-Workspaces, Collections). **Phase 1 BUILT on `feat/notebooks`** (2026-07-08,
-live-tested); the Settings fold-in below and Phase 2 remain.
+Workspaces, Collections). **Phase 1 COMPLETE on `feat/notebooks`** (2026-07-08,
+live-tested end to end); only Phase 2 remains, if demand appears.
 
 **Why this is cheaper than it sounds — what already exists:**
 - A data dir is already a fully self-contained bundle: `zorite.db` + `images/`
@@ -70,13 +70,20 @@ live-tested); the Settings fold-in below and Phase 2 remain.
   macOS that goes through `open`/LaunchServices, which pops a Terminal window
   for a bare (non-.app) binary and drops the environment; the app respawns
   `current_exe` directly and quits (`relaunch()` in app.rs).
-- [x] Window title gains the notebook name when more than one is registered
-  (main + torn-off windows; set at window creation, so a rename of the active
-  notebook shows after the next relaunch).
-- [ ] Settings → General's existing "data location" pane folds into this
-  (Move becomes a per-notebook action; Switch is superseded by the registry).
-  `set_location` already keeps the registry coherent (a Move retargets the
-  moved notebook's entry), so this is UI-only.
+- [x] Window title gains the notebook name when more than one is registered.
+  GOTCHA: the visible title is the app's own drawn `TitleBar` label in
+  AppView::render (`window_label`), NOT the native `WindowOptions` title
+  (which only names Mission Control / the taskbar) — both are set. Updates
+  live on rename/add/remove via the `AppView.notebooks` cache (refreshed on
+  popover open + mutations; the sidebar must NOT call `paths::notebooks()`
+  per render — that's a pointer-file read per keystroke).
+- [x] Settings grew a **Notebooks tab** (user-upgraded scope from "fold the
+  pane in"): the registry list with per-row Switch / Rename / Reveal /
+  Remove + "Add notebook…", live-syncing the chip + title via
+  `AppView::notebooks_changed`. The Data-location card moved into the tab
+  (Move-only now — a target holding a database directs to the switcher
+  instead of silently repointing). Shared validation in
+  `paths::register_dir`.
 - [x] `ZORITE_DATA` keeps top precedence (dev/test). Note: registry writes
   still land in the real pointer file under the override, and a relaunch now
   inherits the env — sandbox live tests with an overridden `HOME` instead.

@@ -18,8 +18,10 @@ log: <https://github.com/packetThrower/zorite/releases>.
   in Dropbox works) — then confirm and Zorite relaunches into it. Rename
   (the name travels with the folder), reveal, or remove a notebook from the
   list without touching its files; the window title shows which notebook
-  you're in once there's more than one. An encrypted notebook lands on its
-  unlock screen, exactly like a normal launch.
+  you're in once there's more than one. Settings gained a **Notebooks** tab
+  with the same management (plus the per-notebook data-location move, which
+  used to live under General). An encrypted notebook lands on its unlock
+  screen, exactly like a normal launch.
 - **Nix flake** — `nix run github:packetThrower/zorite` builds and launches
   Zorite from source on NixOS and other Linux systems with Nix, desktop entry
   and icon included; `nix develop` gives a ready dev shell. A CI job keeps the
