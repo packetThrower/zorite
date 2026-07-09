@@ -595,9 +595,14 @@ pub struct AppView {
     /// Shared cross-window save signal (see [`DocSignal`]): this window emits on
     /// save and reloads stale content on other windows' saves (live multi-window).
     doc_signal: Entity<DocSignal>,
-    /// The rename dialog's text field, and the page being renamed.
+    /// The rename dialog's text field, the page being renamed, and the
+    /// failure line shown inside the dialog (collision / DB error). The error
+    /// is an `Rc<RefCell<…>>`, NOT a plain field: the dialog builder runs
+    /// inside this view's own render (`Root::render_dialog_layer`), where
+    /// reading the AppView entity would double-borrow and panic.
     rename_input: Entity<InputState>,
     rename_target: Option<i64>,
+    rename_error: Rc<RefCell<Option<SharedString>>>,
     /// The text field for the password prompt shown when an encrypted PDF tab is
     /// locked (one field shared across PDF tabs — only the active one prompts).
     pdf_password_input: Entity<InputState>,
@@ -841,6 +846,7 @@ impl AppView {
             doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
+            rename_error: Rc::new(RefCell::new(None)),
             pdf_password_input,
             db_error,
             db_error_shown: false,
@@ -3048,12 +3054,16 @@ impl AppView {
         };
         cx.notify();
         let rx = cx.prompt_for_new_path(crate::paths::desktop_dir().as_path(), Some("formula.png"));
-        cx.spawn_in(window, async move |_this, _cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
-            let Some(png) = ratex_gpui::render::render_latex_to_png(&source, 48.0, 4.0) else {
-                return;
-            };
-            let _ = std::fs::write(path, png);
+            let result = ratex_gpui::render::render_latex_to_png(&source, 48.0, 4.0)
+                .ok_or_else(|| "the formula didn’t render".to_string())
+                .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()));
+            if let Err(e) = result {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.show_error_dialog("Export failed", e, window, cx);
+                });
+            }
         })
         .detach();
     }
@@ -3064,12 +3074,16 @@ impl AppView {
         };
         cx.notify();
         let rx = cx.prompt_for_new_path(crate::paths::desktop_dir().as_path(), Some("formula.svg"));
-        cx.spawn_in(window, async move |_this, _cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
-            let Some(svg) = ratex_gpui::render::render_latex_to_svg(&source, 48.0) else {
-                return;
-            };
-            let _ = std::fs::write(path, svg);
+            let result = ratex_gpui::render::render_latex_to_svg(&source, 48.0)
+                .ok_or_else(|| "the formula didn’t render".to_string())
+                .and_then(|svg| std::fs::write(&path, svg).map_err(|e| e.to_string()));
+            if let Err(e) = result {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.show_error_dialog("Export failed", e, window, cx);
+                });
+            }
         })
         .detach();
     }
@@ -3774,7 +3788,7 @@ impl AppView {
                     on
                 };
                 if new != field.value {
-                    self.write_pdf_field(&path, &field.name, &new, cx);
+                    self.write_pdf_field(&path, &field.name, &new, window, cx);
                 }
             }
             FieldKind::Text | FieldKind::Choice => {
@@ -3840,7 +3854,7 @@ impl AppView {
         };
         let value = edit.input.read(cx).value().trim_end().to_string();
         if value != edit.field.value {
-            self.write_pdf_field(&edit.path, &edit.field.name, &value, cx);
+            self.write_pdf_field(&edit.path, &edit.field.name, &value, window, cx);
         }
         let Some(view) = self.pdf_views.get(&edit.path).cloned() else {
             cx.notify();
@@ -3896,13 +3910,13 @@ impl AppView {
 
     /// Commit the seated PDF field input (Enter / click-away): write the value
     /// if it changed, then drop the seat.
-    pub(crate) fn commit_pdf_field_edit(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn commit_pdf_field_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(edit) = self.pdf_field_edit.take() else {
             return;
         };
         let value = edit.input.read(cx).value().trim_end().to_string();
         if value != edit.field.value {
-            self.write_pdf_field(&edit.path, &edit.field.name, &value, cx);
+            self.write_pdf_field(&edit.path, &edit.field.name, &value, window, cx);
         }
         cx.notify();
     }
@@ -3910,20 +3924,45 @@ impl AppView {
     /// Write one form field: read the stored PDF, rewrite it through
     /// `set_form_value` (value + regenerated appearance), save it back, and
     /// hot-swap the open viewer's document (scroll/zoom preserved).
-    fn write_pdf_field(&mut self, path: &PathBuf, name: &str, value: &str, cx: &mut Context<Self>) {
+    fn write_pdf_field(
+        &mut self,
+        path: &PathBuf,
+        name: &str,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
                 log::error!("read pdf for form write: {e}");
+                self.show_error_dialog(
+                    "Couldn’t save the field",
+                    format!("Reading the PDF failed: {e}"),
+                    window,
+                    cx,
+                );
                 return;
             }
         };
         let Some(new) = gpui_pdf::set_form_value(&bytes, name, value) else {
             log::error!("form write refused: field {name:?}");
+            self.show_error_dialog(
+                "Couldn’t save the field",
+                format!("The PDF rejected a write to “{name}” (it may be read-only)."),
+                window,
+                cx,
+            );
             return;
         };
         if let Err(e) = std::fs::write(path, &new) {
             log::error!("save pdf form write: {e}");
+            self.show_error_dialog(
+                "Couldn’t save the field",
+                format!("Writing the PDF failed: {e}"),
+                window,
+                cx,
+            );
             return;
         }
         if let Some(view) = self.pdf_views.get(path) {
@@ -4515,9 +4554,11 @@ impl AppView {
             }));
             // Files dropped on the canvas → import the images, place at the drop.
             let w = weak.clone();
-            v.set_on_drop_files(Rc::new(move |paths, x, y, _window, cx| {
+            v.set_on_drop_files(Rc::new(move |paths, x, y, window, cx| {
                 if let Some(app) = w.upgrade() {
-                    app.update(cx, |a, cx| a.drop_files_on_board(id, paths, x, y, cx));
+                    app.update(cx, |a, cx| {
+                        a.drop_files_on_board(id, paths, x, y, window, cx)
+                    });
                 }
             }));
             // ⌘C / ⌘X → put the serialized selection on the system clipboard,
@@ -4669,8 +4710,8 @@ impl AppView {
             let Some(path) = paths.into_iter().next() else {
                 return;
             };
-            let _ = this.update(cx, |this, cx| {
-                this.place_image_file_on_board(board_id, path, x, y, cx);
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.place_image_file_on_board(board_id, path, x, y, window, cx);
             });
         })
         .detach();
@@ -4684,12 +4725,20 @@ impl AppView {
         paths: Vec<PathBuf>,
         x: f32,
         y: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let mut n = 0.0;
         for path in paths {
             if crate::images::is_supported(&path) {
-                self.place_image_file_on_board(board_id, path, x + n * 16.0, y + n * 16.0, cx);
+                self.place_image_file_on_board(
+                    board_id,
+                    path,
+                    x + n * 16.0,
+                    y + n * 16.0,
+                    window,
+                    cx,
+                );
                 n += 1.0;
             }
         }
@@ -4702,11 +4751,20 @@ impl AppView {
         path: PathBuf,
         x: f32,
         y: f32,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match crate::images::import_file(&path) {
             Ok(rel) => self.add_image_to_board(board_id, rel.into(), x, y, cx),
-            Err(e) => log::error!("import image {}: {e}", path.display()),
+            Err(e) => {
+                log::error!("import image {}: {e}", path.display());
+                self.show_error_dialog(
+                    "Couldn’t add the image",
+                    format!("Importing {} failed: {e}", path.display()),
+                    window,
+                    cx,
+                );
+            }
         }
     }
 
@@ -6894,6 +6952,31 @@ impl AppView {
 
     /// Delete a named page and refresh the UI. Journals are never deleted
     /// (the DB guards this too). Any tabs showing the page are closed.
+    /// A one-button error dialog — the voice for user-initiated operations
+    /// (rename, delete, export, form writes) whose failures used to be
+    /// log-only. NOTE: `feat/notebooks` adds an identical helper; drop one
+    /// copy when the branches merge.
+    fn show_error_dialog(
+        &mut self,
+        title: &'static str,
+        body: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let body = body.clone();
+            dialog
+                .title(title)
+                .description(SharedString::from(body))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("OK")
+                        .show_cancel(false),
+                )
+                .on_ok(|_, _window, _cx| true)
+        });
+    }
+
     fn delete_page(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
         match self.db.delete_page(id) {
             Ok(true) => {
@@ -6920,7 +7003,10 @@ impl AppView {
                 self.activate_tab(self.active, window, cx);
             }
             Ok(false) => {}
-            Err(e) => log::error!("delete page {id}: {e}"),
+            Err(e) => {
+                log::error!("delete page {id}: {e}");
+                self.show_error_dialog("Couldn’t delete the page", e.to_string(), window, cx);
+            }
         }
     }
 
@@ -7496,6 +7582,7 @@ impl AppView {
             return;
         };
         self.rename_target = Some(id);
+        *self.rename_error.borrow_mut() = None;
         self.rename_input
             .update(cx, |s, cx| s.set_value(title.to_string(), window, cx));
 
@@ -7504,6 +7591,7 @@ impl AppView {
         // a child) with a footer we build ourselves. Enter/Escape are wired
         // via on_ok/on_cancel.
         let input = self.rename_input.clone();
+        let err = self.rename_error.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let input_body = input.clone();
@@ -7511,10 +7599,21 @@ impl AppView {
             let input_key = input.clone();
             let weak_btn = weak.clone();
             let weak_key = weak.clone();
+            // A failed rename (collision, DB error) reports INSIDE this dialog
+            // and keeps it open — a second dialog on top would pop this one off
+            // the dialog stack and read as "nothing happened".
+            let error = err.borrow().clone();
             dialog
                 .title("Rename page")
                 .w(px(420.0))
                 .child(Input::new(&input_body))
+                .children(error.map(|e| {
+                    div()
+                        .mt(px(6.0))
+                        .text_size(px(12.0))
+                        .text_color(gpui::rgb(0xE5484D))
+                        .child(e)
+                }))
                 .footer(
                     DialogFooter::new()
                         .child(
@@ -7525,16 +7624,20 @@ impl AppView {
                         .child(Button::new("rename-ok").primary().label("Rename").on_click(
                             move |_, window, cx| {
                                 let title = input_btn.read(cx).value().to_string();
-                                let _ = weak_btn
-                                    .update(cx, |this, cx| this.commit_rename(title, window, cx));
-                                window.close_dialog(cx);
+                                let done = weak_btn
+                                    .update(cx, |this, cx| this.commit_rename(title, window, cx))
+                                    .unwrap_or(true);
+                                if done {
+                                    window.close_dialog(cx);
+                                }
                             },
                         )),
                 )
                 .on_ok(move |_, window, cx| {
                     let title = input_key.read(cx).value().to_string();
-                    let _ = weak_key.update(cx, |this, cx| this.commit_rename(title, window, cx));
-                    true
+                    weak_key
+                        .update(cx, |this, cx| this.commit_rename(title, window, cx))
+                        .unwrap_or(true)
                 })
                 .on_cancel(|_, _window, _cx| true)
         });
@@ -7543,12 +7646,22 @@ impl AppView {
 
     /// Apply a confirmed rename: rewrite `[[links]]`, refresh the sidebar,
     /// and update any open tab titles for the page.
-    fn commit_rename(&mut self, new_title: String, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.rename_target.take() else {
-            return;
+    /// Returns whether the rename dialog should close: a success or a
+    /// cancel-like no-op (empty/unchanged name) closes; a collision or DB
+    /// error keeps it open showing `rename_error` inline.
+    fn commit_rename(
+        &mut self,
+        new_title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(id) = self.rename_target else {
+            return true;
         };
         match self.db.rename_page(id, &new_title) {
             Ok(true) => {
+                self.rename_target = None;
+                *self.rename_error.borrow_mut() = None;
                 let title: SharedString = new_title.trim().to_string().into();
                 for tab in &mut self.tabs {
                     if matches!(tab.kind, TabKind::Page(pid) if pid == id) {
@@ -7559,10 +7672,39 @@ impl AppView {
                 self.reload_day_editors(window, cx);
                 self.signal_doc_changed(cx);
                 self.activate_tab(self.active, window, cx);
+                true
             }
-            Ok(false) => {}
-            Err(e) => log::error!("rename page {id}: {e}"),
+            Ok(false) => {
+                // Only a collision needs a voice — an empty or unchanged name
+                // reads as cancelling the dialog.
+                let t = new_title.trim().to_string();
+                if !t.is_empty() && self.title_collides(id, &t) {
+                    *self.rename_error.borrow_mut() =
+                        Some(format!("A page named “{t}” already exists.").into());
+                    cx.notify();
+                    false
+                } else {
+                    self.rename_target = None;
+                    true
+                }
+            }
+            Err(e) => {
+                log::error!("rename page {id}: {e}");
+                *self.rename_error.borrow_mut() = Some(format!("Rename failed: {e}").into());
+                cx.notify();
+                false
+            }
         }
+    }
+
+    /// Whether another page already owns `title` (the silent-no-op reason a
+    /// rename most often fails).
+    fn title_collides(&self, id: i64, title: &str) -> bool {
+        self.db
+            .get_page_by_title(title)
+            .ok()
+            .flatten()
+            .is_some_and(|p| p.id != id)
     }
 
     /// Rename the open page from its inline title field. Updates state in
@@ -7607,11 +7749,25 @@ impl AppView {
                 cx.notify();
             }
             Ok(false) => {
-                // Empty, duplicate, or journal — revert the field.
+                // Empty, duplicate, or journal — revert the field, and say
+                // why when it was a collision (the only surprising case).
+                let t = new_title.trim().to_string();
                 title_state.update(cx, |s, cx| s.set_value(current, window, cx));
+                if !t.is_empty() && self.title_collides(id, &t) {
+                    self.show_error_dialog(
+                        "Can’t rename",
+                        format!("A page named “{t}” already exists."),
+                        window,
+                        cx,
+                    );
+                }
                 cx.notify();
             }
-            Err(e) => log::error!("rename page {id} (inline): {e}"),
+            Err(e) => {
+                log::error!("rename page {id} (inline): {e}");
+                title_state.update(cx, |s, cx| s.set_value(current, window, cx));
+                self.show_error_dialog("Rename failed", e.to_string(), window, cx);
+            }
         }
     }
 }
