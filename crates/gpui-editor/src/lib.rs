@@ -1480,9 +1480,37 @@ impl EditorState {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
-        let (row, _) = self.row_col(self.cursor_offset());
+        let (row, col) = self.row_col(self.cursor_offset());
         let starts = self.line_starts();
-        self.move_to(starts[row], cx);
+        // Smart Home on a gutter line (list/task/quote): the marker is hidden
+        // behind a painted bullet, so land on the first content character —
+        // the raw line start would reveal the marker and let typing break it.
+        // A second Home (at or inside the prefix) goes to the true start.
+        let plen = self.hidden_prefix_len(row);
+        let target = if plen > 0 && col > plen {
+            starts[row] + plen
+        } else {
+            starts[row]
+        };
+        self.move_to(target, cx);
+    }
+
+    /// The hidden marker prefix length of logical `row` — list/task/quote
+    /// lines draw their marker as a painted gutter and hide the source chars.
+    /// 0 when the line has no gutter or markdown styling is off.
+    fn hidden_prefix_len(&self, row: usize) -> usize {
+        if self.markdown_style.is_none() {
+            return 0;
+        }
+        let Some(&start) = self.line_starts().get(row) else {
+            return 0;
+        };
+        let line = &self.content[start..self.line_end(row)];
+        markdown_syntax::task_prefix(line)
+            .map(|(l, ..)| l)
+            .or_else(|| markdown_syntax::list_prefix(line).map(|(l, ..)| l))
+            .or_else(|| markdown_syntax::blockquote_prefix(line))
+            .unwrap_or(0)
     }
 
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
@@ -1498,7 +1526,8 @@ impl EditorState {
             // the start of the line just below one — remove the whole picture
             // (line + newline) as one edit, never stepping into its hidden
             // markdown character by character.
-            let (row, col) = self.row_col(self.cursor_offset());
+            let off = self.cursor_offset();
+            let (row, col) = self.row_col(off);
             if let Some(range) = self.image_row_range(row).or_else(|| {
                 (col == 0 && row > 0)
                     .then(|| self.image_row_range(row - 1))
@@ -1508,11 +1537,48 @@ impl EditorState {
                 cx.emit(EditorEvent::Changed);
                 return;
             }
-            let prev = self.previous_boundary(self.cursor_offset());
-            if self.cursor_offset() == prev {
+            // The same Word-style treatment for math: backspacing onto an
+            // inline formula's closing `$` removes the whole formula, and at
+            // the start of the line below a `$$` block removes the whole
+            // block — never stripping one hidden delimiter and dumping raw
+            // LaTeX. A caret strictly INSIDE a span (revealed source) still
+            // edits character-wise.
+            if let Some((range, _)) = self
+                .inline_math_span_at(self.previous_boundary(off))
+                .filter(|(r, _)| off == r.end)
+            {
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
+            if col == 0
+                && row > 0
+                && self.math_block_at(row).is_none() // inside = raw editing
+                && let Some((range, _)) = self.math_block_at(row - 1)
+            {
+                let range = self.math_delete_range(range);
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
+            // Backspacing from the line below a property panel joins as
+            // usual — but the caret would land inside the panel and reveal
+            // its raw `key:: value` source. Seat the in-place form after the
+            // join instead (the same landing as arrowing in from below).
+            let join_into_props = col == 0
+                && row > 0
+                && self.property_block_at(row).is_none()
+                && self.property_block_at(row - 1).is_some();
+            let prev = self.previous_boundary(off);
+            if off == prev {
                 return;
             }
             self.select_to(prev, cx);
+            self.replace_text_in_range(None, "", window, cx);
+            if join_into_props {
+                self.edit_properties_at_caret(true, cx);
+            }
+            return;
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -1532,11 +1598,41 @@ impl EditorState {
                 cx.emit(EditorEvent::Changed);
                 return;
             }
-            let next = self.next_boundary(self.cursor_offset());
-            if self.cursor_offset() == next {
+            // Math mirrors of the backspace guards: deleting onto an inline
+            // formula's opening `$` removes the whole formula; at the end of
+            // the line above a `$$` block removes the whole block.
+            if let Some((range, _)) = self
+                .inline_math_span_at(self.next_boundary(off))
+                .filter(|(r, _)| off == r.start)
+            {
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
+            if off == self.line_end(row)
+                && self.math_block_at(row).is_none() // inside = raw editing
+                && let Some((range, _)) = self.math_block_at(row + 1)
+            {
+                let range = self.math_delete_range(range);
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
+            // Mirroring backspace's property join: pulling the panel's first
+            // line up would seat a raw caret in the block — open the form.
+            let join_into_props = off == self.line_end(row)
+                && self.property_block_at(row).is_none()
+                && self.property_block_at(row + 1).is_some();
+            let next = self.next_boundary(off);
+            if off == next {
                 return;
             }
             self.select_to(next, cx);
+            self.replace_text_in_range(None, "", window, cx);
+            if join_into_props {
+                self.edit_properties_at_caret(false, cx);
+            }
+            return;
         }
         self.replace_text_in_range(None, "", window, cx);
     }
@@ -1572,6 +1668,16 @@ impl EditorState {
             self.selected_range = end..end;
             self.replace_text_in_range(None, "\n", window, cx);
             return;
+        }
+        // Inside a property panel a raw newline would split a `key:: value`
+        // line. Enter opens the panel's editor instead — the same route as a
+        // click or arrow-in (the form's own Enter then commits).
+        if self.selected_range.is_empty() {
+            let (row, _) = self.row_col(self.cursor_offset());
+            if self.property_block_at(row).is_some() {
+                self.edit_properties_at_caret(false, cx);
+                return;
+            }
         }
         // List auto-continuation: Enter on a list/task item opens the next item
         // (same marker + indent; ordered numbers increment); Enter on an *empty*
@@ -1923,6 +2029,39 @@ impl EditorState {
             .map(|(r, source)| (starts[r.start]..self.line_end(r.end - 1), source.into()))
     }
 
+    /// A `$$` block's byte range grown for deletion: takes in the
+    /// `<!-- math:ALIGN -->` marker line directly above (removing the block
+    /// alone would orphan it) and the trailing newline.
+    fn math_delete_range(&self, range: Range<usize>) -> Range<usize> {
+        let mut start = range.start;
+        let (row, _) = self.row_col(range.start);
+        if row > 0 {
+            let prev_start = self.line_starts()[row - 1];
+            let prev = &self.content[prev_start..self.line_end(row - 1)];
+            if markdown_syntax::math_align_marker(prev).is_some() {
+                start = prev_start;
+            }
+        }
+        start..(range.end + 1).min(self.content.len())
+    }
+
+    /// If the caret sits inside a property block, ask the host to seat the
+    /// in-place form there (focused on the caret's row; `at_end` = caret at
+    /// the value's end) — the recovery for any edit that lands a raw caret in
+    /// the panel, mirroring what arrows and clicks do on entry.
+    fn edit_properties_at_caret(&mut self, at_end: bool, cx: &mut Context<Self>) {
+        let (row, _) = self.row_col(self.cursor_offset());
+        if let Some((range, source)) = self.property_block_at(row) {
+            let block_row = row - self.row_col(range.start).0;
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end,
+                row: Some(block_row),
+            });
+        }
+    }
+
     /// The property block whose lines cover `row`, as an absolute byte range +
     /// source — so a click or an arrow into the panel opens the property editor
     /// instead of landing in (and revealing) the raw `key:: value` lines.
@@ -2223,18 +2362,28 @@ impl EditorState {
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
-            // Double-click selects the word under the cursor; a $$…$$ block already
-            // opened the structural editor on the first (single) click.
+            // Double-click selects the word under the cursor. On a $$…$$ block
+            // or property panel the FIRST click of the pair already opened the
+            // in-place editor — word-selecting the hidden source underneath
+            // would fight the seated editor, so those clicks are swallowed.
             2 => {
+                let (row, _) = self.row_col(offset);
+                if self.math_block_at(row).is_some() || self.property_block_at(row).is_some() {
+                    return;
+                }
                 self.is_selecting = false;
                 self.selected_range = self.word_range_at(offset).unwrap_or(offset..offset);
                 self.selection_reversed = false;
                 cx.notify();
             }
-            // Triple-click (or more): select the whole logical line.
+            // Triple-click (or more): select the whole logical line — except on
+            // a block construct, where it would select the raw hidden fences.
             n if n >= 3 => {
-                self.is_selecting = false;
                 let (row, _) = self.row_col(offset);
+                if self.math_block_at(row).is_some() || self.property_block_at(row).is_some() {
+                    return;
+                }
+                self.is_selecting = false;
                 let start = self.line_starts()[row];
                 self.selected_range = start..self.line_end(row);
                 self.selection_reversed = false;
@@ -2558,10 +2707,18 @@ impl EditorState {
         self.focus(window, cx);
         let target = if after {
             let (end_row, _) = self.row_col(block.end.saturating_sub(1));
-            self.line_starts()
-                .get(end_row + 1)
-                .copied()
-                .unwrap_or(self.content.len())
+            match self.line_starts().get(end_row + 1).copied() {
+                Some(start) => start,
+                // The block ends the document: give the caret a fresh line
+                // below. Landing at content-end would park it ON the block's
+                // last row, revealing the raw source it just committed.
+                None => {
+                    let end = self.content.len();
+                    self.replace_range(end..end, "\n", cx);
+                    cx.emit(EditorEvent::Changed);
+                    self.content.len()
+                }
+            }
         } else {
             let (start_row, _) = self.row_col(block.start);
             if start_row > 0 {
