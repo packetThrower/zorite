@@ -25,7 +25,7 @@ use gpui::{
     WindowHandle, WindowOptions, div, point, px, size,
 };
 use gpui_component::{
-    Root, TitleBar, WindowExt,
+    Root, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
@@ -598,6 +598,15 @@ pub struct AppView {
     /// The rename dialog's text field, and the page being renamed.
     rename_input: Entity<InputState>,
     rename_target: Option<i64>,
+    /// The sidebar's notebook-switcher popover open state, and the notebook a
+    /// rename dialog targets (its dir — the dialog shares `rename_input`).
+    pub notebook_popover: bool,
+    notebook_rename_target: Option<String>,
+    /// The notebook registry, cached (the pointer file isn't re-read every
+    /// render) — refreshed when the popover opens and after any mutation.
+    /// `window_label` is the title-bar text derived from it.
+    pub notebooks: Vec<crate::paths::Notebook>,
+    window_label: SharedString,
     /// The text field for the password prompt shown when an encrypted PDF tab is
     /// locked (one field shared across PDF tabs — only the active one prompts).
     pdf_password_input: Entity<InputState>,
@@ -841,6 +850,10 @@ impl AppView {
             doc_signal,
             rename_input: cx.new(|cx| InputState::new(window, cx)),
             rename_target: None,
+            notebook_popover: false,
+            notebook_rename_target: None,
+            notebooks: crate::paths::notebooks(),
+            window_label: crate::paths::window_title().into(),
             pdf_password_input,
             db_error,
             db_error_shown: false,
@@ -5131,7 +5144,7 @@ impl AppView {
                             .text_color(theme::text_primary())
                             .child("🔒 This PDF is password protected"),
                     )
-                    .child(Input::new(&self.pdf_password_input).mask_toggle())
+                    .child(Input::new(&self.pdf_password_input).small().mask_toggle())
                     .children(failed.then(|| {
                         div()
                             .text_size(px(12.0))
@@ -5141,6 +5154,7 @@ impl AppView {
                     .child(
                         div().flex().justify_end().child(
                             Button::new("pdf-unlock")
+                                .small()
                                 .label("Unlock")
                                 .primary()
                                 .on_click(cx.listener(move |this, _, window, cx| {
@@ -6348,7 +6362,7 @@ impl AppView {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Zorite".into()),
+                    title: Some(crate::paths::window_title().into()),
                     ..TitleBar::title_bar_options()
                 }),
                 app_id: Some("zorite".into()),
@@ -7565,6 +7579,233 @@ impl AppView {
         }
     }
 
+    // --- Notebooks: the sidebar switcher chip's flows -------------------------
+
+    /// A one-button error dialog (the notebook flows' failure path).
+    fn show_error_dialog(
+        &mut self,
+        title: &'static str,
+        body: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let body = body.clone();
+            dialog
+                .title(title)
+                .description(SharedString::from(body))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("OK")
+                        .show_cancel(false),
+                )
+                .on_ok(|_, _window, _cx| true)
+        });
+    }
+
+    pub fn toggle_notebook_popover(&mut self, cx: &mut Context<Self>) {
+        self.notebook_popover = !self.notebook_popover;
+        if self.notebook_popover {
+            // Opening shows a fresh view of the registry (another window or
+            // an older build may have written it).
+            self.refresh_notebooks();
+        }
+        cx.notify();
+    }
+
+    /// Re-read the registry cache + the title-bar label after a mutation.
+    fn refresh_notebooks(&mut self) {
+        self.notebooks = crate::paths::notebooks();
+        self.window_label = crate::paths::window_title().into();
+    }
+
+    /// The registry changed outside this view (Settings → Notebooks) —
+    /// refresh the chip + title.
+    pub fn notebooks_changed(&mut self, cx: &mut Context<Self>) {
+        self.refresh_notebooks();
+        cx.notify();
+    }
+
+    /// Confirm, point the location pointer at `nb`, and relaunch into it. The
+    /// restart (rather than an in-place swap) keeps every store on the one
+    /// process-wide data dir honest, lands an encrypted target on its unlock
+    /// screen naturally, and sidesteps the Windows zero-window exit.
+    pub fn switch_notebook(
+        &mut self,
+        nb: crate::paths::Notebook,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.notebook_popover = false;
+        cx.notify();
+        if nb.is_active() {
+            return;
+        }
+        let fresh = !std::path::Path::new(&nb.dir).join("zorite.db").exists();
+        let (title, body): (&'static str, String) = if fresh {
+            (
+                "Create notebook",
+                format!(
+                    "Zorite will relaunch with a fresh, empty notebook “{}” in:\n{}",
+                    nb.name, nb.dir
+                ),
+            )
+        } else {
+            (
+                "Switch notebook",
+                format!("Zorite will relaunch into “{}”:\n{}", nb.name, nb.dir),
+            )
+        };
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let nb = nb.clone();
+            let body = body.clone();
+            dialog
+                .title(title)
+                .description(SharedString::from(body))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Relaunch")
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _window, cx| {
+                    match crate::paths::switch_notebook(&nb.dir) {
+                        Ok(()) => relaunch(cx),
+                        Err(e) => log::error!("switch notebook failed: {e}"),
+                    }
+                    true
+                })
+        });
+    }
+
+    /// "Add notebook…": pick a folder, register it under its folder name, and
+    /// offer the relaunch. The folder's contents decide what happens — one
+    /// holding a `zorite.db` opens as an existing notebook, an empty one
+    /// starts fresh (the confirm dialog says which).
+    pub fn add_notebook_via_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.notebook_popover = false;
+        cx.notify();
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Use folder".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(dir) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                this.register_notebook(dir, window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn register_notebook(
+        &mut self,
+        dir: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match crate::paths::register_dir(&dir) {
+            Ok(nb) => {
+                self.refresh_notebooks();
+                cx.notify();
+                self.switch_notebook(nb, window, cx);
+            }
+            Err(e) => self.show_error_dialog("Can’t use that folder", e, window, cx),
+        }
+    }
+
+    /// The row's ✎ button: the shared rename dialog, targeted at a notebook.
+    pub fn rename_notebook_dialog(
+        &mut self,
+        nb: crate::paths::Notebook,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.notebook_popover = false;
+        self.notebook_rename_target = Some(nb.dir.clone());
+        self.rename_input
+            .update(cx, |s, cx| s.set_value(nb.name, window, cx));
+        let input = self.rename_input.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let input_body = input.clone();
+            let input_btn = input.clone();
+            let input_key = input.clone();
+            let weak_btn = weak.clone();
+            let weak_key = weak.clone();
+            dialog
+                .title("Rename notebook")
+                .w(px(420.0))
+                .child(Input::new(&input_body))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("nb-rename-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(
+                            Button::new("nb-rename-ok")
+                                .primary()
+                                .label("Rename")
+                                .on_click(move |_, window, cx| {
+                                    let name = input_btn.read(cx).value().to_string();
+                                    let _ = weak_btn.update(cx, |this, cx| {
+                                        this.commit_notebook_rename(name, cx)
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
+                )
+                .on_ok(move |_, _window, cx| {
+                    let name = input_key.read(cx).value().to_string();
+                    let _ = weak_key.update(cx, |this, cx| this.commit_notebook_rename(name, cx));
+                    true
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
+        self.rename_input.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    fn commit_notebook_rename(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(dir) = self.notebook_rename_target.take() else {
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        if let Err(e) = crate::paths::rename_notebook(&dir, name) {
+            log::error!("rename notebook: {e}");
+        }
+        self.refresh_notebooks();
+        cx.notify();
+    }
+
+    /// The row's ✕ button: forgets the registry entry (files are never
+    /// touched). The active notebook's row doesn't offer it.
+    pub fn forget_notebook(&mut self, nb: crate::paths::Notebook, cx: &mut Context<Self>) {
+        if nb.is_active() {
+            return;
+        }
+        if let Err(e) = crate::paths::forget_notebook(&nb.dir) {
+            log::error!("forget notebook: {e}");
+        }
+        self.refresh_notebooks();
+        cx.notify();
+    }
+
+    pub fn reveal_notebook(&mut self, nb: crate::paths::Notebook, cx: &mut Context<Self>) {
+        cx.reveal_path(std::path::Path::new(&nb.dir));
+    }
+
     /// Rename the open page from its inline title field. Updates state in
     /// place (no tab reload) so the title field keeps focus; reverts the
     /// field if the new name is empty, a duplicate, or a journal.
@@ -7730,7 +7971,7 @@ impl Render for AppView {
                                         e.field.name
                                     )),
                             )
-                            .child(Input::new(&e.input)),
+                            .child(Input::new(&e.input).small()),
                     ),
             )
             .into_any_element()
@@ -8164,11 +8405,14 @@ impl Render for AppView {
                     .on_click(cx.listener(|this: &mut AppView, _, window, cx| {
                         this.cycle_theme_mode(window, cx);
                     }));
+                // "Zorite — <notebook>" once more than one notebook is
+                // registered (the drawn label; the native title only names
+                // Mission Control / the taskbar).
                 let label = div()
                     .px_2()
                     .text_size(px(13.0))
                     .text_color(theme::text_secondary())
-                    .child("Zorite");
+                    .child(self.window_label.clone());
                 let row = div().flex().flex_row().items_center().w_full();
                 // macOS: the native menu bar carries File/Edit/View, so the titlebar
                 // keeps just the title + theme toggle. Windows/Linux: the AppMenuBar
@@ -8589,6 +8833,23 @@ fn spell_diagnostics(text: &str) -> Vec<Diagnostic> {
         .into_iter()
         .map(|range| Diagnostic { range })
         .collect()
+}
+
+/// Relaunch the app so the next boot picks up the re-pointed data dir (a
+/// notebook switch — from the sidebar chip or Settings → Notebooks). NOT
+/// gpui's `restart()`: on macOS that goes through `open`/LaunchServices,
+/// which pops a Terminal window for a bare (non-.app) binary and drops the
+/// caller's environment — so respawn our own executable directly (inheriting
+/// env, identical bundled or not) and quit. The old and new instances overlap
+/// only for a moment, and on different data dirs.
+pub(crate) fn relaunch(cx: &mut App) {
+    match std::env::current_exe() {
+        Ok(exe) => match std::process::Command::new(exe).spawn() {
+            Ok(_) => cx.quit(),
+            Err(e) => log::error!("relaunch: spawn failed: {e}"),
+        },
+        Err(e) => log::error!("relaunch: current_exe: {e}"),
+    }
 }
 
 /// The auto-link match for a just-completed line slice (text up to the typed

@@ -5,24 +5,95 @@ work is collected under [Completed](#completed) at the bottom.
 
 ## Contents
 
+- [UX papercuts (v0.6.2 candidate)](#ux-papercuts-v062-candidate)
 - [Notes & navigation](#notes--navigation)
 - [Notebooks (multiple data folders)](#notebooks-multiple-data-folders)
 - [Performance](#performance)
 - [App & polish](#app--polish)
-- [Settings window](#settings-window)
 - [Import & export](#import--export)
 - [Crates](#crates)
 - [Maybe](#maybe)
 - [Completed](#completed)
+
+## UX papercuts (v0.6.2 candidate)
+
+Found by the 2026-07-08 four-way UX audit (editor interaction paths,
+cross-view parity, app flows, known-gap mining), plus the overlapping items
+moved in from other sections. The spine for a possible **v0.6.2**.
+
+**Editor interaction (gpui-editor):**
+- [ ] **Home lands before hidden markers** — on a list/task/quote line, Home
+  seats the caret at the raw line start (before the invisible `- [ ]` prefix),
+  so the caret looks wrong and typing lands inside the marker (`home()`)
+- [ ] **Enter inside a property panel breaks it** — `newline()` guards tables
+  (`caret_in_table`) but not property blocks, so Enter splices a raw newline
+  into `key:: value` source; should commit/step like the table path
+- [ ] **Double/triple-click on formulas bypass click-to-edit** — the construct
+  checks (math/property/image) run only at `click_count == 1`; double-click
+  word-selects inside `$x^2$` instead of opening the math editor, triple-click
+  selects the raw `$$` fences
+- [ ] **Backspace/Delete at a math boundary strips a `$`** and dumps raw
+  LaTeX — images delete atomically (Word-style); math wants the same guard
+- [ ] **Selections can include hidden markers** — shift-click, shift-arrows,
+  and drag extend into hidden `$$`/fence regions, so copied text contains
+  markers that were invisible on screen
+- [ ] Word-jump (⌥←/→) stops inside hidden constructs (`$x` splits as two
+  words) instead of hopping the whole formula
+
+**Cross-view parity:**
+- [ ] **`![](file.pdf)` file chips render only in WYSIWYG** — the reader has
+  no file-chip path at all (cross-view-rule violation); the same markdown
+  should read as the same chip in both views
+- [ ] VERIFY: **image resize inside an embed** may write the embedding page
+  instead of the target — editor embeds reuse the main image provider where
+  the reader has a separate read-only embed-image path
+- [ ] Reader opens bare URLs via `cx.open_url` directly, bypassing the host
+  hook the editor's `OpenLink` event goes through
+
+**App flows:**
+- [ ] **Unified right-click menu for page rows everywhere** — All Pages rows,
+  search results, backlink rows, and graph nodes are left-click-only today;
+  extract the sidebar's page menu (open in new tab/window, favorite, rename,
+  delete, export PDF, new sub-page) into one shared builder used by every
+  page-like surface (tabs included), and grow it with **copy/paste actions**:
+  Copy link (`[[Title]]`) and Copy contents (markdown) at minimum
+- [ ] **Error-dialog sweep** — user-facing operations that log failures
+  silently: page rename (dialog AND inline title — a duplicate name is a
+  silent no-op), alias save, notebook rename/forget, math PNG/SVG export
+  (`let _ = fs::write`), image import, PDF form-field writes. Surface each
+  through the existing `show_error_dialog` helper
+- [ ] **Deleting a page in one window leaves it open and editable in
+  others** — the cross-window sync (`apply_external_edit`) detects content
+  changes but not deletion; the ghost tab should close (or mark deleted)
+- [ ] Embeds: the box **height estimate undershoots** for image/math/mermaid-heavy
+  content (it's a line-count heuristic — `ensure_content_embeds`), so those boxes
+  scroll more than they should; measure or estimate rendered heights instead
+- [ ] Sidebar: remember the collapsed state across launches, and add a keyboard
+  shortcut to toggle it
+
+**PDF:**
+- [ ] **A failed load is silent and permanent** (2026-07-06 API audit) — an
+  unreadable/malformed PDF only `log::error!`s and `PdfView` sits on the
+  "Loading PDF…" placeholder forever, no error state, event, or retry; a
+  retry-unlock failing with `LoadError::Other` is likewise eventless, so the
+  password prompt gets no signal. Wants an explicit error state + `PdfEvent`
+  (overlaps the graceful-fallback item under Import & export)
+- [ ] `is_pdf` misses query-string refs (`report.pdf?v=2`) — it only checks
+  `ends_with(".pdf")` after trimming trailing whitespace (API audit)
+
+**Platform (from the crate audit):**
+- [ ] `os-spellcheck`: the Windows backend creates its checker for a
+  **hardcoded `en-US`** — follow the system UI language
+  (`GetUserDefaultLocaleName`), falling back gracefully when unsupported
+- [ ] `ratex-gpui`: `MathEditor` rasterizes at a **hard-coded `dpr: 2.0`**
+  (`view.rs` `with_root`) instead of the window's scale factor — slightly soft
+  on 1× displays, wasteful on 3×
 
 ## Notes & navigation
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
 - [ ] Block references: **"Copy block link"** — auto-generate a ` ^id` on a line
   (right-click / command) and put `[[Page#^id]]` on the clipboard, so linking to
   a block doesn't require inventing an id by hand
-- [ ] Embeds: the box **height estimate undershoots** for image/math/mermaid-heavy
-  content (it's a line-count heuristic — `ensure_content_embeds`), so those boxes
-  scroll more than they should; measure or estimate rendered heights instead
 - [ ] Properties: **typed values** (list / date / number) — today every value is
   text; types would enable sorting/filtering on the Properties page and smarter
   pills
@@ -32,43 +103,9 @@ work is collected under [Completed](#completed) at the bottom.
 Obsidian-style multiple "vaults" — separate, self-contained data sets the user
 switches between (work / personal / a shared folder in Dropbox). **Not called
 vaults**; working name **Notebooks** (alternatives considered: Spaces,
-Workspaces, Collections). **Held for 0.7.0** (planned 2026-07-06; not in the
-next release).
-
-**Why this is cheaper than it sounds — what already exists:**
-- A data dir is already a fully self-contained bundle: `zorite.db` + `images/`
-  + `pdf/` + `themes/` + `fonts/` + the window-bounds sidecar. Nothing lives
-  outside it except the location-pointer file (`data_location.json`, fixed home
-  = the OS-default dir). Settings, favorites, recents, theme — all in the DB,
-  so they're per-notebook for free.
-- `paths.rs` already points the app at an arbitrary dir: `plan_relocation`
-  distinguishes **Switch** (target already holds a `zorite.db` → point at it in
-  place) from **Move** (relocate current data) — so "open a different data set"
-  exists internally today; it lacks only a registry, a switcher UI, and a
-  restart hook. `ZORITE_DATA` proves the isolation (it's how all live testing
-  runs).
-- gpui has `cx.restart()` (Zed's updater uses it) — a clean relaunch is
-  available for switch-by-restart.
-
-**Phase 1 — registry + switcher, switch = relaunch:**
-- [ ] Extend `data_location.json` into a registry: `{active, notebooks:
-  [{name, dir}]}`. Serde compat both ways (old builds ignore unknown fields;
-  `#[serde(default)]` reads old files). First launch after the update
-  auto-registers the current dir as **"Main"**.
-- [ ] **Switcher at the bottom of the sidebar** (user-picked spot): a compact
-  chip showing the active notebook's name; clicking opens a popover — the
-  notebook list (✓ on active, click to switch), **New notebook…** (name + a
-  folder picker; seeds a fresh empty dir), **Add existing…** (pick a folder
-  that holds a `zorite.db`), right-click → rename / **remove from list**
-  (forgets the entry, never deletes files) / Reveal in Finder. Hide the chip
-  (or show "Main" quietly) when only one notebook is registered.
-- [ ] Switch = write `active` to the pointer file + `cx.restart()`. An
-  encrypted target notebook lands on its unlock screen naturally, and restart
-  sidesteps the Windows zero-window-exit gotcha entirely.
-- [ ] Window title gains the notebook name when more than one is registered.
-- [ ] Settings → General's existing "data location" pane folds into this
-  (Move becomes a per-notebook action; Switch is superseded by the registry).
-- [ ] `ZORITE_DATA` keeps top precedence (dev/test), bypassing the registry.
+Workspaces, Collections). **Phase 1 COMPLETE on `feat/notebooks`** (2026-07-08,
+live-tested end to end — the checklist lives under Completed); only Phase 2
+remains, if demand appears.
 
 **Phase 2 — restartless switching / notebooks open side-by-side (only if
 Phase 1 proves demand):**
@@ -88,11 +125,7 @@ per-notebook settings sync.
 
 ## App & polish
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
-- [ ] Sidebar: remember the collapsed state across launches, and add a keyboard shortcut to toggle it
 - [ ] Multi-window: same-page **concurrent edits** are last-write-wins — editing the *same* page/day in two windows at once can drop one side's changes. True resolution needs a CRDT/OT layer (out of scope for a single-user app); revisit only if real-time collaboration is ever wanted
-
-## Settings window
-- [ ] Use small versions of components
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
@@ -100,8 +133,6 @@ per-notebook settings sync.
 - [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
 - [ ] PDF: **graceful fallback for unsupported files** — encrypted PDFs now open behind a password prompt (RC4 / AES-128 / AES-256), but hayro can still fail on an *unsupported* encryption algorithm (e.g. a public-key / certificate handler) or exotic transparency / blend modes; on such a load/parse failure, show an "Open in default app" affordance (hand off to the OS viewer) instead of a blank pane
-- [ ] PDF: **a failed load is silent and permanent** (found in the 2026-07-06 API audit) — an unreadable file or malformed PDF only `log::error!`s and `PdfView` sits on the "Loading PDF…" placeholder forever, with no error state, event, or retry; and a retry-unlock failing with `LoadError::Other` (e.g. unsupported encryption discovered at unlock time) is logged but **eventless**, so the password prompt gets no signal. Both want an explicit error state + `PdfEvent`; overlaps with the graceful-fallback item above
-- [ ] PDF: `is_pdf` misses query-string refs (`report.pdf?v=2`) — it only checks `ends_with(".pdf")` after trimming trailing whitespace (API audit)
 - [ ] PDF forms, follow-ups — the AcroForm feature SHIPPED 2026-07-06 (see
   Completed): remaining niceties are **choice-field dropdowns** (Ch fields
   edit as free text today; `FormField::options` already carries `/Opt`),
@@ -118,12 +149,6 @@ findings worth fixing rather than just documenting):
   table — the ⟨⟩ delimiter pair shadows the `\angle` symbol entry (first-match
   lookup), so the symbol is unreachable by name; rename one (e.g. `langle`
   `rangle` for the delimiters, matching LaTeX)
-- [ ] `ratex-gpui`: `MathEditor` rasterizes at a **hard-coded `dpr: 2.0`**
-  (`view.rs` `with_root`) instead of the window's scale factor — slightly soft
-  on 1× displays, wasteful on 3×
-- [ ] `os-spellcheck`: the Windows backend creates its checker for a
-  **hardcoded `en-US`** — follow the system UI language
-  (`GetUserDefaultLocaleName`), falling back gracefully when unsupported
 - [ ] `gpui-whiteboard`: `Font::layout_wrapped` / `layout_styled` are `pub` but
   return **crate-private types** (unnameable outside — `layout_styled` is
   effectively uncallable externally); demote to `pub(crate)` or export the types
@@ -203,6 +228,29 @@ Ideas worth keeping, not yet committed to.
   > API.md per the crate-docs convention.
 
 ## Completed
+
+### Notebooks Phase 1 + UI polish (unreleased, feat/notebooks / PR #41)
+- [x] **Notebooks (multiple data folders), Phase 1** — registry in
+  `data_location.json` (`notebooks: [{name, dir}]` beside the active `dir`;
+  serde-compatible both ways, tested; active synthesizes as "Main" until the
+  first write; moves/settles never delete a pointer holding a registry); a
+  **sidebar-bottom chip switcher** (list with ✓, per-row ✎ rename / reveal /
+  ✕ remove buttons — inline instead of a context menu, which dies to the
+  popover's click-away; one "Add notebook…" whose picked folder decides
+  create-fresh vs open-existing); a **Settings → Notebooks tab** with the same
+  management + the Data-location card (Move-only; a has-db target directs to
+  the switcher); switch = pointer write + relaunch by **respawning
+  `current_exe`** (NOT `cx.restart()` — macOS `open`/LaunchServices pops a
+  Terminal for bare binaries and drops the env); names persist to a
+  `notebook-name` sidecar inside the folder (survive remove/re-add, travel
+  with the data, carried by moves); window title gains the notebook name —
+  the app's drawn TitleBar label (live-updating via the cached registry), the
+  native title only names Mission Control; `ZORITE_DATA` keeps precedence.
+  Phase 2 (restartless / side-by-side) remains under Notebooks above
+- [x] **Small chrome controls app-wide** (115e826) — gpui-component controls
+  in app chrome take `Sizable::small()` (settings cards, sidebar search, graph
+  panel, find bars, PDF prompts); the settings `text_button` shrank to match;
+  dialogs and focal surfaces keep the default size. Convention in AGENTS.md
 
 ### Obsidian parity (0.6.0)
 - [x] **Properties (`key:: value` anywhere)** (PR #32) — any-line properties render as a two-column panel (per-key icons, `#tag` / `[[link]]` values as clickable pills, hover highlight) in BOTH views; an **in-place property editor** seated in the note (click or arrow in; key dropdown fed by every key in the vault; full keyboard nav; writes `key:: value` back on blur); and a **Properties index page** (All pages → Properties): every key with its values + pages, icon overrides / pre-mapping from a picker, and rename-a-key-across-the-vault. Recognition shared in `gpui_markdown::syntax`; `alias::` keeps its `page_aliases` DB resolution

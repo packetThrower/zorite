@@ -162,6 +162,27 @@ struct LocationPointer {
     /// before opening the database; cleared once the move completes.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     migrate_from: String,
+    /// Registered notebooks — every data directory the user has created or
+    /// added, including the active one. Empty until a second notebook exists
+    /// (or one is renamed), so a plain single-data-set install keeps the old
+    /// pointer shape; old builds ignore the field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    notebooks: Vec<Notebook>,
+}
+
+/// One registered notebook: a self-contained data directory (database +
+/// assets) the user can switch to. See [`notebooks`].
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq, Debug)]
+pub struct Notebook {
+    pub name: String,
+    /// Absolute path of the notebook's data directory.
+    pub dir: String,
+}
+
+impl Notebook {
+    pub fn is_active(&self) -> bool {
+        Path::new(&self.dir) == data_dir()
+    }
 }
 
 /// The pointer file's fixed home — the OS default dir, so it survives the data
@@ -235,19 +256,176 @@ pub fn plan_relocation(target: &Path) -> Relocation {
 /// schedules a move of the current data into it on the next startup. Takes
 /// effect after the app restarts.
 pub fn set_location(target: &Path) -> std::io::Result<()> {
-    let mut p = LocationPointer {
-        dir: target.to_string_lossy().into_owned(),
-        migrate_from: String::new(),
-    };
-    if !target.join("zorite.db").exists() {
-        p.migrate_from = data_dir().to_string_lossy().into_owned();
-    }
-    write_pointer(&p)
+    let current = data_dir();
+    update_pointer(|p| {
+        p.dir = target.to_string_lossy().into_owned();
+        p.migrate_from.clear();
+        if !target.join("zorite.db").exists() {
+            p.migrate_from = current.to_string_lossy().into_owned();
+            // A move relocates the active notebook — its entry follows the data.
+            for n in &mut p.notebooks {
+                if Path::new(&n.dir) == current {
+                    n.dir = p.dir.clone();
+                }
+            }
+        }
+    })
 }
 
 /// Send the data back to the OS-default location (moving it there on restart).
 pub fn reset_location() -> std::io::Result<()> {
     set_location(&default_data_dir())
+}
+
+// --- Notebooks: registered data directories the user switches between --------
+// The registry lives in the location-pointer file; `dir` stays the single
+// source of truth for what's active, so switching notebooks is rewriting
+// `dir` and relaunching. `ZORITE_DATA` outranks all of it (resolve_data_dir).
+
+/// Read-modify-write the pointer file, preserving whatever fields the closure
+/// doesn't touch. An absent/blank `dir` is seeded with the OS default so a
+/// registry write never accidentally repoints the data.
+fn update_pointer(f: impl FnOnce(&mut LocationPointer)) -> std::io::Result<()> {
+    let mut p = read_pointer().unwrap_or_default();
+    if p.dir.trim().is_empty() {
+        p.dir = default_data_dir().to_string_lossy().into_owned();
+    }
+    f(&mut p);
+    write_pointer(&p)
+}
+
+/// Registered notebooks, with the active data directory always present. When
+/// the registry doesn't know it yet (first launch after the update, or a
+/// pointer written by an older build) the active entry is synthesized — named
+/// "Main", or by its folder when other notebooks exist — and persisted on the
+/// first registry mutation.
+pub fn notebooks() -> Vec<Notebook> {
+    let mut list = read_pointer().map(|p| p.notebooks).unwrap_or_default();
+    if !list.iter().any(Notebook::is_active) {
+        let active = data_dir();
+        let name = saved_notebook_name(&active).unwrap_or_else(|| {
+            if list.is_empty() {
+                "Main".to_string()
+            } else {
+                active
+                    .file_name()
+                    .map_or_else(|| "Main".to_string(), |n| n.to_string_lossy().into_owned())
+            }
+        });
+        list.insert(
+            0,
+            Notebook {
+                name,
+                dir: active.to_string_lossy().into_owned(),
+            },
+        );
+    }
+    list
+}
+
+/// The active notebook's name when more than one is registered — the switcher
+/// chip label and the window-title suffix stay quiet for a single data set.
+pub fn active_notebook_name() -> Option<String> {
+    let list = notebooks();
+    (list.len() > 1)
+        .then(|| list.into_iter().find(Notebook::is_active))
+        .flatten()
+        .map(|n| n.name)
+}
+
+/// The note-window title: "Zorite", gaining the notebook's name when more
+/// than one is registered.
+pub fn window_title() -> String {
+    match active_notebook_name() {
+        Some(name) => format!("Zorite — {name}"),
+        None => "Zorite".to_string(),
+    }
+}
+
+/// Validate and register a picked folder as a notebook: rejects nesting with
+/// the current data dir (one notebook's move/sweep could eat another), names
+/// it from its `notebook-name` sidecar (a previously renamed notebook being
+/// re-added) or its folder name. Shared by the sidebar switcher and Settings.
+pub fn register_dir(dir: &Path) -> Result<Notebook, String> {
+    let current = data_dir();
+    if *dir != current && (dir.starts_with(&current) || current.starts_with(dir)) {
+        return Err(
+            "Pick a folder that's neither inside nor the parent of the current data folder."
+                .to_string(),
+        );
+    }
+    let name = saved_notebook_name(dir).unwrap_or_else(|| {
+        dir.file_name().map_or_else(
+            || "Notebook".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    });
+    add_notebook(&name, dir).map_err(|e| e.to_string())?;
+    Ok(Notebook {
+        name,
+        dir: dir.to_string_lossy().into_owned(),
+    })
+}
+
+/// Register `dir` as a notebook named `name` (no-op when already registered).
+/// The first mutation also persists the synthesized active entry, so the
+/// registry is complete from then on.
+pub fn add_notebook(name: &str, dir: &Path) -> std::io::Result<()> {
+    let all = notebooks();
+    update_pointer(move |p| {
+        p.notebooks = all;
+        if !p.notebooks.iter().any(|n| Path::new(&n.dir) == dir) {
+            p.notebooks.push(Notebook {
+                name: name.to_string(),
+                dir: dir.to_string_lossy().into_owned(),
+            });
+        }
+    })
+}
+
+/// A notebook's display name, persisted as a tiny sidecar *inside* its data
+/// dir — so a custom name survives remove/re-add and travels when the folder
+/// is shared or moved. The registry stays the display source of truth; this
+/// file only seeds it. (Renaming never touches the folder itself: the active
+/// notebook's directory is a live, open database.)
+fn notebook_name_file(dir: &Path) -> PathBuf {
+    dir.join("notebook-name")
+}
+
+/// The name saved inside a notebook dir, if any.
+pub fn saved_notebook_name(dir: &Path) -> Option<String> {
+    let s = std::fs::read_to_string(notebook_name_file(dir)).ok()?;
+    let s = s.trim();
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+pub fn rename_notebook(dir: &str, new_name: &str) -> std::io::Result<()> {
+    // Best-effort: the name rides inside the notebook so re-adding finds it.
+    let _ = std::fs::write(notebook_name_file(Path::new(dir)), new_name);
+    let all = notebooks();
+    update_pointer(move |p| {
+        p.notebooks = all;
+        for n in &mut p.notebooks {
+            if n.dir == dir {
+                n.name = new_name.to_string();
+            }
+        }
+    })
+}
+
+/// Drop a notebook from the registry. Its files are never touched.
+pub fn forget_notebook(dir: &str) -> std::io::Result<()> {
+    update_pointer(|p| p.notebooks.retain(|n| n.dir != dir))
+}
+
+/// Point the next launch at `dir`. Unlike [`set_location`] this never
+/// schedules a move: an empty notebook directory boots a fresh database, a
+/// populated one opens in place. The caller relaunches the app.
+pub fn switch_notebook(dir: &str) -> std::io::Result<()> {
+    update_pointer(|p| {
+        p.dir = dir.to_string();
+        p.migrate_from.clear();
+    })
 }
 
 /// Shared progress for a startup data move: total bytes to move, bytes done so
@@ -314,27 +492,27 @@ pub fn pending_migration() -> Option<(PathBuf, PathBuf, u64)> {
 /// while the data still sits at the source. Marks `progress` finished when done.
 pub fn run_migration(source: &Path, target: &Path, progress: &MigrationProgress) {
     match relocate(source, target, &progress.done) {
-        Ok(()) => {
-            if target == default_data_dir().as_path() {
-                // Back at the default → no pointer needed.
-                let _ = std::fs::remove_file(pointer_path());
-            } else if let Some(mut p) = read_pointer() {
-                p.migrate_from.clear();
-                let _ = write_pointer(&p);
-            }
-        }
+        Ok(()) => settle_pointer(target),
         Err(e) => {
             log::error!("data move {source:?} -> {target:?} failed: {e}; keeping data in place");
-            if source == default_data_dir().as_path() {
-                let _ = std::fs::remove_file(pointer_path());
-            } else if let Some(mut p) = read_pointer() {
-                p.dir = source.to_string_lossy().into_owned();
-                p.migrate_from.clear();
-                let _ = write_pointer(&p);
-            }
+            settle_pointer(source);
         }
     }
     progress.finished.store(true, Ordering::Release);
+}
+
+/// After a move settles, record `dir` as the location with the move flag
+/// cleared. A pointer at the OS default with no notebook registry is
+/// redundant and is removed instead — but a registry always keeps the file.
+fn settle_pointer(dir: &Path) {
+    let Some(mut p) = read_pointer() else { return };
+    if dir == default_data_dir().as_path() && p.notebooks.is_empty() {
+        let _ = std::fs::remove_file(pointer_path());
+        return;
+    }
+    p.dir = dir.to_string_lossy().into_owned();
+    p.migrate_from.clear();
+    let _ = write_pointer(&p);
 }
 
 /// Total size of the entries a move would carry — the `zorite.db*` files plus
@@ -360,15 +538,17 @@ fn move_total_bytes(source: &Path) -> u64 {
 /// Move Zorite's managed data from `source` into `target`, rename-first with a
 /// cross-filesystem copy+remove fallback, adding copied bytes to `done`. Moves
 /// every `zorite.db*` file (the database, its `-wal`/`-shm` sidecars, the
-/// rollback journal, and any migration `.bak-*` backups) plus the `images/`,
-/// `pdf/`, `themes/`, `fonts/` asset folders. Only those entries move, so
-/// unrelated files (and the pointer in the default dir) stay put.
+/// rollback journal, and any migration `.bak-*` backups), the `notebook-name`
+/// sidecar, plus the `images/`, `pdf/`, `themes/`, `fonts/` asset folders.
+/// Only those entries move, so unrelated files (and the pointer in the
+/// default dir) stay put.
 fn relocate(source: &Path, target: &Path, done: &AtomicU64) -> std::io::Result<()> {
     std::fs::create_dir_all(target)?;
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;
         let name = entry.file_name();
-        if name.to_string_lossy().starts_with("zorite.db") {
+        // The db + sidecars, and the notebook's display-name sidecar.
+        if name.to_string_lossy().starts_with("zorite.db") || name == "notebook-name" {
             move_path(&entry.path(), &target.join(&name), done)?;
         }
     }
@@ -522,6 +702,25 @@ pub fn resolve_local(src: &str) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_file_is_compatible_both_ways() {
+        // A pointer written by a pre-notebooks build reads cleanly (empty
+        // registry)…
+        let old: LocationPointer = serde_json::from_str(r#"{"dir": "/x/y"}"#).unwrap();
+        assert_eq!(old.dir, "/x/y");
+        assert!(old.notebooks.is_empty());
+        // …and one we write without a registry keeps the old shape, so a
+        // downgrade reads it too.
+        assert_eq!(serde_json::to_string(&old).unwrap(), r#"{"dir":"/x/y"}"#);
+        // The registry round-trips.
+        let new: LocationPointer = serde_json::from_str(
+            r#"{"dir": "/a", "notebooks": [{"name": "Main", "dir": "/a"}, {"name": "Work", "dir": "/b"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(new.notebooks.len(), 2);
+        assert_eq!(new.notebooks[1].name, "Work");
+    }
 
     #[test]
     fn relative_resolves_under_data_dir() {
