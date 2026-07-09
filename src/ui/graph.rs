@@ -16,6 +16,7 @@ use gpui::{
     PinchEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size,
     StatefulInteractiveElement, Styled, TextRun, canvas, div, fill, point, px, size,
 };
+use gpui_component::Sizable;
 use gpui_component::input::{Input, InputState};
 use gpui_component::switch::Switch;
 
@@ -813,6 +814,7 @@ fn panel(
     let toggle = |id: &'static str, on: bool, set: fn(&mut GraphFilters, bool)| {
         let ent = cx.entity();
         Switch::new(id)
+            .small()
             .checked(on)
             .on_click(move |on: &bool, _w, cx| {
                 let mut nf = f;
@@ -879,7 +881,7 @@ fn panel(
                         .child(format!("{} shown", state.nodes.len())),
                 ),
         )
-        .children(search.map(|input| Input::new(&input).text_size(px(12.0))))
+        .children(search.map(|input| Input::new(&input).small().text_size(px(12.0))))
         .children(match_count.map(|n| {
             div()
                 .text_size(px(11.0))

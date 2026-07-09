@@ -11,6 +11,17 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
+- **Notebooks** — keep more than one set of notes, each a self-contained
+  folder (database, images, PDFs, themes), and switch between them from a
+  chip at the bottom of the sidebar. Add a notebook by picking a folder — an
+  empty one starts fresh, one holding a Zorite database opens as-is (a folder
+  in Dropbox works) — then confirm and Zorite relaunches into it. Rename
+  (the name travels with the folder), reveal, or remove a notebook from the
+  list without touching its files; the window title shows which notebook
+  you're in once there's more than one. Settings gained a **Notebooks** tab
+  with the same management (plus the per-notebook data-location move, which
+  used to live under General). An encrypted notebook lands on its unlock
+  screen, exactly like a normal launch.
 - **Nix flake** — `nix run github:packetThrower/zorite` builds and launches
   Zorite from source on NixOS and other Linux systems with Nix, desktop entry
   and icon included; `nix develop` gives a ready dev shell. A CI job keeps the

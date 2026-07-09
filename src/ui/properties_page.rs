@@ -8,6 +8,7 @@ use gpui::{
     AppContext, ClickEvent, Entity, InteractiveElement, IntoElement, ParentElement,
     StatefulInteractiveElement, Styled, Window, div, px, svg,
 };
+use gpui_component::Sizable;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::tooltip::Tooltip;
 
@@ -172,7 +173,11 @@ pub fn render(app: &AppView, cx: &mut gpui::Context<AppView>) -> impl IntoElemen
                 .text_color(theme::text_tertiary())
                 .child("Map a key before first use:"),
         )
-        .child(div().w(px(160.0)).child(Input::new(&state.new_key_input)))
+        .child(
+            div()
+                .w(px(160.0))
+                .child(Input::new(&state.new_key_input).small()),
+        )
         .child(icon_button(
             "props-add-icon",
             String::new(),
@@ -253,7 +258,11 @@ fn key_row(
             .flex()
             .items_center()
             .gap(px(4.0))
-            .child(div().flex_1().child(Input::new(&state.rename_input)))
+            .child(
+                div()
+                    .flex_1()
+                    .child(Input::new(&state.rename_input).small()),
+            )
             .child(action_chip(
                 ("props-rename-ok", i),
                 "OK",

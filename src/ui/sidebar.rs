@@ -7,8 +7,8 @@
 
 use gpui::{
     AnyElement, ClickEvent, Context, Div, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled, Window, div,
-    prelude::FluentBuilder as _, px, relative,
+    MouseDownEvent, ParentElement, SharedString, Stateful, StatefulInteractiveElement, Styled,
+    Window, deferred, div, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::{
     Icon, IconName, Sizable, input::Input, menu::ContextMenuExt, tooltip::Tooltip,
@@ -118,7 +118,7 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                         ),
                 )
                 .child(
-                    Input::new(&app.search_input).prefix(
+                    Input::new(&app.search_input).small().prefix(
                         Icon::new(IconName::Search)
                             .size_4()
                             .text_color(theme::text_tertiary()),
@@ -192,6 +192,216 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                         }),
                 ),
         )
+        .child(notebook_footer(app, cx))
+}
+
+/// The notebook switcher at the sidebar's bottom (user-picked spot): a quiet
+/// chip naming the active notebook; clicking opens a popover with the
+/// registered notebooks (switch = relaunch) and "Add notebook…". Shown even
+/// with a single notebook — it's the entry point for creating a second one.
+fn notebook_footer(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+    // The app's cached registry (no pointer-file read per render); refreshed
+    // on popover open and after mutations.
+    let notebooks = &app.notebooks;
+    let active = notebooks.iter().find(|n| n.is_active());
+    let name: SharedString = active.map_or("Main".to_string(), |n| n.name.clone()).into();
+    let dir: SharedString = active.map(|n| n.dir.clone()).unwrap_or_default().into();
+    let popover = app
+        .notebook_popover
+        .then(|| notebook_popover(notebooks, cx));
+    div()
+        .flex_shrink_0()
+        .relative()
+        .p_2()
+        .border_t_1()
+        .border_color(theme::border_subtle())
+        .child(
+            div()
+                .id("notebook-chip")
+                .flex()
+                .items_center()
+                .gap_2()
+                .px_2()
+                .py_1p5()
+                .rounded(px(6.0))
+                .text_size(px(13.0))
+                .text_color(theme::text_secondary())
+                .cursor_pointer()
+                .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+                .child(
+                    Icon::empty()
+                        .path("icons/book.svg")
+                        .size_4()
+                        .flex_shrink_0(),
+                )
+                .child(div().flex_1().truncate().child(name))
+                .child(
+                    Icon::new(IconName::ChevronUp)
+                        .with_size(px(12.0))
+                        .text_color(theme::text_tertiary())
+                        .flex_shrink_0(),
+                )
+                .tooltip(move |window, cx| Tooltip::new(dir.clone()).build(window, cx))
+                .on_click(
+                    cx.listener(|this: &mut AppView, _: &ClickEvent, _window, cx| {
+                        this.toggle_notebook_popover(cx);
+                    }),
+                ),
+        )
+        .children(popover)
+}
+
+/// The switcher popover, anchored above the chip: one row per registered
+/// notebook (✓ on the active one; right-click for rename / remove / reveal)
+/// and an "Add notebook…" row that picks a folder — empty = create fresh,
+/// holding a `zorite.db` = add existing.
+fn notebook_popover(notebooks: &[crate::paths::Notebook], cx: &mut Context<AppView>) -> AnyElement {
+    let rows: Vec<AnyElement> = notebooks
+        .iter()
+        .map(|nb| notebook_row(nb.clone(), cx))
+        .collect();
+    deferred(
+        div()
+            .absolute()
+            .bottom_full()
+            .left_0()
+            .mb(px(4.0))
+            .w(px(224.0))
+            .occlude()
+            .bg(theme::elevated())
+            .border_1()
+            .border_color(theme::divider())
+            .rounded(px(8.0))
+            .shadow_md()
+            .py_1()
+            .text_size(px(13.0))
+            .text_color(theme::text_primary())
+            .on_mouse_down_out(cx.listener(|this: &mut AppView, _, _window, cx| {
+                this.notebook_popover = false;
+                cx.notify();
+            }))
+            .children(rows)
+            .child(div().my_1().h(px(1.0)).bg(theme::divider()))
+            .child(
+                div()
+                    .id("nb-add")
+                    .mx_1()
+                    .px_2()
+                    .py_1p5()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .text_color(theme::text_secondary())
+                    .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+                    .child("Add notebook…")
+                    .on_click(
+                        cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
+                            this.add_notebook_via_picker(window, cx);
+                        }),
+                    ),
+            ),
+    )
+    .into_any_element()
+}
+
+/// One notebook row in the popover: the name (✓ tints the active row), then
+/// small inline buttons — rename (✎), reveal, and remove-from-list (✕, never
+/// on the active row; removing never deletes files). Inline buttons rather
+/// than a right-click menu: a nested context menu anchored inside this
+/// hand-rolled popover dies to its click-away dismissal.
+fn notebook_row(nb: crate::paths::Notebook, cx: &mut Context<AppView>) -> AnyElement {
+    let active = nb.is_active();
+    let name: SharedString = nb.name.clone().into();
+    let dir: SharedString = nb.dir.clone().into();
+    let nb_click = nb.clone();
+    let nb_rename = nb.clone();
+    let nb_reveal = nb.clone();
+    let nb_forget = nb.clone();
+    div()
+        .id(SharedString::from(format!("nb:{}", nb.dir)))
+        .flex()
+        .items_center()
+        .gap_1()
+        .mx_1()
+        .px_2()
+        .py_1p5()
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .when(active, |d| d.bg(theme::accent_tint()))
+        .when(!active, |d| d.hover(|h| h.bg(theme::hover())))
+        .child(
+            // The folder-path tooltip sits on the NAME, not the whole row, so
+            // it can't flash while the pointer crosses the row's buttons
+            // (which carry their own tips).
+            div()
+                .id(SharedString::from(format!("nb-name:{}", nb.dir)))
+                .flex_1()
+                .truncate()
+                .when(active, |d| d.text_color(theme::accent()))
+                .child(name)
+                .tooltip(move |window, cx| Tooltip::new(dir.clone()).build(window, cx)),
+        )
+        .child(row_btn(
+            ("nb-rename", nb.dir.clone()),
+            Icon::empty()
+                .path("icons/pencil.svg")
+                .with_size(px(13.0))
+                .into_any_element(),
+            "Rename",
+            cx.listener(move |this: &mut AppView, _: &MouseDownEvent, window, cx| {
+                cx.stop_propagation();
+                this.rename_notebook_dialog(nb_rename.clone(), window, cx);
+            }),
+        ))
+        .child(row_btn(
+            ("nb-reveal", nb.dir.clone()),
+            Icon::empty()
+                .path("icons/folder.svg")
+                .with_size(px(13.0))
+                .into_any_element(),
+            "Reveal folder",
+            cx.listener(move |this: &mut AppView, _: &MouseDownEvent, _window, cx| {
+                cx.stop_propagation();
+                this.reveal_notebook(nb_reveal.clone(), cx);
+            }),
+        ))
+        .when(!active, |d| {
+            d.child(row_btn(
+                ("nb-forget", nb.dir.clone()),
+                div().text_size(px(12.0)).child("✕").into_any_element(),
+                "Remove from list (keeps the files)",
+                cx.listener(move |this: &mut AppView, _: &MouseDownEvent, _window, cx| {
+                    cx.stop_propagation();
+                    this.forget_notebook(nb_forget.clone(), cx);
+                }),
+            ))
+        })
+        .on_click(
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                this.switch_notebook(nb_click.clone(), window, cx);
+            }),
+        )
+        .into_any_element()
+}
+
+/// A small muted icon button inside a notebook row. Its handler runs on mouse
+/// down (stopping propagation) so the row's click-to-switch never also fires.
+fn row_btn(
+    id: (&'static str, String),
+    face: AnyElement,
+    tip: &'static str,
+    handler: impl Fn(&MouseDownEvent, &mut Window, &mut gpui::App) + 'static,
+) -> AnyElement {
+    div()
+        .id(SharedString::from(format!("{}:{}", id.0, id.1)))
+        .flex_shrink_0()
+        .p(px(3.0))
+        .rounded(px(4.0))
+        .text_color(theme::text_tertiary())
+        .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+        .child(face)
+        .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
+        .on_mouse_down(MouseButton::Left, handler)
+        .into_any_element()
 }
 
 /// The collapsed sidebar: a thin icon rail with the expand caret (`>`) at the

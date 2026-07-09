@@ -15,7 +15,7 @@ use gpui::{
     Subscription, WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    Disableable, IndexPath, Root, TitleBar, WindowExt,
+    Disableable, IndexPath, Root, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants as _},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
@@ -97,6 +97,7 @@ fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
     General,
+    Notebooks,
     Appearance,
     Pdf,
     Markdown,
@@ -120,9 +121,14 @@ enum PwMode {
 /// that aren't already in its title.
 const SECTIONS: &[(Tab, &str, &str)] = &[
     (
-        Tab::General,
+        Tab::Notebooks,
+        "Notebooks",
+        "vault workspace switch add remove rename folder data set",
+    ),
+    (
+        Tab::Notebooks,
         "Data location",
-        "folder path database directory move attachments",
+        "folder path database directory move attachments notebook vault",
     ),
     (
         Tab::General,
@@ -263,6 +269,9 @@ pub struct SettingsView {
     sec_new: Entity<InputState>,
     sec_confirm: Entity<InputState>,
     security_status: Option<String>,
+    /// The Notebooks tab's rename dialog: its field, and the target's dir.
+    nb_rename_input: Entity<InputState>,
+    nb_rename_target: Option<String>,
     _subs: Vec<Subscription>,
 }
 
@@ -451,6 +460,8 @@ impl SettingsView {
             },
         ));
 
+        let nb_rename_input = cx.new(|cx| InputState::new(window, cx));
+
         Self {
             app,
             theme_select,
@@ -469,8 +480,263 @@ impl SettingsView {
             sec_new,
             sec_confirm,
             security_status: None,
+            nb_rename_input,
+            nb_rename_target: None,
             _subs: subs,
         }
+    }
+
+    /// Tell every note window the registry changed (chip + title refresh).
+    fn notify_app_notebooks(&self, cx: &mut Context<Self>) {
+        if let Some(app) = self.app.upgrade() {
+            app.update(cx, |a, cx| a.notebooks_changed(cx));
+        }
+    }
+
+    /// Confirm and relaunch into `nb` (Settings → Notebooks "Switch").
+    fn switch_notebook(
+        &mut self,
+        nb: crate::paths::Notebook,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if nb.is_active() {
+            return;
+        }
+        let fresh = !std::path::Path::new(&nb.dir).join("zorite.db").exists();
+        let (title, body): (&'static str, String) = if fresh {
+            (
+                "Create notebook",
+                format!(
+                    "Zorite will relaunch with a fresh, empty notebook “{}” in:\n{}",
+                    nb.name, nb.dir
+                ),
+            )
+        } else {
+            (
+                "Switch notebook",
+                format!("Zorite will relaunch into “{}”:\n{}", nb.name, nb.dir),
+            )
+        };
+        window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let nb = nb.clone();
+            let body = body.clone();
+            dialog
+                .title(title)
+                .description(SharedString::from(body))
+                .button_props(
+                    DialogButtonProps::default()
+                        .ok_text("Relaunch")
+                        .cancel_text("Cancel")
+                        .show_cancel(true),
+                )
+                .on_ok(move |_, _window, cx| {
+                    match crate::paths::switch_notebook(&nb.dir) {
+                        Ok(()) => crate::app::relaunch(cx),
+                        Err(e) => log::error!("switch notebook failed: {e}"),
+                    }
+                    true
+                })
+        });
+    }
+
+    /// "Add notebook…": pick a folder — empty starts fresh, one holding a
+    /// `zorite.db` opens as-is — register it, and offer the relaunch.
+    fn add_notebook(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Use folder".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(dir) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                match crate::paths::register_dir(&dir) {
+                    Ok(nb) => {
+                        this.notify_app_notebooks(cx);
+                        cx.notify();
+                        this.switch_notebook(nb, window, cx);
+                    }
+                    Err(e) => this.alert("Can’t use that folder", e, window, cx),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The row's Rename button: a small input dialog, committed to the
+    /// registry (and the notebook's own name sidecar).
+    fn rename_notebook(
+        &mut self,
+        nb: crate::paths::Notebook,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.nb_rename_target = Some(nb.dir.clone());
+        self.nb_rename_input
+            .update(cx, |s, cx| s.set_value(nb.name, window, cx));
+        let input = self.nb_rename_input.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let input_body = input.clone();
+            let input_btn = input.clone();
+            let input_key = input.clone();
+            let weak_btn = weak.clone();
+            let weak_key = weak.clone();
+            dialog
+                .title("Rename notebook")
+                .w(px(420.0))
+                .child(Input::new(&input_body))
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("nb-rn-cancel")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("nb-rn-ok").primary().label("Rename").on_click(
+                            move |_, window, cx| {
+                                let name = input_btn.read(cx).value().to_string();
+                                let _ =
+                                    weak_btn.update(cx, |this, cx| this.commit_nb_rename(name, cx));
+                                window.close_dialog(cx);
+                            },
+                        )),
+                )
+                .on_ok(move |_, _window, cx| {
+                    let name = input_key.read(cx).value().to_string();
+                    let _ = weak_key.update(cx, |this, cx| this.commit_nb_rename(name, cx));
+                    true
+                })
+                .on_cancel(|_, _window, _cx| true)
+        });
+        self.nb_rename_input.update(cx, |s, cx| s.focus(window, cx));
+    }
+
+    fn commit_nb_rename(&mut self, name: String, cx: &mut Context<Self>) {
+        let Some(dir) = self.nb_rename_target.take() else {
+            return;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return;
+        }
+        if let Err(e) = crate::paths::rename_notebook(&dir, name) {
+            log::error!("rename notebook: {e}");
+        }
+        self.notify_app_notebooks(cx);
+        cx.notify();
+    }
+
+    /// Remove from the list — never touches the notebook's files.
+    fn forget_notebook(&mut self, nb: crate::paths::Notebook, cx: &mut Context<Self>) {
+        if nb.is_active() {
+            return;
+        }
+        if let Err(e) = crate::paths::forget_notebook(&nb.dir) {
+            log::error!("forget notebook: {e}");
+        }
+        self.notify_app_notebooks(cx);
+        cx.notify();
+    }
+
+    /// One notebook in the Notebooks card: name + path on the left, its
+    /// actions on the right (the active row swaps Switch/Remove for a
+    /// "current" tag).
+    fn notebook_settings_row(
+        &self,
+        nb: crate::paths::Notebook,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let active = nb.is_active();
+        let name = nb.name.clone();
+        let dir = nb.dir.clone();
+        let nb_switch = nb.clone();
+        let nb_rename = nb.clone();
+        let nb_forget = nb.clone();
+        let reveal_dir = PathBuf::from(&nb.dir);
+        let mut actions = div().flex().flex_row().items_center().gap(px(6.0));
+        if active {
+            actions = actions.child(
+                div()
+                    .px(px(8.0))
+                    .py(px(3.0))
+                    .rounded(px(6.0))
+                    .bg(theme::accent_tint())
+                    .text_size(px(11.0))
+                    .text_color(theme::accent())
+                    .child("current"),
+            );
+        } else {
+            actions = actions.child(nb_button(
+                SharedString::from(format!("nb-switch:{}", nb.dir)),
+                "Switch",
+                cx,
+                move |this, window, cx| this.switch_notebook(nb_switch.clone(), window, cx),
+            ));
+        }
+        actions = actions
+            .child(nb_button(
+                SharedString::from(format!("nb-rename:{}", nb.dir)),
+                "Rename",
+                cx,
+                move |this, window, cx| this.rename_notebook(nb_rename.clone(), window, cx),
+            ))
+            .child(nb_button(
+                SharedString::from(format!("nb-reveal:{}", nb.dir)),
+                "Reveal",
+                cx,
+                move |_this, _window, _cx| {
+                    crate::app::AppView::reveal_folder(&reveal_dir);
+                },
+            ));
+        if !active {
+            actions = actions.child(nb_button(
+                SharedString::from(format!("nb-forget:{}", nb.dir)),
+                "Remove",
+                cx,
+                move |this, _window, cx| this.forget_notebook(nb_forget.clone(), cx),
+            ));
+        }
+        div()
+            .px(px(10.0))
+            .py(px(8.0))
+            .rounded(px(8.0))
+            .bg(theme::glass())
+            .border_1()
+            .border_color(theme::border_subtle())
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.0))
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .text_color(theme::text_primary())
+                            .child(name),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(theme::text_tertiary())
+                            .truncate()
+                            .child(dir),
+                    ),
+            )
+            .child(actions)
     }
 
     /// Re-run the update check now (Settings → Updates → "Check now").
@@ -820,10 +1086,11 @@ impl SettingsView {
     }
 
     /// Confirm a relocation to `target`, then record it and quit so the change
-    /// (and any pending move) applies on the next launch.
+    /// (and any pending move) applies on the next launch. Move-only: a folder
+    /// that already holds a database is a notebook — opening it belongs to the
+    /// sidebar switcher, not a silent repoint from here.
     fn confirm_relocation(&mut self, target: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         use crate::paths::Relocation;
-        let current = crate::paths::data_dir();
         let (title, body, ok): (&'static str, String, &'static str) =
             match crate::paths::plan_relocation(&target) {
                 Relocation::NoOp => return,
@@ -831,21 +1098,25 @@ impl SettingsView {
                     self.alert("Can’t use that folder", reason, window, cx);
                     return;
                 }
-                Relocation::Switch => (
-                    "Switch data location",
-                    format!(
-                        "“{}” already contains a Zorite database.\n\nZorite will use it the next \
-                         time it starts. Your current data stays where it is:\n{}",
-                        target.display(),
-                        current.display(),
-                    ),
-                    "Switch & Quit",
-                ),
+                Relocation::Switch => {
+                    self.alert(
+                        "That folder is already a notebook",
+                        format!(
+                            "“{}” already contains a Zorite database.\n\nAdd it from the \
+                             notebook switcher at the bottom of the sidebar, then switch to \
+                             it there.",
+                            target.display(),
+                        ),
+                        window,
+                        cx,
+                    );
+                    return;
+                }
                 Relocation::Move => (
                     "Move data location",
                     format!(
-                        "Zorite will move your notes, settings, and attachments to:\n{}\n\nThe \
-                         change takes effect the next time you open Zorite.",
+                        "Zorite will move this notebook's notes, settings, and attachments \
+                         to:\n{}\n\nThe change takes effect the next time you open Zorite.",
                         target.display(),
                     ),
                     "Move & Quit",
@@ -1006,6 +1277,14 @@ impl SettingsView {
                 cx,
             ))
             .child(nav_item(
+                "nav-notebooks",
+                "Notebooks",
+                Tab::Notebooks,
+                active,
+                !self.tab_has_matches(Tab::Notebooks),
+                cx,
+            ))
+            .child(nav_item(
                 "nav-appearance",
                 "Appearance",
                 Tab::Appearance,
@@ -1064,6 +1343,7 @@ impl SettingsView {
             .w(px(220.0))
             .child(
                 Input::new(&self.filter_input)
+                    .small()
                     .appearance(true)
                     .text_size(px(13.0)),
             )
@@ -1129,14 +1409,14 @@ impl Render for SettingsView {
             .map(|a| a.read(cx).wysiwyg())
             .unwrap_or(true);
         let wys_app = self.app.clone();
-        let wysiwyg_switch =
-            Switch::new("wysiwyg-toggle")
-                .checked(wys_on)
-                .on_click(move |checked, _window, cx| {
-                    if let Some(app) = wys_app.upgrade() {
-                        app.update(cx, |a, cx| a.set_wysiwyg(*checked, cx));
-                    }
-                });
+        let wysiwyg_switch = Switch::new("wysiwyg-toggle")
+            .small()
+            .checked(wys_on)
+            .on_click(move |checked, _window, cx| {
+                if let Some(app) = wys_app.upgrade() {
+                    app.update(cx, |a, cx| a.set_wysiwyg(*checked, cx));
+                }
+            });
 
         // Auto-link-as-you-type toggle (Markdown pane).
         let al_on = self
@@ -1145,14 +1425,14 @@ impl Render for SettingsView {
             .map(|a| a.read(cx).auto_link())
             .unwrap_or(false);
         let al_app = self.app.clone();
-        let auto_link_switch =
-            Switch::new("auto-link-toggle")
-                .checked(al_on)
-                .on_click(move |checked, _window, cx| {
-                    if let Some(app) = al_app.upgrade() {
-                        app.update(cx, |a, _cx| a.set_auto_link(*checked));
-                    }
-                });
+        let auto_link_switch = Switch::new("auto-link-toggle")
+            .small()
+            .checked(al_on)
+            .on_click(move |checked, _window, cx| {
+                if let Some(app) = al_app.upgrade() {
+                    app.update(cx, |a, _cx| a.set_auto_link(*checked));
+                }
+            });
 
         // Updates pane toggles — switches, like the WYSIWYG one. Controlled by
         // the persisted prefs; the click persists + (for pre-releases) re-checks.
@@ -1163,6 +1443,7 @@ impl Render for SettingsView {
             .unwrap_or(true);
         let check_app = self.app.clone();
         let check_updates_switch = Switch::new("check-updates-toggle")
+            .small()
             .checked(check_on)
             .on_click(move |checked, _window, cx| {
                 if let Some(app) = check_app.upgrade() {
@@ -1175,20 +1456,21 @@ impl Render for SettingsView {
             .map(|a| a.read(cx).include_prerelease())
             .unwrap_or(false);
         let pre_app = self.app.clone();
-        let prerelease_switch = Switch::new("prerelease-toggle").checked(pre_on).on_click(
-            move |checked, _window, cx| {
+        let prerelease_switch = Switch::new("prerelease-toggle")
+            .small()
+            .checked(pre_on)
+            .on_click(move |checked, _window, cx| {
                 if let Some(app) = pre_app.upgrade() {
                     app.update(cx, |a, cx| a.set_include_prerelease(*checked, cx));
                 }
-            },
-        );
+            });
 
         // Font card body: the family dropdown + an import button.
         let font_control = div()
             .flex()
             .flex_col()
             .gap(px(8.0))
-            .child(Select::new(&self.font_select).w_full())
+            .child(Select::new(&self.font_select).small().w_full())
             .child(div().flex().flex_row().child(text_button(
                 "font-add",
                 "Add font file…",
@@ -1269,6 +1551,7 @@ impl Render for SettingsView {
         let window_bounds_switch = {
             let weak = cx.entity().downgrade();
             Switch::new("window-bounds")
+                .small()
                 .checked(crate::paths::window_bounds_enabled())
                 .on_click(move |on: &bool, _w, cx| {
                     if *on {
@@ -1354,6 +1637,7 @@ impl Render for SettingsView {
                 .gap(px(8.0))
                 .child(
                     Switch::new("sec-remember")
+                        .small()
                         .checked(encrypted && crate::security::is_remembered())
                         .disabled(!encrypted)
                         .on_click(move |on: &bool, _w, cx| {
@@ -1426,7 +1710,22 @@ impl Render for SettingsView {
                 }))
         };
 
-        // Data-location card body (General): the current path, then change /
+        // Notebooks card body: every registered notebook with per-row actions
+        // (switch / rename / reveal / remove), then "Add notebook…".
+        let notebooks_control = {
+            let mut col = div().flex().flex_col().gap(px(8.0));
+            for nb in crate::paths::notebooks() {
+                col = col.child(self.notebook_settings_row(nb, cx));
+            }
+            col.child(div().flex().flex_row().mt(px(2.0)).child(text_button(
+                "nb-add",
+                "Add notebook…",
+                cx,
+                |this, w, cx| this.add_notebook(w, cx),
+            )))
+        };
+
+        // Data-location card body (Notebooks): the current path, then move /
         // reveal / reset actions.
         let data_path = crate::paths::data_dir().display().to_string();
         let at_default = crate::paths::is_default_location();
@@ -1451,12 +1750,9 @@ impl Render for SettingsView {
                     .flex()
                     .flex_row()
                     .gap(px(8.0))
-                    .child(text_button(
-                        "data-change",
-                        "Change…",
-                        cx,
-                        |this, w, cx| this.choose_data_location(w, cx),
-                    ))
+                    .child(text_button("data-move", "Move…", cx, |this, w, cx| {
+                        this.choose_data_location(w, cx)
+                    }))
                     .child(text_button(
                         "data-reveal",
                         "Reveal",
@@ -1594,14 +1890,25 @@ impl Render for SettingsView {
                             .flex_col()
                             .gap(px(16.0));
                         match self.tab {
-                            Tab::General => content
+                            Tab::Notebooks => content
+                                .child(self.section_card(
+                                    "Notebooks",
+                                    "Each notebook is a self-contained folder — its own \
+                                         database, settings, and attachments. Switching \
+                                         relaunches Zorite into the picked notebook; \
+                                         removing one only forgets it here, never touching \
+                                         its files. The chip at the bottom of the sidebar is \
+                                         the quick switcher.",
+                                    notebooks_control,
+                                ))
                                 .child(self.section_card(
                                     "Data location",
-                                    "Where Zorite keeps your database, settings, and \
-                                         attachments. Changing it moves your data to the new \
-                                         folder, then reopens Zorite.",
+                                    "Where the current notebook keeps its database, \
+                                         settings, and attachments. Moving relocates the \
+                                         data to the new folder, then reopens Zorite.",
                                     location_control,
-                                ))
+                                )),
+                            Tab::General => content
                                 .child(self.section_card(
                                     "Remember window position",
                                     "Reopen Zorite with the size and position it had when \
@@ -1620,25 +1927,25 @@ impl Render for SettingsView {
                                     "Date format",
                                     "How /date and the {{date}} template placeholder are \
                                          inserted. Journal day headers are unaffected.",
-                                    Select::new(&self.date_format_select).w_full(),
+                                    Select::new(&self.date_format_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Time format",
                                     "How /time and the {{time}} template placeholder are \
                                          inserted.",
-                                    Select::new(&self.time_format_select).w_full(),
+                                    Select::new(&self.time_format_select).small().w_full(),
                                 )),
                             Tab::Appearance => content
                                 .child(self.section_card(
                                     "App Theme",
                                     "Pick a built-in theme or one of your own.",
-                                    Select::new(&self.theme_select).w_full(),
+                                    Select::new(&self.theme_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Appearance",
                                     "Light or dark variant of the active theme. Auto follows \
                                          your system.",
-                                    Select::new(&self.appearance_select).w_full(),
+                                    Select::new(&self.appearance_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Font",
@@ -1652,7 +1959,7 @@ impl Render for SettingsView {
                                     "Text size",
                                     "Size of note text when editing and reading. Headings and \
                                          inline math scale with it.",
-                                    Select::new(&self.text_size_select).w_full(),
+                                    Select::new(&self.text_size_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Installed themes",
@@ -1678,7 +1985,7 @@ impl Render for SettingsView {
                                     "List indentation",
                                     "Spaces per nesting level for Tab and bullet nesting. Editing \
                                      and the rendered view use the same width, so they line up.",
-                                    Select::new(&self.indent_select).w_full(),
+                                    Select::new(&self.indent_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
                                     "Auto-link page titles",
@@ -2009,22 +2316,51 @@ fn fmt_size(bytes: u64) -> String {
     }
 }
 
+/// [`text_button`]'s small sibling for the notebook rows: a dynamic id (one
+/// per notebook) and tighter padding.
+fn nb_button(
+    id: SharedString,
+    label: &'static str,
+    cx: &mut Context<SettingsView>,
+    on: impl Fn(&mut SettingsView, &mut Window, &mut Context<SettingsView>) + 'static,
+) -> impl IntoElement {
+    div()
+        .id(id)
+        .px(px(8.0))
+        .py(px(4.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(theme::border_subtle())
+        .bg(theme::glass())
+        .text_color(theme::text_secondary())
+        .text_size(px(12.0))
+        .cursor_pointer()
+        .hover(|h| {
+            h.bg(theme::glass_strong())
+                .text_color(theme::text_primary())
+        })
+        .child(label)
+        .on_click(cx.listener(move |this, _, window, cx| on(this, window, cx)))
+}
+
 fn text_button(
     id: &'static str,
     label: &str,
     cx: &mut Context<SettingsView>,
     on: impl Fn(&mut SettingsView, &mut Window, &mut Context<SettingsView>) + 'static,
 ) -> impl IntoElement {
+    // Sized to sit beside gpui-component's `.small()` controls (the cards'
+    // dropdowns/switches) — a notch above the per-notebook row buttons.
     div()
         .id(id)
-        .px(px(12.0))
-        .py(px(7.0))
-        .rounded(px(8.0))
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(7.0))
         .border_1()
         .border_color(theme::border_subtle())
         .bg(theme::glass())
         .text_color(theme::text_secondary())
-        .text_size(px(13.0))
+        .text_size(px(12.0))
         .cursor_pointer()
         .hover(|h| {
             h.bg(theme::glass_strong())

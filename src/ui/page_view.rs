@@ -6,6 +6,7 @@ use gpui::{
     MouseDownEvent, ParentElement, StatefulInteractiveElement, Styled, div,
     prelude::FluentBuilder as _, px, relative,
 };
+use gpui_component::Sizable;
 use gpui_component::input::Input;
 
 use crate::app::{AppView, PageEditor, PageFind};
@@ -360,7 +361,7 @@ fn find_bar(pf: &PageFind, cx: &mut Context<AppView>) -> impl IntoElement {
             div()
                 .flex_1()
                 .min_w_0()
-                .child(Input::new(&pf.input).text_size(px(13.0))),
+                .child(Input::new(&pf.input).small().text_size(px(13.0))),
         )
         .child(
             div()
