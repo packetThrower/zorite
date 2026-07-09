@@ -32,8 +32,8 @@ work is collected under [Completed](#completed) at the bottom.
 Obsidian-style multiple "vaults" — separate, self-contained data sets the user
 switches between (work / personal / a shared folder in Dropbox). **Not called
 vaults**; working name **Notebooks** (alternatives considered: Spaces,
-Workspaces, Collections). **Held for 0.7.0** (planned 2026-07-06; not in the
-next release).
+Workspaces, Collections). **Phase 1 BUILT on `feat/notebooks`** (2026-07-08,
+live-tested); the Settings fold-in below and Phase 2 remain.
 
 **Why this is cheaper than it sounds — what already exists:**
 - A data dir is already a fully self-contained bundle: `zorite.db` + `images/`
@@ -50,25 +50,36 @@ next release).
 - gpui has `cx.restart()` (Zed's updater uses it) — a clean relaunch is
   available for switch-by-restart.
 
-**Phase 1 — registry + switcher, switch = relaunch:**
-- [ ] Extend `data_location.json` into a registry: `{active, notebooks:
-  [{name, dir}]}`. Serde compat both ways (old builds ignore unknown fields;
-  `#[serde(default)]` reads old files). First launch after the update
-  auto-registers the current dir as **"Main"**.
-- [ ] **Switcher at the bottom of the sidebar** (user-picked spot): a compact
-  chip showing the active notebook's name; clicking opens a popover — the
-  notebook list (✓ on active, click to switch), **New notebook…** (name + a
-  folder picker; seeds a fresh empty dir), **Add existing…** (pick a folder
-  that holds a `zorite.db`), right-click → rename / **remove from list**
-  (forgets the entry, never deletes files) / Reveal in Finder. Hide the chip
-  (or show "Main" quietly) when only one notebook is registered.
-- [ ] Switch = write `active` to the pointer file + `cx.restart()`. An
-  encrypted target notebook lands on its unlock screen naturally, and restart
-  sidesteps the Windows zero-window-exit gotcha entirely.
-- [ ] Window title gains the notebook name when more than one is registered.
+**Phase 1 — registry + switcher, switch = relaunch (BUILT, with deviations):**
+- [x] Registry in `data_location.json`: the existing `dir` stays the active
+  pointer; a `notebooks: [{name, dir}]` list rides along (serde-compatible
+  both ways, tested). The active dir is synthesized as **"Main"** until the
+  first registry write; a move/settle never deletes the pointer file while it
+  holds a registry.
+- [x] Switcher chip at the bottom of the sidebar. Deviations from the sketch:
+  ONE **Add notebook…** item instead of New/Add-existing (the picked folder
+  decides — empty = create fresh, holds a `zorite.db` = open existing; the
+  confirm dialog says which); per-row inline buttons (✎ rename / reveal /
+  ✕ remove-from-list) instead of a right-click menu — a nested context menu
+  anchored inside the hand-rolled popover dies to its click-away dismissal;
+  and the chip always shows (it's the only entry point for a second notebook
+  until the Settings fold-in lands). Names default to the folder name; a
+  rename persists to a `notebook-name` sidecar INSIDE the notebook dir, so
+  custom names survive remove/re-add and travel with the folder.
+- [x] Switch = write the pointer + relaunch — but NOT `cx.restart()`: on
+  macOS that goes through `open`/LaunchServices, which pops a Terminal window
+  for a bare (non-.app) binary and drops the environment; the app respawns
+  `current_exe` directly and quits (`relaunch()` in app.rs).
+- [x] Window title gains the notebook name when more than one is registered
+  (main + torn-off windows; set at window creation, so a rename of the active
+  notebook shows after the next relaunch).
 - [ ] Settings → General's existing "data location" pane folds into this
   (Move becomes a per-notebook action; Switch is superseded by the registry).
-- [ ] `ZORITE_DATA` keeps top precedence (dev/test), bypassing the registry.
+  `set_location` already keeps the registry coherent (a Move retargets the
+  moved notebook's entry), so this is UI-only.
+- [x] `ZORITE_DATA` keeps top precedence (dev/test). Note: registry writes
+  still land in the real pointer file under the override, and a relaunch now
+  inherits the env — sandbox live tests with an overridden `HOME` instead.
 
 **Phase 2 — restartless switching / notebooks open side-by-side (only if
 Phase 1 proves demand):**
