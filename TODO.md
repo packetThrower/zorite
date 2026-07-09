@@ -110,7 +110,9 @@ per-notebook settings sync.
 - [ ] Multi-window: same-page **concurrent edits** are last-write-wins — editing the *same* page/day in two windows at once can drop one side's changes. True resolution needs a CRDT/OT layer (out of scope for a single-user app); revisit only if real-time collaboration is ever wanted
 
 ## Settings window
-- [ ] Use small versions of components
+- [x] Use small versions of components — DONE on `feat/notebooks` (115e826),
+  and extended app-wide: chrome controls take `Sizable::small()` (convention
+  in AGENTS.md); dialogs and focal surfaces keep the default size
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
