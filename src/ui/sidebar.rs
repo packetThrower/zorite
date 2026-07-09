@@ -203,13 +203,15 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
 /// registered notebooks (switch = relaunch) and "Add notebook…". Shown even
 /// with a single notebook — it's the entry point for creating a second one.
 fn notebook_footer(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
-    let notebooks = crate::paths::notebooks();
+    // The app's cached registry (no pointer-file read per render); refreshed
+    // on popover open and after mutations.
+    let notebooks = &app.notebooks;
     let active = notebooks.iter().find(|n| n.is_active());
     let name: SharedString = active.map_or("Main".to_string(), |n| n.name.clone()).into();
     let dir: SharedString = active.map(|n| n.dir.clone()).unwrap_or_default().into();
     let popover = app
         .notebook_popover
-        .then(|| notebook_popover(&notebooks, cx));
+        .then(|| notebook_popover(notebooks, cx));
     div()
         .flex_shrink_0()
         .relative()

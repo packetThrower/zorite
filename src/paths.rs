@@ -342,6 +342,31 @@ pub fn window_title() -> String {
     }
 }
 
+/// Validate and register a picked folder as a notebook: rejects nesting with
+/// the current data dir (one notebook's move/sweep could eat another), names
+/// it from its `notebook-name` sidecar (a previously renamed notebook being
+/// re-added) or its folder name. Shared by the sidebar switcher and Settings.
+pub fn register_dir(dir: &Path) -> Result<Notebook, String> {
+    let current = data_dir();
+    if *dir != current && (dir.starts_with(&current) || current.starts_with(dir)) {
+        return Err(
+            "Pick a folder that's neither inside nor the parent of the current data folder."
+                .to_string(),
+        );
+    }
+    let name = saved_notebook_name(dir).unwrap_or_else(|| {
+        dir.file_name().map_or_else(
+            || "Notebook".to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    });
+    add_notebook(&name, dir).map_err(|e| e.to_string())?;
+    Ok(Notebook {
+        name,
+        dir: dir.to_string_lossy().into_owned(),
+    })
+}
+
 /// Register `dir` as a notebook named `name` (no-op when already registered).
 /// The first mutation also persists the synthesized active entry, so the
 /// registry is complete from then on.

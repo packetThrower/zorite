@@ -602,6 +602,11 @@ pub struct AppView {
     /// rename dialog targets (its dir — the dialog shares `rename_input`).
     pub notebook_popover: bool,
     notebook_rename_target: Option<String>,
+    /// The notebook registry, cached (the pointer file isn't re-read every
+    /// render) — refreshed when the popover opens and after any mutation.
+    /// `window_label` is the title-bar text derived from it.
+    pub notebooks: Vec<crate::paths::Notebook>,
+    window_label: SharedString,
     /// The text field for the password prompt shown when an encrypted PDF tab is
     /// locked (one field shared across PDF tabs — only the active one prompts).
     pdf_password_input: Entity<InputState>,
@@ -847,6 +852,8 @@ impl AppView {
             rename_target: None,
             notebook_popover: false,
             notebook_rename_target: None,
+            notebooks: crate::paths::notebooks(),
+            window_label: crate::paths::window_title().into(),
             pdf_password_input,
             db_error,
             db_error_shown: false,
@@ -7597,6 +7604,24 @@ impl AppView {
 
     pub fn toggle_notebook_popover(&mut self, cx: &mut Context<Self>) {
         self.notebook_popover = !self.notebook_popover;
+        if self.notebook_popover {
+            // Opening shows a fresh view of the registry (another window or
+            // an older build may have written it).
+            self.refresh_notebooks();
+        }
+        cx.notify();
+    }
+
+    /// Re-read the registry cache + the title-bar label after a mutation.
+    fn refresh_notebooks(&mut self) {
+        self.notebooks = crate::paths::notebooks();
+        self.window_label = crate::paths::window_title().into();
+    }
+
+    /// The registry changed outside this view (Settings → Notebooks) —
+    /// refresh the chip + title.
+    pub fn notebooks_changed(&mut self, cx: &mut Context<Self>) {
+        self.refresh_notebooks();
         cx.notify();
     }
 
@@ -7685,39 +7710,14 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Nested data dirs would let one notebook's move/sweep eat another.
-        let current = crate::paths::data_dir();
-        if dir != current && (dir.starts_with(&current) || current.starts_with(&dir)) {
-            self.show_error_dialog(
-                "Can’t use that folder",
-                "Pick a folder that's neither inside nor the parent of the current data folder."
-                    .to_string(),
-                window,
-                cx,
-            );
-            return;
+        match crate::paths::register_dir(&dir) {
+            Ok(nb) => {
+                self.refresh_notebooks();
+                cx.notify();
+                self.switch_notebook(nb, window, cx);
+            }
+            Err(e) => self.show_error_dialog("Can’t use that folder", e, window, cx),
         }
-        // A name saved inside the folder (a previously renamed notebook being
-        // re-added) wins over the folder's own name.
-        let name = crate::paths::saved_notebook_name(&dir).unwrap_or_else(|| {
-            dir.file_name().map_or_else(
-                || "Notebook".to_string(),
-                |n| n.to_string_lossy().into_owned(),
-            )
-        });
-        if let Err(e) = crate::paths::add_notebook(&name, &dir) {
-            self.show_error_dialog("Couldn’t add notebook", e.to_string(), window, cx);
-            return;
-        }
-        cx.notify();
-        self.switch_notebook(
-            crate::paths::Notebook {
-                name,
-                dir: dir.to_string_lossy().into_owned(),
-            },
-            window,
-            cx,
-        );
     }
 
     /// The row's ✎ button: the shared rename dialog, targeted at a notebook.
@@ -7784,6 +7784,7 @@ impl AppView {
         if let Err(e) = crate::paths::rename_notebook(&dir, name) {
             log::error!("rename notebook: {e}");
         }
+        self.refresh_notebooks();
         cx.notify();
     }
 
@@ -7796,6 +7797,7 @@ impl AppView {
         if let Err(e) = crate::paths::forget_notebook(&nb.dir) {
             log::error!("forget notebook: {e}");
         }
+        self.refresh_notebooks();
         cx.notify();
     }
 
@@ -8402,11 +8404,14 @@ impl Render for AppView {
                     .on_click(cx.listener(|this: &mut AppView, _, window, cx| {
                         this.cycle_theme_mode(window, cx);
                     }));
+                // "Zorite — <notebook>" once more than one notebook is
+                // registered (the drawn label; the native title only names
+                // Mission Control / the taskbar).
                 let label = div()
                     .px_2()
                     .text_size(px(13.0))
                     .text_color(theme::text_secondary())
-                    .child("Zorite");
+                    .child(self.window_label.clone());
                 let row = div().flex().flex_row().items_center().w_full();
                 // macOS: the native menu bar carries File/Edit/View, so the titlebar
                 // keeps just the title + theme toggle. Windows/Linux: the AppMenuBar
@@ -8830,12 +8835,13 @@ fn spell_diagnostics(text: &str) -> Vec<Diagnostic> {
 }
 
 /// Relaunch the app so the next boot picks up the re-pointed data dir (a
-/// notebook switch). NOT gpui's `restart()`: on macOS that goes through
-/// `open`/LaunchServices, which pops a Terminal window for a bare (non-.app)
-/// binary and drops the caller's environment — so respawn our own executable
-/// directly (inheriting env, identical bundled or not) and quit. The old and
-/// new instances overlap only for a moment, and on different data dirs.
-fn relaunch(cx: &mut App) {
+/// notebook switch — from the sidebar chip or Settings → Notebooks). NOT
+/// gpui's `restart()`: on macOS that goes through `open`/LaunchServices,
+/// which pops a Terminal window for a bare (non-.app) binary and drops the
+/// caller's environment — so respawn our own executable directly (inheriting
+/// env, identical bundled or not) and quit. The old and new instances overlap
+/// only for a moment, and on different data dirs.
+pub(crate) fn relaunch(cx: &mut App) {
     match std::env::current_exe() {
         Ok(exe) => match std::process::Command::new(exe).spawn() {
             Ok(_) => cx.quit(),
