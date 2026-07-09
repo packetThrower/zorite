@@ -2051,6 +2051,44 @@ impl EditorState {
         start..(range.end + 1).min(self.content.len())
     }
 
+    /// Route a landing offset into an atomic construct the way the plain
+    /// arrows do: an inline `$…$` span strictly containing it, or a `$$`
+    /// block / property-panel row, opens its in-place editor instead of
+    /// seating a raw caret (which would reveal hidden source). Returns true
+    /// when handled — word-jumps (⌥←/→) stop there.
+    fn enter_construct_at(&mut self, off: usize, at_end: bool, cx: &mut Context<Self>) -> bool {
+        if let Some((range, source)) = self.inline_math_span_at(off) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end,
+                inline: true,
+            });
+            return true;
+        }
+        let (row, _) = self.row_col(off);
+        if let Some((range, source)) = self.math_block_at(row) {
+            cx.emit(EditorEvent::EditMath {
+                range,
+                source,
+                at_end,
+                inline: false,
+            });
+            return true;
+        }
+        if let Some((range, source)) = self.property_block_at(row) {
+            let block_row = row - self.row_col(range.start).0;
+            cx.emit(EditorEvent::EditProperties {
+                range,
+                source,
+                at_end,
+                row: Some(block_row),
+            });
+            return true;
+        }
+        false
+    }
+
     /// If the caret sits inside a property block, ask the host to seat the
     /// in-place form there (focused on the caret's row; `at_end` = caret at
     /// the value's end) — the recovery for any edit that lands a raw caret in
@@ -2989,11 +3027,19 @@ impl EditorState {
     }
 
     fn word_left(&mut self, _: &WordLeft, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.prev_word(self.cursor_offset()), cx);
+        let off = self.prev_word(self.cursor_offset());
+        if self.enter_construct_at(off, true, cx) {
+            return;
+        }
+        self.move_to(off, cx);
     }
 
     fn word_right(&mut self, _: &WordRight, _: &mut Window, cx: &mut Context<Self>) {
-        self.move_to(self.next_word(self.cursor_offset()), cx);
+        let off = self.next_word(self.cursor_offset());
+        if self.enter_construct_at(off, false, cx) {
+            return;
+        }
+        self.move_to(off, cx);
     }
 
     fn select_word_left(&mut self, _: &SelectWordLeft, _: &mut Window, cx: &mut Context<Self>) {
@@ -5052,13 +5098,33 @@ fn shape_document(
     let code_regions = md
         .map(|_| markdown_syntax::code_regions(content))
         .unwrap_or_default();
+    // Rows a (non-empty) selection touches. A selected block reveals its raw
+    // source just like the caret's block does, so what's highlighted is what a
+    // copy carries — the per-line pass below already reveals inline markers on
+    // selected lines; rendered BLOCKS (math, mermaid, panels, fences) need the
+    // same region-wide, or a sweep silently selects invisible `$$`/fence text.
+    let sel_rows: Option<Range<usize>> = (selection.0 != selection.1).then(|| {
+        let (a, b) = (
+            selection.0.min(selection.1).min(content.len()),
+            selection.0.max(selection.1).min(content.len()),
+        );
+        let row_of = |off: usize| content[..off].matches('\n').count();
+        row_of(a)..row_of(b) + 1
+    });
+    let sel_hits = |r: &Range<usize>| {
+        sel_rows
+            .as_ref()
+            .is_some_and(|s| s.start < r.end && r.start < s.end)
+    };
     // ```mermaid blocks ready to render as a diagram: the caret is outside the
     // block and the host has a rendered bitmap. The diagram paints on the block's
     // first line; the rest collapse. Caret inside / still rendering → raw code.
     let mermaid: Vec<(Range<usize>, BlockImg)> = match block_mermaid.filter(|_| md.is_some()) {
         Some(f) => markdown_syntax::mermaid_blocks(content)
             .into_iter()
-            .filter(|(range, _)| caret_row.is_none_or(|cr| !range.contains(&cr)))
+            .filter(|(range, _)| {
+                caret_row.is_none_or(|cr| !range.contains(&cr)) && !sel_hits(range)
+            })
             .filter_map(|(range, source)| {
                 // Sized by the provider's logical dimensions, like math below —
                 // never texture pixels ÷ window scale factor.
@@ -5088,7 +5154,7 @@ fn shape_document(
     let math: Vec<(Range<usize>, BlockImg)> = match block_math.filter(|_| md.is_some()) {
         Some(f) => markdown_syntax::math_regions(content)
             .into_iter()
-            .filter(|r| caret_row.is_none_or(|cr| !r.range.contains(&cr)))
+            .filter(|r| caret_row.is_none_or(|cr| !r.range.contains(&cr)) && !sel_hits(&r.range))
             .filter_map(|r| {
                 // Sized by the provider's logical dimensions — NOT texture pixels
                 // ÷ window scale factor (see [`BlockMathFn`]: the raster's density
@@ -5122,7 +5188,7 @@ fn shape_document(
     let props: Vec<(Range<usize>, PropPanel)> = match md {
         Some(st) => markdown_syntax::property_regions(content)
             .into_iter()
-            .filter(|r| caret_row.is_none_or(|cr| !r.contains(&cr)))
+            .filter(|r| caret_row.is_none_or(|cr| !r.contains(&cr)) && !sel_hits(r))
             .map(|r| {
                 let panel = build_prop_panel(
                     &lines,
@@ -5472,9 +5538,9 @@ fn shape_document(
         // its block — so a code block reads as just its boxed body (W6), with the
         // fences re-appearing while you edit inside it.
         let collapse_fence = is_fence
-            && !code_regions
-                .iter()
-                .any(|r| r.contains(&idx) && caret_row.is_some_and(|cr| r.contains(&cr)));
+            && !code_regions.iter().any(|r| {
+                r.contains(&idx) && (caret_row.is_some_and(|cr| r.contains(&cr)) || sel_hits(r))
+            });
         // A `<!-- table:STYLE -->` or `<!-- math:ALIGN -->` marker line collapses (hidden)
         // too, unless the caret lands on it — so the marker stays out of the way but editable.
         let collapse_marker = caret_row != Some(idx)
