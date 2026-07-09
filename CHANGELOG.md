@@ -11,6 +11,12 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
+- **Right-click, everywhere** — one page menu on every surface a page shows
+  up: sidebar rows, the All Pages browser, search results, linked references,
+  and page tabs all offer open-in-new-tab/window, favorites, rename, delete,
+  export — plus **Copy link** (`[[Title]]`) and **Copy contents**. Selected
+  text gets a Cut/Copy/Paste menu (spelling suggestions stack on top on a
+  flagged word), and a property panel row offers Edit / Delete property.
 - **Notebooks** — keep more than one set of notes, each a self-contained
   folder (database, images, PDFs, themes), and switch between them from a
   chip at the bottom of the sidebar. Add a notebook by picking a folder — an
@@ -49,6 +55,28 @@ log: <https://github.com/packetThrower/zorite/releases>.
   case), and checkboxes/radios show their checked state (their
   state-dictionary appearances previously didn't draw at all). Signature and
   read-only fields stay inert; choice fields edit as free text for now.
+
+### Fixed
+
+- **Editing papercuts** — a sweep from a UX audit: Home on a list/task/quote
+  line lands on the text (a second press reaches the true start) instead of
+  revealing the hidden marker; Enter, Backspace, and Delete around a property
+  panel open its editor instead of splicing raw `key:: value` source;
+  finishing a property or formula at the very end of a note drops the caret
+  on a fresh line below; double- and triple-clicking a formula no longer
+  selects its hidden source; deleting a formula removes it whole, like an
+  image (its alignment marker too); ⌥-arrow word jumps treat formulas and
+  panels as objects; and selecting across a rendered block (math, diagram,
+  properties, code) reveals its source so what you see highlighted is exactly
+  what copies.
+- **Failures speak up** — renaming a page to a name that's taken now says so
+  (right in the rename dialog, which stays open), and errors from deleting
+  pages, exporting formulas, filling PDF form fields, and adding images to a
+  whiteboard all show a dialog instead of failing silently. A PDF that can't
+  be opened shows why instead of loading forever, and a page deleted in one
+  window closes its tabs in every window.
+- **Windows spell-check follows your system language** (it was fixed to
+  English), and the math editor renders sharp on non-Retina displays.
 
 ## [0.6.1] - 2026-07-07
 

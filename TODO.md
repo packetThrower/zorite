@@ -17,77 +17,40 @@ work is collected under [Completed](#completed) at the bottom.
 
 ## UX papercuts (v0.6.2 candidate)
 
-Found by the 2026-07-08 four-way UX audit (editor interaction paths,
-cross-view parity, app flows, known-gap mining), plus the overlapping items
-moved in from other sections. The spine for a possible **v0.6.2**.
+Found by the 2026-07-08 four-way UX audit; **ALL DONE 2026-07-09** (shipping
+in v0.7.0) except the two deferrals at the bottom. Kept briefly for the
+release notes; prune after 0.7.0 ships.
 
-**Editor interaction (gpui-editor):**
-- [ ] **Home lands before hidden markers** — on a list/task/quote line, Home
-  seats the caret at the raw line start (before the invisible `- [ ]` prefix),
-  so the caret looks wrong and typing lands inside the marker (`home()`)
-- [ ] **Enter inside a property panel breaks it** — `newline()` guards tables
-  (`caret_in_table`) but not property blocks, so Enter splices a raw newline
-  into `key:: value` source; should commit/step like the table path
-- [ ] **Double/triple-click on formulas bypass click-to-edit** — the construct
-  checks (math/property/image) run only at `click_count == 1`; double-click
-  word-selects inside `$x^2$` instead of opening the math editor, triple-click
-  selects the raw `$$` fences
-- [ ] **Backspace/Delete at a math boundary strips a `$`** and dumps raw
-  LaTeX — images delete atomically (Word-style); math wants the same guard
-- [ ] **Selections can include hidden markers** — shift-click, shift-arrows,
-  and drag extend into hidden `$$`/fence regions, so copied text contains
-  markers that were invisible on screen
-- [ ] Word-jump (⌥←/→) stops inside hidden constructs (`$x` splits as two
-  words) instead of hopping the whole formula
-
-**Cross-view parity:**
-- [ ] **`![](file.pdf)` file chips render only in WYSIWYG** — the reader has
-  no file-chip path at all (cross-view-rule violation); the same markdown
-  should read as the same chip in both views
-- [ ] VERIFY: **image resize inside an embed** may write the embedding page
-  instead of the target — editor embeds reuse the main image provider where
-  the reader has a separate read-only embed-image path
-- [ ] Reader opens bare URLs via `cx.open_url` directly, bypassing the host
-  hook the editor's `OpenLink` event goes through
-
-**App flows:**
-- [ ] **Unified right-click menu for page rows everywhere** — All Pages rows,
-  search results, backlink rows, and graph nodes are left-click-only today;
-  extract the sidebar's page menu (open in new tab/window, favorite, rename,
-  delete, export PDF, new sub-page) into one shared builder used by every
-  page-like surface (tabs included), and grow it with **copy/paste actions**:
-  Copy link (`[[Title]]`) and Copy contents (markdown) at minimum
-- [ ] **Error-dialog sweep** — user-facing operations that log failures
-  silently: page rename (dialog AND inline title — a duplicate name is a
-  silent no-op), alias save, notebook rename/forget, math PNG/SVG export
-  (`let _ = fs::write`), image import, PDF form-field writes. Surface each
-  through the existing `show_error_dialog` helper
-- [ ] **Deleting a page in one window leaves it open and editable in
-  others** — the cross-window sync (`apply_external_edit`) detects content
-  changes but not deletion; the ghost tab should close (or mark deleted)
-- [ ] Embeds: the box **height estimate undershoots** for image/math/mermaid-heavy
-  content (it's a line-count heuristic — `ensure_content_embeds`), so those boxes
-  scroll more than they should; measure or estimate rendered heights instead
-- [ ] Sidebar: remember the collapsed state across launches, and add a keyboard
-  shortcut to toggle it
-
-**PDF:**
-- [ ] **A failed load is silent and permanent** (2026-07-06 API audit) — an
-  unreadable/malformed PDF only `log::error!`s and `PdfView` sits on the
-  "Loading PDF…" placeholder forever, no error state, event, or retry; a
-  retry-unlock failing with `LoadError::Other` is likewise eventless, so the
-  password prompt gets no signal. Wants an explicit error state + `PdfEvent`
-  (overlaps the graceful-fallback item under Import & export)
-- [ ] `is_pdf` misses query-string refs (`report.pdf?v=2`) — it only checks
-  `ends_with(".pdf")` after trimming trailing whitespace (API audit)
-
-**Platform (from the crate audit):**
-- [ ] `os-spellcheck`: the Windows backend creates its checker for a
-  **hardcoded `en-US`** — follow the system UI language
-  (`GetUserDefaultLocaleName`), falling back gracefully when unsupported
-- [ ] `ratex-gpui`: `MathEditor` rasterizes at a **hard-coded `dpr: 2.0`**
-  (`view.rs` `with_root`) instead of the window's scale factor — slightly soft
-  on 1× displays, wasteful on 3×
+- [x] Editor interaction: smart Home; Enter/backspace-join/forward-delete
+  around property panels seat the form; block-editor exits at document end
+  create a line below; double/triple-click swallowed on $$/property blocks;
+  atomic formula deletion (incl. the `<!-- math:ALIGN -->` marker); ⌥←/→
+  word-jumps route into constructs; selections reveal the blocks they sweep
+- [x] App flows: error-dialog sweep (rename collisions report INLINE in the
+  rename dialog — a stacked dialog pops the first off the dialog stack; the
+  builder runs inside AppView's render, so dialog-read state goes through
+  `Rc<RefCell<…>>`); unified right-click (shared page menu on sidebar /
+  All Pages / search / backlinks / page tabs + Copy link / Copy contents;
+  editor text menu; property Edit/Delete; compact custom menus); ghost tabs
+  close after a cross-window delete
+- [x] PDF: terminal load failures render an error pane + emit
+  `PdfEvent::LoadFailed` (retry-unlock failing non-password stands the
+  prompt down); `is_pdf` sees through URL queries
+- [x] Platform: Windows spell-check follows the system UI language;
+  the math editor rasterizes at the window's real scale factor
+- [x] CLOSED AS FALSE POSITIVES (verified 2026-07-09): "reader lacks file
+  chips" — the host's `ImageRenderer` (src/ui/image.rs) classifies
+  `is_pdf` and renders chips in both the page and embed renderers, the
+  audit only searched gpui-markdown; "embed image-resize writes the wrong
+  page" — embeds use the deliberately grip-free `embed_renderer`
+- [ ] DEFERRED: **graph-node context menu** — nodes hit-test inside one
+  canvas element (`g.hit(position)`), so the shared page-menu builder
+  doesn't attach; needs the app's overlay-menu machinery (the reader
+  ctx-menu recipe)
+- [ ] DEFERRED: **PopupMenu density** — the pinned gpui-component rev has a
+  `Size::Small` branch for menus (20px rows vs 26px) but NO public setter;
+  upstream a `Sizable` impl for `PopupMenu` (or bump the pin when one
+  exists), then `.small()` the page menus to match the custom ones
 
 ## Notes & navigation
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
