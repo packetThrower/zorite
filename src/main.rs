@@ -65,6 +65,8 @@ const ALERT_OCTAGON: &[u8] = include_bytes!("../assets/icons/octagon-alert.svg")
 // Sidebar "All pages" browser button.
 const LAYOUT_LIST: &[u8] = include_bytes!("../assets/icons/layout-list.svg");
 const WAYPOINTS: &[u8] = include_bytes!("../assets/icons/waypoints.svg");
+// Notebook-switcher row buttons (rename).
+const PENCIL: &[u8] = include_bytes!("../assets/icons/pencil.svg");
 // Property-key icons: ONE list drives both the picker's choices and the
 // embedded bytes, so a face offered on the Properties page can never be
 // missing from a release build (the on-disk lucide set is dev-only — a
@@ -185,6 +187,7 @@ impl AssetSource for Assets {
             "icons/octagon-alert.svg" => Some(ALERT_OCTAGON),
             "icons/layout-list.svg" => Some(LAYOUT_LIST),
             "icons/waypoints.svg" => Some(WAYPOINTS),
+            "icons/pencil.svg" => Some(PENCIL),
             _ => property_icon_bytes(path),
         };
         if let Some(bytes) = custom {
@@ -358,7 +361,7 @@ pub(crate) fn open_main_window(cx: &mut App) {
         WindowOptions {
             window_bounds: Some(window_bounds),
             titlebar: Some(TitlebarOptions {
-                title: Some("Zorite".into()),
+                title: Some(paths::window_title().into()),
                 ..TitleBar::title_bar_options()
             }),
             app_id: Some("zorite".into()),
