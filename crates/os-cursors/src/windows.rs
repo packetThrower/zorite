@@ -25,9 +25,10 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     CWPRETSTRUCT, CallNextHookEx, CreateIconIndirect, GetCursor, GetSystemMetrics, HCURSOR,
     ICONINFO, IDC_ARROW, IDC_CROSS, IDC_HAND, IDC_IBEAM, IDC_NO, IDC_SIZENESW, IDC_SIZENS,
-    IDC_SIZENWSE, IDC_SIZEWE, LoadCursorW, PCWSTR, SM_CXCURSOR, SetCursor, SetWindowsHookExW,
+    IDC_SIZENWSE, IDC_SIZEWE, LoadCursorW, SM_CXCURSOR, SetCursor, SetWindowsHookExW,
     WH_CALLWNDPROCRET, WM_SETCURSOR,
 };
+use windows::core::PCWSTR;
 
 use crate::{Cursor, Image, best_image};
 

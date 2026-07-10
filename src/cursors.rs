@@ -22,7 +22,9 @@ use os_cursors::{Cursor, Image, xcursor};
 pub const BUNDLED: &str = "Bibata-Catppuccin-Mocha";
 
 /// On-screen size in points (the native macOS arrow is ≈17pt; 64px frames
-/// at 20pt are Retina-crisp). Ignored on Windows (system pixel size rules).
+/// at 20pt are Retina-crisp). Ignored on Windows (system pixel size rules);
+/// unused on Linux (the env mechanism installs nothing in-process).
+#[cfg(not(target_os = "linux"))]
 const SIZE_PT: f32 = 20.0;
 
 /// `XCURSOR_SIZE` on Linux — the freedesktop default cursor size.
