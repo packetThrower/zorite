@@ -96,8 +96,18 @@ fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>
 /// Cursor-theme dropdown choices: System, then the bundled pack and every
 /// user-added pack on disk (see `cursors::available`).
 fn cursor_opts() -> (Vec<Opt>, String) {
-    let mut opts = vec![Opt::new("", "System (default)")];
+    let mut opts = vec![
+        Opt::new("", "System (default)"),
+        Opt::new(crate::cursors::THEME_PACK, "Bibata (match theme)"),
+    ];
     opts.extend(crate::cursors::available().iter().map(|n| Opt::new(n, n)));
+    // User packs with SVG sources render theme-reactively as a second entry.
+    opts.extend(crate::cursors::reactive_available().iter().map(|n| {
+        Opt::new(
+            &format!("{}{n}", crate::cursors::THEME_PREFIX),
+            &format!("{n} (match theme)"),
+        )
+    }));
     (opts, crate::cursors::selected().unwrap_or_default())
 }
 
@@ -884,7 +894,16 @@ impl SettingsView {
             let _ = this.update_in(cx, |this, window, cx| {
                 match crate::cursors::import(&path) {
                     Ok(name) => {
-                        crate::cursors::set_selected(Some(&name));
+                        // An SVG-only pack has no fixed-color variant — select
+                        // its theme-reactive entry instead.
+                        if crate::cursors::available().contains(&name) {
+                            crate::cursors::set_selected(Some(&name));
+                        } else {
+                            crate::cursors::set_selected(Some(&format!(
+                                "{}{name}",
+                                crate::cursors::THEME_PREFIX
+                            )));
+                        }
                         this.cursor_status = None;
                     }
                     Err(e) => this.cursor_status = Some(e),
