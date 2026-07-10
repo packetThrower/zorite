@@ -49,6 +49,11 @@ const crates = [
 			'An infinite, pannable and zoomable freeform whiteboard canvas for GPUI.',
 	},
 	{
+		name: 'os-cursors',
+		description:
+			'Per-app custom mouse cursors without forking the UI toolkit — NSCursor swizzling, a WM_SETCURSOR hook, XCURSOR_* environment; packs are standard XCursor themes.',
+	},
+	{
 		name: 'os-spellcheck',
 		description:
 			'Native OS spell-checking (NSSpellChecker / ISpellChecker) with a tiny, host-agnostic API.',

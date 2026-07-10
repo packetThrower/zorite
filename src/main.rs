@@ -12,6 +12,7 @@
 
 mod actions;
 mod app;
+mod cursors;
 mod dates;
 mod db;
 mod export;
@@ -243,6 +244,8 @@ fn main() {
     let application = gpui_platform::application().with_assets(Assets);
     application.run(|cx: &mut App| {
         gpui_component::init(cx);
+        // The bundled cursor theme, installed from below gpui (see cursors.rs).
+        cursors::install();
         // User-added UI fonts (Settings → Appearance → Font) live in the
         // managed fonts/ dir; register them before any window measures text.
         theme::register_user_fonts(cx);
