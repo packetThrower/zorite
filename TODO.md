@@ -91,6 +91,7 @@ per-notebook settings sync.
 - [ ] Move SQLite writes off the UI thread (background executor) — **fsync stall handled** for now via WAL + `synchronous = NORMAL` in `Db::open` (per-keystroke autosave no longer fsyncs on the UI thread; measured worst case ~1.2 ms at a 50k-char page, well within a frame). The full off-thread refactor is now a lower-priority fast-follow (pathological pages / slow or contended disks)
 
 ## App & polish
+- [ ] **Download/region analytics** — GitHub Releases exposes per-asset download *totals* only (good for a platform split via a polling script), never geography; winget/tap/bucket/Nix expose nothing. For regions: (1) GoatCounter or Plausible on the docs site — visitor countries, one script tag, best effort/signal; (2) download links through a Cloudflare Worker logging `CF-IPCountry` → 302 to the GitHub asset (only covers clicks on our links); (3) pointing the app's update check at our own endpoint would map the active install base but is telemetry — against the local-first pitch, needs disclosure + opt-out; avoid
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
 - [ ] Multi-window: same-page **concurrent edits** are last-write-wins — editing the *same* page/day in two windows at once can drop one side's changes. True resolution needs a CRDT/OT layer (out of scope for a single-user app); revisit only if real-time collaboration is ever wanted
 
