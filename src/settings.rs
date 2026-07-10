@@ -164,8 +164,8 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
     ),
     (
         Tab::General,
-        "Remember window position",
-        "bounds size resize reopen restore placement screen monitor",
+        "Remember window",
+        "bounds size resize reopen restore placement screen monitor position tabs session",
     ),
     (
         Tab::General,
@@ -1736,6 +1736,55 @@ impl Render for SettingsView {
                     }
                 })
         };
+        // Second row of the same card: restore the tab set on relaunch. On
+        // enable, arm the sidecar and have the main window write its current
+        // tabs (its render persists on change; force skips the change check).
+        let open_tabs_switch = {
+            let weak = cx.entity().downgrade();
+            Switch::new("open-tabs")
+                .small()
+                .checked(crate::paths::open_tabs_enabled())
+                .on_click(move |on: &bool, _w, cx| {
+                    if *on {
+                        crate::paths::save_open_tabs("");
+                        let _ = weak.update(cx, |this, cx| {
+                            if let Some(app) = this.app.upgrade() {
+                                app.update(cx, |a, cx| {
+                                    a.force_persist_open_tabs();
+                                    cx.notify();
+                                });
+                            }
+                            cx.notify();
+                        });
+                    } else {
+                        crate::paths::clear_open_tabs();
+                        let _ = weak.update(cx, |_, cx| cx.notify());
+                    }
+                })
+        };
+        let labeled_row = |label: &str, control: Switch| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .text_color(theme::text_secondary())
+                        .child(label.to_string()),
+                )
+                .child(control)
+        };
+        let remember_window_control = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .child(labeled_row(
+                "Window size and position",
+                window_bounds_switch,
+            ))
+            .child(labeled_row("Open tabs", open_tabs_switch));
 
         // Security cards: the password state drives which actions show.
         let encrypted = crate::db::db_is_encrypted();
@@ -2063,11 +2112,11 @@ impl Render for SettingsView {
                                 )),
                             Tab::General => content
                                 .child(self.section_card(
-                                    "Remember window position",
-                                    "Reopen Zorite with the size and position it had when \
-                                         you left. Falls back to centered if the saved spot's \
-                                         display is gone.",
-                                    window_bounds_switch,
+                                    "Remember window",
+                                    "Reopen Zorite the way you left it: the window's size \
+                                         and position (centered if its display is gone), and \
+                                         optionally the tabs you had open.",
+                                    remember_window_control,
                                 ))
                                 .child(self.section_card(
                                     "Unused images",

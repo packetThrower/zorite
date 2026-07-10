@@ -387,6 +387,9 @@ pub(crate) fn open_main_window(cx: &mut App) {
             window.set_client_inset(px(10.0));
             let view = cx.new(|cx| AppView::new(window, cx));
             view.update(cx, |this, cx| this.attach_appearance_observer(window, cx));
+            // Reopen the saved tab set (Settings → General → Remember window →
+            // Open tabs) — also marks this window as the one that persists it.
+            view.update(cx, |this, cx| this.restore_open_tabs(window, cx));
             AppView::register_window(&view, window, cx);
             cx.new(|cx| Root::new(view, window, cx))
         },

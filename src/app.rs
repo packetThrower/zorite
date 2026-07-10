@@ -537,6 +537,12 @@ pub struct AppView {
     /// Enter or clicking away commits through `gpui_pdf::set_form_value`,
     /// writing the file and reloading the viewer.
     pdf_field_edit: Option<PdfFieldEdit>,
+    /// Only the window opened at startup persists/restores the tab set (see
+    /// `restore_open_tabs`); tear-off windows don't fight over the sidecar.
+    is_main_window: bool,
+    /// Last serialization written to the open-tabs sidecar, so `render` only
+    /// touches the file when the tab set actually changed.
+    last_tabs_saved: String,
 
     // Open whiteboard canvases, keyed by board (page) id. Each is an independent
     // `gpui_whiteboard::WhiteboardView`; dropped when its tab closes. Reloaded
@@ -545,6 +551,9 @@ pub struct AppView {
 
     // Sidebar.
     pub pages: Vec<Page>,
+    /// `(alias, page title)` pairs for the `[[` completion, cached alongside
+    /// `pages` (refreshed together in `refresh_sidebar`).
+    aliases: Vec<(String, String)>,
     /// Whiteboards for the sidebar's "Whiteboards" section (titles only; content
     /// not loaded). Refreshed alongside `pages`.
     pub whiteboards: Vec<Page>,
@@ -828,12 +837,15 @@ impl AppView {
             image_decodes: 0,
             pdf_views: HashMap::new(),
             pdf_field_edit: None,
+            is_main_window: false,
+            last_tabs_saved: String::new(),
             whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
             slash_scroll: ScrollHandle::new(),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
+            aliases: Vec::new(),
             whiteboards: Vec::new(),
             new_page_input,
             search_input,
@@ -1698,6 +1710,105 @@ impl AppView {
         }
     }
 
+    /// Serialize the tab set to the open-tabs sidecar (Settings → General →
+    /// Remember window → Open tabs). Called from `render`, so every way a tab
+    /// can open/close/reorder funnels through one save point; writes only on
+    /// change, and only from the main window.
+    fn persist_open_tabs(&mut self) {
+        if !self.is_main_window || !crate::paths::open_tabs_enabled() {
+            return;
+        }
+        let mut out = format!("active {}\n", self.active);
+        for tab in &self.tabs {
+            match &tab.kind {
+                TabKind::Journal | TabKind::Game => {} // pinned / never restored
+                TabKind::Page(id) => out.push_str(&format!("page {id}\n")),
+                TabKind::Pdf(path) => out.push_str(&format!("pdf {}\n", self.pdf_ref(path))),
+                TabKind::Whiteboard(id) => out.push_str(&format!("whiteboard {id}\n")),
+                TabKind::AllPages => out.push_str("allpages\n"),
+                TabKind::Graph => out.push_str("graph\n"),
+                TabKind::Properties => out.push_str("properties\n"),
+            }
+        }
+        if out != self.last_tabs_saved {
+            crate::paths::save_open_tabs(&out);
+            self.last_tabs_saved = out;
+        }
+    }
+
+    /// Re-save the tab set even if unchanged — the Settings switch just turned
+    /// the feature on, so the (empty) sidecar needs the current state.
+    pub(crate) fn force_persist_open_tabs(&mut self) {
+        self.last_tabs_saved.clear();
+        self.persist_open_tabs();
+    }
+
+    /// Reopen the tabs saved by [`Self::persist_open_tabs`] (startup, main
+    /// window only). Entries whose target vanished — a deleted page, a missing
+    /// PDF — are skipped silently; the active tab is restored last.
+    pub(crate) fn restore_open_tabs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.is_main_window = true;
+        if !crate::paths::open_tabs_enabled() {
+            return;
+        }
+        let Some(data) = crate::paths::load_open_tabs() else {
+            return;
+        };
+        let mut active = 0usize;
+        for line in data.lines() {
+            let (word, rest) = match line.split_once(' ') {
+                Some((w, r)) => (w, r.trim()),
+                None => (line.trim(), ""),
+            };
+            match word {
+                "active" => active = rest.parse().unwrap_or(0),
+                "page" => {
+                    if let Ok(id) = rest.parse::<i64>()
+                        && let Ok(Some(page)) = self.db.get_page(id)
+                        && !page.is_journal
+                    {
+                        self.tabs.push(OpenTab {
+                            kind: TabKind::Page(id),
+                            title: page.title.into(),
+                        });
+                    }
+                }
+                "whiteboard" => {
+                    if let Ok(id) = rest.parse::<i64>()
+                        && matches!(self.db.get_page(id), Ok(Some(_)))
+                    {
+                        // The full open path builds the canvas view.
+                        self.open_whiteboard(id, window, cx);
+                    }
+                }
+                "pdf" => {
+                    if let Some(path) = crate::pdf::resolve_path(rest)
+                        && path.is_file()
+                    {
+                        // The full open path builds the viewer entity.
+                        self.open_pdf(path, window, cx);
+                    }
+                }
+                "allpages" => self.tabs.push(OpenTab {
+                    kind: TabKind::AllPages,
+                    title: "All pages".into(),
+                }),
+                "graph" => self.tabs.push(OpenTab {
+                    kind: TabKind::Graph,
+                    title: "Graph".into(),
+                }),
+                "properties" => self.tabs.push(OpenTab {
+                    kind: TabKind::Properties,
+                    title: "Properties".into(),
+                }),
+                _ => {}
+            }
+        }
+        // Land on the saved tab (open_pdf/open_whiteboard activated as they
+        // went); an out-of-range index falls back to the journal.
+        self.activate_tab(active.min(self.tabs.len() - 1), window, cx);
+    }
+
     /// Open a page in a **background** tab without leaving the current one
     /// (right-click → "Open in new tab"). No-op if it's already open.
     pub fn open_page_in_new_tab(&mut self, id: i64, cx: &mut Context<Self>) {
@@ -2271,6 +2382,7 @@ impl AppView {
 
     fn refresh_sidebar(&mut self) {
         self.pages = self.db.list_pages().unwrap_or_default();
+        self.aliases = self.db.list_aliases().unwrap_or_default();
         self.whiteboards = self.db.list_whiteboards().unwrap_or_default();
         // Titles the auto-link closures match against — pages AND whiteboards
         // ([[Board]] opens the canvas). Short titles would link every stray
@@ -2382,7 +2494,7 @@ impl AppView {
                 // they complete alongside pages.
                 let mut linkable = self.pages.clone();
                 linkable.extend(self.whiteboards.iter().cloned());
-                slash::build_link_items(&query, &linkable)
+                slash::build_link_items(&query, &linkable, &self.aliases)
             }
             Trigger::Tag => slash::build_tag_items(&query, &self.pages),
             Trigger::Placeholder => slash::build_placeholder_items(&query),
@@ -8113,6 +8225,9 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Mirror the tab set to the open-tabs sidecar (no-op unless enabled,
+        // main window, and actually changed).
+        self.persist_open_tabs();
         // Lazy journal feed: build it on the first frame that shows the Journal
         // tab (covers startup, ⌘N windows, and a later tab click — the editors
         // are created just above the feed render in this same pass), and keep

@@ -57,7 +57,7 @@ release notes; prune after 0.7.0 ships.
   (today it routes to the global search): match + step across every loaded
   day's rendered text, reusing `gpui-markdown`'s `find_matches`/`search` like
   the page find bar, but with per-day match bookkeeping and feed scrolling
-- [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
+- [x] Aliases: offer a page's aliases as suggestions in `[[` autocomplete — alias rows rank with titles (shown `alias → Title`, inserting `[[alias]]`; exact alias match suppresses Create). `Db::list_aliases` cached with the sidebar page list
 - [ ] Block references: **"Copy block link"** — auto-generate a ` ^id` on a line
   (right-click / command) and put `[[Page#^id]]` on the clipboard, so linking to
   a block doesn't require inventing an id by hand
