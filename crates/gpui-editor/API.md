@@ -17,6 +17,7 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`bind_keys`](#fn-bind_keys) | fn | `fn bind_keys(cx: &mut App)` | Bind the editing keys (once, at startup) |
 | [`LINE_HEIGHT_RATIO`](#const-line_height_ratio) | const | `const LINE_HEIGHT_RATIO: f32 = 1.45` | Row height as a multiple of the font size |
 | [`mermaid_sources`](#fn-mermaid_sources) | fn | `fn mermaid_sources(content: &str) -> Vec<SharedString>` | Every ` ```mermaid ` block's source, for pre-rendering |
+| [`paint_doc_icon`](#fn-paint_doc_icon) | fn | `fn paint_doc_icon(x, y, w, h: Pixels, color: Hsla, window: &mut Window)` | The file chips' line-art document glyph |
 | [`math_sources`](#fn-math_sources) | fn | `fn math_sources(content: &str) -> Vec<SharedString>` | Every `$$…$$` block's LaTeX, for pre-rendering |
 | [`inline_math_sources`](#fn-inline_math_sources) | fn | `fn inline_math_sources(content: &str) -> Vec<SharedString>` | Every inline `$…$` formula's LaTeX, for pre-rendering |
 | [`EditorState`](#struct-editorstate) | struct | — | The editor entity (text, caret, undo, layout) |
@@ -117,6 +118,21 @@ height from its **own** font (not the ambient `window.line_height()`, which
 tracks the host's UI text style and would leave caret and rows mismatched
 against differently-sized editor text). Public so a host's scroll math (e.g.
 click-to-edit caret prediction) can mirror the editor's row heights exactly.
+
+---
+
+## `fn paint_doc_icon`
+
+```rust
+pub fn paint_doc_icon(x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla, window: &mut Window)
+```
+
+Paint the flat, line-art document glyph (a page with a folded top-right corner
+and two text lines) the editor draws on its file chips, in `color` at the
+given bounds. Stroke-drawn — not a font emoji — so it reads flat and on-theme
+at any text size. Public so a host's read-only view can draw the identical
+icon on its own file chips (cross-view parity); the editor sizes it
+`h = font_size × 0.92`, `w = h × 0.74`.
 
 ---
 

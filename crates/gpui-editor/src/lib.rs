@@ -6413,8 +6413,17 @@ fn paint_chip(
 
 /// Paint a flat, line-art document glyph (a page with a folded top-right corner +
 /// two text lines) in `color`, the chip's file icon. Drawn with strokes — not a
-/// font emoji — so it reads flat and on-theme at the text's size.
-fn paint_doc_icon(x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla, window: &mut Window) {
+/// font emoji — so it reads flat and on-theme at the text's size. Public so a
+/// host's read-only view can draw the identical icon on its own file chips
+/// (cross-view parity).
+pub fn paint_doc_icon(
+    x: Pixels,
+    y: Pixels,
+    w: Pixels,
+    h: Pixels,
+    color: Hsla,
+    window: &mut Window,
+) {
     let f = w * 0.33; // folded-corner size
     // Page silhouette, with the top-right corner cut away for the fold.
     let mut outline = PathBuilder::stroke(px(1.3));
