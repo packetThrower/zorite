@@ -56,6 +56,8 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`PdfView::set_on_highlight`](#pdfviewset_on_highlight) | method | markup | `fn set_on_highlight(&mut self, handler: HighlightClickFn)` | Click handler for a highlight |
 | [`PdfView::set_on_create_highlight`](#pdfviewset_on_create_highlight) | method | markup | `fn set_on_create_highlight(&mut self, handler: CreateHighlightFn)` | Handler for a finished drag-selection |
 | [`PdfView::toggle_select_mode`](#pdfviewtoggle_select_mode) | method | markup | `fn toggle_select_mode(&mut self, cx: &mut Context<Self>)` | Toggle drag-to-highlight mode |
+| [`PdfView::toggle_area_mode`](#pdfviewtoggle_area_mode) | method | markup | `fn toggle_area_mode(&mut self, cx: &mut Context<Self>)` | Toggle drag-a-box area mode |
+| [`PdfView::set_on_create_area`](#pdfviewset_on_create_area) | method | markup | `fn set_on_create_area(&mut self, handler: CreateAreaFn, cx: &mut Context<Self>)` | Handler for a finished area drag |
 | [`PdfView::set_highlight_palette`](#pdfviewset_highlight_palette) | method | markup | `fn set_highlight_palette(&mut self, palette: Vec<(SharedString, Hsla)>, cx: &mut Context<Self>)` | Colors for the picker |
 | [`PdfView::reveal_highlight`](#pdfviewreveal_highlight) | method | markup | `fn reveal_highlight(&mut self, page: usize, cx: &mut Context<Self>)` | Scroll to a page's highlight and flash it |
 | [`PdfView::toggle_search`](#pdfviewtoggle_search) | method | search | `fn toggle_search(&mut self, cx: &mut Context<Self>)` | Open/close the find bar |
@@ -70,6 +72,7 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`Highlight`](#struct-highlight) | struct | markup | `{ id: u64, page: usize, quote: String, occurrence: usize, color: Hsla }` | A quote-anchored highlight to draw |
 | [`HighlightClickFn`](#type-highlightclickfn) | type alias | markup | `Rc<dyn Fn(u64, &mut Window, &mut App)>` | Highlight click callback |
 | [`CreateHighlightFn`](#type-createhighlightfn) | type alias | markup | `Rc<dyn Fn(usize, String, usize, SharedString, &mut Window, &mut App)>` | Drag-selection-finished callback |
+| [`CreateAreaFn`](#type-createareafn) | type alias | markup | `Rc<dyn Fn(usize, NormRect, SharedString, &mut Window, &mut App)>` | Area-drag-finished callback |
 | [`NormRect`](#struct-normrect) | struct | markup | `{ x, y, w, h: f32 }` | Rect in normalized (0..1) page coords |
 | [`NormPoint`](#struct-normpoint) | struct | markup | `{ x, y: f32 }` | Point in normalized page coords |
 | [`Selection`](#struct-selection) | struct | markup | `{ quote: String, occurrence: usize, rects: Vec<NormRect> }` | A resolved drag selection |
@@ -972,6 +975,46 @@ cancels any in-progress selection and hides the picker. While on, every visible
 page extracts its text layer so drags can select anywhere. Also bound to ⌘⇧H.
 **Parameters** — `cx` only.
 
+### `PdfView::toggle_area_mode`
+
+*(`markup` feature)*
+
+```rust
+pub fn toggle_area_mode(&mut self, cx: &mut Context<Self>)
+```
+
+Toggle "area mode": like highlight mode, but a drag marks a rectangular page
+*region* (a figure, a scanned paragraph) instead of selecting text, firing
+[`CreateAreaFn`](#type-createareafn) on release — no text layer involved, so it
+works on pages with none. The header shows it as the `⬚` tool beside the pen;
+they share the color picker, and turning either mode on turns the other off.
+**Parameters** — `cx` only.
+
+### `PdfView::set_on_create_area`
+
+*(`markup` feature)*
+
+```rust
+pub fn set_on_create_area(&mut self, handler: CreateAreaFn, cx: &mut Context<Self>)
+```
+
+Set the handler invoked when an area (box) drag finishes. Without one, the drag
+draws feedback but nothing is stored.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `handler` | [`CreateAreaFn`](#type-createareafn) | Receives `(page, rect, color_label, &mut Window, &mut App)`; `rect` is normalized page coords. |
+| `cx` | `&mut Context<Self>` | — |
+
+**Guarantees & edge cases**
+
+- The same minimum-drag threshold as text highlights applies (a bare click never
+  creates one).
+- The rect is normalized against the page the drag *started* on; a drag that
+  leaves the page clamps to the last position over it.
+
 ### `PdfView::set_highlight_palette`
 
 *(`markup` feature)*
@@ -1191,18 +1234,22 @@ walk; no rasterization. Pure and thread-safe.
 
 ```rust
 pub struct Highlight {
-    pub id: u64,           // host identifier, echoed back on click
-    pub page: usize,       // 0-based page the quote is on
-    pub quote: String,     // the text to locate (case-/whitespace-insensitive)
-    pub occurrence: usize, // which occurrence on the page (0-based)
-    pub color: Hsla,       // fill color; drawn translucent (alpha overridden)
+    pub id: u64,                  // host identifier, echoed back on click
+    pub page: usize,              // 0-based page the quote is on
+    pub quote: String,            // the text to locate (case-/whitespace-insensitive)
+    pub occurrence: usize,        // which occurrence on the page (0-based)
+    pub color: Hsla,              // fill color; drawn translucent (alpha overridden)
+    pub region: Option<NormRect>, // area highlight: drawn at this rect, no text layer
 }
 ```
 
-A highlight to draw on the PDF, located by its quote. Hand these to
-[`PdfView::set_highlights`](#pdfviewset_highlights); the viewer finds the quote via
-the text layer and draws a translucent box over each line it spans (`color` at
-alpha 0.35 normally, 0.6 while flashing). `Clone`.
+A highlight to draw on the PDF. Hand these to
+[`PdfView::set_highlights`](#pdfviewset_highlights). A quote highlight
+(`region: None`) is located via the text layer and draws a translucent box over
+each line it spans; an **area highlight** (`region: Some(rect)`) draws one box at
+its stored rect directly — no text layer, so it works on scans and figures, and
+`quote`/`occurrence` are not used for locating. Both draw `color` at alpha 0.35
+normally, 0.6 while flashing. `Clone`.
 
 ---
 
@@ -1234,6 +1281,21 @@ one-line quote, which occurrence of it on the page (so it re-locates
 unambiguously), and the label of the picked palette color (the opaque tag from
 [`set_highlight_palette`](#pdfviewset_highlight_palette), for the host to store).
 Install via [`PdfView::set_on_create_highlight`](#pdfviewset_on_create_highlight).
+
+---
+
+## `type CreateAreaFn`
+
+*(`markup` feature)*
+
+```rust
+pub type CreateAreaFn = Rc<dyn Fn(usize, NormRect, SharedString, &mut Window, &mut App)>;
+```
+
+Invoked when a box-drag finishes in area mode: the page (0-based), the dragged
+rect in normalized page coordinates, and the active palette color's label. The
+host stores it and hands it back as a [`Highlight`](#struct-highlight) with
+`region` set.
 
 ---
 

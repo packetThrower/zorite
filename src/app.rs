@@ -3735,6 +3735,8 @@ impl AppView {
         let weak = cx.entity().downgrade();
         let create_weak = weak.clone();
         let create_path = path.clone();
+        let area_weak = weak.clone();
+        let area_path = path.clone();
         view.update(cx, move |v, cx| {
             v.set_highlights(highlights, cx);
             v.set_highlight_palette(crate::pdf::highlight_palette(), cx);
@@ -3759,6 +3761,29 @@ impl AppView {
                     });
                 }
             }));
+            // Box-drag in area mode → the same store path; the rect rides as an
+            // `@area(…)` quote token (parse_highlights turns it back into a region).
+            let area_weak = area_weak.clone();
+            let area_path = area_path.clone();
+            v.set_on_create_area(
+                Rc::new(move |page, rect, color, window, cx| {
+                    if let Some(app) = area_weak.upgrade() {
+                        let token = crate::pdf::area_token(rect);
+                        app.update(cx, |a, cx| {
+                            a.add_pdf_highlight(
+                                &area_path,
+                                page,
+                                &token,
+                                0,
+                                color.as_ref(),
+                                window,
+                                cx,
+                            )
+                        });
+                    }
+                }),
+                cx,
+            );
         });
         // Re-render the surrounding UI on lock/unlock, so the password prompt
         // appears when an encrypted PDF loads and is replaced by the viewer once

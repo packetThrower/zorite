@@ -405,6 +405,10 @@ pub struct Highlight {
     pub occurrence: usize,
     /// Fill color; drawn translucent.
     pub color: Hsla,
+    /// An **area (image-region) highlight**: a normalized page rect drawn
+    /// directly — no text layer involved, so it works on scans and figures.
+    /// When set, `quote`/`occurrence` are not used for locating.
+    pub region: Option<NormRect>,
 }
 
 /// Invoked with a [`Highlight`]'s `id` when the user clicks it. (`markup` feature.)
@@ -418,6 +422,25 @@ pub type HighlightClickFn = Rc<dyn Fn(u64, &mut Window, &mut gpui::App)>;
 #[cfg(feature = "markup")]
 pub type CreateHighlightFn =
     Rc<dyn Fn(usize, String, usize, SharedString, &mut Window, &mut gpui::App)>;
+
+/// Invoked when the user finishes a box-drag in "area mode": the page (0-based), the
+/// dragged rect in normalized page coordinates, and the label of the picked color.
+/// The host stores it and hands it back as a [`Highlight`] with `region` set.
+/// (`markup` feature.)
+#[cfg(feature = "markup")]
+pub type CreateAreaFn = Rc<dyn Fn(usize, NormRect, SharedString, &mut Window, &mut gpui::App)>;
+
+/// The normalized rect spanned by two drag endpoints, in either direction.
+/// (`markup` feature.)
+#[cfg(feature = "markup")]
+fn norm_rect_between(a: NormPoint, b: NormPoint) -> NormRect {
+    NormRect {
+        x: a.x.min(b.x),
+        y: a.y.min(b.y),
+        w: (a.x - b.x).abs(),
+        h: (a.y - b.y).abs(),
+    }
+}
 
 /// Cache state for a page's extracted text layer. (`markup` feature.)
 #[cfg(feature = "markup")]
@@ -540,6 +563,11 @@ pub struct PdfView {
     /// Click handler for a highlight (markup).
     #[cfg(feature = "markup")]
     on_highlight: Option<HighlightClickFn>,
+    /// "Area mode" (only meaningful while `selecting`): a drag marks a page
+    /// region instead of selecting text (markup).
+    area_mode: bool,
+    /// Called when an area drag finishes, so the host stores it (markup).
+    on_create_area: Option<CreateAreaFn>,
     /// "Highlight mode": dragging over text selects + creates a highlight (markup).
     #[cfg(feature = "markup")]
     selecting: bool,
@@ -666,6 +694,8 @@ impl PdfView {
             on_highlight: None,
             #[cfg(feature = "markup")]
             selecting: false,
+            area_mode: false,
+            on_create_area: None,
             #[cfg(feature = "markup")]
             sel_drag: None,
             #[cfg(feature = "markup")]
@@ -923,10 +953,34 @@ impl PdfView {
     #[cfg(feature = "markup")]
     pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>) {
         self.selecting = !self.selecting;
+        self.area_mode = false;
         self.sel_drag = None;
         // Turning highlight mode on pops the color picker down; off hides it.
         self.palette_open = self.selecting && !self.palette.is_empty();
         cx.notify();
+    }
+
+    /// Toggle "area mode": like highlight mode, but a drag marks a page *region*
+    /// (an image/figure box) instead of selecting text, firing [`CreateAreaFn`]
+    /// on release. Turning it on turns text-highlight mode's selection off (they
+    /// share the pen state); turning either mode off clears the other.
+    /// (`markup` feature.)
+    pub fn toggle_area_mode(&mut self, cx: &mut Context<Self>) {
+        if self.selecting && self.area_mode {
+            self.selecting = false;
+            self.area_mode = false;
+        } else {
+            self.selecting = true;
+            self.area_mode = true;
+        }
+        self.sel_drag = None;
+        self.palette_open = self.selecting && !self.palette.is_empty();
+        cx.notify();
+    }
+
+    /// Set the handler invoked when an area (box) drag finishes. (`markup` feature.)
+    pub fn set_on_create_area(&mut self, f: CreateAreaFn, _cx: &mut Context<Self>) {
+        self.on_create_area = Some(f);
     }
 
     /// Set the highlight colors the picker offers, as `(label, fill)` pairs. The label
@@ -1448,10 +1502,11 @@ impl PdfView {
             let mut pages: Vec<usize> = self
                 .highlights
                 .iter()
+                .filter(|h| h.region.is_none())
                 .map(|h| h.page)
                 .filter(|p| (start..=end).contains(p))
                 .collect();
-            if self.selecting {
+            if self.selecting && !self.area_mode {
                 pages.extend(start..=end);
             }
             pages.sort_unstable();
@@ -1643,49 +1698,64 @@ impl Render for PdfView {
             #[cfg(feature = "markup")]
             let slot = {
                 let mut slot = slot;
-                if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i) {
-                    // Brighten + outline the page's highlights briefly after a jump from
-                    // a note, so the clicked one is easy to spot.
-                    let flashing = self.flash == Some(i);
-                    for h in self.highlights.iter().filter(|h| h.page == i) {
-                        let fill = Hsla {
-                            a: if flashing { 0.6 } else { 0.35 },
-                            ..h.color
-                        };
-                        for (ri, r) in pt.locate(&h.quote, h.occurrence).into_iter().enumerate() {
-                            let id = h.id;
-                            let mut hl = div()
-                                .id(gpui::SharedString::from(format!(
-                                    "pdf-hl-{i}-{}-{ri}",
-                                    h.id
-                                )))
-                                .absolute()
-                                .left(px(r.x * page_width))
-                                .top(px(r.y * disp_h))
-                                .w(px(r.w * page_width))
-                                .h(px(r.h * disp_h))
-                                .rounded(px(1.0))
-                                .bg(fill)
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if let Some(cb) = this.on_highlight.clone() {
-                                        cb(id, window, cx);
-                                    }
-                                }));
-                            if flashing {
-                                hl = hl.border_1().border_color(Hsla { a: 0.95, ..h.color });
-                            }
-                            slot = slot.child(hl);
+                // Brighten + outline the page's highlights briefly after a jump from
+                // a note, so the clicked one is easy to spot.
+                let flashing = self.flash == Some(i);
+                for h in self.highlights.iter().filter(|h| h.page == i) {
+                    let fill = Hsla {
+                        a: if flashing { 0.6 } else { 0.35 },
+                        ..h.color
+                    };
+                    // An area highlight is its stored rect; a quote highlight is
+                    // one rect per located line (needs the page's text layer).
+                    let rects: Vec<NormRect> = match h.region {
+                        Some(r) => vec![r],
+                        None => match self.page_text.get(&i) {
+                            Some(TextSlot::Ready(pt)) => pt.locate(&h.quote, h.occurrence),
+                            _ => Vec::new(),
+                        },
+                    };
+                    for (ri, r) in rects.into_iter().enumerate() {
+                        let id = h.id;
+                        let mut hl = div()
+                            .id(gpui::SharedString::from(format!(
+                                "pdf-hl-{i}-{}-{ri}",
+                                h.id
+                            )))
+                            .absolute()
+                            .left(px(r.x * page_width))
+                            .top(px(r.y * disp_h))
+                            .w(px(r.w * page_width))
+                            .h(px(r.h * disp_h))
+                            .rounded(px(1.0))
+                            .bg(fill)
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(cb) = this.on_highlight.clone() {
+                                    cb(id, window, cx);
+                                }
+                            }));
+                        if flashing {
+                            hl = hl.border_1().border_color(Hsla { a: 0.95, ..h.color });
                         }
+                        slot = slot.child(hl);
                     }
                 }
-                // Live drag-selection feedback (highlight mode).
+                // Live drag feedback: the raw box in area mode, the text
+                // selection's line rects in highlight mode.
                 if let Some((pg, a, b)) = self.sel_drag
                     && pg == i
-                    && let Some(TextSlot::Ready(pt)) = self.page_text.get(&i)
-                    && let Some(sel) = pt.select(a, b)
                 {
-                    for r in sel.rects {
+                    let rects: Vec<NormRect> = if self.area_mode {
+                        vec![norm_rect_between(a, b)]
+                    } else if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i)
+                        && let Some(sel) = pt.select(a, b)
+                    {
+                        sel.rects
+                    } else {
+                        Vec::new()
+                    };
+                    for r in rects {
                         slot = slot.child(
                             div()
                                 .absolute()
@@ -1919,6 +1989,32 @@ impl Render for PdfView {
                 .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
                 .on_click(cx.listener(|this, _, _window, cx| this.toggle_select_mode(cx)))
                 .tooltip(self.tip("Highlight — pick a color (⌘⇧H)"));
+            // The area (box) tool: same pen state + palette, but a drag marks a
+            // page region instead of selecting text — for figures and scans.
+            let area_bg = if self.selecting && self.area_mode {
+                style.placeholder_bg
+            } else {
+                Hsla { a: 0.0, ..style.bg }
+            };
+            let area = div()
+                .id("pdf-area")
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(1.0))
+                .min_w(px(20.0))
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_color(style.header_fg)
+                .bg(area_bg)
+                .hover(|s| s.bg(style.placeholder_bg))
+                .child("⬚")
+                .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
+                .on_click(cx.listener(|this, _, _window, cx| this.toggle_area_mode(cx)))
+                .tooltip(self.tip("Area highlight — drag a box over a region"));
 
             // Color-picker dropdown, deferred so it paints over the page area below.
             let dropdown = if self.palette_open && !self.palette.is_empty() {
@@ -1965,7 +2061,16 @@ impl Render for PdfView {
                 None
             };
 
-            header.child(div().relative().child(pen).children(dropdown))
+            header.child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .gap(px(2.0))
+                    .child(pen)
+                    .child(area)
+                    .children(dropdown),
+            )
         };
 
         // Find toggle (search): a magnifier that opens the find bar.
@@ -2149,6 +2254,14 @@ impl Render for PdfView {
                     // highlight. Threshold is in normalized page coords (~a few pixels).
                     const MIN_DRAG: f32 = 0.005;
                     if (a.x - b.x).abs() < MIN_DRAG && (a.y - b.y).abs() < MIN_DRAG {
+                        cx.notify();
+                        return;
+                    }
+                    if this.area_mode {
+                        if let Some(cb) = this.on_create_area.clone() {
+                            let color = this.active_color_name();
+                            cb(pg, norm_rect_between(a, b), color, window, cx);
+                        }
                         cx.notify();
                         return;
                     }
