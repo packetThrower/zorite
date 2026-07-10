@@ -6145,7 +6145,10 @@ fn build_prop_panel(
         rows.push((SharedString::from(k.to_string()), icon, segs));
     }
     let key_w = key_indent + key_w + px(20.);
-    let width = key_w + val_w + px(10.);
+    // 10px inner padding on BOTH sides: values start at key_w + 10 (see
+    // `paint_prop_panel`), so the width needs 10 + val_w + 10 past key_w or
+    // the hover border sits flush against the last value character.
+    let width = key_w + val_w + px(20.);
     let row_h = font_size * LINE_HEIGHT_RATIO + px(8.);
     let height = row_h * rows.len() as f32;
     PropPanel {
