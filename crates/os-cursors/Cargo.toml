@@ -1,0 +1,34 @@
+[package]
+name = "os-cursors"
+version = "0.1.0"
+edition = "2024"
+description = "Per-app custom mouse cursors without forking the UI toolkit — NSCursor swizzling on macOS, a WM_SETCURSOR hook on Windows, XCURSOR_* environment on Linux. Packs are standard XCursor theme directories; pure-Rust XCursor parse/write included."
+license = "GPL-3.0-or-later"
+repository = "https://github.com/packetThrower/zorite"
+homepage = "https://packetthrower.github.io/zorite/reference/crates/os-cursors/"
+keywords = ["cursor", "xcursor", "theme", "macos", "windows"]
+categories = ["gui", "os"]
+
+# macOS: replace what the NSCursor class methods (+arrowCursor …) return via
+# objc runtime method swizzling — every AppKit caller in the process, gpui
+# included, then vends our cursors. Same objc2 family gpui already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSString", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSCursor",
+    "NSImage",
+    "NSImageRep",
+    "NSBitmapImageRep",
+    "NSGraphics",
+] }
+
+# Windows: a thread-scoped WH_CALLWNDPROCRET hook re-maps the standard IDC_*
+# cursor after each WM_SETCURSOR. `windows` 0.62 to match the existing lock.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_System_Threading",
+] }

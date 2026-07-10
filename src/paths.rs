@@ -65,7 +65,7 @@ fn resolve_data_dir() -> PathBuf {
 }
 
 /// The directory holding `zorite.db` and the managed `images/`, `pdf/`,
-/// `themes/`, and `fonts/` folders. Resolved once per process — a change made
+/// `themes/`, `fonts/`, and `cursors/` folders. Resolved once per process — a change made
 /// via [`set_location`] takes effect on the next launch, which is also when any
 /// pending move runs (before the database is opened).
 pub fn data_dir() -> PathBuf {
@@ -526,7 +526,7 @@ fn move_total_bytes(source: &Path) -> u64 {
             }
         }
     }
-    for dir in ["images", "pdf", "themes", "fonts"] {
+    for dir in ["images", "pdf", "themes", "fonts", "cursors"] {
         let p = source.join(dir);
         if p.exists() {
             total += dir_size(&p);
@@ -539,7 +539,8 @@ fn move_total_bytes(source: &Path) -> u64 {
 /// cross-filesystem copy+remove fallback, adding copied bytes to `done`. Moves
 /// every `zorite.db*` file (the database, its `-wal`/`-shm` sidecars, the
 /// rollback journal, and any migration `.bak-*` backups), the `notebook-name`
-/// sidecar, plus the `images/`, `pdf/`, `themes/`, `fonts/` asset folders.
+/// and `cursor-theme` sidecars, plus the `images/`, `pdf/`, `themes/`,
+/// `fonts/`, `cursors/` asset folders.
 /// Only those entries move, so unrelated files (and the pointer in the
 /// default dir) stay put.
 fn relocate(source: &Path, target: &Path, done: &AtomicU64) -> std::io::Result<()> {
@@ -548,11 +549,14 @@ fn relocate(source: &Path, target: &Path, done: &AtomicU64) -> std::io::Result<(
         let entry = entry?;
         let name = entry.file_name();
         // The db + sidecars, and the notebook's display-name sidecar.
-        if name.to_string_lossy().starts_with("zorite.db") || name == "notebook-name" {
+        if name.to_string_lossy().starts_with("zorite.db")
+            || name == "notebook-name"
+            || name == "cursor-theme"
+        {
             move_path(&entry.path(), &target.join(&name), done)?;
         }
     }
-    for dir in ["images", "pdf", "themes", "fonts"] {
+    for dir in ["images", "pdf", "themes", "fonts", "cursors"] {
         let from = source.join(dir);
         if from.exists() {
             move_path(&from, &target.join(dir), done)?;

@@ -132,6 +132,13 @@ export default defineConfig({
 									],
 								},
 								{
+									label: 'os-cursors',
+									items: [
+										{ label: 'Overview', slug: 'reference/crates/os-cursors' },
+										{ label: 'API reference', slug: 'reference/crates/os-cursors-api' },
+									],
+								},
+								{
 									label: 'os-spellcheck',
 									items: [
 										{ label: 'Overview', slug: 'reference/crates/os-spellcheck' },

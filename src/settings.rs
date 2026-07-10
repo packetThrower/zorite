@@ -102,6 +102,24 @@ fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>
     (opts, current)
 }
 
+/// Cursor-theme dropdown choices: System, then the bundled pack and every
+/// user-added pack on disk (see `cursors::available`).
+fn cursor_opts() -> (Vec<Opt>, String) {
+    let mut opts = vec![
+        Opt::new("", "System (default)"),
+        Opt::new(crate::cursors::THEME_PACK, "Bibata (match theme)"),
+    ];
+    opts.extend(crate::cursors::available().iter().map(|n| Opt::new(n, n)));
+    // User packs with SVG sources render theme-reactively as a second entry.
+    opts.extend(crate::cursors::reactive_available().iter().map(|n| {
+        Opt::new(
+            &format!("{}{n}", crate::cursors::THEME_PREFIX),
+            &format!("{n} (match theme)"),
+        )
+    }));
+    (opts, crate::cursors::selected().unwrap_or_default())
+}
+
 /// Which settings category the left nav has selected.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Tab {
@@ -174,6 +192,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
         Tab::Appearance,
         "Text size",
         "font size zoom bigger smaller larger scale px",
+    ),
+    (
+        Tab::Appearance,
+        "Mouse cursor",
+        "pointer arrow theme pack xcursor bibata custom",
     ),
     (
         Tab::Appearance,
@@ -258,6 +281,7 @@ pub struct SettingsView {
     theme_select: Entity<SelectState<Vec<Opt>>>,
     appearance_select: Entity<SelectState<Vec<Opt>>>,
     font_select: Entity<SelectState<Vec<Opt>>>,
+    cursor_select: Entity<SelectState<Vec<Opt>>>,
     text_size_select: Entity<SelectState<Vec<Opt>>>,
     quality_slider: Entity<SliderState>,
     indent_select: Entity<SelectState<Vec<Opt>>>,
@@ -272,6 +296,8 @@ pub struct SettingsView {
     /// Last images-GC outcome ("Removed 12 files (3.4 MB)"), shown under the
     /// Unused images button.
     image_gc_result: Option<String>,
+    /// The last cursor-theme import error, shown under the Mouse cursor card.
+    cursor_status: Option<String>,
     /// Password dialogs' fields (masked) + the last outcome line shown under
     /// the Password card.
     sec_current: Entity<InputState>,
@@ -301,6 +327,8 @@ impl SettingsView {
         let appearance_select = make_select(a_opts, mode.as_str(), window, cx);
         let (f_opts, current_font) = font_opts(&app, cx);
         let font_select = make_select(f_opts, &current_font, window, cx);
+        let (c_opts, current_cursor) = cursor_opts();
+        let cursor_select = make_select(c_opts, &current_cursor, window, cx);
 
         // Note text size (Appearance pane) — one value for all three views.
         let size_opts: Vec<Opt> = crate::app::TEXT_SIZES
@@ -324,6 +352,7 @@ impl SettingsView {
         let mut subs = Vec::new();
         subs.push(Self::on_theme_select(&theme_select, window, cx));
         subs.push(Self::on_font_select(&font_select, window, cx));
+        subs.push(Self::on_cursor_select(&cursor_select, window, cx));
         subs.push(cx.subscribe_in(
             &text_size_select,
             window,
@@ -476,6 +505,7 @@ impl SettingsView {
             theme_select,
             appearance_select,
             font_select,
+            cursor_select,
             text_size_select,
             quality_slider,
             indent_select,
@@ -485,6 +515,7 @@ impl SettingsView {
             filter: String::new(),
             tab: Tab::Appearance,
             image_gc_result: None,
+            cursor_status: None,
             sec_current,
             sec_new,
             sec_confirm,
@@ -830,6 +861,73 @@ impl SettingsView {
         let select = make_select(opts, &current, window, cx);
         self._subs.push(Self::on_font_select(&select, window, cx));
         self.font_select = select;
+        cx.notify();
+    }
+
+    /// Subscribe to the cursor `Select`'s confirm → persist + apply the pack
+    /// (live on macOS/Windows; next launch on Linux).
+    fn on_cursor_select(
+        select: &Entity<SelectState<Vec<Opt>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Subscription {
+        cx.subscribe_in(
+            select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev {
+                    crate::cursors::set_selected((!id.is_empty()).then_some(id.as_str()));
+                    this.cursor_status = None;
+                    cx.notify();
+                }
+            },
+        )
+    }
+
+    /// Pick an XCursor theme folder, import it into the managed `cursors/`
+    /// dir, and select it (or surface the import error under the card).
+    fn choose_cursor_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(gpui::PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Use theme".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else {
+                return;
+            };
+            let Some(path) = paths.into_iter().next() else {
+                return;
+            };
+            let _ = this.update_in(cx, |this, window, cx| {
+                match crate::cursors::import(&path) {
+                    Ok(name) => {
+                        // An SVG-only pack has no fixed-color variant — select
+                        // its theme-reactive entry instead.
+                        if crate::cursors::available().contains(&name) {
+                            crate::cursors::set_selected(Some(&name));
+                        } else {
+                            crate::cursors::set_selected(Some(&format!(
+                                "{}{name}",
+                                crate::cursors::THEME_PREFIX
+                            )));
+                        }
+                        this.cursor_status = None;
+                    }
+                    Err(e) => this.cursor_status = Some(e),
+                }
+                this.rebuild_cursor_select(window, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn rebuild_cursor_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (opts, current) = cursor_opts();
+        let select = make_select(opts, &current, window, cx);
+        self._subs.push(Self::on_cursor_select(&select, window, cx));
+        self.cursor_select = select;
         cx.notify();
     }
 
@@ -1487,6 +1585,52 @@ impl Render for SettingsView {
                 |this, w, cx| this.choose_font_file(w, cx),
             )));
 
+        // Mouse-cursor card body: the pack dropdown + add/reveal actions, the
+        // last import error, and (Linux) the relaunch note.
+        #[allow(unused_mut)]
+        let mut cursor_control = div()
+            .flex()
+            .flex_col()
+            .gap(px(8.0))
+            .child(Select::new(&self.cursor_select).small().w_full())
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(text_button(
+                        "cursor-add",
+                        "Add cursor theme…",
+                        cx,
+                        |this, w, cx| this.choose_cursor_theme(w, cx),
+                    ))
+                    .child(text_button(
+                        "cursor-reveal",
+                        "Reveal cursors folder",
+                        cx,
+                        |_this, _w, _cx| {
+                            let dir = crate::cursors::cursors_dir();
+                            let _ = std::fs::create_dir_all(&dir);
+                            crate::app::AppView::reveal_folder(&dir);
+                        },
+                    )),
+            )
+            .children(self.cursor_status.clone().map(|msg| {
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_tertiary())
+                    .child(msg)
+            }));
+        #[cfg(target_os = "linux")]
+        {
+            cursor_control = cursor_control.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_tertiary())
+                    .child("Cursor changes take effect after a relaunch."),
+            );
+        }
+
         // Installed-themes card body: the actions + the list (or empty state).
         let actions = div()
             .flex()
@@ -1969,6 +2113,12 @@ impl Render for SettingsView {
                                     "Size of note text when editing and reading. Headings and \
                                          inline math scale with it.",
                                     Select::new(&self.text_size_select).small().w_full(),
+                                ))
+                                .child(self.section_card(
+                                    "Mouse cursor",
+                                    "The pointer inside Zorite. Add any XCursor theme folder \
+                                         (the Linux cursor-theme format) to use your own.",
+                                    cursor_control,
                                 ))
                                 .child(self.section_card(
                                     "Installed themes",

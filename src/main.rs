@@ -12,6 +12,7 @@
 
 mod actions;
 mod app;
+mod cursors;
 mod dates;
 mod db;
 mod export;
@@ -240,9 +241,20 @@ fn main() {
         std::process::exit(0);
     }
 
+    // Linux: the selected cursor theme rides XCURSOR_* env vars, which the
+    // display connection reads — set them before gpui exists, while the
+    // process is still single-threaded (see cursors.rs).
+    #[cfg(target_os = "linux")]
+    cursors::apply();
+
     let application = gpui_platform::application().with_assets(Assets);
     application.run(|cx: &mut App| {
         gpui_component::init(cx);
+        // The selected cursor theme, installed from below gpui (see
+        // cursors.rs). On a launch that also moves the data dir this reads
+        // the sidecar pre-move and shows native cursors once — self-heals.
+        #[cfg(not(target_os = "linux"))]
+        cursors::apply();
         // User-added UI fonts (Settings → Appearance → Font) live in the
         // managed fonts/ dir; register them before any window measures text.
         theme::register_user_fonts(cx);
