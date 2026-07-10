@@ -303,13 +303,48 @@ fn datetime_items(q: &str, out: &mut Vec<PaletteItem>) {
 const MAX_COMPLETION_ITEMS: usize = 8;
 
 /// Page-link items for `[[query`: the best-matching page titles → `[[Title]]`,
-/// plus a "Create" entry when the query names a page that doesn't exist yet.
-pub fn build_link_items(query: &str, pages: &[Page]) -> Vec<PaletteItem> {
+/// with each page's **aliases** completing alongside (shown as
+/// `alias → Title`, inserting `[[alias]]` — link resolution already follows
+/// the alias table), plus a "Create" entry when the query names a page (or
+/// alias) that doesn't exist yet.
+pub fn build_link_items(
+    query: &str,
+    pages: &[Page],
+    aliases: &[(String, String)],
+) -> Vec<PaletteItem> {
     let q = query.trim().to_lowercase();
-    let (titles, exact) = ranked_titles(&q, pages, |_| true);
-    let mut out: Vec<PaletteItem> = titles
+    // Titles and aliases rank together: 0 = prefix match, 1 = elsewhere.
+    // The third field is the alias's target title (None for a real title).
+    let mut matches: Vec<(u8, &str, Option<&str>)> = Vec::new();
+    let mut exact = false;
+    let candidates =
+        pages
+            .iter()
+            .map(|p| (p.title.as_str(), None))
+            .chain(aliases.iter().filter_map(|(a, t)| {
+                // An alias equal to its own title adds nothing.
+                (!a.eq_ignore_ascii_case(t)).then_some((a.as_str(), Some(t.as_str())))
+            }));
+    for (name, target) in candidates {
+        let lower = name.to_lowercase();
+        if q.is_empty() {
+            matches.push((0, name, target));
+        } else if let Some(pos) = lower.find(&q) {
+            exact |= lower == q;
+            matches.push((u8::from(pos != 0), name, target));
+        }
+    }
+    matches.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
+    });
+    let mut out: Vec<PaletteItem> = matches
         .into_iter()
-        .map(|t| insert_item(t.clone(), format!("[[{t}]]")))
+        .take(MAX_COMPLETION_ITEMS)
+        .map(|(_, name, target)| match target {
+            Some(title) => insert_item(format!("{name} → {title}"), format!("[[{name}]]")),
+            None => insert_item(name.to_string(), format!("[[{name}]]")),
+        })
         .collect();
     let trimmed = query.trim();
     if !trimmed.is_empty() && !exact {
@@ -731,7 +766,7 @@ mod tests {
 
     #[test]
     fn link_items_offer_create_for_new_title() {
-        let items = build_link_items("New", &[]);
+        let items = build_link_items("New", &[], &[]);
         assert_eq!(items.len(), 1);
         let ItemKind::Insert { snippet, .. } = &items[0].kind else {
             panic!("expected insert");
@@ -777,6 +812,35 @@ mod tests {
     }
 
     #[test]
+    fn link_items_complete_aliases() {
+        let pages = vec![Page {
+            id: 1,
+            title: "Massachusetts Institute of Technology".to_string(),
+            is_journal: false,
+            journal_date: None,
+            content: String::new(),
+            created_at: None,
+            updated_at: None,
+        }];
+        let aliases = vec![(
+            "MIT".to_string(),
+            "Massachusetts Institute of Technology".to_string(),
+        )];
+        let items = build_link_items("mi", &pages, &aliases);
+        // The alias ranks as a prefix match, labeled with its target, and
+        // inserts itself (resolution follows the alias table).
+        let alias = items
+            .iter()
+            .find(|i| i.label.contains("→"))
+            .expect("alias item");
+        assert_eq!(alias.label, "MIT → Massachusetts Institute of Technology");
+        assert!(matches!(&alias.kind, ItemKind::Insert { snippet, .. } if snippet == "[[MIT]]"));
+        // An exact alias match suppresses the Create entry.
+        let items = build_link_items("MIT", &pages, &aliases);
+        assert!(!items.iter().any(|i| i.label.starts_with("Create")));
+    }
+
+    #[test]
     fn link_items_are_capped() {
         let pages: Vec<Page> = (0..20)
             .map(|i| Page {
@@ -789,7 +853,7 @@ mod tests {
                 updated_at: None,
             })
             .collect();
-        let items = build_link_items("proj", &pages);
+        let items = build_link_items("proj", &pages, &[]);
         // Capped matches + one "Create" entry (no exact "proj").
         assert_eq!(items.len(), MAX_COMPLETION_ITEMS + 1);
     }

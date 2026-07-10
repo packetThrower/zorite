@@ -53,7 +53,7 @@ release notes; prune after 0.7.0 ships.
   exists), then `.small()` the page menus to match the custom ones
 
 ## Notes & navigation
-- [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
+- [x] Aliases: offer a page's aliases as suggestions in `[[` autocomplete — alias rows rank with titles (shown `alias → Title`, inserting `[[alias]]`; exact alias match suppresses Create). `Db::list_aliases` cached with the sidebar page list
 - [ ] Block references: **"Copy block link"** — auto-generate a ` ^id` on a line
   (right-click / command) and put `[[Page#^id]]` on the clipboard, so linking to
   a block doesn't require inventing an id by hand

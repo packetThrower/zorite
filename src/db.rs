@@ -881,6 +881,16 @@ impl Db {
     // --- Aliases ---
 
     /// A page's alias names, sorted — used to populate the alias field.
+    /// Every alias with its page's title — `(alias, title)` — for the `[[`
+    /// completion (one indexed read; refreshed with the sidebar's page list).
+    pub fn list_aliases(&self) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT a.alias, p.title FROM page_aliases a              JOIN pages p ON p.id = a.page_id              ORDER BY a.alias COLLATE NOCASE",
+        )?;
+        stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect()
+    }
+
     pub fn get_page_aliases(&self, page_id: i64) -> rusqlite::Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT alias FROM page_aliases WHERE page_id = ?1 ORDER BY alias COLLATE NOCASE",

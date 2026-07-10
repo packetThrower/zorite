@@ -551,6 +551,9 @@ pub struct AppView {
 
     // Sidebar.
     pub pages: Vec<Page>,
+    /// `(alias, page title)` pairs for the `[[` completion, cached alongside
+    /// `pages` (refreshed together in `refresh_sidebar`).
+    aliases: Vec<(String, String)>,
     /// Whiteboards for the sidebar's "Whiteboards" section (titles only; content
     /// not loaded). Refreshed alongside `pages`.
     pub whiteboards: Vec<Page>,
@@ -842,6 +845,7 @@ impl AppView {
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
+            aliases: Vec::new(),
             whiteboards: Vec::new(),
             new_page_input,
             search_input,
@@ -2378,6 +2382,7 @@ impl AppView {
 
     fn refresh_sidebar(&mut self) {
         self.pages = self.db.list_pages().unwrap_or_default();
+        self.aliases = self.db.list_aliases().unwrap_or_default();
         self.whiteboards = self.db.list_whiteboards().unwrap_or_default();
         // Titles the auto-link closures match against — pages AND whiteboards
         // ([[Board]] opens the canvas). Short titles would link every stray
@@ -2489,7 +2494,7 @@ impl AppView {
                 // they complete alongside pages.
                 let mut linkable = self.pages.clone();
                 linkable.extend(self.whiteboards.iter().cloned());
-                slash::build_link_items(&query, &linkable)
+                slash::build_link_items(&query, &linkable, &self.aliases)
             }
             Trigger::Tag => slash::build_tag_items(&query, &self.pages),
             Trigger::Placeholder => slash::build_placeholder_items(&query),
