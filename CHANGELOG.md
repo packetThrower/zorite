@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
-## [0.8.0] - 2026-07-11
+## [0.8.0] - 2026-07-10
 
 Cursors that match your theme, a PDF viewer that marks up scans and fits your
 window, and a batch of everyday polish — tabs that come back after a restart,
