@@ -24,6 +24,8 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`PdfView::form_fields`](#pdfviewform_fields) | method | `forms` | `fn form_fields(&self) -> &[FormField]` | The loaded document's fields (Tab order) |
 | [`PdfView::reveal_field`](#pdfviewreveal_field) | method | `forms` | `fn reveal_field(&mut self, field: &FormField, cx) -> Option<Bounds<Pixels>>` | Scroll a field on-screen, return its window bounds |
 | [`PdfView::replace_bytes`](#pdfviewreplace_bytes) | method | — | `fn replace_bytes(&mut self, bytes: Vec<u8>, cx)` | Hot-swap the document (scroll/zoom kept, no blanking) |
+| [`PdfView::set_on_open_external`](#pdfviewset_on_open_external) | method | — | `fn set_on_open_external(&mut self, f: OpenExternalFn)` | Button on the failure pane → host opens the OS viewer |
+| [`OpenExternalFn`](#type-openexternalfn) | type alias | — | `Rc<dyn Fn(&mut Window, &mut App)>` | The failure pane's hand-off callback |
 | `PdfEvent::FieldClicked` | event variant | `forms` | `{ field: FormField, bounds: Bounds<Pixels> }` | A form widget was clicked — toggle or seat an input |
 | [`parse_with_password`](#parse_with_password) | fn | — | `fn parse_with_password(bytes: Arc<Vec<u8>>, password: &str) -> Result<Arc<Document>, LoadError>` | Parse an encrypted PDF |
 | [`page_dims`](#page_dims) | fn | — | `fn page_dims(doc: &Document) -> Vec<(f32, f32)>` | Per-page `(w, h)` in points, no rasterization |
@@ -743,6 +745,24 @@ place of the loading placeholder, and [`PdfEvent::LoadFailed`](#enum-pdfevent)
 fired when it was set. `None` while loading and after a successful parse.
 **Parameters** — none (`&self`).
 
+### `PdfView::set_on_open_external`
+
+```rust
+pub fn set_on_open_external(&mut self, f: OpenExternalFn)
+```
+
+Set the handler behind the failure pane's **"Open in system viewer"** button —
+a graceful hand-off for files hayro can't parse (an unsupported encryption
+handler such as a public-key/certificate scheme, exotic transparency/blend
+features). The viewer stays host-agnostic: the host does the actual OS launch.
+Without a handler the pane shows only the error text.
+
+**Parameters**
+
+| Name | Type | Description |
+| --- | --- | --- |
+| `f` | [`OpenExternalFn`](#type-openexternalfn) | Called from the button with `(&mut Window, &mut App)`. |
+
 ### `PdfView::unlock`
 
 ```rust
@@ -1252,6 +1272,17 @@ an empty vec (the outer vec always has exactly one entry per page).
 
 **Cost & threading** — one pass over each page's annotation array plus a page-tree
 walk; no rasterization. Pure and thread-safe.
+
+---
+
+## `type OpenExternalFn`
+
+```rust
+pub type OpenExternalFn = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
+```
+
+Invoked from the load-failure pane's "Open in system viewer" button (see
+[`set_on_open_external`](#pdfviewset_on_open_external)).
 
 ---
 

@@ -3737,6 +3737,7 @@ impl AppView {
         let create_path = path.clone();
         let area_weak = weak.clone();
         let area_path = path.clone();
+        let ext_path = path.clone();
         view.update(cx, move |v, cx| {
             v.set_highlights(highlights, cx);
             v.set_highlight_palette(crate::pdf::highlight_palette(), cx);
@@ -3760,6 +3761,11 @@ impl AppView {
                         )
                     });
                 }
+            }));
+            // Failure pane's hand-off: give the unparseable file to the OS viewer.
+            let ext_path = ext_path.clone();
+            v.set_on_open_external(Rc::new(move |_window, _cx| {
+                AppView::open_with_default_app(&ext_path);
             }));
             // Box-drag in area mode → the same store path; the rect rides as an
             // `@area(…)` quote token (parse_highlights turns it back into a region).
@@ -6085,6 +6091,24 @@ impl AppView {
         #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
         let cmd = "xdg-open";
         let _ = std::process::Command::new(cmd).arg(&dir).spawn();
+    }
+
+    /// Open a file with the OS default application (e.g. a PDF hayro can't
+    /// parse, handed to Preview/Edge/evince from the viewer's failure pane).
+    pub fn open_with_default_app(file: &Path) {
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        // `start` is a cmd built-in; the empty "" is its window-title slot so
+        // a path with spaces isn't mistaken for the title.
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        };
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        let mut cmd = std::process::Command::new("xdg-open");
+        let _ = cmd.arg(file).spawn();
     }
 
     /// Open a folder in the OS file manager (Finder / Explorer / file manager).

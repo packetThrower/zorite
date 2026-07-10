@@ -451,6 +451,12 @@ fn norm_rect_between(a: NormPoint, b: NormPoint) -> NormRect {
     }
 }
 
+/// Invoked from the load-failure pane's "Open in system viewer" button, so the
+/// host can hand the file to the OS default app — the viewer itself stays
+/// host-agnostic (no process spawning). Set via [`PdfView::set_on_open_external`];
+/// without it the pane shows no button.
+pub type OpenExternalFn = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
+
 /// Cache state for a page's extracted text layer. (`markup` feature.)
 #[cfg(feature = "markup")]
 enum TextSlot {
@@ -526,6 +532,8 @@ pub struct PdfView {
     /// A terminal read/parse failure — the viewer renders this message
     /// instead of sitting on "Loading PDF…" forever.
     load_error: Option<SharedString>,
+    /// Handler behind the failure pane's "Open in system viewer" button.
+    on_open_external: Option<OpenExternalFn>,
     /// `(width, height)` in points per page — drives page-slot sizing.
     dims: Vec<(f32, f32)>,
     /// Per-page render state; only pages near the viewport hold a bitmap.
@@ -685,6 +693,7 @@ impl PdfView {
             locked: false,
             unlock_failed: false,
             load_error: None,
+            on_open_external: None,
             dims: Vec::new(),
             pages: Vec::new(),
             scroll: ScrollHandle::new(),
@@ -939,6 +948,14 @@ impl PdfView {
     /// The terminal read/parse failure shown in place of the viewer, if any.
     pub fn load_error(&self) -> Option<&SharedString> {
         self.load_error.as_ref()
+    }
+
+    /// Set the handler behind the failure pane's "Open in system viewer"
+    /// button — a graceful hand-off for files hayro can't parse (unsupported
+    /// encryption handlers, exotic features). Without one, the pane shows
+    /// only the error text.
+    pub fn set_on_open_external(&mut self, f: OpenExternalFn) {
+        self.on_open_external = Some(f);
     }
 
     /// Set the highlights to draw — the host derives these from its own store (e.g.
@@ -1732,7 +1749,8 @@ impl Render for PdfView {
         let style = (self.style)();
 
         if let Some(err) = &self.load_error {
-            return load_failed(style, err.clone()).into_any_element();
+            return load_failed(style, err.clone(), self.on_open_external.clone())
+                .into_any_element();
         }
         if self.dims.is_empty() {
             return loading(style).into_any_element();
@@ -2673,7 +2691,11 @@ impl Render for PdfView {
 
 /// The terminal-failure pane: the file name stays in the tab; the pane says
 /// why the viewer is empty (instead of an eternal "Loading PDF…").
-fn load_failed(style: PdfStyle, err: SharedString) -> impl IntoElement {
+fn load_failed(
+    style: PdfStyle,
+    err: SharedString,
+    open_external: Option<OpenExternalFn>,
+) -> impl IntoElement {
     div()
         .size_full()
         .flex()
@@ -2694,6 +2716,24 @@ fn load_failed(style: PdfStyle, err: SharedString) -> impl IntoElement {
                 .max_w(px(520.))
                 .child(err),
         )
+        // Graceful hand-off: the file may still open fine in the OS viewer
+        // (unsupported encryption handler, exotic features).
+        .children(open_external.map(|handler| {
+            div()
+                .id("pdf-open-external")
+                .mt(px(8.))
+                .px(px(10.))
+                .py(px(4.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(style.border)
+                .text_size(px(12.))
+                .text_color(style.header_fg)
+                .cursor_pointer()
+                .hover(|s| s.bg(style.placeholder_bg))
+                .child("Open in system viewer")
+                .on_click(move |_, window, cx| handler(window, cx))
+        }))
 }
 
 fn loading(style: PdfStyle) -> impl IntoElement {
