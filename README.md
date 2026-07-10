@@ -106,7 +106,8 @@ Developed in close collaboration with Claude (Anthropic).
   loading everything. It has a table of contents, text search, password
   support, drag-to-highlight annotations that link back to notes, and AcroForm
   form filling — checkboxes, text fields, Tab between fields — with saved files
-  that render correctly in other viewers.
+  that render correctly in other viewers. A file that can't be opened says
+  why instead of loading forever.
 - `⌘P` exports the current note as a styled PDF, including tables, images,
   math, and diagrams. No browser involved.
 - Whiteboards are infinite pan-and-zoom canvases with shapes, arrows, freehand
@@ -126,12 +127,18 @@ Developed in close collaboration with Claude (Anthropic).
 
 ### Privacy and customization
 
+- More than one set of notes? **Notebooks** are self-contained data folders
+  (a work set, a personal set, a folder in Dropbox) switched from a chip at
+  the bottom of the sidebar or Settings → Notebooks; switching relaunches
+  into the picked one.
 - Notes live in one local SQLite file, with images and PDFs beside it. The
   whole database can be encrypted (SQLCipher, AES-256), with an unlock screen,
   optional keychain storage of the password, and an idle auto-lock.
 - Importers exist for Obsidian (vault, links, properties, callouts, canvas
-  boards) and Logseq (graph, whiteboards, PDF highlights). Imports don't touch
-  the source vault.
+  boards) and Logseq (graph, whiteboards, PDF highlights); imports don't touch
+  the source. And the way out is just as open: File → Export Notebook as
+  Markdown writes the whole notebook as plain markdown + assets (whiteboards
+  as JSON Canvas), readable by any other app.
 - Appearance: built-in and JSON-file themes, light/dark/auto, any installed or
   imported font, and an adjustable text size.
 

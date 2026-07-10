@@ -55,6 +55,7 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`EditorState::math_align`](#math_align) | method | `fn math_align(&self, block_start: usize) -> MathAlign` | A `$$` block's alignment marker |
 | [`EditorState::math_marker_edit`](#math_marker_edit) | method | `fn math_marker_edit(&self, block: Range<usize>, align: MathAlign) -> (Range<usize>, String)` | Fold an alignment change into a commit edit |
 | [`EditorState::edit_math_at_caret`](#edit_math_at_caret) | method | `fn edit_math_at_caret(&mut self, cx: &mut Context<Self>)` | Emit `EditMath` for the caret's `$$` block |
+| [`EditorState::property_block_at_caret`](#property_block_at_caret) | method | `fn property_block_at_caret(&self) -> Option<(Range<usize>, SharedString)>` | The property block at the caret, for the host's `/property` flow |
 | [`EditorState::exit_math`](#exit_math) | method | `fn exit_math(&mut self, block: Range<usize>, after: bool, window: &mut Window, cx: &mut Context<Self>)` | Seat the caret just outside a math block |
 | [`EditorState::set_auto_replace`](#set_auto_replace) | method | `fn set_auto_replace(&mut self, impl Fn(&str) -> Option<(Range<usize>, String)> + 'static)` | Word-completion rewrite hook |
 | [`EditorState::take_replaced_selection`](#take_replaced_selection) | method | `fn take_replaced_selection(&mut self) -> Option<String>` | Text the last keystroke typed over (consumed) |
@@ -665,6 +666,18 @@ If the caret sits inside a `$$…$$` block, emit
 can turn a freshly inserted, empty math block (e.g. a `/math` snippet)
 straight into a live editor instead of raw source. No-op outside a block.
 
+#### `property_block_at_caret`
+
+```rust
+pub fn property_block_at_caret(&self) -> Option<(Range<usize>, SharedString)>
+```
+
+The `key:: value` property block covering the caret's line, as its absolute
+byte range + source — `None` outside a block or when no markdown style is
+installed (WYSIWYG-only, like [`edit_math_at_caret`](#edit_math_at_caret)).
+Lets a host open the property editor on a freshly inserted `/property` line
+instead of leaving raw source.
+
 #### `exit_math`
 
 ```rust
@@ -887,15 +900,17 @@ window-space click point.
 **Host obligation:** show a context menu (Copy LaTeX / Export / …) at
 `position`.
 
-### `EditProperties { range, source, at_end }`
+### `EditProperties { range, source, at_end, row }`
 
-A `key:: value` property panel was clicked or arrowed into.
+A `key:: value` property panel was clicked, arrowed, word-jumped, or edited
+into (Enter inside the block, a backspace/delete join at its edge).
 
 | Field | Type | Meaning |
 | --- | --- | --- |
 | `range` | `Range<usize>` | Byte range of the whole consecutive `key:: value` block. |
 | `source` | `SharedString` | The block's text, to seed the host's property editor. |
-| `at_end` | `bool` | `true` = entered by arrowing up from below (focus the last field); `false` = click or arrowing down from above (focus the first). |
+| `at_end` | `bool` | `true` = entered from below (focus the last field, caret at the value's end); `false` = from above (focus the first). |
+| `row` | `Option<usize>` | The property line's index within the block, when the entry targeted a specific row (a click, Enter, a join) — the host focuses that row. `None` for plain arrow entry (`at_end` decides). |
 
 **Host obligation:** seat an in-place property editor with
 [`set_editing_block`](#set_editing_block) and overwrite `range` on commit —

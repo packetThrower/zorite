@@ -1,6 +1,6 @@
 ---
 title: PDF & images
-description: 'Link or drop PDFs into the page-virtualized viewer — zoom, navigation, a TOC, drag-to-highlight markup with note↔PDF jump links, and password-protected files. Plus inline images you can paste, drop, and resize.'
+description: 'Link or drop PDFs into the page-virtualized viewer — zoom, navigation, a TOC, drag-to-highlight markup with note↔PDF jump links, fillable forms, and password-protected files. Plus inline images you can paste, drop, and resize.'
 ---
 
 Reference material lives next to your notes. Link a PDF with a wiki-link or drop
@@ -40,6 +40,17 @@ from the PDF back to where you wrote about it.
 
 Encrypted PDFs are supported — both **RC4** and **AES**. Zorite prompts for the
 password and renders the document once it's unlocked.
+
+### Fill in forms
+
+A PDF with form fields (AcroForm) is fillable right in the viewer. Click a
+**checkbox or radio button** to toggle it. Click a **text field** and a small
+input appears seated under it — type, then **Enter** (or click away) saves,
+**Esc** cancels, and **Tab / Shift-Tab** hop field to field, scrolling each
+into view. Edits are written back into the stored PDF with proper appearance
+streams, so the filled file renders correctly in every other PDF viewer too.
+Signature and read-only fields stay untouched; choice fields currently edit
+as free text.
 
 ### Under the hood
 
