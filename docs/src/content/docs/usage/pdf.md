@@ -28,7 +28,9 @@ and scrolled-away pages free both their memory *and* their GPU texture. An
 high-resolution displays.
 
 Zoom, page navigation, and a table of contents for jumping around a long
-document.
+document. Two **fit modes** live next to the zoom controls: `↔` fits the page
+width to the viewer, `⤢` fits the whole page — both stay in effect as you
+resize the window, until you zoom manually.
 
 ### Highlight markup
 
@@ -36,10 +38,16 @@ document.
 **note↔PDF jump links**: follow it from your note to land on the right page, or
 from the PDF back to where you wrote about it.
 
+Next to the highlight pen sits the **area tool** (`⬚`): drag a box over any
+region — a figure, a chart, a scanned page with no text layer at all — and it
+becomes a markup exactly like a text highlight, same colors and jump links.
+
 ### Password-protected PDFs
 
 Encrypted PDFs are supported — both **RC4** and **AES**. Zorite prompts for the
-password and renders the document once it's unlocked.
+password and renders the document once it's unlocked. On the rare file Zorite
+can't parse at all (an exotic encryption scheme, unusual features), the viewer
+offers **Open in system viewer** to hand it to your OS default app instead.
 
 ### Fill in forms
 
@@ -49,8 +57,9 @@ input appears seated under it — type, then **Enter** (or click away) saves,
 **Esc** cancels, and **Tab / Shift-Tab** hop field to field, scrolling each
 into view. Edits are written back into the stored PDF with proper appearance
 streams, so the filled file renders correctly in every other PDF viewer too.
-Signature and read-only fields stay untouched; choice fields currently edit
-as free text.
+Signature and read-only fields stay untouched. **Choice fields** (dropdowns
+and lists) offer their options as a click-to-pick list under the input —
+typing still works for combos that allow free entry.
 
 ### Under the hood
 

@@ -93,7 +93,10 @@ export default defineConfig({
 				},
 				{
 					label: 'Customize',
-					items: [{ label: 'Themes', slug: 'customize/themes' }],
+					items: [
+						{ label: 'Themes', slug: 'customize/themes' },
+						{ label: 'Mouse cursors', slug: 'customize/cursors' },
+					],
 				},
 				{
 					label: 'Reference',

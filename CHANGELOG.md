@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.8.0] - 2026-07-11
+
+Cursors that match your theme, a PDF viewer that marks up scans and fits your
+window, and a batch of everyday polish — tabs that come back after a restart,
+aliases in autocomplete, and seven interaction bugs put down.
+
+### Added
+
+- **Custom mouse cursors** — pick a cursor theme under Settings → Appearance →
+  Mouse cursor. Ships with **Bibata-Catppuccin (Mocha)**, and — the fun one —
+  **Bibata (match theme)**: the cursors re-color live from your active theme's
+  accent, custom `.json` themes included, on every skin or light/dark switch.
+  Add your own packs like fonts: any **XCursor theme folder** (the standard
+  Linux cursor-theme format — thousands exist) drops in as-is, and a pack that
+  carries SVG sources in Bibata's color-slot convention gets its own
+  "(match theme)" entry too. Selection is per-notebook and applies before an
+  encrypted notebook unlocks. On Linux changes take effect on the next launch;
+  on Windows the standard cursor set is themed at the granularity Windows
+  offers.
+- **PDF area highlights** — a `⬚` tool beside the highlight pen: drag a box
+  over any page region — figures, charts, scanned pages with no text layer —
+  and it lands on the highlights page with the same colors, jump-links, and
+  flash-on-jump as text highlights.
+- **PDF fit-width / fit-page zoom** — two sticky header controls (`↔` / `⤢`)
+  that keep re-fitting as the window or sidebar resizes; any manual zoom takes
+  back over.
+- **PDF choice-field dropdowns** — a form's combo/list fields now offer their
+  options as a click-to-pick list under the in-place editor (typing still
+  works for editable combos).
+- **"Open in system viewer"** — a PDF Zorite can't parse (an unsupported
+  encryption scheme, exotic features) now offers a one-click hand-off to your
+  OS default viewer instead of a dead end.
+- **Remember open tabs** — a second switch on the Settings → General →
+  **Remember window** card: reopen Zorite with the tabs (and active tab) you
+  had — pages, PDFs, whiteboards, All pages / Graph / Properties. Deleted
+  pages and missing files are skipped quietly.
+- **Aliases in `[[` autocomplete** — a page's `alias::` names complete
+  alongside titles, shown as `alias → Title`; picking one inserts `[[alias]]`,
+  which already resolves to the page.
+
+### Fixed
+
+- **Slash menu** scrolling with the arrow keys lagged a line behind the
+  selection and the height cap clipped the bottom row — rows are now exactly
+  as tall as the scroll math thinks, the menu is an exact ten rows, and
+  keyboard scrolling advances whole lines the moment the selection would
+  leave view.
+- **PDF export** ignored math alignment — display formulas now center by
+  default (like the reading view) and honor left/right alignment.
+- **Reader PDF chips** looked nothing like the WYSIWYG pill — now
+  pixel-matched: same line-art file icon, colors, geometry, and the chip hugs
+  its content instead of stretching across the page.
+- **Find in Page** silently did nothing on the Journal tab, making the Edit
+  menu item look broken — it now routes to the global search there (the
+  feed's find); page tabs keep their find bar.
+- Clicking a tab in the **tab-overflow menu** did nothing — it now activates
+  the tab.
+- The **property row hover box** sat flush against the last value character —
+  it now has even padding on both sides.
+- The Settings **Font** dropdown's "Default" now says what it resolves to —
+  "Default (theme font)" or "Default (System)".
+
 ## [0.7.0] - 2026-07-09
 
 The everything release: multiple notebooks, PDF form filling, a portable
@@ -654,6 +716,7 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
+[0.8.0]: https://github.com/packetThrower/zorite/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/packetThrower/zorite/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/packetThrower/zorite/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/packetThrower/zorite/compare/v0.5.1...v0.6.0

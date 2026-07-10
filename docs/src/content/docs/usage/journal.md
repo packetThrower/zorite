@@ -28,9 +28,11 @@ word processor, not an outliner.
 
 ## Pages, wiki-links, and backlinks
 
-Any note can link to any other with `[[wiki-links]]`. In the rendered view a
-wiki-link is clickable; following one navigates to that page, **creating it** if
-it doesn't exist yet. The reverse direction is automatic: every page shows a
+Any note can link to any other with `[[wiki-links]]`. Typing `[[` completes
+against your page titles **and their aliases** (an alias shows as
+`alias → Title` and links to its page). In the rendered view a wiki-link is
+clickable; following one navigates to that page, **creating it** if it doesn't
+exist yet. The reverse direction is automatic: every page shows a
 **Linked References** panel listing the places that link to it.
 
 `#tags` work the same way — clickable in the rendered view, each one its own
