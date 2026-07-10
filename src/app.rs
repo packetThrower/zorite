@@ -8554,15 +8554,14 @@ impl Render for AppView {
             )
             .on_action(
                 cx.listener(|this: &mut AppView, _: &FindInPage, window, cx| {
-                    // ⌘F: find in the active page's rendered text. Only on a Page tab —
-                    // PDFs handle ⌘F in the viewer; the journal feed uses ⌘⇧F.
-                    if matches!(
-                        this.tabs.get(this.active).map(|t| &t.kind),
-                        Some(TabKind::Page(_))
-                    ) {
-                        this.open_page_find(window, cx);
-                    } else {
-                        cx.propagate();
+                    // ⌘F: find in the active page's rendered text on a Page tab.
+                    // On the Journal it routes to the global search — the feed's
+                    // find (silently eating the key made the menu item look
+                    // broken). PDFs handle ⌘F in the viewer.
+                    match this.tabs.get(this.active).map(|t| &t.kind) {
+                        Some(TabKind::Page(_)) => this.open_page_find(window, cx),
+                        Some(TabKind::Journal) => this.focus_global_search(window, cx),
+                        _ => cx.propagate(),
                     }
                 }),
             )
