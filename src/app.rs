@@ -3992,6 +3992,23 @@ impl AppView {
         cx.notify();
     }
 
+    /// Commit a choice field to `value` directly (an option row was clicked —
+    /// bypasses the input's text).
+    fn commit_pdf_field_choice(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(edit) = self.pdf_field_edit.take() else {
+            return;
+        };
+        if value != edit.field.value {
+            self.write_pdf_field(&edit.path, &edit.field.name, value, window, cx);
+        }
+        cx.notify();
+    }
+
     /// Write one form field: read the stored PDF, rewrite it through
     /// `set_form_value` (value + regenerated appearance), save it back, and
     /// hot-swap the open viewer's document (scroll/zoom preserved).
@@ -8156,7 +8173,16 @@ impl Render for AppView {
         // from the focused input); the seat swallows its own clicks.
         let pdf_field_overlay = self.pdf_field_edit.as_ref().map(|e| {
             let seat_w = e.bounds.size.width.clamp(px(220.0), px(460.0));
-            let seat_h = px(64.0);
+            // Choice fields list their /Opt entries below the input (clicking
+            // one commits immediately; typing still works for editable combos).
+            let options: Vec<String> = if e.field.kind == gpui_pdf::FieldKind::Choice {
+                e.field.options.clone()
+            } else {
+                Vec::new()
+            };
+            const OPT_ROW_H: f32 = 22.0;
+            let opt_h = (options.len().min(6) as f32) * OPT_ROW_H;
+            let seat_h = px(64.0 + opt_h);
             let gap = px(6.0);
             let below = e.bounds.origin.y + e.bounds.size.height + gap;
             let win_h = window.viewport_size().height;
@@ -8208,7 +8234,46 @@ impl Render for AppView {
                                         e.field.name
                                     )),
                             )
-                            .child(Input::new(&e.input).small()),
+                            .child(Input::new(&e.input).small())
+                            .children((!options.is_empty()).then(|| {
+                                let current = e.field.value.clone();
+                                let mut col = div()
+                                    .id("pdf-choice-options")
+                                    .max_h(px(6.0 * OPT_ROW_H))
+                                    .overflow_y_scroll()
+                                    .flex()
+                                    .flex_col();
+                                for (i, opt) in options.iter().enumerate() {
+                                    let value = opt.clone();
+                                    let mut row = div()
+                                        .id(("pdf-choice-opt", i))
+                                        .h(px(OPT_ROW_H))
+                                        .flex_none();
+                                    if *opt == current {
+                                        row = row.bg(theme::accent_tint());
+                                    }
+                                    col = col.child(
+                                        row.flex()
+                                            .items_center()
+                                            .px(px(6.0))
+                                            .rounded(px(4.0))
+                                            .text_size(px(12.0))
+                                            .cursor_pointer()
+                                            .hover(|d| d.bg(theme::hover()))
+                                            .child(opt.clone())
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.commit_pdf_field_choice(
+                                                        &value, window, cx,
+                                                    );
+                                                }),
+                                            ),
+                                    );
+                                }
+                                col
+                            })),
                     ),
             )
             .into_any_element()

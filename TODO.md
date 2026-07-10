@@ -97,8 +97,8 @@ per-notebook settings sync.
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
 - [x] PDF: **graceful fallback for unsupported files** — the load-failure pane now offers **"Open in system viewer"** (host launches the OS default app via `open`/`start`/`xdg-open`); `PdfView::set_on_open_external` keeps the crate host-agnostic
 - [ ] PDF forms, follow-ups — the AcroForm feature SHIPPED 2026-07-06 (see
-  Completed): remaining niceties are **choice-field dropdowns** (Ch fields
-  edit as free text today; `FormField::options` already carries `/Opt`),
+  Completed): choice-field dropdowns DONE (the seat editor lists /Opt
+  entries — click commits, typing still covers editable combos); remaining:
   synthesized-appearance fidelity (`/DA` fonts, `/Q` quadding, comb fields,
   multiline), and **filing the two hayro gaps upstream** (state-dict `/AP /N`
   selected by `/AS`; `NeedAppearances` synthesis) so the lopdf normalization
