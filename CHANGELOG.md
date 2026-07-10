@@ -7,7 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
-## [Unreleased]
+## [0.7.0] - 2026-07-09
+
+The everything release: multiple notebooks, PDF form filling, a portable
+Markdown + canvas exporter, a Nix flake — and a deep pass over the editor's
+papercuts, so the everyday interactions stop showing their markdown seams.
+
 
 ### Added
 
@@ -649,6 +654,7 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
+[0.7.0]: https://github.com/packetThrower/zorite/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/packetThrower/zorite/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/packetThrower/zorite/compare/v0.5.1...v0.6.0
 [0.5.1]: https://github.com/packetThrower/zorite/compare/v0.5.0...v0.5.1
