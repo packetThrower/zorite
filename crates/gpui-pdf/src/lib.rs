@@ -318,6 +318,15 @@ fn render_scale(page_width: f32, scale_factor: f32, quality: f32, page_pt_width:
 
 // ─────────────────────────────── Component: PdfView ───────────────────────────────
 
+/// Automatic zoom-to-fit modes — see [`PdfView::fit_width`] / [`PdfView::fit_page`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FitMode {
+    /// The page column fills the viewport width.
+    Width,
+    /// The whole current page fits inside the viewport.
+    Page,
+}
+
 /// Smallest / largest zoom the viewer allows.
 const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
@@ -526,6 +535,11 @@ pub struct PdfView {
     /// from the thumb's top at grab time, so the thumb tracks the cursor. `None` when
     /// not dragging the scrollbar.
     scrollbar_drag: Option<f32>,
+    /// Active zoom-to-fit mode: re-fits on every viewport resize until a
+    /// manual zoom clears it.
+    fit: Option<FitMode>,
+    /// Viewport size the fit was last computed for (so a resize re-fits once).
+    fit_viewport: (f32, f32),
     /// On-screen zoom factor (1.0 = base width). Affects layout and render scale.
     zoom: f32,
     /// The quality multiplier the pages were last rendered at; compared against the
@@ -675,6 +689,8 @@ impl PdfView {
             pages: Vec::new(),
             scroll: ScrollHandle::new(),
             scrollbar_drag: None,
+            fit: None,
+            fit_viewport: (0.0, 0.0),
             zoom: 1.0,
             last_quality,
             generation: 0,
@@ -1338,6 +1354,12 @@ impl PdfView {
     /// re-render crisp at the new scale; their current bitmaps stay on screen
     /// (rescaled) until the fresh ones land, so nothing blanks.
     pub fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
+        // A manual zoom takes over from any active fit mode.
+        self.fit = None;
+        self.apply_zoom(zoom, cx);
+    }
+
+    fn apply_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         let z = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
         if (z - self.zoom).abs() < 0.001 {
             return;
@@ -1347,6 +1369,63 @@ impl PdfView {
         self.generation = self.generation.wrapping_add(1);
         self.go_to_page(anchor, cx);
         cx.notify();
+    }
+
+    /// Fit the page column to the viewport width. Sticky: re-fits as the
+    /// viewer resizes, until a manual zoom (buttons, ⌘±/⌘0, [`set_zoom`])
+    /// takes over. Toggles off if already active.
+    ///
+    /// [`set_zoom`]: Self::set_zoom
+    pub fn fit_width(&mut self, cx: &mut Context<Self>) {
+        self.toggle_fit(FitMode::Width, cx);
+    }
+
+    /// Fit the whole current page inside the viewport (both axes). Sticky
+    /// like [`fit_width`](Self::fit_width); toggles off if already active.
+    pub fn fit_page(&mut self, cx: &mut Context<Self>) {
+        self.toggle_fit(FitMode::Page, cx);
+    }
+
+    fn toggle_fit(&mut self, mode: FitMode, cx: &mut Context<Self>) {
+        self.fit = if self.fit == Some(mode) {
+            None
+        } else {
+            Some(mode)
+        };
+        self.apply_fit(cx);
+        cx.notify();
+    }
+
+    /// Compute + apply the zoom for the active fit mode against the current
+    /// viewport. No-op before first layout (render re-applies once bounds are
+    /// known) or with no fit active.
+    fn apply_fit(&mut self, cx: &mut Context<Self>) {
+        let Some(mode) = self.fit else {
+            return;
+        };
+        let vp = self.scroll.bounds().size;
+        let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
+        if vw <= 1.0 || vh <= 1.0 {
+            return;
+        }
+        self.fit_viewport = (vw, vh);
+        // Chrome around the page column: the overlay scrollbar plus the page
+        // slots' 1px borders and a hair of breathing room.
+        let avail_w = (vw - SCROLLBAR_W - 6.0).max(50.0);
+        let zoom = match mode {
+            FitMode::Width => avail_w / PAGE_WIDTH,
+            FitMode::Page => {
+                let (pw, ph) = self
+                    .dims
+                    .get(self.current_page_index())
+                    .copied()
+                    .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+                    .unwrap_or((612.0, 792.0));
+                let avail_h = (vh - 2.0 * PAGE_PAD_Y).max(50.0);
+                (avail_h / (PAGE_WIDTH * (ph / pw))).min(avail_w / PAGE_WIDTH)
+            }
+        };
+        self.apply_zoom(zoom, cx);
     }
 
     /// Zoom in one step.
@@ -1639,6 +1718,15 @@ impl EventEmitter<PdfEvent> for PdfView {}
 
 impl Render for PdfView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A sticky fit mode re-fits when the viewport size changes (window or
+        // sidebar resize) — and computes the first real fit once layout exists.
+        if self.fit.is_some() {
+            let vp = self.scroll.bounds().size;
+            let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
+            if (vw - self.fit_viewport.0).abs() > 1.0 || (vh - self.fit_viewport.1).abs() > 1.0 {
+                self.apply_fit(cx);
+            }
+        }
         // Keep only the on-screen pages rasterized for the current scroll position.
         self.ensure_window(window, cx);
         let style = (self.style)();
@@ -1958,7 +2046,28 @@ impl Render for PdfView {
                 self.control("pdf-zoom-in", "+")
                     .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx)))
                     .tooltip(self.tip("Zoom in (⌘+)")),
-            );
+            )
+            .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
+            .child({
+                let mut c = self
+                    .control("pdf-fit-width", "↔")
+                    .on_click(cx.listener(|this, _, _window, cx| this.fit_width(cx)))
+                    .tooltip(self.tip("Fit width"));
+                if self.fit == Some(FitMode::Width) {
+                    c = c.bg(style.placeholder_bg);
+                }
+                c
+            })
+            .child({
+                let mut c = self
+                    .control("pdf-fit-page", "⤢")
+                    .on_click(cx.listener(|this, _, _window, cx| this.fit_page(cx)))
+                    .tooltip(self.tip("Fit page"));
+                if self.fit == Some(FitMode::Page) {
+                    c = c.bg(style.placeholder_bg);
+                }
+                c
+            });
 
         // Highlight-mode toggle + color picker (markup): the pen turns drag-to-select
         // on and pops a palette down; the active color shows as a chip beneath it.

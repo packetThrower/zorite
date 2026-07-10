@@ -92,7 +92,7 @@ per-notebook settings sync.
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
-- [ ] PDF: **fit-width / fit-page** zoom modes (zoom is free-scale only today)
+- [x] PDF: **fit-width / fit-page** zoom modes — sticky `↔`/`⤢` header controls (re-fit on viewport resize; any manual zoom takes over); `PdfView::fit_width`/`fit_page` in gpui-pdf
 - [x] PDF: **area (image-region) highlights** — the `⬚` tool beside the pen: a box-drag marks a page region (figures / scans, no text layer needed), stored on the highlights page as an `@area(x,y,w,h)` quote token (same colors, jump-links, and flash); `Highlight.region` + `toggle_area_mode`/`CreateAreaFn` in gpui-pdf. See `crates/gpui-pdf/src/lib.rs`, `src/pdf.rs`
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
 - [ ] PDF: **graceful fallback for unsupported files** — encrypted PDFs now open behind a password prompt (RC4 / AES-128 / AES-256), but hayro can still fail on an *unsupported* encryption algorithm (e.g. a public-key / certificate handler) or exotic transparency / blend modes; on such a load/parse failure, show an "Open in default app" affordance (hand off to the OS viewer) instead of a blank pane

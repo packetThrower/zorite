@@ -47,6 +47,9 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`PdfView::zoom_in`](#pdfviewzoom_in--zoom_out--reset_zoom) | method | — | `fn zoom_in(&mut self, cx: &mut Context<Self>)` | Zoom in one step (×1.25) |
 | [`PdfView::zoom_out`](#pdfviewzoom_in--zoom_out--reset_zoom) | method | — | `fn zoom_out(&mut self, cx: &mut Context<Self>)` | Zoom out one step (÷1.25) |
 | [`PdfView::reset_zoom`](#pdfviewzoom_in--zoom_out--reset_zoom) | method | — | `fn reset_zoom(&mut self, cx: &mut Context<Self>)` | Back to 100% |
+| [`PdfView::fit_width`](#pdfviewfit_width) | method | — | `fn fit_width(&mut self, cx: &mut Context<Self>)` | Sticky fit-to-width zoom (toggles) |
+| [`PdfView::fit_page`](#pdfviewfit_page) | method | — | `fn fit_page(&mut self, cx: &mut Context<Self>)` | Sticky whole-page fit zoom (toggles) |
+| [`FitMode`](#enum-fitmode) | enum | — | `Width \| Page` | The two zoom-to-fit modes |
 | [`PdfView::go_to_page`](#pdfviewgo_to_page) | method | — | `fn go_to_page(&mut self, index: usize, cx: &mut Context<Self>)` | Scroll a page to the viewport top |
 | [`PdfView::next_page`](#pdfviewnext_page--prev_page) | method | — | `fn next_page(&mut self, cx: &mut Context<Self>)` | Go to the next page |
 | [`PdfView::prev_page`](#pdfviewnext_page--prev_page) | method | — | `fn prev_page(&mut self, cx: &mut Context<Self>)` | Go to the previous page |
@@ -841,6 +844,30 @@ One multiplicative step (×1.25 / ÷1.25) or back to 100% — all delegate to
 [`set_zoom`](#pdfviewset_zoom) (same clamping and no-blank behavior).
 **Parameters** — `cx` only.
 
+### `PdfView::fit_width`
+
+```rust
+pub fn fit_width(&mut self, cx: &mut Context<Self>)
+```
+
+Fit the page column to the viewport width. **Sticky**: the zoom re-computes on
+every viewport resize (window/sidebar changes) until a manual zoom — the ± / %
+controls, ⌘±/⌘0, or [`set_zoom`](#pdfviewset_zoom) — takes over. Calling it
+while already active toggles the mode off. The header shows it as the `↔`
+control, highlighted while active. **Parameters** — `cx` only.
+
+### `PdfView::fit_page`
+
+```rust
+pub fn fit_page(&mut self, cx: &mut Context<Self>)
+```
+
+Fit the whole *current* page inside the viewport, both axes — the fit uses that
+page's aspect ratio, so mixed-size documents re-fit for the page current at the
+time of (re-)fitting, not per scrolled page. Sticky and toggling like
+[`fit_width`](#pdfviewfit_width); the `⤢` header control.
+**Parameters** — `cx` only.
+
 ### `PdfView::go_to_page`
 
 ```rust
@@ -1225,6 +1252,17 @@ an empty vec (the outer vec always has exactly one entry per page).
 
 **Cost & threading** — one pass over each page's annotation array plus a page-tree
 walk; no rasterization. Pure and thread-safe.
+
+---
+
+## `enum FitMode`
+
+```rust
+pub enum FitMode { Width, Page }
+```
+
+The two zoom-to-fit modes (see [`fit_width`](#pdfviewfit_width) /
+[`fit_page`](#pdfviewfit_page)). `Copy`, `Clone`, `PartialEq`, `Eq`, `Debug`.
 
 ---
 
