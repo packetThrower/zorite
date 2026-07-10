@@ -6145,7 +6145,10 @@ fn build_prop_panel(
         rows.push((SharedString::from(k.to_string()), icon, segs));
     }
     let key_w = key_indent + key_w + px(20.);
-    let width = key_w + val_w + px(10.);
+    // 10px inner padding on BOTH sides: values start at key_w + 10 (see
+    // `paint_prop_panel`), so the width needs 10 + val_w + 10 past key_w or
+    // the hover border sits flush against the last value character.
+    let width = key_w + val_w + px(20.);
     let row_h = font_size * LINE_HEIGHT_RATIO + px(8.);
     let height = row_h * rows.len() as f32;
     PropPanel {
@@ -6410,8 +6413,17 @@ fn paint_chip(
 
 /// Paint a flat, line-art document glyph (a page with a folded top-right corner +
 /// two text lines) in `color`, the chip's file icon. Drawn with strokes — not a
-/// font emoji — so it reads flat and on-theme at the text's size.
-fn paint_doc_icon(x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla, window: &mut Window) {
+/// font emoji — so it reads flat and on-theme at the text's size. Public so a
+/// host's read-only view can draw the identical icon on its own file chips
+/// (cross-view parity).
+pub fn paint_doc_icon(
+    x: Pixels,
+    y: Pixels,
+    w: Pixels,
+    h: Pixels,
+    color: Hsla,
+    window: &mut Window,
+) {
     let f = w * 0.33; // folded-corner size
     // Page silhouette, with the top-right corner cut away for the fold.
     let mut outline = PathBuilder::stroke(px(1.3));

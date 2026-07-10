@@ -53,6 +53,10 @@ release notes; prune after 0.7.0 ships.
   exists), then `.small()` the page menus to match the custom ones
 
 ## Notes & navigation
+- [ ] **Find in the journal feed** — a real `⌘F` find bar on the Journal tab
+  (today it routes to the global search): match + step across every loaded
+  day's rendered text, reusing `gpui-markdown`'s `find_matches`/`search` like
+  the page find bar, but with per-day match bookkeeping and feed scrolling
 - [ ] Aliases: offer a page's aliases as suggestions in `[[` autocomplete
 - [ ] Block references: **"Copy block link"** — auto-generate a ` ^id` on a line
   (right-click / command) and put `[[Page#^id]]` on the clipboard, so linking to

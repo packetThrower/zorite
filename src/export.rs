@@ -82,6 +82,10 @@ struct Pdf {
     y: f64,
     /// Unique names for embedded images (the crate keys them by name).
     image_n: usize,
+    /// Horizontal alignment (0 left, 0.5 center, 1 right) set by the last
+    /// `<!-- math:ALIGN -->` marker, consumed by the formula that follows.
+    /// Center absent a marker — the app's and LaTeX's default.
+    math_align: f64,
 }
 
 impl Pdf {
@@ -93,6 +97,7 @@ impl Pdf {
             page: Page::new(PAGE_W, PAGE_H),
             y: PAGE_H - MARGIN,
             image_n: 0,
+            math_align: 0.5,
         }
     }
 
@@ -141,7 +146,8 @@ impl Pdf {
                     && let Some(png) =
                         ratex_gpui::render::render_latex_to_png(&m.value, MATH_PT as f32, MATH_DPR)
                 {
-                    self.png(png, MATH_DPR as f64, indent);
+                    let align = std::mem::replace(&mut self.math_align, 0.5);
+                    self.png_aligned(png, MATH_DPR as f64, indent, align);
                     return;
                 }
                 // Standalone images render as images; everything else flows.
@@ -205,7 +211,21 @@ impl Pdf {
             // Comments never print — they carry the app's control markers
             // (`<!-- math:left -->` alignment, table styles) and are invisible
             // in every view. Other raw HTML prints literally, like the reader.
-            mdast::Node::Html(h) if h.value.trim_start().starts_with("<!--") => {}
+            mdast::Node::Html(h) if h.value.trim_start().starts_with("<!--") => {
+                // …but a math-alignment marker steers the formula below it.
+                if let Some(inner) = h
+                    .value
+                    .trim()
+                    .strip_prefix("<!--")
+                    .and_then(|v| v.strip_suffix("-->"))
+                {
+                    self.math_align = match inner.trim() {
+                        "math:left" => 0.0,
+                        "math:right" => 1.0,
+                        _ => self.math_align,
+                    };
+                }
+            }
             mdast::Node::Html(h) => {
                 let runs = vec![(h.value.clone(), Style::default())];
                 self.runs(&runs, BODY_SIZE, indent);
@@ -214,8 +234,9 @@ impl Pdf {
             mdast::Node::Math(m) => {
                 // Typeset like the reader (RaTeX → PNG); the LaTeX source in
                 // monospace only if typesetting fails.
+                let align = std::mem::replace(&mut self.math_align, 0.5);
                 match ratex_gpui::render::render_latex_to_png(&m.value, MATH_PT as f32, MATH_DPR) {
-                    Some(png) => self.png(png, MATH_DPR as f64, indent),
+                    Some(png) => self.png_aligned(png, MATH_DPR as f64, indent, align),
                     None => self.code_block(&format!("$$ {} $$", m.value), indent),
                 }
             }
@@ -682,6 +703,12 @@ impl Pdf {
     /// Embed pre-rendered PNG bytes at `1/oversample` of their pixel size
     /// (96dpi px → pt), capped to the content width.
     fn png(&mut self, png: Vec<u8>, oversample: f64, indent: f64) {
+        self.png_aligned(png, oversample, indent, 0.0);
+    }
+
+    /// Like [`png`](Self::png), placed at `align` across the content width
+    /// (0 left, 0.5 center, 1 right) — display math carries an alignment.
+    fn png_aligned(&mut self, png: Vec<u8>, oversample: f64, indent: f64, align: f64) {
         let Ok(img) = Image::from_png_data(png) else {
             return;
         };
@@ -697,9 +724,8 @@ impl Pdf {
         self.image_n += 1;
         let name = format!("img{}", self.image_n);
         self.page.add_image(&name, img);
-        let _ = self
-            .page
-            .draw_image(&name, MARGIN + indent, self.y - h, w, h);
+        let x = MARGIN + indent + (CONTENT_W - indent - w) * align;
+        let _ = self.page.draw_image(&name, x, self.y - h, w, h);
         self.gap(h + BODY_SIZE * 0.5);
     }
 }

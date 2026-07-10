@@ -221,38 +221,59 @@ fn build(
 
 /// A `![](file.pdf)` reference renders as a clickable chip that opens the PDF in
 /// its own viewer tab (keeping the note light — the pages live in the viewer).
+/// Styled to pixel-match the WYSIWYG editor's file chip (`paint_chip` in
+/// gpui-editor): same tokens, geometry, and line-art document glyph.
 fn pdf_chip(info: &ImageInfo, weak: WeakEntity<AppView>) -> AnyElement {
     let src = info.src.clone();
     let label = crate::pdf::resolve_path(&src)
         .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
         .unwrap_or_else(|| src.to_string());
-    div()
+    // The reader's body text size; chip metrics mirror the editor's
+    // (row height ratio, 10px x-pad, 7px icon gap, font-scaled icon).
+    let fs = px(16.0);
+    let icon_h = fs * 0.92;
+    let icon_w = icon_h * 0.74;
+    let icon_color = theme::accent();
+    let icon = canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            gpui_editor::paint_doc_icon(
+                bounds.origin.x,
+                bounds.origin.y,
+                bounds.size.width,
+                bounds.size.height,
+                icon_color,
+                window,
+            );
+        },
+    )
+    .w(icon_w)
+    .h(icon_h);
+    let chip = div()
         .id(SharedString::from(format!("pdf-chip:{src}")))
         .my(px(4.0))
-        .px_3()
-        .py_2()
+        .h(fs * gpui_editor::LINE_HEIGHT_RATIO + px(10.0))
+        .px(px(10.0))
         .rounded(px(6.0))
         .border_1()
-        .border_color(theme::border_subtle())
+        .border_color(theme::text_tertiary())
         .bg(theme::glass())
         .cursor_pointer()
         .hover(|h| h.bg(theme::glass_strong()))
         .flex()
         .flex_row()
         .items_center()
-        .gap_2()
-        .child("📄")
-        .child(
-            div()
-                .text_color(theme::accent())
-                .child(format!("{label} — open")),
-        )
+        .gap(px(7.0))
+        .child(icon)
+        .child(div().text_size(fs).text_color(theme::accent()).child(label))
         .on_click(move |_ev, window, cx| {
             if let Some(path) = crate::pdf::resolve_path(&src) {
                 let _ = weak.update(cx, |this, cx| this.open_pdf(path, window, cx));
             }
-        })
-        .into_any_element()
+        });
+    // A row wrapper so the chip hugs its content (a bare block child would
+    // stretch to the column width) — the editor's chip hugs too.
+    div().flex().child(chip).into_any_element()
 }
 
 /// Outcome of resolving a local image through the downscaling store.

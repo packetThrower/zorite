@@ -78,13 +78,22 @@ fn theme_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt
     }
 }
 
-/// Font-dropdown choices: Default, then every installed family (including the
-/// user-added ones registered at startup / via "Add font file…").
+/// Font-dropdown choices: Default (named for what it resolves to — the active
+/// theme's font, else the system face), then every installed family (including
+/// the user-added ones registered at startup / via "Add font file…").
 fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>, String) {
     let mut names = cx.text_system().all_font_names();
     names.sort();
     names.dedup();
-    let mut opts = vec![Opt::new("", "Default")];
+    let default_font = app.upgrade().and_then(|a| {
+        let a = a.read(cx);
+        a.skins()
+            .iter()
+            .find(|s| s.id == a.active_skin_id())
+            .and_then(|s| s.font.clone())
+    });
+    let default_label = format!("Default ({})", default_font.as_deref().unwrap_or("System"));
+    let mut opts = vec![Opt::new("", &default_label)];
     opts.extend(names.iter().map(|n| Opt::new(n, n)));
     let current = app
         .upgrade()
