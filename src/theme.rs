@@ -409,6 +409,9 @@ pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App)
         cx,
     );
     apply_to_component_theme(&palette, cx);
+    // The theme-reactive cursor pack re-renders from the new palette (a
+    // no-op unless it's the selected pack).
+    crate::cursors::theme_changed();
     cx.refresh_windows();
 }
 

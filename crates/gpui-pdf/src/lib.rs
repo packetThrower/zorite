@@ -318,6 +318,15 @@ fn render_scale(page_width: f32, scale_factor: f32, quality: f32, page_pt_width:
 
 // ─────────────────────────────── Component: PdfView ───────────────────────────────
 
+/// Automatic zoom-to-fit modes — see [`PdfView::fit_width`] / [`PdfView::fit_page`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FitMode {
+    /// The page column fills the viewport width.
+    Width,
+    /// The whole current page fits inside the viewport.
+    Page,
+}
+
 /// Smallest / largest zoom the viewer allows.
 const MIN_ZOOM: f32 = 0.5;
 const MAX_ZOOM: f32 = 3.0;
@@ -405,6 +414,10 @@ pub struct Highlight {
     pub occurrence: usize,
     /// Fill color; drawn translucent.
     pub color: Hsla,
+    /// An **area (image-region) highlight**: a normalized page rect drawn
+    /// directly — no text layer involved, so it works on scans and figures.
+    /// When set, `quote`/`occurrence` are not used for locating.
+    pub region: Option<NormRect>,
 }
 
 /// Invoked with a [`Highlight`]'s `id` when the user clicks it. (`markup` feature.)
@@ -418,6 +431,31 @@ pub type HighlightClickFn = Rc<dyn Fn(u64, &mut Window, &mut gpui::App)>;
 #[cfg(feature = "markup")]
 pub type CreateHighlightFn =
     Rc<dyn Fn(usize, String, usize, SharedString, &mut Window, &mut gpui::App)>;
+
+/// Invoked when the user finishes a box-drag in "area mode": the page (0-based), the
+/// dragged rect in normalized page coordinates, and the label of the picked color.
+/// The host stores it and hands it back as a [`Highlight`] with `region` set.
+/// (`markup` feature.)
+#[cfg(feature = "markup")]
+pub type CreateAreaFn = Rc<dyn Fn(usize, NormRect, SharedString, &mut Window, &mut gpui::App)>;
+
+/// The normalized rect spanned by two drag endpoints, in either direction.
+/// (`markup` feature.)
+#[cfg(feature = "markup")]
+fn norm_rect_between(a: NormPoint, b: NormPoint) -> NormRect {
+    NormRect {
+        x: a.x.min(b.x),
+        y: a.y.min(b.y),
+        w: (a.x - b.x).abs(),
+        h: (a.y - b.y).abs(),
+    }
+}
+
+/// Invoked from the load-failure pane's "Open in system viewer" button, so the
+/// host can hand the file to the OS default app — the viewer itself stays
+/// host-agnostic (no process spawning). Set via [`PdfView::set_on_open_external`];
+/// without it the pane shows no button.
+pub type OpenExternalFn = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
 
 /// Cache state for a page's extracted text layer. (`markup` feature.)
 #[cfg(feature = "markup")]
@@ -494,6 +532,8 @@ pub struct PdfView {
     /// A terminal read/parse failure — the viewer renders this message
     /// instead of sitting on "Loading PDF…" forever.
     load_error: Option<SharedString>,
+    /// Handler behind the failure pane's "Open in system viewer" button.
+    on_open_external: Option<OpenExternalFn>,
     /// `(width, height)` in points per page — drives page-slot sizing.
     dims: Vec<(f32, f32)>,
     /// Per-page render state; only pages near the viewport hold a bitmap.
@@ -503,6 +543,11 @@ pub struct PdfView {
     /// from the thumb's top at grab time, so the thumb tracks the cursor. `None` when
     /// not dragging the scrollbar.
     scrollbar_drag: Option<f32>,
+    /// Active zoom-to-fit mode: re-fits on every viewport resize until a
+    /// manual zoom clears it.
+    fit: Option<FitMode>,
+    /// Viewport size the fit was last computed for (so a resize re-fits once).
+    fit_viewport: (f32, f32),
     /// On-screen zoom factor (1.0 = base width). Affects layout and render scale.
     zoom: f32,
     /// The quality multiplier the pages were last rendered at; compared against the
@@ -540,6 +585,11 @@ pub struct PdfView {
     /// Click handler for a highlight (markup).
     #[cfg(feature = "markup")]
     on_highlight: Option<HighlightClickFn>,
+    /// "Area mode" (only meaningful while `selecting`): a drag marks a page
+    /// region instead of selecting text (markup).
+    area_mode: bool,
+    /// Called when an area drag finishes, so the host stores it (markup).
+    on_create_area: Option<CreateAreaFn>,
     /// "Highlight mode": dragging over text selects + creates a highlight (markup).
     #[cfg(feature = "markup")]
     selecting: bool,
@@ -643,10 +693,13 @@ impl PdfView {
             locked: false,
             unlock_failed: false,
             load_error: None,
+            on_open_external: None,
             dims: Vec::new(),
             pages: Vec::new(),
             scroll: ScrollHandle::new(),
             scrollbar_drag: None,
+            fit: None,
+            fit_viewport: (0.0, 0.0),
             zoom: 1.0,
             last_quality,
             generation: 0,
@@ -666,6 +719,8 @@ impl PdfView {
             on_highlight: None,
             #[cfg(feature = "markup")]
             selecting: false,
+            area_mode: false,
+            on_create_area: None,
             #[cfg(feature = "markup")]
             sel_drag: None,
             #[cfg(feature = "markup")]
@@ -895,6 +950,14 @@ impl PdfView {
         self.load_error.as_ref()
     }
 
+    /// Set the handler behind the failure pane's "Open in system viewer"
+    /// button — a graceful hand-off for files hayro can't parse (unsupported
+    /// encryption handlers, exotic features). Without one, the pane shows
+    /// only the error text.
+    pub fn set_on_open_external(&mut self, f: OpenExternalFn) {
+        self.on_open_external = Some(f);
+    }
+
     /// Set the highlights to draw — the host derives these from its own store (e.g.
     /// the markdown blocks that link this PDF). Pages with highlights extract their
     /// text layer lazily as they scroll into view, then each quote is located and
@@ -923,10 +986,34 @@ impl PdfView {
     #[cfg(feature = "markup")]
     pub fn toggle_select_mode(&mut self, cx: &mut Context<Self>) {
         self.selecting = !self.selecting;
+        self.area_mode = false;
         self.sel_drag = None;
         // Turning highlight mode on pops the color picker down; off hides it.
         self.palette_open = self.selecting && !self.palette.is_empty();
         cx.notify();
+    }
+
+    /// Toggle "area mode": like highlight mode, but a drag marks a page *region*
+    /// (an image/figure box) instead of selecting text, firing [`CreateAreaFn`]
+    /// on release. Turning it on turns text-highlight mode's selection off (they
+    /// share the pen state); turning either mode off clears the other.
+    /// (`markup` feature.)
+    pub fn toggle_area_mode(&mut self, cx: &mut Context<Self>) {
+        if self.selecting && self.area_mode {
+            self.selecting = false;
+            self.area_mode = false;
+        } else {
+            self.selecting = true;
+            self.area_mode = true;
+        }
+        self.sel_drag = None;
+        self.palette_open = self.selecting && !self.palette.is_empty();
+        cx.notify();
+    }
+
+    /// Set the handler invoked when an area (box) drag finishes. (`markup` feature.)
+    pub fn set_on_create_area(&mut self, f: CreateAreaFn, _cx: &mut Context<Self>) {
+        self.on_create_area = Some(f);
     }
 
     /// Set the highlight colors the picker offers, as `(label, fill)` pairs. The label
@@ -1284,6 +1371,12 @@ impl PdfView {
     /// re-render crisp at the new scale; their current bitmaps stay on screen
     /// (rescaled) until the fresh ones land, so nothing blanks.
     pub fn set_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
+        // A manual zoom takes over from any active fit mode.
+        self.fit = None;
+        self.apply_zoom(zoom, cx);
+    }
+
+    fn apply_zoom(&mut self, zoom: f32, cx: &mut Context<Self>) {
         let z = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
         if (z - self.zoom).abs() < 0.001 {
             return;
@@ -1293,6 +1386,63 @@ impl PdfView {
         self.generation = self.generation.wrapping_add(1);
         self.go_to_page(anchor, cx);
         cx.notify();
+    }
+
+    /// Fit the page column to the viewport width. Sticky: re-fits as the
+    /// viewer resizes, until a manual zoom (buttons, ⌘±/⌘0, [`set_zoom`])
+    /// takes over. Toggles off if already active.
+    ///
+    /// [`set_zoom`]: Self::set_zoom
+    pub fn fit_width(&mut self, cx: &mut Context<Self>) {
+        self.toggle_fit(FitMode::Width, cx);
+    }
+
+    /// Fit the whole current page inside the viewport (both axes). Sticky
+    /// like [`fit_width`](Self::fit_width); toggles off if already active.
+    pub fn fit_page(&mut self, cx: &mut Context<Self>) {
+        self.toggle_fit(FitMode::Page, cx);
+    }
+
+    fn toggle_fit(&mut self, mode: FitMode, cx: &mut Context<Self>) {
+        self.fit = if self.fit == Some(mode) {
+            None
+        } else {
+            Some(mode)
+        };
+        self.apply_fit(cx);
+        cx.notify();
+    }
+
+    /// Compute + apply the zoom for the active fit mode against the current
+    /// viewport. No-op before first layout (render re-applies once bounds are
+    /// known) or with no fit active.
+    fn apply_fit(&mut self, cx: &mut Context<Self>) {
+        let Some(mode) = self.fit else {
+            return;
+        };
+        let vp = self.scroll.bounds().size;
+        let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
+        if vw <= 1.0 || vh <= 1.0 {
+            return;
+        }
+        self.fit_viewport = (vw, vh);
+        // Chrome around the page column: the overlay scrollbar plus the page
+        // slots' 1px borders and a hair of breathing room.
+        let avail_w = (vw - SCROLLBAR_W - 6.0).max(50.0);
+        let zoom = match mode {
+            FitMode::Width => avail_w / PAGE_WIDTH,
+            FitMode::Page => {
+                let (pw, ph) = self
+                    .dims
+                    .get(self.current_page_index())
+                    .copied()
+                    .filter(|(w, h)| *w > 0.0 && *h > 0.0)
+                    .unwrap_or((612.0, 792.0));
+                let avail_h = (vh - 2.0 * PAGE_PAD_Y).max(50.0);
+                (avail_h / (PAGE_WIDTH * (ph / pw))).min(avail_w / PAGE_WIDTH)
+            }
+        };
+        self.apply_zoom(zoom, cx);
     }
 
     /// Zoom in one step.
@@ -1448,10 +1598,11 @@ impl PdfView {
             let mut pages: Vec<usize> = self
                 .highlights
                 .iter()
+                .filter(|h| h.region.is_none())
                 .map(|h| h.page)
                 .filter(|p| (start..=end).contains(p))
                 .collect();
-            if self.selecting {
+            if self.selecting && !self.area_mode {
                 pages.extend(start..=end);
             }
             pages.sort_unstable();
@@ -1584,12 +1735,22 @@ impl EventEmitter<PdfEvent> for PdfView {}
 
 impl Render for PdfView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A sticky fit mode re-fits when the viewport size changes (window or
+        // sidebar resize) — and computes the first real fit once layout exists.
+        if self.fit.is_some() {
+            let vp = self.scroll.bounds().size;
+            let (vw, vh) = (f32::from(vp.width), f32::from(vp.height));
+            if (vw - self.fit_viewport.0).abs() > 1.0 || (vh - self.fit_viewport.1).abs() > 1.0 {
+                self.apply_fit(cx);
+            }
+        }
         // Keep only the on-screen pages rasterized for the current scroll position.
         self.ensure_window(window, cx);
         let style = (self.style)();
 
         if let Some(err) = &self.load_error {
-            return load_failed(style, err.clone()).into_any_element();
+            return load_failed(style, err.clone(), self.on_open_external.clone())
+                .into_any_element();
         }
         if self.dims.is_empty() {
             return loading(style).into_any_element();
@@ -1643,49 +1804,64 @@ impl Render for PdfView {
             #[cfg(feature = "markup")]
             let slot = {
                 let mut slot = slot;
-                if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i) {
-                    // Brighten + outline the page's highlights briefly after a jump from
-                    // a note, so the clicked one is easy to spot.
-                    let flashing = self.flash == Some(i);
-                    for h in self.highlights.iter().filter(|h| h.page == i) {
-                        let fill = Hsla {
-                            a: if flashing { 0.6 } else { 0.35 },
-                            ..h.color
-                        };
-                        for (ri, r) in pt.locate(&h.quote, h.occurrence).into_iter().enumerate() {
-                            let id = h.id;
-                            let mut hl = div()
-                                .id(gpui::SharedString::from(format!(
-                                    "pdf-hl-{i}-{}-{ri}",
-                                    h.id
-                                )))
-                                .absolute()
-                                .left(px(r.x * page_width))
-                                .top(px(r.y * disp_h))
-                                .w(px(r.w * page_width))
-                                .h(px(r.h * disp_h))
-                                .rounded(px(1.0))
-                                .bg(fill)
-                                .cursor_pointer()
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    if let Some(cb) = this.on_highlight.clone() {
-                                        cb(id, window, cx);
-                                    }
-                                }));
-                            if flashing {
-                                hl = hl.border_1().border_color(Hsla { a: 0.95, ..h.color });
-                            }
-                            slot = slot.child(hl);
+                // Brighten + outline the page's highlights briefly after a jump from
+                // a note, so the clicked one is easy to spot.
+                let flashing = self.flash == Some(i);
+                for h in self.highlights.iter().filter(|h| h.page == i) {
+                    let fill = Hsla {
+                        a: if flashing { 0.6 } else { 0.35 },
+                        ..h.color
+                    };
+                    // An area highlight is its stored rect; a quote highlight is
+                    // one rect per located line (needs the page's text layer).
+                    let rects: Vec<NormRect> = match h.region {
+                        Some(r) => vec![r],
+                        None => match self.page_text.get(&i) {
+                            Some(TextSlot::Ready(pt)) => pt.locate(&h.quote, h.occurrence),
+                            _ => Vec::new(),
+                        },
+                    };
+                    for (ri, r) in rects.into_iter().enumerate() {
+                        let id = h.id;
+                        let mut hl = div()
+                            .id(gpui::SharedString::from(format!(
+                                "pdf-hl-{i}-{}-{ri}",
+                                h.id
+                            )))
+                            .absolute()
+                            .left(px(r.x * page_width))
+                            .top(px(r.y * disp_h))
+                            .w(px(r.w * page_width))
+                            .h(px(r.h * disp_h))
+                            .rounded(px(1.0))
+                            .bg(fill)
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                if let Some(cb) = this.on_highlight.clone() {
+                                    cb(id, window, cx);
+                                }
+                            }));
+                        if flashing {
+                            hl = hl.border_1().border_color(Hsla { a: 0.95, ..h.color });
                         }
+                        slot = slot.child(hl);
                     }
                 }
-                // Live drag-selection feedback (highlight mode).
+                // Live drag feedback: the raw box in area mode, the text
+                // selection's line rects in highlight mode.
                 if let Some((pg, a, b)) = self.sel_drag
                     && pg == i
-                    && let Some(TextSlot::Ready(pt)) = self.page_text.get(&i)
-                    && let Some(sel) = pt.select(a, b)
                 {
-                    for r in sel.rects {
+                    let rects: Vec<NormRect> = if self.area_mode {
+                        vec![norm_rect_between(a, b)]
+                    } else if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i)
+                        && let Some(sel) = pt.select(a, b)
+                    {
+                        sel.rects
+                    } else {
+                        Vec::new()
+                    };
+                    for r in rects {
                         slot = slot.child(
                             div()
                                 .absolute()
@@ -1888,7 +2064,28 @@ impl Render for PdfView {
                 self.control("pdf-zoom-in", "+")
                     .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx)))
                     .tooltip(self.tip("Zoom in (⌘+)")),
-            );
+            )
+            .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
+            .child({
+                let mut c = self
+                    .control("pdf-fit-width", "↔")
+                    .on_click(cx.listener(|this, _, _window, cx| this.fit_width(cx)))
+                    .tooltip(self.tip("Fit width"));
+                if self.fit == Some(FitMode::Width) {
+                    c = c.bg(style.placeholder_bg);
+                }
+                c
+            })
+            .child({
+                let mut c = self
+                    .control("pdf-fit-page", "⤢")
+                    .on_click(cx.listener(|this, _, _window, cx| this.fit_page(cx)))
+                    .tooltip(self.tip("Fit page"));
+                if self.fit == Some(FitMode::Page) {
+                    c = c.bg(style.placeholder_bg);
+                }
+                c
+            });
 
         // Highlight-mode toggle + color picker (markup): the pen turns drag-to-select
         // on and pops a palette down; the active color shows as a chip beneath it.
@@ -1919,6 +2116,32 @@ impl Render for PdfView {
                 .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
                 .on_click(cx.listener(|this, _, _window, cx| this.toggle_select_mode(cx)))
                 .tooltip(self.tip("Highlight — pick a color (⌘⇧H)"));
+            // The area (box) tool: same pen state + palette, but a drag marks a
+            // page region instead of selecting text — for figures and scans.
+            let area_bg = if self.selecting && self.area_mode {
+                style.placeholder_bg
+            } else {
+                Hsla { a: 0.0, ..style.bg }
+            };
+            let area = div()
+                .id("pdf-area")
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(1.0))
+                .min_w(px(20.0))
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(4.0))
+                .cursor_pointer()
+                .text_color(style.header_fg)
+                .bg(area_bg)
+                .hover(|s| s.bg(style.placeholder_bg))
+                .child("⬚")
+                .child(div().w(px(12.0)).h(px(2.0)).rounded(px(1.0)).bg(active))
+                .on_click(cx.listener(|this, _, _window, cx| this.toggle_area_mode(cx)))
+                .tooltip(self.tip("Area highlight — drag a box over a region"));
 
             // Color-picker dropdown, deferred so it paints over the page area below.
             let dropdown = if self.palette_open && !self.palette.is_empty() {
@@ -1965,7 +2188,16 @@ impl Render for PdfView {
                 None
             };
 
-            header.child(div().relative().child(pen).children(dropdown))
+            header.child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_row()
+                    .gap(px(2.0))
+                    .child(pen)
+                    .child(area)
+                    .children(dropdown),
+            )
         };
 
         // Find toggle (search): a magnifier that opens the find bar.
@@ -2149,6 +2381,14 @@ impl Render for PdfView {
                     // highlight. Threshold is in normalized page coords (~a few pixels).
                     const MIN_DRAG: f32 = 0.005;
                     if (a.x - b.x).abs() < MIN_DRAG && (a.y - b.y).abs() < MIN_DRAG {
+                        cx.notify();
+                        return;
+                    }
+                    if this.area_mode {
+                        if let Some(cb) = this.on_create_area.clone() {
+                            let color = this.active_color_name();
+                            cb(pg, norm_rect_between(a, b), color, window, cx);
+                        }
                         cx.notify();
                         return;
                     }
@@ -2451,7 +2691,11 @@ impl Render for PdfView {
 
 /// The terminal-failure pane: the file name stays in the tab; the pane says
 /// why the viewer is empty (instead of an eternal "Loading PDF…").
-fn load_failed(style: PdfStyle, err: SharedString) -> impl IntoElement {
+fn load_failed(
+    style: PdfStyle,
+    err: SharedString,
+    open_external: Option<OpenExternalFn>,
+) -> impl IntoElement {
     div()
         .size_full()
         .flex()
@@ -2472,6 +2716,24 @@ fn load_failed(style: PdfStyle, err: SharedString) -> impl IntoElement {
                 .max_w(px(520.))
                 .child(err),
         )
+        // Graceful hand-off: the file may still open fine in the OS viewer
+        // (unsupported encryption handler, exotic features).
+        .children(open_external.map(|handler| {
+            div()
+                .id("pdf-open-external")
+                .mt(px(8.))
+                .px(px(10.))
+                .py(px(4.))
+                .rounded(px(5.))
+                .border_1()
+                .border_color(style.border)
+                .text_size(px(12.))
+                .text_color(style.header_fg)
+                .cursor_pointer()
+                .hover(|s| s.bg(style.placeholder_bg))
+                .child("Open in system viewer")
+                .on_click(move |_, window, cx| handler(window, cx))
+        }))
 }
 
 fn loading(style: PdfStyle) -> impl IntoElement {
