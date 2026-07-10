@@ -7,7 +7,9 @@
 //! `check` (detection) collects the error spans; `suggestions` asks the checker
 //! for replacements for one word, lazily — mirroring the macOS split.
 
-use windows::Win32::Globalization::{ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory};
+use windows::Win32::Globalization::{
+    GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory,
+};
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance, CoTaskMemFree};
 use windows::core::{HSTRING, PWSTR};
 
@@ -90,13 +92,29 @@ impl Backend {
     }
 }
 
-/// Create the system spell checker for the UI language. `None` on any failure
-/// (COM not initialized, language unsupported) — the caller treats that as
-/// "spell-check unavailable".
+/// Create the system spell checker for the user's UI language
+/// (`GetUserDefaultLocaleName`, e.g. "de-DE"), falling back to `en-US` when
+/// the lookup fails or that language has no checker installed. `None` on any
+/// failure (COM not initialized, no language supported) — the caller treats
+/// that as "spell-check unavailable".
 fn connect() -> Option<ISpellChecker> {
     unsafe {
         let factory: ISpellCheckerFactory =
             CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+        // 85 = LOCALE_NAME_MAX_LENGTH; the returned count includes the NUL.
+        let mut buf = [0u16; 85];
+        let n = GetUserDefaultLocaleName(&mut buf);
+        if n > 1 {
+            let lang = HSTRING::from(String::from_utf16_lossy(&buf[..(n - 1) as usize]));
+            if factory
+                .IsSupported(&lang)
+                .map(|b| b.as_bool())
+                .unwrap_or(false)
+                && let Ok(sc) = factory.CreateSpellChecker(&lang)
+            {
+                return Some(sc);
+            }
+        }
         let lang = HSTRING::from("en-US");
         factory.CreateSpellChecker(&lang).ok()
     }

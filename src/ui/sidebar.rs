@@ -14,10 +14,7 @@ use gpui_component::{
     Icon, IconName, Sizable, input::Input, menu::ContextMenuExt, tooltip::Tooltip,
 };
 
-use crate::actions::{
-    DeletePage, ExportPdf, NewPage, NewSubPage, OpenInNewTab, OpenInNewWindow, RenamePage,
-    ToggleFavorite,
-};
+use crate::actions::NewPage;
 use crate::app::AppView;
 use crate::hierarchy::{self, PageNode};
 use crate::models::Page;
@@ -662,7 +659,7 @@ fn tree_row(
         row = row.child(chevron(full_path.clone(), collapsed, row_indent(depth), cx));
     }
     match node.id {
-        Some(id) => with_page_menu(row, id, full_path, is_fav, cx),
+        Some(id) => super::with_page_menu(row, id, full_path, is_fav, cx),
         None => row.into_any_element(),
     }
 }
@@ -697,7 +694,7 @@ fn favorite_row(
         let full = title.clone();
         row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
     }
-    with_page_menu(row, page.id, title, true, cx)
+    super::with_page_menu(row, page.id, title, true, cx)
 }
 
 /// A "Whiteboards" section row: a board shown by its full title, opened by id
@@ -728,7 +725,7 @@ fn whiteboard_row(
         let full = title.clone();
         row = row.tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx));
     }
-    with_page_menu(row, page.id, title, app.is_favorite(page.id), cx)
+    super::with_page_menu(row, page.id, title, app.is_favorite(page.id), cx)
 }
 
 /// The "new whiteboard" button in the sidebar's top toolbar — the Lucide
@@ -824,41 +821,6 @@ fn chevron(
                 this.toggle_collapsed(&toggle_path, cx);
             }),
         )
-}
-
-/// Attach the page right-click menu (favorite toggle / open elsewhere / rename /
-/// delete) to a built row. Shared by recent and favorite rows.
-fn with_page_menu(
-    row: Stateful<Div>,
-    id: i64,
-    full_path: SharedString,
-    is_fav: bool,
-    cx: &mut Context<AppView>,
-) -> AnyElement {
-    let fav_label = if is_fav {
-        "Remove from favorites"
-    } else {
-        "Add to favorites"
-    };
-    row.on_mouse_down(
-        MouseButton::Right,
-        cx.listener(move |this: &mut AppView, _, _window, _cx| {
-            this.set_context_page(id, full_path.clone());
-        }),
-    )
-    .context_menu(move |menu, _window, _cx| {
-        menu.menu(fav_label, Box::new(ToggleFavorite))
-            .separator()
-            .menu("Open in new tab", Box::new(OpenInNewTab))
-            .menu("Open in new window", Box::new(OpenInNewWindow))
-            .separator()
-            .menu("Export as PDF…", Box::new(ExportPdf))
-            .separator()
-            .menu("New sub-page", Box::new(NewSubPage))
-            .menu("Rename page", Box::new(RenamePage))
-            .menu("Delete page", Box::new(DeletePage))
-    })
-    .into_any_element()
 }
 
 /// A collapsible section header: the uppercase title, a hairline rule, and a

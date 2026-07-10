@@ -205,6 +205,7 @@ impl MathEditor {
             anchor: None,
             focus: cx.focus_handle(),
             font_size,
+            // Corrected to the window's scale factor on first render.
             dpr: 2.0,
             align,
             theme,
@@ -775,7 +776,16 @@ impl MathEditor {
 }
 
 impl Render for MathEditor {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Rasterize at the window's real pixel density — the construction
+        // default (2.0) is only right on a 2× display; a 1× screen rendered
+        // soft and a 3× wasted texture. Guarded, so this settles in one
+        // extra frame after a display change.
+        let dpr = window.scale_factor().max(1.0);
+        if (dpr - self.dpr).abs() > f32::EPSILON {
+            self.dpr = dpr;
+            self.rerender(window, cx);
+        }
         let theme = self.theme;
         let (w, h) = self
             .rendered

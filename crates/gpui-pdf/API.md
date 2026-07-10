@@ -28,17 +28,18 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`parse_with_password`](#parse_with_password) | fn | — | `fn parse_with_password(bytes: Arc<Vec<u8>>, password: &str) -> Result<Arc<Document>, LoadError>` | Parse an encrypted PDF |
 | [`page_dims`](#page_dims) | fn | — | `fn page_dims(doc: &Document) -> Vec<(f32, f32)>` | Per-page `(w, h)` in points, no rasterization |
 | [`render_page`](#render_page) | fn | — | `fn render_page(doc: &Document, idx: usize, scale: f32) -> Result<Arc<RenderImage>, String>` | Rasterize one page to a BGRA bitmap |
-| [`is_pdf`](#is_pdf) | fn | — | `fn is_pdf(src: &str) -> bool` | `.pdf` extension check |
+| [`is_pdf`](#is_pdf) | fn | — | `fn is_pdf(src: &str) -> bool` | `.pdf` extension check (sees through `?query`) |
 | [`PAGE_WIDTH`](#const-page_width) | const | — | `const PAGE_WIDTH: f32 = 820.0` | Base on-screen page width at zoom 1.0 |
 | [`keep_window`](#keep_window) | fn | — | `fn keep_window(dims: &[(f32, f32)], page_width: f32, scroll_y: f32, viewport_h: f32) -> (usize, usize)` | Which pages to keep rasterized |
 | [`PdfStyle`](#struct-pdfstyle) | struct | — | 6 `pub Hsla` fields; `impl Default` | Colors for the viewer chrome |
 | [`PdfStyleFn`](#type-pdfstylefn) | type alias | — | `Rc<dyn Fn() -> PdfStyle>` | Live style source, read at paint time |
 | [`PdfQualityFn`](#type-pdfqualityfn) | type alias | — | `Rc<dyn Fn() -> f32>` | Live render-quality source |
-| [`PdfEvent`](#enum-pdfevent) | enum | — | `LockChanged` | Emitted on lock-state transitions |
+| [`PdfEvent`](#enum-pdfevent) | enum | — | `LockChanged`, `LoadFailed` | Lock transitions + terminal load failures |
 | [`PdfView`](#struct-pdfview) | struct | — | `impl Render + EventEmitter<PdfEvent>` | The ready-made page-virtualized viewer |
 | [`PdfView::new`](#pdfviewnew) | constructor | — | `fn new(path: PathBuf, style: PdfStyleFn, quality: PdfQualityFn, cx: &mut Context<Self>) -> Self` | Create a viewer; loads off-thread |
 | [`PdfView::is_locked`](#pdfviewis_locked) | method | — | `fn is_locked(&self) -> bool` | Encrypted and awaiting a password |
 | [`PdfView::unlock_failed`](#pdfviewunlock_failed) | method | — | `fn unlock_failed(&self) -> bool` | Last unlock used a wrong password |
+| [`PdfView::load_error`](#pdfviewload_error) | method | — | `fn load_error(&self) -> Option<&SharedString>` | Terminal read/parse failure message |
 | [`PdfView::unlock`](#pdfviewunlock) | method | — | `fn unlock(&mut self, password: String, cx: &mut Context<Self>)` | Retry an encrypted PDF with a password |
 | [`PdfView::release`](#pdfviewrelease) | method | — | `fn release(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Free all bitmaps + GPU textures before drop |
 | [`PdfView::detach_textures`](#pdfviewdetach_textures) | method | — | `fn detach_textures(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Free GPU textures, keep bitmaps (window move) |
@@ -486,8 +487,10 @@ True if a link/image `src` points at a PDF.
 | --- | --- | --- |
 | `src` | `&str` | A path or URL string. |
 
-**Returns** — `bool`: whether `src`, lowercased and with trailing whitespace
-trimmed, ends with `.pdf`.
+**Returns** — `bool`: whether `src` — lowercased, trailing whitespace trimmed,
+and with any `?query` suffix ignored (`report.pdf?v=2` counts) — ends with
+`.pdf`. A `#fragment` is NOT stripped: for PDF refs it's the page-jump anchor
+(`file.pdf#p3`), handled by callers.
 
 **Guarantees & edge cases**
 
@@ -602,15 +605,19 @@ there is no `set_quality` method.
 ```rust
 pub enum PdfEvent {
     LockChanged,
+    LoadFailed,
 }
 ```
 
-Emitted (via `impl EventEmitter<PdfEvent> for PdfView`) when the view's lock state
-transitions: the load discovered an encrypted file, an [`unlock`](#pdfviewunlock)
-succeeded, or an unlock failed with a wrong password. Fired only on these
-transitions — not on every redraw. A host rendering a password prompt around the
-viewer subscribes to know when to re-render (see
-[`PdfView::is_locked`](#pdfviewis_locked)).
+Emitted (via `impl EventEmitter<PdfEvent> for PdfView`). `LockChanged` fires when
+the view's lock state transitions: the load discovered an encrypted file, an
+[`unlock`](#pdfviewunlock) succeeded, or an unlock failed with a wrong password.
+`LoadFailed` fires when the file can't be read or parsed — terminal for the view,
+which renders the failure message (see [`PdfView::load_error`](#pdfviewload_error))
+in place of the loading placeholder; it also fires when a retry-unlock fails with
+a non-password error (e.g. an unsupported encryption handler), so a password
+prompt knows to stand down. Fired only on these transitions — not on every
+redraw.
 
 ---
 
@@ -718,6 +725,17 @@ pub fn unlock_failed(&self) -> bool
 Whether the most recent [`unlock`](#pdfviewunlock) used a wrong password — drives
 the prompt's "incorrect password" message. Cleared at the start of the next
 attempt (and on success). **Parameters** — none (`&self`).
+
+### `PdfView::load_error`
+
+```rust
+pub fn load_error(&self) -> Option<&SharedString>
+```
+
+The terminal read/parse failure, if any — the viewer renders this message in
+place of the loading placeholder, and [`PdfEvent::LoadFailed`](#enum-pdfevent)
+fired when it was set. `None` while loading and after a successful parse.
+**Parameters** — none (`&self`).
 
 ### `PdfView::unlock`
 

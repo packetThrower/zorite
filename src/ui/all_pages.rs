@@ -5,7 +5,7 @@
 //! and thousands of day rows would swamp the list.
 
 use gpui::{
-    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement,
+    ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, div, px,
 };
 
@@ -28,8 +28,8 @@ pub enum KindFilter {
 /// What a row is — and, for a PDF, where it lives.
 #[derive(Clone)]
 enum Row {
-    Page,
-    Board,
+    Page(i64),
+    Board(i64),
     Pdf(std::path::PathBuf),
 }
 
@@ -55,7 +55,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         rows.extend(app.pages().iter().map(|p| {
             (
                 p.title.clone(),
-                Row::Page,
+                Row::Page(p.id),
                 local_date(&p.created_at),
                 local_date(&p.updated_at),
             )
@@ -65,7 +65,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         rows.extend(app.whiteboards().iter().map(|w| {
             (
                 w.title.clone(),
-                Row::Board,
+                Row::Board(w.id),
                 local_date(&w.created_at),
                 local_date(&w.updated_at),
             )
@@ -164,56 +164,64 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         let open_title = title.clone();
         let open_row = row.clone();
         let badge = match &row {
-            Row::Page => "Page",
-            Row::Board => "Whiteboard",
+            Row::Page(_) => "Page",
+            Row::Board(_) => "Whiteboard",
             Row::Pdf(_) => "PDF",
         };
-        list = list.child(
-            div()
-                .id(("all-pages-row", i))
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(12.0))
-                .px(px(10.0))
-                .py(px(6.0))
-                .rounded(px(6.0))
-                .cursor_pointer()
-                .hover(|s| s.bg(theme::hover()))
-                .on_click(
-                    cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-                        // Pages/boards route like a wiki-link (boards open
-                        // their canvas); a PDF opens its viewer directly.
-                        match &open_row {
-                            Row::Pdf(path) => this.open_pdf(path.clone(), window, cx),
-                            _ => this.open_page_title(&open_title, window, cx),
-                        }
-                    }),
-                )
-                .child(
+        let menu_target = match &row {
+            Row::Page(id) | Row::Board(id) => Some(*id),
+            Row::Pdf(_) => None,
+        };
+        let menu_title: SharedString = title.clone().into();
+        let row_el = div()
+            .id(("all-pages-row", i))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.0))
+            .px(px(10.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(theme::hover()))
+            .on_click(
+                cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
+                    // Pages/boards route like a wiki-link (boards open
+                    // their canvas); a PDF opens its viewer directly.
+                    match &open_row {
+                        Row::Pdf(path) => this.open_pdf(path.clone(), window, cx),
+                        _ => this.open_page_title(&open_title, window, cx),
+                    }
+                }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(14.0))
+                    .text_color(theme::text_primary())
+                    .child(title),
+            )
+            .child(date_cell(created))
+            .child(date_cell(updated))
+            .child(
+                div().w(px(92.0)).flex_shrink_0().flex().flex_row().child(
                     div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(14.0))
-                        .text_color(theme::text_primary())
-                        .child(title),
-                )
-                .child(date_cell(created))
-                .child(date_cell(updated))
-                .child(
-                    div().w(px(92.0)).flex_shrink_0().flex().flex_row().child(
-                        div()
-                            .px(px(8.0))
-                            .py(px(1.0))
-                            .rounded(px(10.0))
-                            .bg(theme::glass())
-                            .text_size(px(11.0))
-                            .text_color(theme::text_secondary())
-                            .child(badge),
-                    ),
+                        .px(px(8.0))
+                        .py(px(1.0))
+                        .rounded(px(10.0))
+                        .bg(theme::glass())
+                        .text_size(px(11.0))
+                        .text_color(theme::text_secondary())
+                        .child(badge),
                 ),
-        );
+            );
+        list = list.child(match menu_target {
+            // Pages and boards carry the shared page menu; PDFs are files.
+            Some(id) => super::with_page_menu(row_el, id, menu_title, app.is_favorite(id), cx),
+            None => row_el.into_any_element(),
+        });
     }
     if count == 0 {
         list = list.child(
