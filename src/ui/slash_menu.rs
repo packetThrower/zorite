@@ -11,11 +11,15 @@ use crate::app::AppView;
 use crate::slash::{ItemKind, Slash, Trigger};
 use crate::theme;
 
-/// Row height (px) + the height cap, shared with `AppView::scroll_slash_into_view` so the
-/// keyboard scroll-into-view and the scrollbar thumb agree on the menu's geometry.
-pub const ITEM_H: f32 = 25.0;
-pub const MAX_H: f32 = 280.0;
+/// Fixed row height (px) — rows are exactly this tall (`.h(ITEM_H)`), so the
+/// keyboard scroll-into-view (`AppView::scroll_slash_into_view`) and the
+/// scrollbar thumb below always agree with the painted list. (They drifted
+/// ~4px/row when rows sized themselves from text + padding.)
+pub const ITEM_H: f32 = 28.0;
 const PAD: f32 = 4.0;
+/// Height cap = an exact number of rows, so the bottom row is never
+/// half-clipped and arrow-key scrolling advances by whole rows.
+pub const MAX_H: f32 = 2.0 * PAD + 10.0 * ITEM_H;
 /// Scrollable viewport height (the cap minus top/bottom padding).
 pub const VIEW_H: f32 = MAX_H - 2.0 * PAD;
 
@@ -61,7 +65,8 @@ pub fn render(
             col = col.child(
                 div()
                     .px_3()
-                    .py_1()
+                    .h(px(ITEM_H))
+                    .flex_none()
                     .text_size(px(13.0))
                     .flex()
                     .flex_row()
