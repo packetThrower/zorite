@@ -9,7 +9,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-pub use gpui_pdf::{Highlight, PdfEvent, PdfStyle, PdfView, is_pdf};
+pub use gpui_pdf::{Highlight, NormRect, PdfEvent, PdfStyle, PdfView, is_pdf};
 
 use crate::paths;
 
@@ -128,6 +128,26 @@ fn strip_quote_meta(s: &str) -> (String, gpui::Hsla) {
     (quote, color)
 }
 
+/// Encode an area (image-region) highlight's rect as the stored quote token:
+/// `@area(x,y,w,h)`, normalized page coordinates. No spaces — the token must
+/// survive `add_pdf_highlight`'s whitespace normalization.
+pub fn area_token(r: NormRect) -> String {
+    format!("@area({:.4},{:.4},{:.4},{:.4})", r.x, r.y, r.w, r.h)
+}
+
+/// Parse an `@area(x,y,w,h)` quote token back into its rect. `None` for
+/// ordinary text quotes (or a malformed token, which then just fails to locate
+/// as a quote — harmless).
+fn parse_area(quote: &str) -> Option<NormRect> {
+    let inner = quote.strip_prefix("@area(")?.strip_suffix(')')?;
+    let mut nums = inner.split(',').map(|v| v.trim().parse::<f32>());
+    let mut next = || nums.next().and_then(Result::ok);
+    let (x, y, w, h) = (next()?, next()?, next()?, next()?);
+    let unit = 0.0..=1.0;
+    (unit.contains(&x) && unit.contains(&y) && w > 0.0 && h > 0.0 && nums.next().is_none())
+        .then_some(NormRect { x, y, w, h })
+}
+
 /// Record a highlight, assigning the next occurrence index for its `(page, quote)`.
 fn push_highlight(
     out: &mut Vec<Highlight>,
@@ -143,12 +163,14 @@ fn push_highlight(
         *c += 1;
         v
     };
+    let region = parse_area(&quote);
     out.push(Highlight {
         id: id as u64,
         page,
         quote,
         occurrence,
         color,
+        region,
     });
 }
 
@@ -244,6 +266,37 @@ mod tests {
         assert_eq!(hs[0].occurrence, 0);
         assert_eq!(hs[1].page, 0);
         assert_eq!(hs[1].quote, "Overview");
+    }
+
+    #[test]
+    fn area_token_roundtrips_through_parse() {
+        let r = NormRect {
+            x: 0.1234,
+            y: 0.5,
+            w: 0.25,
+            h: 0.125,
+        };
+        let line = format!("- p3: {} {{green}} [[pdf/scan.pdf#p3|↗]]", area_token(r));
+        let hs = parse_highlights(&line);
+        assert_eq!(hs.len(), 1);
+        let got = hs[0].region.expect("area region");
+        assert!((got.x - r.x).abs() < 1e-4 && (got.h - r.h).abs() < 1e-4);
+        assert_eq!(hs[0].page, 2);
+        assert_eq!(hs[0].color, known_color("green").unwrap());
+        // Ordinary quotes stay quote highlights.
+        assert_eq!(parse_highlights("- p1: plain words")[0].region, None);
+    }
+
+    #[test]
+    fn malformed_area_tokens_stay_quotes() {
+        for bad in [
+            "- p1: @area(0.1,0.2,0.3)",     // three fields
+            "- p1: @area(2.0,0.2,0.3,0.4)", // out of range
+            "- p1: @area(0.1,0.2,0.0,0.4)", // zero size
+            "- p1: @area(a,b,c,d)",         // not numbers
+        ] {
+            assert_eq!(parse_highlights(bad)[0].region, None, "{bad}");
+        }
     }
 
     #[test]

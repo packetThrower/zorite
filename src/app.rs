@@ -3735,6 +3735,9 @@ impl AppView {
         let weak = cx.entity().downgrade();
         let create_weak = weak.clone();
         let create_path = path.clone();
+        let area_weak = weak.clone();
+        let area_path = path.clone();
+        let ext_path = path.clone();
         view.update(cx, move |v, cx| {
             v.set_highlights(highlights, cx);
             v.set_highlight_palette(crate::pdf::highlight_palette(), cx);
@@ -3759,6 +3762,34 @@ impl AppView {
                     });
                 }
             }));
+            // Failure pane's hand-off: give the unparseable file to the OS viewer.
+            let ext_path = ext_path.clone();
+            v.set_on_open_external(Rc::new(move |_window, _cx| {
+                AppView::open_with_default_app(&ext_path);
+            }));
+            // Box-drag in area mode → the same store path; the rect rides as an
+            // `@area(…)` quote token (parse_highlights turns it back into a region).
+            let area_weak = area_weak.clone();
+            let area_path = area_path.clone();
+            v.set_on_create_area(
+                Rc::new(move |page, rect, color, window, cx| {
+                    if let Some(app) = area_weak.upgrade() {
+                        let token = crate::pdf::area_token(rect);
+                        app.update(cx, |a, cx| {
+                            a.add_pdf_highlight(
+                                &area_path,
+                                page,
+                                &token,
+                                0,
+                                color.as_ref(),
+                                window,
+                                cx,
+                            )
+                        });
+                    }
+                }),
+                cx,
+            );
         });
         // Re-render the surrounding UI on lock/unlock, so the password prompt
         // appears when an encrypted PDF loads and is replaced by the viewer once
@@ -3957,6 +3988,23 @@ impl AppView {
         let value = edit.input.read(cx).value().trim_end().to_string();
         if value != edit.field.value {
             self.write_pdf_field(&edit.path, &edit.field.name, &value, window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Commit a choice field to `value` directly (an option row was clicked —
+    /// bypasses the input's text).
+    fn commit_pdf_field_choice(
+        &mut self,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(edit) = self.pdf_field_edit.take() else {
+            return;
+        };
+        if value != edit.field.value {
+            self.write_pdf_field(&edit.path, &edit.field.name, value, window, cx);
         }
         cx.notify();
     }
@@ -6062,6 +6110,24 @@ impl AppView {
         let _ = std::process::Command::new(cmd).arg(&dir).spawn();
     }
 
+    /// Open a file with the OS default application (e.g. a PDF hayro can't
+    /// parse, handed to Preview/Edge/evince from the viewer's failure pane).
+    pub fn open_with_default_app(file: &Path) {
+        #[cfg(target_os = "macos")]
+        let mut cmd = std::process::Command::new("open");
+        // `start` is a cmd built-in; the empty "" is its window-title slot so
+        // a path with spaces isn't mistaken for the title.
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/C", "start", ""]);
+            c
+        };
+        #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+        let mut cmd = std::process::Command::new("xdg-open");
+        let _ = cmd.arg(file).spawn();
+    }
+
     /// Open a folder in the OS file manager (Finder / Explorer / file manager).
     pub fn reveal_folder(folder: &Path) {
         #[cfg(target_os = "macos")]
@@ -8107,7 +8173,16 @@ impl Render for AppView {
         // from the focused input); the seat swallows its own clicks.
         let pdf_field_overlay = self.pdf_field_edit.as_ref().map(|e| {
             let seat_w = e.bounds.size.width.clamp(px(220.0), px(460.0));
-            let seat_h = px(64.0);
+            // Choice fields list their /Opt entries below the input (clicking
+            // one commits immediately; typing still works for editable combos).
+            let options: Vec<String> = if e.field.kind == gpui_pdf::FieldKind::Choice {
+                e.field.options.clone()
+            } else {
+                Vec::new()
+            };
+            const OPT_ROW_H: f32 = 22.0;
+            let opt_h = (options.len().min(6) as f32) * OPT_ROW_H;
+            let seat_h = px(64.0 + opt_h);
             let gap = px(6.0);
             let below = e.bounds.origin.y + e.bounds.size.height + gap;
             let win_h = window.viewport_size().height;
@@ -8159,7 +8234,46 @@ impl Render for AppView {
                                         e.field.name
                                     )),
                             )
-                            .child(Input::new(&e.input).small()),
+                            .child(Input::new(&e.input).small())
+                            .children((!options.is_empty()).then(|| {
+                                let current = e.field.value.clone();
+                                let mut col = div()
+                                    .id("pdf-choice-options")
+                                    .max_h(px(6.0 * OPT_ROW_H))
+                                    .overflow_y_scroll()
+                                    .flex()
+                                    .flex_col();
+                                for (i, opt) in options.iter().enumerate() {
+                                    let value = opt.clone();
+                                    let mut row = div()
+                                        .id(("pdf-choice-opt", i))
+                                        .h(px(OPT_ROW_H))
+                                        .flex_none();
+                                    if *opt == current {
+                                        row = row.bg(theme::accent_tint());
+                                    }
+                                    col = col.child(
+                                        row.flex()
+                                            .items_center()
+                                            .px(px(6.0))
+                                            .rounded(px(4.0))
+                                            .text_size(px(12.0))
+                                            .cursor_pointer()
+                                            .hover(|d| d.bg(theme::hover()))
+                                            .child(opt.clone())
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(move |this, _, window, cx| {
+                                                    cx.stop_propagation();
+                                                    this.commit_pdf_field_choice(
+                                                        &value, window, cx,
+                                                    );
+                                                }),
+                                            ),
+                                    );
+                                }
+                                col
+                            })),
                     ),
             )
             .into_any_element()

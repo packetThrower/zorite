@@ -96,13 +96,13 @@ per-notebook settings sync.
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
-- [ ] PDF: **fit-width / fit-page** zoom modes (zoom is free-scale only today)
-- [ ] PDF: **area (image-region) highlights** — only text-anchored highlights exist so far; a box-drag over a scanned region would cover figures / pages with no text layer
+- [x] PDF: **fit-width / fit-page** zoom modes — sticky `↔`/`⤢` header controls (re-fit on viewport resize; any manual zoom takes over); `PdfView::fit_width`/`fit_page` in gpui-pdf
+- [x] PDF: **area (image-region) highlights** — the `⬚` tool beside the pen: a box-drag marks a page region (figures / scans, no text layer needed), stored on the highlights page as an `@area(x,y,w,h)` quote token (same colors, jump-links, and flash); `Highlight.region` + `toggle_area_mode`/`CreateAreaFn` in gpui-pdf. See `crates/gpui-pdf/src/lib.rs`, `src/pdf.rs`
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
-- [ ] PDF: **graceful fallback for unsupported files** — encrypted PDFs now open behind a password prompt (RC4 / AES-128 / AES-256), but hayro can still fail on an *unsupported* encryption algorithm (e.g. a public-key / certificate handler) or exotic transparency / blend modes; on such a load/parse failure, show an "Open in default app" affordance (hand off to the OS viewer) instead of a blank pane
+- [x] PDF: **graceful fallback for unsupported files** — the load-failure pane now offers **"Open in system viewer"** (host launches the OS default app via `open`/`start`/`xdg-open`); `PdfView::set_on_open_external` keeps the crate host-agnostic
 - [ ] PDF forms, follow-ups — the AcroForm feature SHIPPED 2026-07-06 (see
-  Completed): remaining niceties are **choice-field dropdowns** (Ch fields
-  edit as free text today; `FormField::options` already carries `/Opt`),
+  Completed): choice-field dropdowns DONE (the seat editor lists /Opt
+  entries — click commits, typing still covers editable combos); remaining:
   synthesized-appearance fidelity (`/DA` fonts, `/Q` quadding, comb fields,
   multiline), and **filing the two hayro gaps upstream** (state-dict `/AP /N`
   selected by `/AS`; `NeedAppearances` synthesis) so the lopdf normalization
