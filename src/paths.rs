@@ -107,6 +107,33 @@ pub fn clear_window_bounds() {
     let _ = std::fs::remove_file(window_bounds_file());
 }
 
+// --- Open-tabs persistence (the second switch on the same Settings card) ---
+//
+// Same sidecar pattern as window-bounds: file presence is the on/off state.
+// Holds the main window's tab list (`active N` + one `page/pdf/whiteboard/
+// allpages/graph/properties` line per tab, journal excluded) — written by
+// `AppView::persist_open_tabs` whenever the set changes, read once at startup.
+
+fn open_tabs_file() -> PathBuf {
+    data_dir().join("open-tabs")
+}
+
+pub fn open_tabs_enabled() -> bool {
+    open_tabs_file().exists()
+}
+
+pub fn save_open_tabs(serialized: &str) {
+    let _ = std::fs::write(open_tabs_file(), serialized);
+}
+
+pub fn load_open_tabs() -> Option<String> {
+    std::fs::read_to_string(open_tabs_file()).ok()
+}
+
+pub fn clear_open_tabs() {
+    let _ = std::fs::remove_file(open_tabs_file());
+}
+
 /// The user's Desktop directory — the default location a "save as" dialog opens at (e.g. for
 /// exporting a formula). Platform conventions:
 /// - macOS:   `~/Desktop`
@@ -548,7 +575,10 @@ fn relocate(source: &Path, target: &Path, done: &AtomicU64) -> std::io::Result<(
         let entry = entry?;
         let name = entry.file_name();
         // The db + sidecars, and the notebook's display-name sidecar.
-        if name.to_string_lossy().starts_with("zorite.db") || name == "notebook-name" {
+        if name.to_string_lossy().starts_with("zorite.db")
+            || name == "notebook-name"
+            || name == "open-tabs"
+        {
             move_path(&entry.path(), &target.join(&name), done)?;
         }
     }
