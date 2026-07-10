@@ -18,10 +18,18 @@ use crate::app::{AppView, DraggingTab, GlobalDraggingTab, TabDrag, TabKind};
 use crate::theme;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
+    let weak = cx.entity().downgrade();
     let mut bar = TabBar::new("tabs")
         .menu(true)
         .track_scroll(&app.tab_scroll)
-        .selected_index(app.active);
+        .selected_index(app.active)
+        // The overflow dropdown (and only it) reports picks through the
+        // bar-level handler — the per-`Tab` on_click below never fires for
+        // menu items, so without this an overflow pick did nothing.
+        .on_click(move |ix: &usize, window, cx| {
+            let ix = *ix;
+            let _ = weak.update(cx, |this, cx| this.activate_tab(ix, window, cx));
+        });
 
     for (i, tab) in app.tabs.iter().enumerate() {
         let kind = tab.kind.clone();
