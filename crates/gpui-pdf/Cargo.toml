@@ -24,7 +24,7 @@ kurbo = { version = "0.13", optional = true }
 
 # PDF *writing* for the forms feature only: normalize form-field appearance
 # streams before hayro renders (hayro reads; lopdf rewrites). Pure Rust, MIT.
-lopdf = { version = "0.43", optional = true, default-features = false }
+lopdf = { version = "0.44", optional = true, default-features = false }
 
 [features]
 default = []
