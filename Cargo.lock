@@ -3322,13 +3322,14 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "heic_decoder"
-version = "0.1.0"
-source = "git+https://github.com/ente-io/heic-decoder#019b2fd8ee6af99579f26e424a6a0b9016a73fdc"
+version = "0.2.0"
+source = "git+https://github.com/ente-io/heic-decoder#0998ddc52085b38fa359049d1fe28baf144fe79b"
 dependencies = [
  "archmage",
  "brotli",
  "flate2",
  "libc",
+ "moxcms",
  "png 0.18.1",
  "rav1d",
  "safe_unaligned_simd",
