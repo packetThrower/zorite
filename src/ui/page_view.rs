@@ -2,9 +2,9 @@
 //! "Linked References" panel.
 
 use gpui::{
-    ClickEvent, Context, ExternalPaths, FontWeight, InteractiveElement, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, StatefulInteractiveElement, Styled, div,
-    prelude::FluentBuilder as _, px, relative,
+    ClickEvent, Context, Entity, ExternalPaths, FontWeight, InteractiveElement, IntoElement,
+    MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString, StatefulInteractiveElement,
+    Styled, TextRun, canvas, div, point, prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::Sizable;
 use gpui_component::input::Input;
@@ -76,11 +76,22 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(if app.wysiwyg() || app.is_page_editing() {
                             // gpui-editor draws no chrome; the wrapper sets the
                             // ambient text style it inherits when shaping lines.
-                            div()
+                            let editor = div()
+                                .flex_1()
+                                .min_w_0()
                                 .text_size(app.text_size())
                                 .text_color(theme::text_primary())
-                                .child(pe.state.clone())
-                                .into_any_element()
+                                .child(pe.state.clone());
+                            if app.line_numbers() {
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .child(line_gutter(pe.state.clone(), app.text_size(), cx))
+                                    .child(editor)
+                                    .into_any_element()
+                            } else {
+                                editor.into_any_element()
+                            }
                         } else {
                             page_rendered(app, pe, cx).into_any_element()
                         })
@@ -102,6 +113,71 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 ),
         )
         .into_any_element()
+}
+
+/// The optional line-number gutter (Settings → Markdown → Line numbers):
+/// a canvas beside the editor painting one number per **logical** line,
+/// aligned via the editor's `row_layout` (wrapped text counts once — the
+/// number sits on the first wrap row). Rows a heading fold collapsed show no
+/// vertical advance and are skipped. Off-screen rows aren't shaped.
+fn line_gutter(
+    state: Entity<gpui_editor::EditorState>,
+    text_size: Pixels,
+    cx: &mut Context<AppView>,
+) -> impl IntoElement {
+    let font_size = text_size * 0.72;
+    // Gutter width from the digit count (~0.62em per digit + padding); read
+    // the logical line count cheaply at layout time.
+    let digits = state
+        .read(cx)
+        .value()
+        .lines()
+        .count()
+        .max(1)
+        .to_string()
+        .len() as f32;
+    let width = px(16.0) + font_size * 0.62 * digits;
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, cx| {
+            let layout = state.read(cx).row_layout();
+            let total = layout.len();
+            if total == 0 {
+                return;
+            }
+            let color = theme::text_tertiary();
+            let font = window.text_style().font();
+            let viewport_h = window.viewport_size().height;
+            for (i, &(top, row_h)) in layout.iter().enumerate() {
+                // A fold collapsed this row (no vertical advance) — skip it.
+                if let Some(&(next_top, _)) = layout.get(i + 1)
+                    && next_top - top <= px(0.5)
+                {
+                    continue;
+                }
+                let y = bounds.top() + top;
+                if y + row_h < px(0.) || y > viewport_h {
+                    continue;
+                }
+                let text = SharedString::from((i + 1).to_string());
+                let run = TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line = window
+                    .text_system()
+                    .shape_line(text, font_size, &[run], None);
+                let x = bounds.right() - line.width - px(10.0);
+                let _ = line.paint(point(x, y), row_h, gpui::TextAlign::Left, None, window, cx);
+            }
+        },
+    )
+    .w(width)
+    .flex_none()
 }
 
 /// Ancestor breadcrumb above a namespaced page's title — `Projects › Tasks`

@@ -221,6 +221,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
     ),
     (
         Tab::Markdown,
+        "Line numbers",
+        "gutter source rows numbering count editor",
+    ),
+    (
+        Tab::Markdown,
         "List indentation",
         "spaces tab nesting indent bullet",
     ),
@@ -1531,6 +1536,22 @@ impl Render for SettingsView {
                 }
             });
 
+        // Line-number gutter toggle (Markdown pane).
+        let ln_on = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).line_numbers())
+            .unwrap_or(false);
+        let ln_app = self.app.clone();
+        let line_numbers_switch = Switch::new("line-numbers-toggle")
+            .small()
+            .checked(ln_on)
+            .on_click(move |checked, _window, cx| {
+                if let Some(app) = ln_app.upgrade() {
+                    app.update(cx, |a, cx| a.set_line_numbers(*checked, cx));
+                }
+            });
+
         // Auto-link-as-you-type toggle (Markdown pane).
         let al_on = self
             .app
@@ -2194,6 +2215,13 @@ impl Render for SettingsView {
                                      type. Off edits plain Markdown and shows the rendered page \
                                      on Esc.",
                                     wysiwyg_switch,
+                                ))
+                                .child(self.section_card(
+                                    "Line numbers",
+                                    "Show a numbered gutter beside a page's editor — logical \
+                                     source lines, wrapped text counts once. The reading view \
+                                     stays clean.",
+                                    line_numbers_switch,
                                 ))
                                 .child(self.section_card(
                                     "List indentation",

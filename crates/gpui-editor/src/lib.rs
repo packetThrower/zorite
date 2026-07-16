@@ -1220,6 +1220,20 @@ impl EditorState {
         self.move_to(offset, cx);
     }
 
+    /// Per logical line, from the last paint: its top offset within the
+    /// editor and its first wrap-row's height — enough for a host-drawn
+    /// gutter (line numbers) to align with rows without re-deriving layout.
+    /// Empty before the first paint. Rows collapsed by a heading fold show
+    /// no vertical advance (the next row's top equals theirs) — a gutter
+    /// should skip those.
+    pub fn row_layout(&self) -> Vec<(Pixels, Pixels)> {
+        self.line_tops
+            .iter()
+            .enumerate()
+            .map(|(row, &top)| (top, self.line_h(row)))
+            .collect()
+    }
+
     /// The wrap-row height of logical line `row` (a heading is taller). Falls
     /// back to the base `line_height` for unrecorded rows / the empty document.
     fn line_h(&self, row: usize) -> Pixels {

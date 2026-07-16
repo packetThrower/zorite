@@ -16,6 +16,7 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | --- | --- | --- | --- |
 | [`bind_keys`](#fn-bind_keys) | fn | `fn bind_keys(cx: &mut App)` | Bind the editing keys (once, at startup) |
 | [`LINE_HEIGHT_RATIO`](#const-line_height_ratio) | const | `const LINE_HEIGHT_RATIO: f32 = 1.45` | Row height as a multiple of the font size |
+| [`EditorState::row_layout`](#editorstaterow_layout) | method | `fn row_layout(&self) -> Vec<(Pixels, Pixels)>` | Per-line (top, first-wrap-row height) for host gutters |
 | [`mermaid_sources`](#fn-mermaid_sources) | fn | `fn mermaid_sources(content: &str) -> Vec<SharedString>` | Every ` ```mermaid ` block's source, for pre-rendering |
 | [`paint_doc_icon`](#fn-paint_doc_icon) | fn | `fn paint_doc_icon(x, y, w, h: Pixels, color: Hsla, window: &mut Window)` | The file chips' line-art document glyph |
 | [`math_sources`](#fn-math_sources) | fn | `fn math_sources(content: &str) -> Vec<SharedString>` | Every `$$…$$` block's LaTeX, for pre-rendering |
@@ -133,6 +134,20 @@ given bounds. Stroke-drawn — not a font emoji — so it reads flat and on-them
 at any text size. Public so a host's read-only view can draw the identical
 icon on its own file chips (cross-view parity); the editor sizes it
 `h = font_size × 0.92`, `w = h × 0.74`.
+
+---
+
+## `EditorState::row_layout`
+
+```rust
+pub fn row_layout(&self) -> Vec<(Pixels, Pixels)>
+```
+
+Per logical line, from the last paint: its top offset within the editor and
+its first wrap-row's height — enough for a host-drawn gutter (line numbers)
+to align with rows without re-deriving layout. Empty before the first paint.
+Rows collapsed by a heading fold show no vertical advance (the next row's top
+equals theirs) — a gutter should skip those.
 
 ---
 

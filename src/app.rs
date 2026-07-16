@@ -428,6 +428,8 @@ pub struct AppView {
     /// shows inline markdown formatting as you type (W1+); off = "editor mode",
     /// plain raw markdown in edit + the rendered page on Esc (the classic flow).
     wysiwyg: bool,
+    /// Show a line-number gutter beside page editors (Settings → Markdown).
+    line_numbers: bool,
     /// In the feed, the date currently being edited (raw editor); all
     /// other days render as markdown. `None` = every day rendered.
     editing_day: Option<String>,
@@ -803,6 +805,7 @@ impl AppView {
             check_updates: true,
             include_prerelease: false,
             wysiwyg: true,
+            line_numbers: false,
             editing_day: None,
             page_editing: false,
             loaded_days: 0,
@@ -953,6 +956,11 @@ impl AppView {
             .get_setting("wysiwyg")
             .map(|v| v != "0")
             .unwrap_or(true);
+        this.line_numbers = this
+            .db
+            .get_setting("line_numbers")
+            .map(|v| v == "1")
+            .unwrap_or(false);
         this.auto_link.set(
             this.db
                 .get_setting("auto_link")
@@ -6473,6 +6481,21 @@ impl AppView {
 
     pub fn wysiwyg(&self) -> bool {
         self.wysiwyg
+    }
+
+    pub fn line_numbers(&self) -> bool {
+        self.line_numbers
+    }
+
+    /// Toggle the page editor's line-number gutter (Settings → Markdown).
+    pub fn set_line_numbers(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.line_numbers != on {
+            self.line_numbers = on;
+            let _ = self
+                .db
+                .set_setting("line_numbers", if on { "1" } else { "0" });
+            cx.notify();
+        }
     }
 
     /// Toggle WYSIWYG live-preview editing; persists, then re-applies to every
