@@ -18,6 +18,9 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`LINE_HEIGHT_RATIO`](#const-line_height_ratio) | const | `const LINE_HEIGHT_RATIO: f32 = 1.45` | Row height as a multiple of the font size |
 | [`EditorState::set_clipboard_writer`](#editorstateset_clipboard_writer) | method | `fn set_clipboard_writer(&mut self, writer: ClipboardWriter)` | Host-owned Copy/Cut clipboard write |
 | [`EditorState::copy_plain`](#editorstatecopy_plain) | method | `fn copy_plain(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Copy the selection as raw markdown only |
+| [`EditorState::set_search`](#editorstateset_search) | method | `fn set_search(&mut self, matches: Vec<Range<usize>>, active: Option<usize>, cx)` | Find-match highlights behind the text |
+| [`EditorState::offset_screen_top`](#editorstateoffset_screen_top) | method | `fn offset_screen_top(&self, offset: usize) -> Option<Pixels>` | Window-space top of a byte offset's row |
+| [`find_in_source`](#fn-find_in_source) | fn | `fn find_in_source(content: &str, query: &str) -> Vec<Range<usize>>` | Case-insensitive source match ranges |
 | [`ClipboardWriter`](#type-clipboardwriter) | type alias | `Rc<dyn Fn(&str, &mut App)>` | The Copy/Cut write hook |
 | [`EditorState::row_layout`](#editorstaterow_layout) | method | `fn row_layout(&self) -> Vec<(Pixels, Pixels)>` | Per-line (top, first-wrap-row height) for host gutters |
 | [`mermaid_sources`](#fn-mermaid_sources) | fn | `fn mermaid_sources(content: &str) -> Vec<SharedString>` | Every ` ```mermaid ` block's source, for pre-rendering |
@@ -151,6 +154,39 @@ writer receives the markdown text the editor would have written (Copy's
 renumbered ordered-list form included), so a host can add clipboard flavors
 gpui can't express — e.g. rendered HTML beside the plain string. Paste is
 unaffected (it still reads gpui's clipboard).
+
+## `EditorState::set_search`
+
+```rust
+pub fn set_search(&mut self, matches: Vec<Range<usize>>, active: Option<usize>, cx: &mut Context<Self>)
+```
+
+Highlight `matches` (source byte ranges) behind the text — soft yellow, with
+`active` in the stronger current-match orange (the reader's browser-style find
+colors). The quads reuse the selection's multi-wrap-row geometry, tables
+included. An empty vec clears. Host-driven: a find bar computes matches (see
+[`find_in_source`](#fn-find_in_source)) and steps `active`.
+
+## `EditorState::offset_screen_top`
+
+```rust
+pub fn offset_screen_top(&self, offset: usize) -> Option<Pixels>
+```
+
+The window-space top of the row containing byte `offset`, from the last
+layout — what a find bar needs to scroll a match into view. `None` before the
+first paint.
+
+## `fn find_in_source`
+
+```rust
+pub fn find_in_source(content: &str, query: &str) -> Vec<Range<usize>>
+```
+
+Case-insensitive occurrences of `query` in `content`, as source byte ranges —
+Unicode-aware (comparison happens on lowercased text through an index map back
+to original offsets, so `Grüße` matches `grüße`). An empty query matches
+nothing.
 
 ## `EditorState::copy_plain`
 

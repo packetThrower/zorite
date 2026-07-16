@@ -483,6 +483,9 @@ pub struct EditorState {
     /// Host-supplied clipboard writer for Copy/Cut (e.g. adding an HTML
     /// flavor beside the plain text). `None` = gpui's plain-string copy.
     clipboard_writer: Option<ClipboardWriter>,
+    /// Find-in-feed highlights: match byte ranges + the active index, painted
+    /// behind the text like the selection. Host-driven ([`Self::set_search`]).
+    search: Option<(Vec<Range<usize>>, Option<usize>)>,
     /// Last paint's wrapped lines (one per logical line) and each line's top
     /// offset relative to the editor's top — both used for hit-testing and
     /// cursor/IME positioning.
@@ -679,6 +682,7 @@ impl EditorState {
             selection_reversed: false,
             marked_range: None,
             clipboard_writer: None,
+            search: None,
             wrapped: Vec::new(),
             line_tops: Vec::new(),
             line_heights: Vec::new(),
@@ -888,6 +892,29 @@ impl EditorState {
     /// the host owns the actual clipboard write (and its extra flavors).
     pub fn set_clipboard_writer(&mut self, writer: ClipboardWriter) {
         self.clipboard_writer = Some(writer);
+    }
+
+    /// Highlight `matches` (source byte ranges) behind the text — soft yellow,
+    /// with `active` in the stronger current-match orange (the reader's
+    /// browser-style find colors). Empty clears. Host-driven: a find bar
+    /// computes matches (see [`find_in_source`]) and steps `active`.
+    pub fn set_search(
+        &mut self,
+        matches: Vec<Range<usize>>,
+        active: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.search = (!matches.is_empty()).then_some((matches, active));
+        cx.notify();
+    }
+
+    /// The window-space top of the row containing byte `offset` (from the
+    /// last layout) — for a host scrolling a find match into view. `None`
+    /// before first paint or for an out-of-range offset.
+    pub fn offset_screen_top(&self, offset: usize) -> Option<Pixels> {
+        let bounds = self.last_bounds?;
+        let (row, _) = self.row_col(offset.min(self.content.len()));
+        Some(bounds.top() + self.line_tops.get(row).copied()?)
     }
 
     pub fn set_block_math_provider(
@@ -6474,6 +6501,32 @@ fn paint_chip(
     );
 }
 
+/// Case-insensitive occurrences of `query` in `content`, as source byte
+/// ranges — the match list a find bar feeds to [`EditorState::set_search`].
+/// Unicode-aware (comparison happens on lowercased text through an index map
+/// back to original byte offsets). An empty query matches nothing.
+pub fn find_in_source(content: &str, query: &str) -> Vec<Range<usize>> {
+    let query: String = query.chars().flat_map(char::to_lowercase).collect();
+    if query.is_empty() {
+        return Vec::new();
+    }
+    // Lowercased haystack + per-byte map back to original offsets. Boundaries
+    // survive: each original char lowercases to >= 1 chars, all of whose bytes
+    // map to the original char's start.
+    let mut lower = String::with_capacity(content.len());
+    let mut map = Vec::with_capacity(content.len() + 1);
+    for (off, ch) in content.char_indices() {
+        for lc in ch.to_lowercase() {
+            lower.push(lc);
+            map.resize(lower.len(), off);
+        }
+    }
+    lower
+        .match_indices(&query)
+        .map(|(i, m)| map[i]..map.get(i + m.len()).copied().unwrap_or(content.len()))
+        .collect()
+}
+
 /// Paint a flat, line-art document glyph (a page with a folded top-right corner +
 /// two text lines) in `color`, the chip's file icon. Drawn with strokes — not a
 /// font emoji — so it reads flat and on-theme at the text's size. Public so a
@@ -6933,6 +6986,8 @@ struct PrepaintState {
     col_del: Option<DelHandle>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
+    /// Find-match highlight quads, painted beneath the selection.
+    search: Vec<PaintQuad>,
 }
 
 impl IntoElement for EditorElement {
@@ -7516,6 +7571,124 @@ impl Element for EditorElement {
             )
         };
 
+        // Quads covering source range `s..e`, one per wrap row — the
+        // selection's multi-row geometry, shared with the find-match
+        // highlights (which paint the same shapes in other colors).
+        let range_quads =
+            |s: usize, e: usize, color: Hsla, window: &mut Window| -> Vec<PaintQuad> {
+                let starts = editor.line_starts();
+                let (s_row, _) = editor.row_col(s);
+                let (e_row, _) = editor.row_col(e);
+                let right = bounds.size.width;
+                let mut sels = Vec::new();
+                for row in s_row..=e_row {
+                    let Some(line) = wrapped.get(row) else {
+                        continue;
+                    };
+                    let lh = line_heights.get(row).copied().unwrap_or(base_lh);
+                    let top = line_tops[row];
+                    let line_start = starts[row];
+                    let a = s.max(line_start) - line_start;
+                    let b = e.min(editor.line_end(row)) - line_start;
+                    // Table row: highlight between the cell positions of the selection
+                    // ends (not raw-source geometry).
+                    if let Some(t) = tables.get(row).and_then(Option::as_ref) {
+                        if let (Some((xa, ..)), Some((xb, ..))) = (
+                            table_caret_pos(
+                                t,
+                                a,
+                                bounds.left() + px(TABLE_GUTTER),
+                                &font,
+                                font_size,
+                                window,
+                            ),
+                            table_caret_pos(
+                                t,
+                                b,
+                                bounds.left() + px(TABLE_GUTTER),
+                                &font,
+                                font_size,
+                                window,
+                            ),
+                        ) {
+                            let (lo, hi) = (xa.min(xb), xa.max(xb));
+                            let cy = bounds.top() + top + (lh - base_lh) / 2.;
+                            sels.push(fill(
+                                Bounds::from_corners(
+                                    point(lo, cy),
+                                    point(hi.max(lo + px(2.)), cy + base_lh),
+                                ),
+                                color,
+                            ));
+                        }
+                        continue;
+                    }
+                    let inset = code_inset(row);
+                    let pa = line
+                        .position_for_index(disp_col(row, a), lh)
+                        .unwrap_or_default();
+                    let pb = line
+                        .position_for_index(disp_col(row, b), lh)
+                        .unwrap_or_default();
+                    let pa = point(pa.x + inset, pa.y);
+                    let pb = point(pb.x + inset, pb.y);
+                    if pa.y == pb.y {
+                        sels.push(fill(
+                            Bounds::from_corners(
+                                to_screen(top, pa),
+                                to_screen(top, point(pb.x.max(pa.x + px(2.)), pb.y + lh)),
+                            ),
+                            color,
+                        ));
+                    } else {
+                        // First wrap row: start x → right edge.
+                        sels.push(fill(
+                            Bounds::from_corners(
+                                to_screen(top, pa),
+                                to_screen(top, point(right, pa.y + lh)),
+                            ),
+                            color,
+                        ));
+                        // Full middle wrap rows.
+                        let mut yy = pa.y + lh;
+                        while yy < pb.y {
+                            sels.push(fill(
+                                Bounds::from_corners(
+                                    to_screen(top, point(px(0.), yy)),
+                                    to_screen(top, point(right, yy + lh)),
+                                ),
+                                color,
+                            ));
+                            yy += lh;
+                        }
+                        // Last wrap row: left edge → end x.
+                        sels.push(fill(
+                            Bounds::from_corners(
+                                to_screen(top, point(px(0.), pb.y)),
+                                to_screen(top, point(pb.x, pb.y + lh)),
+                            ),
+                            color,
+                        ));
+                    }
+                }
+                sels
+            };
+
+        // Find-match highlights (host-set): the reader's browser-style find
+        // colors — soft yellow everywhere, stronger orange on the active
+        // match. Behind the text, like the selection.
+        let mut search = Vec::new();
+        if let Some((ranges, active)) = editor.search.as_ref() {
+            for (i, r) in ranges.iter().enumerate() {
+                let color: Hsla = if Some(i) == *active {
+                    rgba(0xFF9500DD).into()
+                } else {
+                    rgba(0xFFD60055).into()
+                };
+                search.extend(range_quads(r.start, r.end, color, window));
+            }
+        }
+
         let (cursor, selections) = if editor.content.is_empty() {
             let c = fill(
                 Bounds::new(
@@ -7588,11 +7761,6 @@ impl Element for EditorElement {
                 (Some(c), Vec::new())
             }
         } else {
-            let (s, e) = (editor.selected_range.start, editor.selected_range.end);
-            let starts = editor.line_starts();
-            let (s_row, _) = editor.row_col(s);
-            let (e_row, _) = editor.row_col(e);
-            let right = bounds.size.width;
             // Selection tint = the theme accent at low alpha (fallback: a fixed blue).
             let color = editor
                 .markdown_style
@@ -7602,98 +7770,15 @@ impl Element for EditorElement {
                     c.a = 0.25;
                     c
                 });
-            let mut sels = Vec::new();
-            for row in s_row..=e_row {
-                let Some(line) = wrapped.get(row) else {
-                    continue;
-                };
-                let lh = line_heights.get(row).copied().unwrap_or(base_lh);
-                let top = line_tops[row];
-                let line_start = starts[row];
-                let a = s.max(line_start) - line_start;
-                let b = e.min(editor.line_end(row)) - line_start;
-                // Table row: highlight between the cell positions of the selection
-                // ends (not raw-source geometry).
-                if let Some(t) = tables.get(row).and_then(Option::as_ref) {
-                    if let (Some((xa, ..)), Some((xb, ..))) = (
-                        table_caret_pos(
-                            t,
-                            a,
-                            bounds.left() + px(TABLE_GUTTER),
-                            &font,
-                            font_size,
-                            window,
-                        ),
-                        table_caret_pos(
-                            t,
-                            b,
-                            bounds.left() + px(TABLE_GUTTER),
-                            &font,
-                            font_size,
-                            window,
-                        ),
-                    ) {
-                        let (lo, hi) = (xa.min(xb), xa.max(xb));
-                        let cy = bounds.top() + top + (lh - base_lh) / 2.;
-                        sels.push(fill(
-                            Bounds::from_corners(
-                                point(lo, cy),
-                                point(hi.max(lo + px(2.)), cy + base_lh),
-                            ),
-                            color,
-                        ));
-                    }
-                    continue;
-                }
-                let inset = code_inset(row);
-                let pa = line
-                    .position_for_index(disp_col(row, a), lh)
-                    .unwrap_or_default();
-                let pb = line
-                    .position_for_index(disp_col(row, b), lh)
-                    .unwrap_or_default();
-                let pa = point(pa.x + inset, pa.y);
-                let pb = point(pb.x + inset, pb.y);
-                if pa.y == pb.y {
-                    sels.push(fill(
-                        Bounds::from_corners(
-                            to_screen(top, pa),
-                            to_screen(top, point(pb.x.max(pa.x + px(2.)), pb.y + lh)),
-                        ),
-                        color,
-                    ));
-                } else {
-                    // First wrap row: start x → right edge.
-                    sels.push(fill(
-                        Bounds::from_corners(
-                            to_screen(top, pa),
-                            to_screen(top, point(right, pa.y + lh)),
-                        ),
-                        color,
-                    ));
-                    // Full middle wrap rows.
-                    let mut yy = pa.y + lh;
-                    while yy < pb.y {
-                        sels.push(fill(
-                            Bounds::from_corners(
-                                to_screen(top, point(px(0.), yy)),
-                                to_screen(top, point(right, yy + lh)),
-                            ),
-                            color,
-                        ));
-                        yy += lh;
-                    }
-                    // Last wrap row: left edge → end x.
-                    sels.push(fill(
-                        Bounds::from_corners(
-                            to_screen(top, point(px(0.), pb.y)),
-                            to_screen(top, point(pb.x, pb.y + lh)),
-                        ),
-                        color,
-                    ));
-                }
-            }
-            (None, sels)
+            (
+                None,
+                range_quads(
+                    editor.selected_range.start,
+                    editor.selected_range.end,
+                    color,
+                    window,
+                ),
+            )
         };
 
         PrepaintState {
@@ -7725,6 +7810,7 @@ impl Element for EditorElement {
             col_del,
             cursor,
             selections,
+            search,
         }
     }
 
@@ -7745,6 +7831,9 @@ impl Element for EditorElement {
             cx,
         );
 
+        for quad in prepaint.search.drain(..) {
+            window.paint_quad(quad);
+        }
         for sel in prepaint.selections.drain(..) {
             window.paint_quad(sel);
         }
@@ -8356,6 +8445,23 @@ fn word_boundary_input(new_text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn find_in_source_cases() {
+        use super::find_in_source;
+        assert_eq!(find_in_source("aa bb aa", "aa"), vec![0..2, 6..8]);
+        // Case-insensitive, unicode-aware.
+        assert_eq!(
+            find_in_source("Grüße hier", "grüsse"),
+            Vec::<std::ops::Range<usize>>::new()
+        );
+        assert_eq!(find_in_source("Grüße", "grüße"), vec![0..7]);
+        assert_eq!(find_in_source("İstanbul", "i̇stanbul"), vec![0..9]);
+        assert_eq!(
+            find_in_source("abc", ""),
+            Vec::<std::ops::Range<usize>>::new()
+        );
+    }
+
     use super::{display_col_in, set_image_width, word_boundary_input};
 
     #[test]

@@ -7,6 +7,8 @@ use gpui::{
     MouseButton, MouseDownEvent, ParentElement, Pixels, SharedString, StatefulInteractiveElement,
     Styled, div, prelude::FluentBuilder as _, px,
 };
+use gpui_component::Sizable;
+use gpui_component::input::Input;
 use gpui_component::{Icon, IconName};
 use gpui_editor::EditorState;
 
@@ -26,6 +28,72 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
     // Floating back-to-top, once the feed is meaningfully scrolled (like the
     // PDF viewer's nav) — offset.y goes negative as you scroll down.
     let scrolled = f32::from(app.feed_scroll.offset().y).abs() > 400.0;
+
+    // Floating find bar (⌘F), styled like the PDF viewer's: query, n / m
+    // count, prev/next/close. Deferred so it paints over the feed.
+    let find_bar = app.feed_find.as_ref().map(|ff| {
+        let count = ff.count();
+        let status = if ff.query.trim().is_empty() {
+            "0 / 0".to_string()
+        } else {
+            format!(
+                "{} / {}",
+                if count == 0 { 0 } else { ff.current + 1 },
+                count
+            )
+        };
+        let nav = |id: &'static str, label: &'static str| {
+            div()
+                .id(id)
+                .flex()
+                .items_center()
+                .justify_center()
+                .min_w(px(22.0))
+                .px(px(4.0))
+                .py(px(2.0))
+                .rounded(px(4.0))
+                .text_size(px(13.0))
+                .text_color(theme::text_secondary())
+                .cursor_pointer()
+                .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+                .child(label)
+        };
+        gpui::deferred(
+            div()
+                .absolute()
+                .top(px(12.0))
+                .right(px(24.0))
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(10.0))
+                .py(px(6.0))
+                .rounded(px(8.0))
+                .bg(theme::elevated())
+                .border_1()
+                .border_color(theme::border_subtle())
+                .shadow_md()
+                .occlude()
+                .child(div().w(px(200.0)).child(Input::new(&ff.input).small()))
+                .child(
+                    div()
+                        .flex_shrink_0()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_tertiary())
+                        .child(status),
+                )
+                .child(nav("feed-find-prev", "‹").on_click(cx.listener(
+                    |this: &mut AppView, _: &ClickEvent, _w, cx| this.feed_find_step(-1, cx),
+                )))
+                .child(nav("feed-find-next", "›").on_click(cx.listener(
+                    |this: &mut AppView, _: &ClickEvent, _w, cx| this.feed_find_step(1, cx),
+                )))
+                .child(nav("feed-find-close", "✕").on_click(cx.listener(
+                    |this: &mut AppView, _: &ClickEvent, _w, cx| this.close_feed_find(cx),
+                ))),
+        )
+    });
 
     div()
         .flex_1()
@@ -71,6 +139,7 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                         .child(load_older(cx)),
                 ),
         )
+        .children(find_bar)
         .when(scrolled, |this| {
             this.child(gpui::deferred(
                 div()
@@ -223,6 +292,16 @@ fn rendered_day(
         let fold_date = d.clone();
         let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
             .style(theme::markdown_style(app.list_indent(), app.text_size()))
+            // Feed find (⌘F): paint this day's matches. The active index is
+            // best-effort — block matching (rendered text) can count slightly
+            // differently than the bar's source scan; the day + soft
+            // highlights are what orient the eye in reader mode.
+            .map(
+                |md| match app.feed_find.as_ref().filter(|ff| !ff.query.is_empty()) {
+                    Some(ff) => md.search(ff.query.clone(), ff.current_in_day(&d)),
+                    None => md,
+                },
+            )
             .on_image(crate::ui::image::renderer(
                 app,
                 SlashTarget::Day(d.clone()),

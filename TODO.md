@@ -67,10 +67,14 @@ release notes; prune after 0.7.0 ships.
   **"Copy as Markdown"** variants (editor menu + page menu) write the raw
   source only, for pasting literal syntax into rich surfaces.
   `EditorState::set_clipboard_writer`/`copy_plain` in gpui-editor
-- [ ] **Find in the journal feed** — a real `⌘F` find bar on the Journal tab
-  (today it routes to the global search): match + step across every loaded
-  day's rendered text, reusing `gpui-markdown`'s `find_matches`/`search` like
-  the page find bar, but with per-day match bookkeeping and feed scrolling
+- [x] **Find in the journal feed** — `⌘F` on the Journal opens a floating
+  PDF-viewer-style bar (query, n / m, ‹ › step, ✕; Esc closes): matches span
+  every loaded day (case-insensitive, Unicode-aware `find_in_source`), with
+  highlights + scroll in BOTH modes — WYSIWYG via gpui-editor's new
+  `set_search`/`offset_screen_top` (match quads share the selection's
+  multi-row geometry), reader via per-day `MarkdownView::search` + tracked
+  block bounds. The page find bar gained the same WYSIWYG support (it was
+  reader-only)
 - [x] Aliases: offer a page's aliases as suggestions in `[[` autocomplete — alias rows rank with titles (shown `alias → Title`, inserting `[[alias]]`; exact alias match suppresses Create). `Db::list_aliases` cached with the sidebar page list
 - [ ] Block references: **"Copy block link"** — auto-generate a ` ^id` on a line
   (right-click / command) and put `[[Page#^id]]` on the clipboard, so linking to
