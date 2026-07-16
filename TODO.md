@@ -53,6 +53,12 @@ release notes; prune after 0.7.0 ships.
   exists), then `.small()` the page menus to match the custom ones
 
 ## Notes & navigation
+- [ ] **Rich-text copy** — every copy path is plain-text only (raw markdown
+  via `ClipboardItem::new_string`); add an HTML flavor alongside (gpui's
+  `ClipboardItem` takes multiple entries) rendered from the markdown, so
+  pasting into Word/Mail/Docs keeps headings, bold, links, and lists instead
+  of showing literal `**markers**`. Covers editor Cut/Copy and the page
+  menu's "Copy contents"
 - [ ] **Find in the journal feed** — a real `⌘F` find bar on the Journal tab
   (today it routes to the global search): match + step across every loaded
   day's rendered text, reusing `gpui-markdown`'s `find_matches`/`search` like
