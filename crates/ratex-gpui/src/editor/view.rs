@@ -75,6 +75,10 @@ pub struct MathEditor {
     match_scroll: ScrollHandle,
     /// The palette panel's top-left, in window px (draggable by its grip).
     palette_pos: (f32, f32),
+    /// In-line only: where the user dragged the palette, in formula-container
+    /// px. `None` = the automatic dock (below the formula, flipping above
+    /// near the window bottom). Per-editor, so each edit starts docked.
+    inline_palette_off: Option<(f32, f32)>,
     /// While dragging the palette: the (cursor − panel-origin) offset, kept for 1:1
     /// tracking with no jump on grab.
     palette_drag: Option<(f32, f32)>,
@@ -103,6 +107,23 @@ pub struct MathEditor {
 
 /// Palette panel width (px) — used to dock a right-aligned formula's palette to its right edge.
 const PALETTE_W: f32 = 200.0;
+
+/// Drag payload for the palette / toolbar grips. gpui's `on_drag` +
+/// `on_drag_move` (not a bounds-gated `on_mouse_move`) keeps events flowing
+/// when the pointer leaves the editor's thin reserved gap mid-drag — a plain
+/// mouse-move listener froze vertical palette drags at the gap edge.
+struct GripDrag;
+
+impl Render for GripDrag {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+/// The palette panel's full height: 40 buttons wrap to 8 rows at this width
+/// (32px + 4px gap), plus padding and the drag handle. Used to flip the
+/// panel above the formula when the below-dock would clip at the window
+/// bottom — an estimate is fine, it only steers the flip.
+const PALETTE_H: f32 = 330.0;
 
 /// Cap on the formula's in-place undo history, to bound memory.
 const UNDO_CAP: usize = 200;
@@ -214,6 +235,7 @@ impl MathEditor {
             selected: 0,
             match_scroll: ScrollHandle::new(),
             palette_pos: (16.0, 16.0),
+            inline_palette_off: None,
             palette_drag: None,
             toolbar_off: (0.0, 8.0),
             toolbar_drag: None,
@@ -582,14 +604,27 @@ impl MathEditor {
     /// table with `\command` typing, so a click is just a keyboard-free `commit_command`.
     /// The in-line palette's top, in image-container px: just below the formula normally, but
     /// below the matrix toolbar when the caret is in a matrix (else the two panels overlap).
-    fn inline_palette_top(&self) -> f32 {
+    fn inline_palette_top(&self, window: &Window) -> f32 {
+        // A user-dragged position overrides every automatic dock.
+        if let Some((_, y)) = self.inline_palette_off {
+            return y;
+        }
         if let Some(m) = geometry::matrix_rect(&self.root, &self.cursor) {
             // Clear the toolbar, which docks at the matrix's bottom (see `matrix_toolbar`):
             // its dock top + the toolbar's own height (24px row + padding) + a small gap.
-            PAD + (m.y + m.h) as f32 * self.font_size + self.toolbar_off.1 + 40.0
-        } else {
-            self.rendered.as_ref().map_or(0.0, |r| r.height) + 4.0
+            return PAD + (m.y + m.h) as f32 * self.font_size + self.toolbar_off.1 + 40.0;
         }
+        let below = self.rendered.as_ref().map_or(0.0, |r| r.height) + 4.0;
+        // Near the window bottom the below-the-formula dock would clip — flip
+        // the panel above the formula when it fully fits there instead.
+        if let Some(b) = self.img_bounds.get() {
+            let win_h = f32::from(window.viewport_size().height);
+            let formula_top = f32::from(b.top());
+            if formula_top + below + PALETTE_H > win_h && formula_top - PALETTE_H - 4.0 >= 0.0 {
+                return -(PALETTE_H + 4.0);
+            }
+        }
+        below
     }
 
     /// The in-line palette's left, in formula-container px. The palette is a child of the
@@ -600,6 +635,9 @@ impl MathEditor {
     /// (which would lag a frame). Left/center dock at the formula's left; a matrix docks beside
     /// the grid.
     fn inline_palette_left(&self) -> f32 {
+        if let Some((x, _)) = self.inline_palette_off {
+            return x;
+        }
         if let Some(m) = geometry::matrix_rect(&self.root, &self.cursor) {
             return PAD + m.x as f32 * self.font_size + self.toolbar_off.0;
         }
@@ -609,7 +647,7 @@ impl MathEditor {
         }
     }
 
-    fn palette(&self, cx: &mut Context<Self>) -> Div {
+    fn palette(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let theme = self.theme;
         // The grip "ear": press and hold here to move the panel.
         let handle = div()
@@ -625,14 +663,32 @@ impl MathEditor {
             .text_color(theme.muted)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, ev: &MouseDownEvent, _window, cx| {
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| {
+                    // Grab offset against the panel's current window position
+                    // (in-line, that's the dock or a previous drag).
+                    let (px_, py_) = if this.inline {
+                        let (ox, oy) = this
+                            .img_bounds
+                            .get()
+                            .map_or((0.0, 0.0), |b| (f32::from(b.left()), f32::from(b.top())));
+                        (
+                            ox + this.inline_palette_left(),
+                            oy + this.inline_palette_top(window),
+                        )
+                    } else {
+                        this.palette_pos
+                    };
                     this.palette_drag = Some((
-                        f32::from(ev.position.x) - this.palette_pos.0,
-                        f32::from(ev.position.y) - this.palette_pos.1,
+                        f32::from(ev.position.x) - px_,
+                        f32::from(ev.position.y) - py_,
                     ));
                     cx.notify();
                 }),
             )
+            .on_drag(GripDrag, |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| GripDrag)
+            })
             .child("⠿ ⠿ ⠿");
 
         let buttons = div()
@@ -676,7 +732,7 @@ impl MathEditor {
                 self.palette_pos.0
             }))
             .top(px(if self.inline {
-                self.inline_palette_top()
+                self.inline_palette_top(window)
             } else {
                 self.palette_pos.1
             }))
@@ -726,6 +782,10 @@ impl MathEditor {
                     cx.notify();
                 }),
             )
+            .on_drag(GripDrag, |_, _, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| GripDrag)
+            })
             .child("⠿");
 
         let btn = |label: &'static str, op: fn(&mut Cursor, &mut Row)| {
@@ -921,7 +981,7 @@ impl Render for MathEditor {
         .inset_0();
         // In-line: the palette lives inside the (flex-justified) formula container so it tracks
         // a centered / right-aligned formula. Standalone: it's a draggable root child.
-        let palette = self.palette(cx);
+        let palette = self.palette(window, cx);
         let (root_palette, inner_palette) = if self.inline {
             (None, Some(palette))
         } else {
@@ -931,18 +991,29 @@ impl Render for MathEditor {
         div()
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
-            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, _window, cx| {
-                let (mx, my) = (f32::from(ev.position.x), f32::from(ev.position.y));
-                if let Some((ox, oy)) = this.palette_drag {
-                    this.palette_pos = (mx - ox, my - oy);
-                    cx.notify();
-                } else if let Some((lx, ly)) = this.toolbar_drag {
-                    this.toolbar_off.0 += mx - lx;
-                    this.toolbar_off.1 += my - ly;
-                    this.toolbar_drag = Some((mx, my));
-                    cx.notify();
-                }
-            }))
+            .on_drag_move(
+                cx.listener(|this, e: &gpui::DragMoveEvent<GripDrag>, _window, cx| {
+                    let (mx, my) = (f32::from(e.event.position.x), f32::from(e.event.position.y));
+                    if let Some((gx, gy)) = this.palette_drag {
+                        if this.inline {
+                            if let Some(b) = this.img_bounds.get() {
+                                this.inline_palette_off = Some((
+                                    mx - gx - f32::from(b.left()),
+                                    my - gy - f32::from(b.top()),
+                                ));
+                            }
+                        } else {
+                            this.palette_pos = (mx - gx, my - gy);
+                        }
+                        cx.notify();
+                    } else if let Some((lx, ly)) = this.toolbar_drag {
+                        this.toolbar_off.0 += mx - lx;
+                        this.toolbar_off.1 += my - ly;
+                        this.toolbar_drag = Some((mx, my));
+                        cx.notify();
+                    }
+                }),
+            )
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, _window, cx| {
