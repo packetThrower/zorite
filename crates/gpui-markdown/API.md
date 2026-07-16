@@ -1183,6 +1183,12 @@ enabled in the parser) and hands over the source. Set via
 
 ---
 
+The view wraps the returned element in a **justified row**: centered by
+default (the LaTeX convention), or left/right when a `<!-- math:left -->` /
+`<!-- math:right -->` marker line sits directly above the block — so the
+renderer should return a content-sized element and leave alignment to the
+view.
+
 ## `InlineMathRenderer`
 
 ```rust

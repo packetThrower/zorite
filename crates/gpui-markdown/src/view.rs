@@ -648,6 +648,28 @@ thread_local! {
 /// Parse `source` with the view's options (GFM + `$…$`/`$$…$$` math),
 /// memoized. `None` when the parser errors (not cached — the caller falls
 /// back to plain text).
+/// Alignment named by a `<!-- math:ALIGN -->` marker line.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MathMarkerAlign {
+    Left,
+    Right,
+}
+
+/// The `<!-- math:ALIGN -->` marker on the line **directly above** the block
+/// starting at byte `start`, if any — the same adjacency rule the editor's
+/// `math_regions` uses, so a marker separated by a blank line steers neither.
+fn preceding_math_align(source: &str, start: Option<usize>) -> Option<MathMarkerAlign> {
+    let start = start?.min(source.len());
+    let before = source[..start].strip_suffix('\n')?;
+    let line = before.rsplit('\n').next().unwrap_or(before).trim();
+    let inner = line.strip_prefix("<!--")?.strip_suffix("-->")?.trim();
+    match inner.strip_prefix("math:")?.trim() {
+        "left" => Some(MathMarkerAlign::Left),
+        "right" => Some(MathMarkerAlign::Right),
+        _ => None,
+    }
+}
+
 fn parse_cached(source: &str) -> Option<Arc<mdast::Node>> {
     PARSE_CACHE.with(|cache| {
         let mut map = cache.borrow_mut();
@@ -1004,8 +1026,21 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
         mdast::Node::Math(m) => {
             // A `$$…$$` block renders as a typeset image when the host supplies a
             // renderer; otherwise it falls back to its raw LaTeX in a code block.
+            // Display math centers by default (LaTeX convention); an adjacent
+            // `<!-- math:left/right -->` marker line — written by the editor's
+            // alignment menu — steers it, matching WYSIWYG and the PDF export.
             if let Some(renderer) = ctx.on_math.clone() {
-                return Some(renderer(m.value.clone().into()));
+                let start = m.position.as_ref().map(|p| p.start.offset);
+                let row = div().w_full().flex();
+                let row = match preceding_math_align(&ctx.source, start) {
+                    Some(MathMarkerAlign::Left) => row.justify_start(),
+                    Some(MathMarkerAlign::Right) => row.justify_end(),
+                    _ => row.justify_center(),
+                };
+                return Some(
+                    row.child(renderer(m.value.clone().into()))
+                        .into_any_element(),
+                );
             }
             let bg = ctx.style.code_bg;
             let color = ctx.style.code_color;
@@ -2557,6 +2592,22 @@ fn renders_to_block(node: &mdast::Node) -> bool {
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn math_align_marker_adjacency() {
+        let src = "<!-- math:left -->\n$$x$$\n";
+        assert!(matches!(
+            preceding_math_align(src, Some(19)),
+            Some(MathMarkerAlign::Left)
+        ));
+        // A blank line between breaks adjacency; center (None) wins.
+        let gap = "<!-- math:right -->\n\n$$x$$\n";
+        assert!(preceding_math_align(gap, Some(21)).is_none());
+        // Not a marker line at all.
+        assert!(preceding_math_align("text\n$$x$$", Some(5)).is_none());
+        // Block at the top of the document.
+        assert!(preceding_math_align("$$x$$", Some(0)).is_none());
+    }
 
     #[test]
     fn scan_is_ascii_case_insensitive_and_nonoverlapping() {
