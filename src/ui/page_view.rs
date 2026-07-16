@@ -28,6 +28,23 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let page_id = pe.id;
     // Pages titled `<this>::<leaf>` are sub-pages; this page acts as their index.
     let children = hierarchy::direct_children(&app.pages, &pe.title);
+    // The gutter's width (line numbers on + editing): sized from the digit
+    // count (~0.62em per digit at the gutter's font size, plus padding). The
+    // rail hangs in the content column's LEFT PADDING — widened to fit — so
+    // the text itself sits exactly where it would without a gutter.
+    let gutter_w: Option<Pixels> = (app.line_numbers() && (app.wysiwyg() || app.is_page_editing()))
+        .then(|| {
+            let digits = pe
+                .state
+                .read(cx)
+                .value()
+                .lines()
+                .count()
+                .max(1)
+                .to_string()
+                .len() as f32;
+            px(18.0) + app.text_size() * 0.72 * 0.62 * digits
+        });
     div()
         .flex_1()
         .min_w_0()
@@ -62,6 +79,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     div()
                         // Match the journal feed: uniform padding, left-aligned.
                         .p(px(28.0))
+                        // The gutter rail lives inside the left padding.
+                        .when_some(gutter_w, |d, w| d.pl(w.max(px(28.0))))
                         .flex()
                         .flex_col()
                         // Fill the viewport so the open area below the content
@@ -76,21 +95,20 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                         .child(if app.wysiwyg() || app.is_page_editing() {
                             // gpui-editor draws no chrome; the wrapper sets the
                             // ambient text style it inherits when shaping lines.
+                            // The gutter — the page's margin rail (line numbers
+                            // today; room for more per-line UI later) — is an
+                            // absolute child hanging left into the padding, so
+                            // rows and rail share a coordinate origin.
                             let editor = div()
-                                .flex_1()
-                                .min_w_0()
+                                .relative()
                                 .text_size(app.text_size())
                                 .text_color(theme::text_primary())
                                 .child(pe.state.clone());
-                            if app.line_numbers() {
-                                div()
-                                    .flex()
-                                    .flex_row()
-                                    .child(line_gutter(pe.state.clone(), app.text_size(), cx))
-                                    .child(editor)
-                                    .into_any_element()
-                            } else {
-                                editor.into_any_element()
+                            match gutter_w {
+                                Some(w) => editor
+                                    .child(line_gutter(pe.state.clone(), app.text_size(), w))
+                                    .into_any_element(),
+                                None => editor.into_any_element(),
                             }
                         } else {
                             page_rendered(app, pe, cx).into_any_element()
@@ -115,28 +133,19 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .into_any_element()
 }
 
-/// The optional line-number gutter (Settings → Markdown → Line numbers):
-/// a canvas beside the editor painting one number per **logical** line,
-/// aligned via the editor's `row_layout` (wrapped text counts once — the
-/// number sits on the first wrap row). Rows a heading fold collapsed show no
-/// vertical advance and are skipped. Off-screen rows aren't shaped.
+/// The page's margin gutter (Settings → Markdown → Line numbers): an
+/// absolutely-positioned rail hanging `width` into the content column's left
+/// padding, painting one number per **logical** line, aligned via the
+/// editor's `row_layout` (wrapped text counts once — the number sits on the
+/// first wrap row). Rows a heading fold collapsed show no vertical advance
+/// and are skipped; off-screen rows aren't shaped. A UI surface of its own —
+/// future per-line affordances (fold handles, block markers) belong here too.
 fn line_gutter(
     state: Entity<gpui_editor::EditorState>,
     text_size: Pixels,
-    cx: &mut Context<AppView>,
+    width: Pixels,
 ) -> impl IntoElement {
     let font_size = text_size * 0.72;
-    // Gutter width from the digit count (~0.62em per digit + padding); read
-    // the logical line count cheaply at layout time.
-    let digits = state
-        .read(cx)
-        .value()
-        .lines()
-        .count()
-        .max(1)
-        .to_string()
-        .len() as f32;
-    let width = px(16.0) + font_size * 0.62 * digits;
     canvas(
         |_, _, _| (),
         move |bounds, _, window, cx| {
@@ -176,8 +185,11 @@ fn line_gutter(
             }
         },
     )
+    .absolute()
+    .left(-width)
+    .top_0()
     .w(width)
-    .flex_none()
+    .h_full()
 }
 
 /// Ancestor breadcrumb above a namespaced page's title — `Projects › Tasks`
