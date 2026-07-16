@@ -5,7 +5,6 @@ work is collected under [Completed](#completed) at the bottom.
 
 ## Contents
 
-- [UX papercuts (v0.6.2 candidate)](#ux-papercuts-v062-candidate)
 - [Notes & navigation](#notes--navigation)
 - [Notebooks (multiple data folders)](#notebooks-multiple-data-folders)
 - [Performance](#performance)
@@ -15,67 +14,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [Maybe](#maybe)
 - [Completed](#completed)
 
-## UX papercuts (v0.6.2 candidate)
-
-Found by the 2026-07-08 four-way UX audit; **ALL DONE 2026-07-09** (shipping
-in v0.7.0) except the two deferrals at the bottom. Kept briefly for the
-release notes; prune after 0.7.0 ships.
-
-- [x] Editor interaction: smart Home; Enter/backspace-join/forward-delete
-  around property panels seat the form; block-editor exits at document end
-  create a line below; double/triple-click swallowed on $$/property blocks;
-  atomic formula deletion (incl. the `<!-- math:ALIGN -->` marker); ⌥←/→
-  word-jumps route into constructs; selections reveal the blocks they sweep
-- [x] App flows: error-dialog sweep (rename collisions report INLINE in the
-  rename dialog — a stacked dialog pops the first off the dialog stack; the
-  builder runs inside AppView's render, so dialog-read state goes through
-  `Rc<RefCell<…>>`); unified right-click (shared page menu on sidebar /
-  All Pages / search / backlinks / page tabs + Copy link / Copy contents;
-  editor text menu; property Edit/Delete; compact custom menus); ghost tabs
-  close after a cross-window delete
-- [x] PDF: terminal load failures render an error pane + emit
-  `PdfEvent::LoadFailed` (retry-unlock failing non-password stands the
-  prompt down); `is_pdf` sees through URL queries
-- [x] Platform: Windows spell-check follows the system UI language;
-  the math editor rasterizes at the window's real scale factor
-- [x] CLOSED AS FALSE POSITIVES (verified 2026-07-09): "reader lacks file
-  chips" — the host's `ImageRenderer` (src/ui/image.rs) classifies
-  `is_pdf` and renders chips in both the page and embed renderers, the
-  audit only searched gpui-markdown; "embed image-resize writes the wrong
-  page" — embeds use the deliberately grip-free `embed_renderer`
-- [ ] DEFERRED: **graph-node context menu** — nodes hit-test inside one
-  canvas element (`g.hit(position)`), so the shared page-menu builder
-  doesn't attach; needs the app's overlay-menu machinery (the reader
-  ctx-menu recipe)
-- [ ] DEFERRED: **PopupMenu density** — the pinned gpui-component rev has a
-  `Size::Small` branch for menus (20px rows vs 26px) but NO public setter;
-  upstream a `Sizable` impl for `PopupMenu` (or bump the pin when one
-  exists), then `.small()` the page menus to match the custom ones
-
 ## Notes & navigation
-- [x] **Line numbers for pages** — Settings → Markdown toggle (off by
-  default): a margin **gutter rail** beside a page's editor (WYSIWYG + raw),
-  hanging absolutely in the left padding so the text column never shifts —
-  and a UI surface of its own for future per-line affordances. Logical lines
-  (wraps count once), folds skipped, off-screen rows unshaped; reader stays
-  clean (add later if wanted). `EditorState::row_layout` in gpui-editor
-- [x] **Rich-text copy** — Copy/Cut and the page menu's "Copy contents" now
-  write rendered HTML beside the raw markdown (one `arboard` transaction —
-  gpui's clipboard has NO html flavor, contrary to this entry's original
-  premise), so rich targets paste formatting and plain targets still get
-  markdown; graceful fallback to plain if the platform write fails. Explicit
-  **"Copy as Markdown"** variants (editor menu + page menu) write the raw
-  source only, for pasting literal syntax into rich surfaces.
-  `EditorState::set_clipboard_writer`/`copy_plain` in gpui-editor
-- [x] **Find in the journal feed** — `⌘F` on the Journal opens a floating
-  PDF-viewer-style bar (query, n / m, ‹ › step, ✕; Esc closes): matches span
-  every loaded day (case-insensitive, Unicode-aware `find_in_source`), with
-  highlights + scroll in BOTH modes — WYSIWYG via gpui-editor's new
-  `set_search`/`offset_screen_top` (match quads share the selection's
-  multi-row geometry), reader via per-day `MarkdownView::search` + tracked
-  block bounds. The page find bar gained the same WYSIWYG support (it was
-  reader-only)
-- [x] Aliases: offer a page's aliases as suggestions in `[[` autocomplete — alias rows rank with titles (shown `alias → Title`, inserting `[[alias]]`; exact alias match suppresses Create). `Db::list_aliases` cached with the sidebar page list
 - [ ] Block references: **"Copy block link"** — auto-generate a ` ^id` on a line
   (right-click / command) and put `[[Page#^id]]` on the clipboard, so linking to
   a block doesn't require inventing an id by hand
@@ -109,23 +48,26 @@ per-notebook settings sync.
 - [ ] Move SQLite writes off the UI thread (background executor) — **fsync stall handled** for now via WAL + `synchronous = NORMAL` in `Db::open` (per-keystroke autosave no longer fsyncs on the UI thread; measured worst case ~1.2 ms at a 50k-char page, well within a frame). The full off-thread refactor is now a lower-priority fast-follow (pathological pages / slow or contended disks)
 
 ## App & polish
+- [ ] **Graph-node context menu** — nodes hit-test inside one
+  canvas element (`g.hit(position)`), so the shared page-menu builder
+  doesn't attach; needs the app's overlay-menu machinery (the reader
+  ctx-menu recipe)
+- [ ] **PopupMenu density** — the pinned gpui-component rev has a
+  `Size::Small` branch for menus (20px rows vs 26px) but NO public setter;
+  upstream a `Sizable` impl for `PopupMenu` (or bump the pin when one
+  exists), then `.small()` the page menus to match the custom ones
 - [ ] **Download/region analytics** — GitHub Releases exposes per-asset download *totals* only (good for a platform split via a polling script), never geography; winget/tap/bucket/Nix expose nothing. For regions: (1) GoatCounter or Plausible on the docs site — visitor countries, one script tag, best effort/signal; (2) download links through a Cloudflare Worker logging `CF-IPCountry` → 302 to the GitHub asset (only covers clicks on our links); (3) pointing the app's update check at our own endpoint would map the active install base but is telemetry — against the local-first pitch, needs disclosure + opt-out; avoid
 - [ ] **Visual design pass** — make the UI look professional and easy on the eyes (spacing, typography, color, density)
 - [ ] Multi-window: same-page **concurrent edits** are last-write-wins — editing the *same* page/day in two windows at once can drop one side's changes. True resolution needs a CRDT/OT layer (out of scope for a single-user app); revisit only if real-time collaboration is ever wanted
 
 ## Import & export
 - [ ] Logseq import follow-ups: an in-progress indicator with real progress (it's a bare "may take a minute" dialog today); surface imported pages in the sidebar right away (a fresh DB shows "No recent pages" until things are visited)
-- [x] PDF: **fit-width / fit-page** zoom modes — sticky `↔`/`⤢` header controls (re-fit on viewport resize; any manual zoom takes over); `PdfView::fit_width`/`fit_page` in gpui-pdf
-- [x] PDF: **area (image-region) highlights** — the `⬚` tool beside the pen: a box-drag marks a page region (figures / scans, no text layer needed), stored on the highlights page as an `@area(x,y,w,h)` quote token (same colors, jump-links, and flash); `Highlight.region` + `toggle_area_mode`/`CreateAreaFn` in gpui-pdf. See `crates/gpui-pdf/src/lib.rs`, `src/pdf.rs`
 - [ ] PDF: **garbled quotes from decorative fonts** — some heading fonts decode to shifted/garbled unicode (e.g. a −29 glyph shift), so a highlight on them stores garbled text (it still re-locates, since garbled matches garbled); body text is correct. Upstream hayro limitation
-- [x] PDF: **graceful fallback for unsupported files** — the load-failure pane now offers **"Open in system viewer"** (host launches the OS default app via `open`/`start`/`xdg-open`); `PdfView::set_on_open_external` keeps the crate host-agnostic
-- [ ] PDF forms, follow-ups — the AcroForm feature SHIPPED 2026-07-06 (see
-  Completed): choice-field dropdowns DONE (the seat editor lists /Opt
-  entries — click commits, typing still covers editable combos); remaining:
-  synthesized-appearance fidelity (`/DA` fonts, `/Q` quadding, comb fields,
-  multiline), and **filing the two hayro gaps upstream** (state-dict `/AP /N`
-  selected by `/AS`; `NeedAppearances` synthesis) so the lopdf normalization
-  pass can eventually retire.
+- [ ] PDF forms, follow-ups — remaining niceties: synthesized-appearance
+  fidelity (`/DA` fonts, `/Q` quadding, comb fields, multiline), and
+  **filing the two hayro gaps upstream** (state-dict `/AP /N` selected by
+  `/AS`; `NeedAppearances` synthesis) so the lopdf normalization pass can
+  eventually retire.
 
 ## Crates
 Crate-internal defects and API hygiene, mostly surfaced by the 2026-07-06
@@ -214,6 +156,68 @@ Ideas worth keeping, not yet committed to.
   > API.md per the crate-docs convention.
 
 ## Completed
+
+### Post-0.8.0 (unreleased)
+- [x] **Line numbers for pages** — Settings → Appearance toggle (off by
+  default): a margin **gutter rail** beside a page's editor (WYSIWYG + raw),
+  hanging absolutely in the left padding so the text column never shifts —
+  and a UI surface of its own for future per-line affordances. Logical lines
+  (wraps count once), folds skipped, off-screen rows unshaped; reader stays
+  clean (add later if wanted). `EditorState::row_layout` in gpui-editor
+- [x] **Rich-text copy** — Copy/Cut and the page menu's "Copy contents" now
+  write rendered HTML beside the raw markdown (one `arboard` transaction —
+  gpui's clipboard has NO html flavor, contrary to this entry's original
+  premise), so rich targets paste formatting and plain targets still get
+  markdown; graceful fallback to plain if the platform write fails. Explicit
+  **"Copy as Markdown"** variants (editor menu + page menu) write the raw
+  source only, for pasting literal syntax into rich surfaces.
+  `EditorState::set_clipboard_writer`/`copy_plain` in gpui-editor
+- [x] **Find in the journal feed** — `⌘F` on the Journal opens a floating
+  PDF-viewer-style bar (query, n / m, ‹ › step, ✕; Esc closes): matches span
+  every loaded day (case-insensitive, Unicode-aware `find_in_source`), with
+  highlights + scroll in BOTH modes — WYSIWYG via gpui-editor's new
+  `set_search`/`offset_screen_top` (match quads share the selection's
+  multi-row geometry), reader via per-day `MarkdownView::search` + tracked
+  block bounds. The page find bar gained the same WYSIWYG support (it was
+  reader-only)
+
+### 0.8.0
+Shipped 2026-07-10 — the full list lives in CHANGELOG.md; the TODO-tracked
+items were:
+- [x] Aliases: offer a page's aliases as suggestions in `[[` autocomplete — alias rows rank with titles (shown `alias → Title`, inserting `[[alias]]`; exact alias match suppresses Create). `Db::list_aliases` cached with the sidebar page list
+- [x] PDF: **fit-width / fit-page** zoom modes — sticky `↔`/`⤢` header controls (re-fit on viewport resize; any manual zoom takes over); `PdfView::fit_width`/`fit_page` in gpui-pdf
+- [x] PDF: **area (image-region) highlights** — the `⬚` tool beside the pen: a box-drag marks a page region (figures / scans, no text layer needed), stored on the highlights page as an `@area(x,y,w,h)` quote token (same colors, jump-links, and flash); `Highlight.region` + `toggle_area_mode`/`CreateAreaFn` in gpui-pdf. See `crates/gpui-pdf/src/lib.rs`, `src/pdf.rs`
+- [x] PDF: **graceful fallback for unsupported files** — the load-failure pane now offers **"Open in system viewer"** (host launches the OS default app via `open`/`start`/`xdg-open`); `PdfView::set_on_open_external` keeps the crate host-agnostic
+- [x] PDF forms: **choice-field dropdowns** — a Ch field's seat editor lists its `/Opt` entries (current highlighted; click commits through the write-and-hot-swap path); typing still covers editable combos
+- [x] **Custom cursor themes** (PR #43) — os-cursors crate (NSCursor swizzle / WM_SETCURSOR hook / XCURSOR_* env, no gpui fork), Settings picker, XCursor packs as drop-in content, theme-reactive SVG packs (bundled Bibata + user packs)
+- [x] **Remember open tabs** (PR #46) — second switch on the Remember window card; open-tabs sidecar next to the db, restores pages/PDFs/whiteboards/browsers + the active tab, skips vanished targets
+
+### UX papercuts (0.7.0)
+From the 2026-07-08 four-way UX audit; shipped in v0.7.0 (PR #42). The two
+deferrals moved to App & polish.
+- [x] Editor interaction: smart Home; Enter/backspace-join/forward-delete
+  around property panels seat the form; block-editor exits at document end
+  create a line below; double/triple-click swallowed on $$/property blocks;
+  atomic formula deletion (incl. the `<!-- math:ALIGN -->` marker); ⌥←/→
+  word-jumps route into constructs; selections reveal the blocks they sweep
+- [x] App flows: error-dialog sweep (rename collisions report INLINE in the
+  rename dialog — a stacked dialog pops the first off the dialog stack; the
+  builder runs inside AppView's render, so dialog-read state goes through
+  `Rc<RefCell<…>>`); unified right-click (shared page menu on sidebar /
+  All Pages / search / backlinks / page tabs + Copy link / Copy contents;
+  editor text menu; property Edit/Delete; compact custom menus); ghost tabs
+  close after a cross-window delete
+- [x] PDF: terminal load failures render an error pane + emit
+  `PdfEvent::LoadFailed` (retry-unlock failing non-password stands the
+  prompt down); `is_pdf` sees through URL queries
+- [x] Platform: Windows spell-check follows the system UI language;
+  the math editor rasterizes at the window's real scale factor
+- [x] CLOSED AS FALSE POSITIVES (verified 2026-07-09): "reader lacks file
+  chips" — the host's `ImageRenderer` (src/ui/image.rs) classifies
+  `is_pdf` and renders chips in both the page and embed renderers, the
+  audit only searched gpui-markdown; "embed image-resize writes the wrong
+  page" — embeds use the deliberately grip-free `embed_renderer`
+
 
 ### Notebooks Phase 1 + UI polish (unreleased, feat/notebooks / PR #41)
 - [x] **Notebooks (multiple data folders), Phase 1** — registry in
