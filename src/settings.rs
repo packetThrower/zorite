@@ -83,6 +83,12 @@ fn theme_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt
 /// the user-added ones registered at startup / via "Add font file…").
 fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>, String) {
     let mut names = cx.text_system().all_font_names();
+    // gpui appends its internal fallback aliases (".ZedMono", ".ZedSans",
+    // ".SystemUIFont") to the OS list. They only render inside Zed, which
+    // bundles the font files those aliases point at — here they'd silently
+    // fall back to the default face, so don't offer them ("Default (System)"
+    // already covers the system face).
+    names.retain(|n| !n.starts_with('.'));
     names.sort();
     names.dedup();
     let default_font = app.upgrade().and_then(|a| {
