@@ -1,18 +1,26 @@
 name: After Release
 
-# Fires after a GitHub Release has been published by release.yml's `release`
-# job (which uses softprops/action-gh-release on tag-push). Separate workflow
+# Fires after release.yml completes on a tag push. Separate workflow
 # from release.yml so the release job stays focused on building + uploading
 # artifacts; post-release publishing — currently the winget submission, more
 # in the future — lives here.
 #
+# `workflow_run`, NOT `release: published`: release.yml publishes the
+# Release with the default GITHUB_TOKEN, and GitHub suppresses events
+# created by that token from triggering other workflows (recursion
+# guard) — a `release` trigger here never fires (every submission
+# through v0.8.0 was a manual dispatch). `workflow_run` events are
+# exempt from that suppression. For a tag-push run, the tag name
+# arrives as `workflow_run.head_branch`.
+#
 # The workflow_dispatch trigger lets us manually re-run a winget submission
-# if the release-event-triggered run flakes (rare but documented in the
+# if the auto-triggered run flakes (rare but documented in the
 # winget-pkgs validator history).
 on:
-  release:
+  workflow_run:
+    workflows: [Release]
     types:
-      - published
+      - completed
   workflow_dispatch:
     inputs:
       tag_name:
@@ -39,14 +47,24 @@ jobs:
     # WINGET_TOKEN secret won't be set on a fork anyway, but failing fast
     # with a clean skip is friendlier than a mid-action 401.
     #
-    # Skip on pre-releases — the manifest schema's `ProductVersion` field
-    # rejects alphanumeric segments (`-beta.N`), MSI builds are skipped
-    # for pre-release tags by release.yml's existing `contains('-')` gate
-    # anyway, and winget itself has no pre-release channel. Stable only.
+    # On the workflow_run path: only after a SUCCESSFUL Release run, and
+    # only for tag-push runs (head_branch = the tag, e.g. `v0.8.0`) —
+    # release.yml's other trigger paths carry a plain branch name here.
+    #
+    # Skip on pre-releases (tag contains `-`) — the manifest schema's
+    # `ProductVersion` field rejects alphanumeric segments (`-beta.N`),
+    # MSI builds are skipped for pre-release tags by release.yml's
+    # existing `contains('-')` gate anyway, and winget itself has no
+    # pre-release channel. Stable only.
     if: >-
       github.repository_owner == 'packetThrower' &&
       (
-        (github.event_name == 'release' && !github.event.release.prerelease) ||
+        (
+          github.event_name == 'workflow_run' &&
+          github.event.workflow_run.conclusion == 'success' &&
+          startsWith(github.event.workflow_run.head_branch, 'v') &&
+          !contains(github.event.workflow_run.head_branch, '-')
+        ) ||
         (github.event_name == 'workflow_dispatch' && !contains(inputs.tag_name, '-'))
       )
     steps:
@@ -87,8 +105,9 @@ jobs:
       #
       # `identifier`: the PackageIdentifier our manifest declares
       # (`packaging/windows/winget/packetThrower.Zorite.installer.yaml.template`).
-      # `release-tag`: drawn from the triggering Release on the auto-
-      # fire path, from the dispatch input on the manual path.
+      # `release-tag`: the tag that triggered the Release run on the
+      # auto-fire path (workflow_run.head_branch carries the tag for
+      # tag-push runs), the dispatch input on the manual path.
       # `max-versions-to-keep`: bounds the per-version directories in
       # `microsoft/winget-pkgs/manifests/p/packetThrower/Zorite/` so
       # the tree doesn't accumulate every historical version. 5 gives
@@ -116,7 +135,7 @@ jobs:
         uses: vedantmgoyal9/winget-releaser@7bd472be23763def6e16bd06cc8b1cdfab0e2fd5 # v2
         with:
           identifier: packetThrower.Zorite
-          release-tag: ${{ github.event.release.tag_name || inputs.tag_name }}
+          release-tag: ${{ github.event.workflow_run.head_branch || inputs.tag_name }}
           max-versions-to-keep: 5
           installers-regex: '_amd64_en-US\.msi$'
           token: ${{ secrets.WINGET_TOKEN }}
