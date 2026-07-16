@@ -1019,11 +1019,17 @@ impl Render for MathEditor {
                     .children(image)
                     .children(caret)
                     .children(pending)
-                    .children(dropdown)
+                    // Deferred: the dropdown floats below the caret, often past
+                    // the host's reserved gap — without deferral, later-painted
+                    // siblings (the next journal day) draw over it.
+                    .children(dropdown.map(deferred))
                     // In-line palette + matrix toolbar live in the container, so they track the
                     // formula's centered / right-aligned position automatically.
-                    .children(inner_palette)
-                    .children(self.matrix_toolbar(cx)),
+                    // Deferred like the dropdown: both panels float outside the
+                    // reserved gap (palette below the formula, toolbar under a
+                    // matrix) and must paint above the host's later content.
+                    .children(inner_palette.map(deferred))
+                    .children(self.matrix_toolbar(cx).map(deferred)),
             )
     }
 }
