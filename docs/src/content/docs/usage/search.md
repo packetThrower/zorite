@@ -37,8 +37,12 @@ Narrow the results two ways:
 | `img:` | Images |
 | `wb:` | Whiteboards |
 
-## Find in page
+## Find in page — and in the journal
 
-Separate from global search, **find in page** searches the rendered text of the
-current note (or PDF), with a highlight and a running match count — for pinning
-down a phrase inside the document you're already reading.
+Separate from global search, **find in page** (`⌘F`) searches the current
+note — reading view or live editor — with every match highlighted, the active
+one emphasized, and a running count; Enter / ⇧Enter step between matches.
+
+On the **Journal**, `⌘F` opens a floating find bar (like the PDF viewer's)
+that matches across **every loaded day**, scrolling the feed from match to
+match. Esc closes either bar. PDFs keep their own `⌘F` inside the viewer.

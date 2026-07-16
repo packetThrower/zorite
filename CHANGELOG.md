@@ -7,6 +7,60 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.9.0] - 2026-07-16
+
+Find anything, anywhere: a find bar for the journal feed (and real find
+support while editing), rich-text copy for pasting into anything, line
+numbers when you want them — plus a set of math-editor and rendering fixes.
+
+### Added
+
+- **Find in the journal** — `⌘F` on the Journal opens a floating find bar
+  (like the PDF viewer's): type to match across every loaded day,
+  case-insensitively, with every match highlighted and the active one
+  emphasized; Enter / ⇧Enter or ‹ › step between matches, scrolling the feed
+  to each, and Esc closes. Works in both editing and reading views.
+- **Find in page, while editing** — the page find bar used to search only the
+  reading view; it now highlights and scrolls in the live editor too, so
+  `⌘F` works the same whichever way you write.
+- **Rich-text copy** — Copy/Cut and the page menu's "Copy contents" now put
+  formatted text on the clipboard alongside the raw markdown: paste into
+  Word, Mail, or Docs and headings, bold, links, and lists arrive formatted,
+  while terminals and code editors still receive plain markdown. When you
+  want the literal syntax in a rich surface, the new **"Copy as Markdown"**
+  (selection menu) and **"Copy contents as Markdown"** (page menu) copy the
+  raw source only.
+- **Line numbers** — an optional gutter beside the editor on pages and
+  journal days (Settings → Appearance): logical source lines (wrapped text
+  counts once), sitting in the margin so your text never shifts, restarting
+  per journal day. Off by default; the reading view stays clean.
+- **Underscore emphasis** — `_italic_` and `__bold__` now style while
+  editing (they always rendered in the reading view), with CommonMark's
+  word-boundary rules so `snake_case_names` and `CONST_MAX_VALUES` stay
+  plain and the shruggie keeps both arms.
+
+### Fixed
+
+- **Math** — the reading view now honors a formula's left/center/right
+  alignment (it always centered); the symbol palette paints above following
+  content instead of sliding under the next day's header, docks above the
+  formula when the window bottom would clip it, and is draggable anywhere by
+  its grip (drags used to freeze vertically); the matrix toolbar drags
+  smoothly too.
+- The Settings **Font** dropdown no longer offers `.ZedMono` / `.ZedSans` —
+  gpui-internal aliases that only render inside Zed and silently fell back
+  to the default face here.
+- Dependency refresh: lopdf 0.44, oxidize-pdf 4 (with the manifest
+  requirement actually bumped — plain builds masked a lockfile mismatch that
+  broke Nix builds), RaTeX 0.1.13, heic-decoder.
+
+### Infrastructure
+
+- The winget submission now fires automatically after a release — the
+  `release: published` trigger never actually fired (GitHub suppresses
+  events from the default workflow token), and every submission to date had
+  been manual without anyone noticing. First automatic run: this release.
+
 ## [0.8.0] - 2026-07-10
 
 Cursors that match your theme, a PDF viewer that marks up scans and fits your
@@ -716,6 +770,7 @@ First cross-platform beta.
 - **Theming and settings**, plus cross-platform **packaging** (`.app`/`.dmg`,
   `.exe`, `.deb`/`.AppImage`/`.rpm`) with an app icon, and cross-platform CI.
 
+[0.9.0]: https://github.com/packetThrower/zorite/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/packetThrower/zorite/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/packetThrower/zorite/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/packetThrower/zorite/compare/v0.6.0...v0.6.1

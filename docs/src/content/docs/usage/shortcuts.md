@@ -21,9 +21,11 @@ macOS and **Ctrl** on Windows and Linux.
 | Open settings | `⌘,` | `Ctrl+,` |
 | Quit | `⌘Q` | `Ctrl+Q` |
 
-**Find in page** searches the current page's rendered text; **Search all notes**
-opens the note-wide search (see [Search](/zorite/usage/search/)). PDF tabs keep
-their own find — `⌘F` inside a PDF searches that document.
+**Find in page** searches the current page (reading view or editor); on the
+Journal it opens the feed's find bar, matching across every loaded day.
+**Search all notes** opens the note-wide search (see
+[Search](/zorite/usage/search/)). PDF tabs keep their own find — `⌘F` inside a
+PDF searches that document.
 
 The tab-switch chords are `Ctrl+Tab` / `Ctrl+Shift+Tab` on every platform
 (including macOS), matching the convention most apps use for cycling tabs.
