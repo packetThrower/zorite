@@ -201,6 +201,11 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
     ),
     (
         Tab::Appearance,
+        "Line numbers",
+        "gutter source rows numbering count editor",
+    ),
+    (
+        Tab::Appearance,
         "Mouse cursor",
         "pointer arrow theme pack xcursor bibata custom",
     ),
@@ -218,11 +223,6 @@ const SECTIONS: &[(Tab, &str, &str)] = &[
         Tab::Markdown,
         "WYSIWYG editing",
         "live preview inline formatting bold heading links",
-    ),
-    (
-        Tab::Markdown,
-        "Line numbers",
-        "gutter source rows numbering count editor",
     ),
     (
         Tab::Markdown,
@@ -2191,6 +2191,13 @@ impl Render for SettingsView {
                                     Select::new(&self.text_size_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
+                                    "Line numbers",
+                                    "Show a numbered gutter beside the editor on pages and \
+                                     journal days — logical source lines, wrapped text counts \
+                                     once. The reading view stays clean.",
+                                    line_numbers_switch,
+                                ))
+                                .child(self.section_card(
                                     "Mouse cursor",
                                     "The pointer inside Zorite. Add any XCursor theme folder \
                                          (the Linux cursor-theme format) to use your own.",
@@ -2215,13 +2222,6 @@ impl Render for SettingsView {
                                      type. Off edits plain Markdown and shows the rendered page \
                                      on Esc.",
                                     wysiwyg_switch,
-                                ))
-                                .child(self.section_card(
-                                    "Line numbers",
-                                    "Show a numbered gutter beside a page's editor — logical \
-                                     source lines, wrapped text counts once. The reading view \
-                                     stays clean.",
-                                    line_numbers_switch,
                                 ))
                                 .child(self.section_card(
                                     "List indentation",
