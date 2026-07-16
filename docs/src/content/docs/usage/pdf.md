@@ -89,3 +89,9 @@ Right-click a tab or a sidebar page and pick **Export as PDF…** (or press
 — wrapped styled text, tables, inline images, alerts, typeset math, and
 mermaid diagrams — written by a pure-Rust PDF writer, no browser or print
 dialog involved.
+
+One known limitation: the writer places glyphs directly without a text-shaping
+pass, so **font ligatures** (the `->`/`=>` arrows of a font like JetBrains
+Mono, or a serif's `fi`) render in the app but come out as their individual
+characters in the exported PDF. The text is unaffected — only the glyph
+substitution is skipped.

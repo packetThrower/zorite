@@ -109,7 +109,8 @@ Developed in close collaboration with Claude (Anthropic).
   that render correctly in other viewers. A file that can't be opened says
   why instead of loading forever.
 - `⌘P` exports the current note as a styled PDF, including tables, images,
-  math, and diagrams. No browser involved.
+  math, and diagrams. No browser involved. (One quirk: the export writes
+  glyphs directly, so font ligatures render in the app but not in the PDF.)
 - Whiteboards are infinite pan-and-zoom canvases with shapes, arrows, freehand
   drawing, images, text, templates, and cards that link back to pages.
 
