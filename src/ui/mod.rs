@@ -27,8 +27,8 @@ use gpui::{
 use gpui_component::menu::ContextMenuExt;
 
 use crate::actions::{
-    CopyPageContents, CopyPageLink, DeletePage, ExportPdf, NewSubPage, OpenInNewTab,
-    OpenInNewWindow, RenamePage, ToggleFavorite,
+    CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage, ExportPdf, NewSubPage,
+    OpenInNewTab, OpenInNewWindow, RenamePage, ToggleFavorite,
 };
 use crate::app::AppView;
 
@@ -62,6 +62,10 @@ pub(crate) fn with_page_menu(
             .separator()
             .menu("Copy link", Box::new(CopyPageLink))
             .menu("Copy contents", Box::new(CopyPageContents))
+            .menu(
+                "Copy contents as Markdown",
+                Box::new(CopyPageContentsMarkdown),
+            )
             .separator()
             .menu("Export as PDF…", Box::new(ExportPdf))
             .separator()

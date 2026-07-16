@@ -33,11 +33,11 @@ use gpui_component::{
 use gpui_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, CopyPageContents, CopyPageLink, DeletePage, ExportActivePdf, ExportNotebook,
-    ExportPdf, FindInPage, FitImages, GlobalSearch, ImportLogseq, ImportObsidian, InsertTab,
-    NewPage, NewSubPage, NewWhiteboard, NextTab, OpenInNewTab, OpenInNewWindow, OpenSettings,
-    Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown, SlashUp,
-    ToggleFavorite,
+    CloseTab, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
+    ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, ImportLogseq,
+    ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenInNewTab,
+    OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel,
+    SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -7201,17 +7201,14 @@ impl AppView {
         }
     }
 
-    /// Shared page-menu "Copy contents": the page's markdown body.
-    fn on_copy_page_contents(
-        &mut self,
-        _: &CopyPageContents,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    /// Shared page-menu "Copy contents": the page's markdown body, as plain
+    /// text + rendered HTML (`rich`) or the raw source only.
+    fn copy_page_contents(&mut self, rich: bool, window: &mut Window, cx: &mut Context<Self>) {
         let Some((id, _)) = self.context_page.take() else {
             return;
         };
         match self.db.get_page(id) {
+            Ok(Some(p)) if rich => crate::clipboard::copy_rich(&p.content, cx),
             Ok(Some(p)) => cx.write_to_clipboard(ClipboardItem::new_string(p.content)),
             Ok(None) => {}
             Err(e) => {
@@ -7219,6 +7216,24 @@ impl AppView {
                 self.show_error_dialog("Couldn’t copy", e.to_string(), window, cx);
             }
         }
+    }
+
+    fn on_copy_page_contents(
+        &mut self,
+        _: &CopyPageContents,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_page_contents(true, window, cx);
+    }
+
+    fn on_copy_page_contents_markdown(
+        &mut self,
+        _: &CopyPageContentsMarkdown,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.copy_page_contents(false, window, cx);
     }
 
     /// A one-button error dialog — the voice for user-initiated operations
@@ -8773,6 +8788,7 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_copy_page_link))
             .on_action(cx.listener(Self::on_copy_page_contents))
+            .on_action(cx.listener(Self::on_copy_page_contents_markdown))
             .on_action(cx.listener(Self::on_toggle_favorite))
             .on_action(cx.listener(Self::on_new_page))
             .on_action(cx.listener(Self::on_new_sub_page))
@@ -9191,6 +9207,9 @@ fn make_editor(
         let mut editor = EditorState::new(window, cx).with_text(content);
         // Right-click a flagged word → the OS's suggestions, fetched lazily.
         editor.on_suggest(|word| os_spellcheck::SpellChecker::new().suggestions(word));
+        // Copy/Cut put rendered HTML on the clipboard beside the raw markdown,
+        // so rich editors paste formatting (see clipboard::copy_rich).
+        editor.set_clipboard_writer(Rc::new(crate::clipboard::copy_rich));
         // Inline images (W4): resolve a standalone image's src to its decoded
         // bitmap from the shared store (None until decoding finishes / on fail).
         editor.set_block_image_provider(move |src| image_store.borrow().get(src));

@@ -29,6 +29,9 @@ ignore = [
 # new license is GPL-3-compatible AND acceptable for redistribution.
 allow = [
     "0BSD",
+    # Boost 1.0: permissive, GPL-3-compatible (FSF-listed). Via arboard ->
+    # clipboard-win/error-code (the rich-copy clipboard writer).
+    "BSL-1.0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",

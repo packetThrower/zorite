@@ -16,6 +16,9 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | --- | --- | --- | --- |
 | [`bind_keys`](#fn-bind_keys) | fn | `fn bind_keys(cx: &mut App)` | Bind the editing keys (once, at startup) |
 | [`LINE_HEIGHT_RATIO`](#const-line_height_ratio) | const | `const LINE_HEIGHT_RATIO: f32 = 1.45` | Row height as a multiple of the font size |
+| [`EditorState::set_clipboard_writer`](#editorstateset_clipboard_writer) | method | `fn set_clipboard_writer(&mut self, writer: ClipboardWriter)` | Host-owned Copy/Cut clipboard write |
+| [`EditorState::copy_plain`](#editorstatecopy_plain) | method | `fn copy_plain(&mut self, window: &mut Window, cx: &mut Context<Self>)` | Copy the selection as raw markdown only |
+| [`ClipboardWriter`](#type-clipboardwriter) | type alias | `Rc<dyn Fn(&str, &mut App)>` | The Copy/Cut write hook |
 | [`EditorState::row_layout`](#editorstaterow_layout) | method | `fn row_layout(&self) -> Vec<(Pixels, Pixels)>` | Per-line (top, first-wrap-row height) for host gutters |
 | [`mermaid_sources`](#fn-mermaid_sources) | fn | `fn mermaid_sources(content: &str) -> Vec<SharedString>` | Every ` ```mermaid ` block's source, for pre-rendering |
 | [`paint_doc_icon`](#fn-paint_doc_icon) | fn | `fn paint_doc_icon(x, y, w, h: Pixels, color: Hsla, window: &mut Window)` | The file chips' line-art document glyph |
@@ -134,6 +137,39 @@ given bounds. Stroke-drawn — not a font emoji — so it reads flat and on-them
 at any text size. Public so a host's read-only view can draw the identical
 icon on its own file chips (cross-view parity); the editor sizes it
 `h = font_size × 0.92`, `w = h × 0.74`.
+
+---
+
+## `EditorState::set_clipboard_writer`
+
+```rust
+pub fn set_clipboard_writer(&mut self, writer: ClipboardWriter)
+```
+
+Route Copy/Cut through `writer` instead of gpui's plain-string copy. The
+writer receives the markdown text the editor would have written (Copy's
+renumbered ordered-list form included), so a host can add clipboard flavors
+gpui can't express — e.g. rendered HTML beside the plain string. Paste is
+unaffected (it still reads gpui's clipboard).
+
+## `EditorState::copy_plain`
+
+```rust
+pub fn copy_plain(&mut self, window: &mut Window, cx: &mut Context<Self>)
+```
+
+Copy the selection as the raw markdown **only** — bypassing any
+[`ClipboardWriter`](#type-clipboardwriter) — for pasting literal source into
+rich surfaces where Copy's extra flavors would win. Same selection extension
+and ordered-list renumbering as Copy; the context menu's "Copy as Markdown".
+
+## `type ClipboardWriter`
+
+```rust
+pub type ClipboardWriter = Rc<dyn Fn(&str, &mut App)>;
+```
+
+The Copy/Cut write hook — `(markdown_text, app)`.
 
 ---
 

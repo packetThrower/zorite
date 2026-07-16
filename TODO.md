@@ -59,12 +59,14 @@ release notes; prune after 0.7.0 ships.
   and a UI surface of its own for future per-line affordances. Logical lines
   (wraps count once), folds skipped, off-screen rows unshaped; reader stays
   clean (add later if wanted). `EditorState::row_layout` in gpui-editor
-- [ ] **Rich-text copy** — every copy path is plain-text only (raw markdown
-  via `ClipboardItem::new_string`); add an HTML flavor alongside (gpui's
-  `ClipboardItem` takes multiple entries) rendered from the markdown, so
-  pasting into Word/Mail/Docs keeps headings, bold, links, and lists instead
-  of showing literal `**markers**`. Covers editor Cut/Copy and the page
-  menu's "Copy contents"
+- [x] **Rich-text copy** — Copy/Cut and the page menu's "Copy contents" now
+  write rendered HTML beside the raw markdown (one `arboard` transaction —
+  gpui's clipboard has NO html flavor, contrary to this entry's original
+  premise), so rich targets paste formatting and plain targets still get
+  markdown; graceful fallback to plain if the platform write fails. Explicit
+  **"Copy as Markdown"** variants (editor menu + page menu) write the raw
+  source only, for pasting literal syntax into rich surfaces.
+  `EditorState::set_clipboard_writer`/`copy_plain` in gpui-editor
 - [ ] **Find in the journal feed** — a real `⌘F` find bar on the Journal tab
   (today it routes to the global search): match + step across every loaded
   day's rendered text, reusing `gpui-markdown`'s `find_matches`/`search` like

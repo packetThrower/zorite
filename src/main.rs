@@ -12,6 +12,7 @@
 
 mod actions;
 mod app;
+mod clipboard;
 mod cursors;
 mod dates;
 mod db;

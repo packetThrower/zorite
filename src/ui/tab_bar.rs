@@ -11,8 +11,8 @@ use gpui_component::tab::{Tab, TabBar};
 use gpui_component::tooltip::Tooltip;
 
 use crate::actions::{
-    CopyPageContents, CopyPageLink, DeletePage, NewSubPage, OpenInNewWindow, RenamePage,
-    ToggleFavorite,
+    CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage, NewSubPage,
+    OpenInNewWindow, RenamePage, ToggleFavorite,
 };
 use crate::app::{AppView, DraggingTab, GlobalDraggingTab, TabDrag, TabKind};
 use crate::theme;
@@ -85,6 +85,10 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             menu.separator()
                 .menu("Copy link", Box::new(CopyPageLink))
                 .menu("Copy contents", Box::new(CopyPageContents))
+                .menu(
+                    "Copy contents as Markdown",
+                    Box::new(CopyPageContentsMarkdown),
+                )
                 .separator()
                 .menu(fav_label, Box::new(ToggleFavorite))
                 .separator()

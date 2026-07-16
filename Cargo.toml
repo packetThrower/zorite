@@ -188,6 +188,11 @@ keyring = { version = "3", default-features = false, features = [
     "windows-native",
     "linux-native",
 ] }
+# Rich-text copy (src/clipboard.rs): plain + HTML flavors in one clipboard
+# transaction — gpui's clipboard has no HTML entry. Default features off drops
+# its image support (we never copy images through it); wayland-data-control
+# lets Linux Wayland sessions own the selection.
+arboard = { version = "3.6", default-features = false, features = ["wayland-data-control"] }
 
 # Embeds the Windows .exe icon (resources/icon.rc -> resources/icons/icon.ico)
 # into the PE resource section via build.rs. `embed_resource::compile` is a

@@ -66,7 +66,8 @@ actions!(
         // The shared page context menu's copy verbs (`[[Title]]` / markdown
         // body to the clipboard); no keybindings.
         CopyPageLink,
-        CopyPageContents
+        CopyPageContents,
+        CopyPageContentsMarkdown
     ]
 );
 

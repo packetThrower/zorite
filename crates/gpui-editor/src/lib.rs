@@ -383,6 +383,12 @@ type BlockImageFn = Box<dyn Fn(&str) -> Option<Arc<RenderImage>>>;
 /// clickable chip (left-click emits [`EditorEvent::OpenLink`]).
 type BlockChipFn = Box<dyn Fn(&str) -> Option<SharedString>>;
 
+/// Host-supplied clipboard writer for Copy/Cut — receives the markdown text
+/// the editor would put on the clipboard, so a host can add flavors gpui's
+/// clipboard can't (e.g. rendered HTML beside the plain string). See
+/// [`EditorState::set_clipboard_writer`].
+pub type ClipboardWriter = std::rc::Rc<dyn Fn(&str, &mut App)>;
+
 /// Resolves a standalone `![[target]]` embed line to the host view that renders
 /// the transclusion, plus the row height to reserve for it (the host estimates
 /// and caps it; long content scrolls inside the view). `None` falls back to the
@@ -474,6 +480,9 @@ pub struct EditorState {
     selection_reversed: bool,
     /// IME composition range, if any.
     marked_range: Option<Range<usize>>,
+    /// Host-supplied clipboard writer for Copy/Cut (e.g. adding an HTML
+    /// flavor beside the plain text). `None` = gpui's plain-string copy.
+    clipboard_writer: Option<ClipboardWriter>,
     /// Last paint's wrapped lines (one per logical line) and each line's top
     /// offset relative to the editor's top — both used for hit-testing and
     /// cursor/IME positioning.
@@ -669,6 +678,7 @@ impl EditorState {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
+            clipboard_writer: None,
             wrapped: Vec::new(),
             line_tops: Vec::new(),
             line_heights: Vec::new(),
@@ -874,6 +884,12 @@ impl EditorState {
     /// renders as the equation when the caret is elsewhere; with the caret inside
     /// (or while it renders) it shows the raw `$$…$$` source. Pre-render with
     /// [`math_sources`].
+    /// Route Copy/Cut through `writer` instead of gpui's plain-string copy —
+    /// the host owns the actual clipboard write (and its extra flavors).
+    pub fn set_clipboard_writer(&mut self, writer: ClipboardWriter) {
+        self.clipboard_writer = Some(writer);
+    }
+
     pub fn set_block_math_provider(
         &mut self,
         provider: impl Fn(&str) -> Option<(Arc<RenderImage>, f32, f32)> + 'static,
@@ -1910,7 +1926,31 @@ impl EditorState {
             } else {
                 self.content[range].to_string()
             };
+            self.write_clipboard(text, cx);
+        }
+    }
+
+    /// Copy the selection as the raw markdown ONLY — no host clipboard
+    /// flavors — for pasting literal source into rich surfaces (the context
+    /// menu's "Copy as Markdown"). Same selection/renumber rules as `copy`.
+    pub fn copy_plain(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selected_range.is_empty() {
+            let range = self.copy_range();
+            let text = if self.markdown_style.is_some() {
+                markdown_syntax::renumber_copy(&self.content, range)
+            } else {
+                self.content[range].to_string()
+            };
             cx.write_to_clipboard(ClipboardItem::new_string(text));
+        }
+    }
+
+    /// Route a Copy/Cut payload through the host's clipboard writer when one
+    /// is set (see [`Self::set_clipboard_writer`]), else gpui's plain copy.
+    fn write_clipboard(&self, text: String, cx: &mut Context<Self>) {
+        match &self.clipboard_writer {
+            Some(writer) => writer(&text, cx),
+            None => cx.write_to_clipboard(ClipboardItem::new_string(text)),
         }
     }
 
@@ -1945,9 +1985,7 @@ impl EditorState {
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
+            self.write_clipboard(self.content[self.selected_range.clone()].to_string(), cx);
             self.replace_text_in_range(None, "", window, cx);
         }
     }
@@ -4212,6 +4250,17 @@ impl Render for EditorState {
                                 cx.stop_propagation();
                                 editor.menu = None;
                                 editor.copy(&Copy, window, cx);
+                            }),
+                        ))
+                        // Plain-only: the raw markdown with no host flavors —
+                        // for pasting literal source into rich surfaces
+                        // (email, chat) where Copy's HTML flavor would win.
+                        .child(clip_item("menu-copy-md", "Copy as Markdown").on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                cx.stop_propagation();
+                                editor.menu = None;
+                                editor.copy_plain(window, cx);
                             }),
                         ));
                 }
