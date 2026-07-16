@@ -28,23 +28,11 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let page_id = pe.id;
     // Pages titled `<this>::<leaf>` are sub-pages; this page acts as their index.
     let children = hierarchy::direct_children(&app.pages, &pe.title);
-    // The gutter's width (line numbers on + editing): sized from the digit
-    // count (~0.62em per digit at the gutter's font size, plus padding). The
-    // rail hangs in the content column's LEFT PADDING — widened to fit — so
-    // the text itself sits exactly where it would without a gutter.
+    // The gutter's width (line numbers on + editing). The rail hangs in the
+    // content column's LEFT PADDING — widened to fit — so the text itself
+    // sits exactly where it would without a gutter.
     let gutter_w: Option<Pixels> = (app.line_numbers() && (app.wysiwyg() || app.is_page_editing()))
-        .then(|| {
-            let digits = pe
-                .state
-                .read(cx)
-                .value()
-                .lines()
-                .count()
-                .max(1)
-                .to_string()
-                .len() as f32;
-            px(18.0) + app.text_size() * 0.72 * 0.62 * digits
-        });
+        .then(|| gutter_width(pe.state.read(cx).value().as_ref(), app.text_size()));
     div()
         .flex_1()
         .min_w_0()
@@ -133,6 +121,14 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .into_any_element()
 }
 
+/// The gutter rail's width for `content`: ~0.62em per line-count digit at
+/// the gutter's font size, plus padding. Shared by the page and journal
+/// surfaces so their rails size identically.
+pub(crate) fn gutter_width(content: &str, text_size: Pixels) -> Pixels {
+    let digits = content.lines().count().max(1).to_string().len() as f32;
+    px(18.0) + text_size * 0.72 * 0.62 * digits
+}
+
 /// The page's margin gutter (Settings → Markdown → Line numbers): an
 /// absolutely-positioned rail hanging `width` into the content column's left
 /// padding, painting one number per **logical** line, aligned via the
@@ -140,7 +136,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
 /// first wrap row). Rows a heading fold collapsed show no vertical advance
 /// and are skipped; off-screen rows aren't shaped. A UI surface of its own —
 /// future per-line affordances (fold handles, block markers) belong here too.
-fn line_gutter(
+pub(crate) fn line_gutter(
     state: Entity<gpui_editor::EditorState>,
     text_size: Pixels,
     width: Pixels,

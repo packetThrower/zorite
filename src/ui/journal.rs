@@ -47,6 +47,23 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                         // Uniform padding on all sides; left-aligned (no
                         // centering) so content isn't pushed into the middle.
                         .p(px(28.0))
+                        // With line numbers on, widen the left padding so the
+                        // day gutters have room (sized for the longest loaded
+                        // day, so every day's text aligns to one column).
+                        .when(app.line_numbers() && app.wysiwyg(), |d| {
+                            let w = app
+                                .day_editors
+                                .values()
+                                .map(|day| {
+                                    super::page_view::gutter_width(
+                                        day.state.read(cx).value().as_ref(),
+                                        app.text_size(),
+                                    )
+                                })
+                                .max()
+                                .unwrap_or(px(28.0));
+                            d.pl(w.max(px(28.0)))
+                        })
                         .flex()
                         .flex_col()
                         .gap(px(40.0))
@@ -105,11 +122,27 @@ fn day_section(
     let body = if app.wysiwyg() || app.is_editing_day(date) {
         // gpui-editor has no chrome of its own; the wrapper sets the ambient
         // text style (size/color) the editor inherits when it shapes lines.
-        div()
+        // With line numbers on, the day's gutter rail hangs left into the
+        // feed's (widened) padding — numbering restarts per day, since each
+        // day is its own document.
+        let editor = div()
+            .relative()
             .text_size(app.text_size())
             .text_color(theme::text_primary())
-            .child(state.clone())
-            .into_any_element()
+            .child(state.clone());
+        if app.line_numbers() {
+            let w =
+                super::page_view::gutter_width(state.read(cx).value().as_ref(), app.text_size());
+            editor
+                .child(super::page_view::line_gutter(
+                    state.clone(),
+                    app.text_size(),
+                    w,
+                ))
+                .into_any_element()
+        } else {
+            editor.into_any_element()
+        }
     } else {
         rendered_day(app, i, date, state.read(cx).value(), cx).into_any_element()
     };
