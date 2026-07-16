@@ -53,12 +53,12 @@ release notes; prune after 0.7.0 ships.
   exists), then `.small()` the page menus to match the custom ones
 
 ## Notes & navigation
-- [ ] **Line numbers for pages** — an optional gutter in the editor
-  (Settings toggle, off by default; probably alongside the Markdown/WYSIWYG
-  settings). Number **logical** lines, not wrap rows — `gpui-editor` already
-  tracks per-row line tops/heights, so the gutter rides existing geometry;
-  decide whether numbers show in WYSIWYG too or raw mode only, and whether
-  the reader stays unnumbered (likely yes — it's a reading surface)
+- [x] **Line numbers for pages** — Settings → Markdown toggle (off by
+  default): a margin **gutter rail** beside a page's editor (WYSIWYG + raw),
+  hanging absolutely in the left padding so the text column never shifts —
+  and a UI surface of its own for future per-line affordances. Logical lines
+  (wraps count once), folds skipped, off-screen rows unshaped; reader stays
+  clean (add later if wanted). `EditorState::row_layout` in gpui-editor
 - [ ] **Rich-text copy** — every copy path is plain-text only (raw markdown
   via `ClipboardItem::new_string`); add an HTML flavor alongside (gpui's
   `ClipboardItem` takes multiple entries) rendered from the markdown, so
