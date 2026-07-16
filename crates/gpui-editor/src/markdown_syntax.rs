@@ -498,7 +498,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             i = close + 2;
             continue;
         }
-        // Italic: *text* (asterisks only in W1 — `_` collides with snake_case).
+        // Italic: *text*.
         if c == b'*'
             && let Some(close) = find1(b, i + 1, end, b'*')
             && close > i + 1
@@ -515,6 +515,52 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             marker(out, close..close + 1, st.marker);
             i = close + 1;
             continue;
+        }
+        // Underscore emphasis (__bold__ / _italic_), CommonMark's flanking
+        // rules so snake_case identifiers never light up: `_` only opens
+        // after a non-word character (or the segment start) and only closes
+        // before one, and a backslash-escaped `\_` (the shruggie's arms)
+        // stays literal. The reader's CommonMark parser applies the same
+        // word-boundary rule, so the views agree.
+        if c == b'_' && (i == start || (!is_word_byte(b[i - 1]) && b[i - 1] != b'\\')) {
+            // __bold__ (check before single-_ italic).
+            if i + 1 < end
+                && b[i + 1] == b'_'
+                && i + 2 < end
+                && b[i + 2] != b' '
+                && let Some(close) = find_underscore_close(b, i + 2, end, true)
+            {
+                marker(out, i..i + 2, st.marker);
+                push(
+                    out,
+                    i + 2..close,
+                    Style {
+                        bold: true,
+                        ..Default::default()
+                    },
+                );
+                marker(out, close..close + 2, st.marker);
+                i = close + 2;
+                continue;
+            }
+            if i + 1 < end
+                && b[i + 1] != b'_'
+                && b[i + 1] != b' '
+                && let Some(close) = find_underscore_close(b, i + 1, end, false)
+            {
+                marker(out, i..i + 1, st.marker);
+                push(
+                    out,
+                    i + 1..close,
+                    Style {
+                        italic: true,
+                        ..Default::default()
+                    },
+                );
+                marker(out, close..close + 1, st.marker);
+                i = close + 1;
+                continue;
+            }
         }
         // Strikethrough: ~~text~~
         if c == b'~'
@@ -741,6 +787,35 @@ fn find1(b: &[u8], from: usize, end: usize, c: u8) -> Option<usize> {
 /// First index of the pair `c1 c2` in `b[from..end]`.
 fn find2(b: &[u8], from: usize, end: usize, c1: u8, c2: u8) -> Option<usize> {
     (from..end.saturating_sub(1)).find(|&k| b[k] == c1 && b[k + 1] == c2)
+}
+
+/// A "word" byte for `_`-emphasis flanking: ASCII alphanumerics, plus any
+/// non-ASCII byte — accented/CJK letters count as word characters, so
+/// intraword underscores stay literal (CommonMark's rule for `_`).
+fn is_word_byte(x: u8) -> bool {
+    x.is_ascii_alphanumeric() || x >= 0x80
+}
+
+/// The closing `_` (or `__`) for an underscore-emphasis span whose content
+/// starts at `from`: the first candidate with non-empty content that doesn't
+/// end in a space, that isn't backslash-escaped, and whose following
+/// character is not a word character (CommonMark right-flank). `None` if the
+/// span never closes.
+fn find_underscore_close(b: &[u8], from: usize, end: usize, double: bool) -> Option<usize> {
+    let width = if double { 2 } else { 1 };
+    let mut j = from + 1; // content is at least one byte
+    while j + width <= end {
+        if b[j] == b'_'
+            && (!double || b[j + 1] == b'_')
+            && b[j - 1] != b' '
+            && b[j - 1] != b'\\'
+            && (j + width >= end || !is_word_byte(b[j + width]))
+        {
+            return Some(j);
+        }
+        j += 1;
+    }
+    None
 }
 
 // Linkables (wiki/tag/url/bare-url) are shared with the reader
@@ -1743,6 +1818,59 @@ mod tests {
         // Same line unselected: both prefix and inline markers hidden.
         let (disp, _, _) = hidden_runs("- a **b** c", &font, c, &[], None, 0, 2, false, &st);
         assert_eq!(disp, "a b c");
+    }
+
+    /// The styled substrings a line scans to, as `(text, bold, italic)` —
+    /// markers excluded (they carry a color, not bold/italic).
+    fn emphasis_spans(line: &str) -> Vec<(String, bool, bool)> {
+        let st = test_style();
+        let mut out = Vec::new();
+        scan_line(line, 0, line.len(), &st, &mut out);
+        out.iter()
+            .filter(|sp| sp.style.bold || sp.style.italic)
+            .map(|sp| {
+                (
+                    line[sp.range.clone()].to_string(),
+                    sp.style.bold,
+                    sp.style.italic,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn underscore_emphasis_at_word_boundaries() {
+        assert_eq!(
+            emphasis_spans("_italic_ and __bold__"),
+            vec![
+                ("italic".to_string(), false, true),
+                ("bold".to_string(), true, false)
+            ]
+        );
+        assert_eq!(
+            emphasis_spans("mid _span here_ end"),
+            vec![("span here".to_string(), false, true)]
+        );
+    }
+
+    #[test]
+    fn underscores_inside_words_stay_plain() {
+        // The reason `_` was originally skipped — identifiers must not light up.
+        assert_eq!(emphasis_spans("snake_case_name"), vec![]);
+        assert_eq!(emphasis_spans("a foo_bar_baz b"), vec![]);
+        assert_eq!(emphasis_spans("CONST_MAX_VALUE = 3"), vec![]);
+        // Closing candidate followed by a word character doesn't close.
+        assert_eq!(emphasis_spans("_a_b"), vec![]);
+        // Space-adjacent content never opens/closes.
+        assert_eq!(emphasis_spans("_ nope_"), vec![]);
+        assert_eq!(emphasis_spans("_nope _"), vec![]);
+    }
+
+    #[test]
+    fn escaped_underscores_stay_literal() {
+        // The shruggie's arms are backslash-escaped underscores.
+        assert_eq!(emphasis_spans(r"¯\_(ツ)_/¯"), vec![]);
+        assert_eq!(emphasis_spans(r"\_not italic\_"), vec![]);
     }
 
     #[test]
