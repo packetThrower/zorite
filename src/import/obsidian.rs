@@ -37,7 +37,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use gpui_whiteboard::{
-    BoxGeom, Element, ElementKind, EmbedGeom, ImageGeom, Scene, SegGeom, TextGeom,
+    BoxGeom, Element, ElementKind, EmbedGeom, ImageGeom, Scene, SegGeom, SegmentStyle, TextGeom,
 };
 
 use super::{AssetCopy, ImportBundle, ImportDay, ImportPage};
@@ -689,6 +689,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
             label,
             label_color: color,
             styles: Vec::new(),
+            mindmap: None,
         };
         match n.kind.as_str() {
             "text" => {
@@ -716,6 +717,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                             label: None,
                             label_color: None,
                             styles: Vec::new(),
+                            mindmap: None,
                         });
                     } else {
                         conv.warnings
@@ -741,6 +743,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                         label: None,
                         label_color: None,
                         styles: Vec::new(),
+                        mindmap: None,
                     });
                 } else {
                     // PDFs, nested .canvas boards, audio, … — a named box.
@@ -761,6 +764,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                     label: n.label.clone(),
                     label_color: color,
                     styles: Vec::new(),
+                    mindmap: None,
                 });
             }
             other => {
@@ -794,6 +798,9 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                 x2,
                 y2,
                 width: 2.0,
+                style: SegmentStyle::Solid,
+                start_anchor: None,
+                end_anchor: None,
             }
         } else {
             SegGeom {
@@ -802,6 +809,9 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                 x2: x1,
                 y2: y1,
                 width: 2.0,
+                style: SegmentStyle::Solid,
+                start_anchor: None,
+                end_anchor: None,
             }
         };
         let kind = if to_arrow || from_arrow {
@@ -817,6 +827,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
             label: None,
             label_color: None,
             styles: Vec::new(),
+            mindmap: None,
         });
         if let Some(label) = e.label.clone().filter(|l| !l.trim().is_empty()) {
             edges.push(Element {
@@ -835,6 +846,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                 label: None,
                 label_color: None,
                 styles: Vec::new(),
+                mindmap: None,
             });
         }
     }

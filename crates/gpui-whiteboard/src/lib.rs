@@ -17,26 +17,33 @@
 //! camera and a host can supply a custom face ([`Font`]). See `README.md` for the
 //! full API and usage; design notes in `docs/whiteboard-architecture.md`.
 //!
-//! Perf note: elements are re-tessellated each paint (as GPUI's own
-//! `painting`/`brush` examples do). A built-`Path` cache + viewport culling is the
-//! planned optimization once boards get large — deferred so we don't build it
-//! before there's something to measure.
+//! Perf note: element geometry is re-tessellated when painted (as GPUI's own
+//! `painting`/`brush` examples do), but rendering is viewport-culled and text
+//! glyph layouts are cached. A built-`Path` cache remains a further optimization
+//! for extremely dense visible scenes.
 
 mod font;
+mod render_perf;
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::ops::Range;
 use std::rc::Rc;
+use std::sync::Arc;
 
 pub use font::Font;
+use render_perf::WorldViewport;
 
 use gpui::{
-    AnyView, App, AppContext, Bounds, Context, CursorStyle, Div, FocusHandle, Hsla,
-    InteractiveElement, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, ObjectFit, ParentElement, PathBuilder, PinchEvent, Pixels, Point, Render, Rgba,
-    ScrollDelta, ScrollWheelEvent, SharedString, StatefulInteractiveElement, Styled, StyledImage,
-    TransformationMatrix, Window, canvas, div, fill, hsla, linear_color_stop, linear_gradient,
-    point, px, rgba, size,
+    AnyElement, AnyView, App, AppContext, Bounds, Context, CursorStyle, Div, ElementId,
+    ElementInputHandler, Entity, EntityInputHandler, FocusHandle, GlobalElementId, Hsla,
+    InspectorElementId, InteractiveElement, IntoElement, KeyDownEvent, LayoutId, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement, PathBuilder,
+    PinchEvent, Pixels, Point, Render, Rgba, ScrollDelta, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement, Style, Styled, StyledImage, TransformationMatrix, UTF16Selection,
+    Window, canvas, div, fill, hsla, linear_color_stop, linear_gradient, point, px, relative, rgba,
+    size,
 };
 use serde::{Deserialize, Serialize};
 
@@ -52,6 +59,11 @@ const MIN_DOT_SPACING: f32 = 16.0;
 const DOT: f32 = 2.0;
 /// Screen px per scroll "line" for inexact (`Lines`) scroll deltas.
 const LINE_PX: f32 = 16.0;
+const VIEWPORT_CULL_MARGIN_PX: f32 = 96.0;
+
+fn accepts_wheel_input(read_only: bool) -> bool {
+    !read_only
+}
 /// Pen nib in screen px. A stored width is world-space (`NIB / zoom` at draw
 /// time) so strokes/shapes feel like a constant nib yet scale with the content.
 /// Also the default of [`WhiteboardView::active_width`].
@@ -70,14 +82,13 @@ const MIN_POINT_PX: f32 = 2.0;
 const SELECT_PAD: f32 = 6.0;
 /// Most undo steps kept (bounds memory; each step is a scene snapshot).
 const UNDO_CAP: usize = 50;
-/// Selection-box padding around the element, screen px (handles sit on it).
-const SEL_PAD_PX: f32 = 5.0;
 /// Half-size of a corner resize handle, screen px.
-const HANDLE_HALF: f32 = 4.5;
+const HANDLE_HALF: f32 = 4.0;
 /// Grab radius for a corner handle, screen px.
 const HANDLE_GRAB: f32 = 10.0;
-/// Gap from the selection's top to the rotate handle, screen px.
-const ROTATE_DIST: f32 = 22.0;
+/// Distance in screen pixels from a selected shape edge to its connector button.
+const CONNECTOR_BUTTON_GAP: f32 = 24.0;
+const CONNECTOR_BUTTON_SIZE: f32 = 20.0;
 /// Color picker: saturation/brightness square + hue strip dimensions, px.
 const SV_W: f32 = 216.0;
 const SV_H: f32 = 140.0;
@@ -106,6 +117,16 @@ const TEXT_LINE_H: f32 = 1.3;
 /// Default page-card size at creation, screen px (stored world size is / zoom).
 const EMBED_W: f32 = 210.0;
 const EMBED_H: f32 = 76.0;
+const MINDMAP_ROOT_W: f32 = 196.0;
+const MINDMAP_ROOT_H: f32 = 60.0;
+const MINDMAP_NODE_W: f32 = 164.0;
+const MINDMAP_NODE_H: f32 = 48.0;
+const MINDMAP_BRANCH_GAP_X: f32 = 120.0;
+const MINDMAP_BRANCH_GAP_Y: f32 = 84.0;
+const FLOWCHART_NODE_W: f32 = 180.0;
+const FLOWCHART_NODE_H: f32 = 52.0;
+const FLOWCHART_GAP_Y: f32 = 92.0;
+const FLOWCHART_BRANCH_GAP_X: f32 = 240.0;
 /// Longest edge of a freshly placed image, screen px (aspect preserved).
 const IMAGE_PLACE_PX: f32 = 280.0;
 
@@ -179,6 +200,48 @@ pub struct Element {
     /// non-overlapping and maintained across edits; absent in older boards.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub styles: Vec<StyleSpan>,
+    /// Optional whiteboard-native mind-map metadata. Only mind-map nodes carry
+    /// this; lines stay regular anchored arrows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mindmap: Option<MindMapNodeMeta>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MindMapSide {
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MindMapRootDirection {
+    #[default]
+    Both,
+    Left,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MindMapConnectorStyle {
+    Straight,
+    #[default]
+    Bezier,
+    Orthogonal,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MindMapNodeMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<u64>,
+    pub side: MindMapSide,
+    #[serde(default)]
+    pub order: usize,
+    #[serde(default)]
+    pub root_direction: MindMapRootDirection,
+    #[serde(default)]
+    pub connector_style: MindMapConnectorStyle,
 }
 
 /// Whether a [`RunStyle`] flag is unset — its default, kept out of the JSON.
@@ -496,6 +559,14 @@ pub struct BoxGeom {
 }
 
 /// A directed segment (line / arrow), world-space.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SegmentAnchor {
+    /// The connected shape/text/image element.
+    pub element_id: u64,
+    /// Which connector on that element: 0/1/2/3 = top/right/bottom/left.
+    pub connector: usize,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct SegGeom {
     pub x1: f32,
@@ -503,6 +574,25 @@ pub struct SegGeom {
     pub x2: f32,
     pub y2: f32,
     pub width: f32,
+    #[serde(default = "default_segment_style")]
+    pub style: SegmentStyle,
+    /// Attachment for the first endpoint. Absent in older boards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_anchor: Option<SegmentAnchor>,
+    /// Attachment for the second endpoint. Absent in older boards.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_anchor: Option<SegmentAnchor>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SegmentStyle {
+    Solid,
+    Dashed,
+}
+
+fn default_segment_style() -> SegmentStyle {
+    SegmentStyle::Solid
 }
 
 /// The viewport: a world-space pan offset and a zoom factor. The offset is the
@@ -560,6 +650,108 @@ impl Camera {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalThumbnailMode {
+    Auto,
+    Selection,
+    Viewport,
+    AllContent,
+    Element(u64),
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct LocalThumbnailSpec {
+    pub anchor_element_id: Option<u64>,
+    /// Focus bounds in world coordinates: `[x0, y0, x1, y1]`.
+    pub focus_bounds: [f32; 4],
+    /// Whole-scene bounds in world coordinates, when available.
+    pub scene_bounds: Option<[f32; 4]>,
+    /// Recommended camera to render this thumbnail into the requested size.
+    pub camera: Camera,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalThumbnailSnapshot {
+    pub scene: Scene,
+    pub spec: LocalThumbnailSpec,
+}
+
+impl LocalThumbnailSnapshot {
+    /// Build a chrome-free all-content thumbnail directly from a persisted scene.
+    /// Hosts can use this without mounting a full [`WhiteboardView`] entity first.
+    pub fn for_scene_all_content(scene: Scene, width_px: f32, height_px: f32) -> Self {
+        let width_px = width_px.max(1.0);
+        let height_px = height_px.max(1.0);
+        let scene_bounds = scene_bbox_for_local_thumbnail(&scene);
+        let spec = if let Some(focus) = scene_bounds {
+            local_thumbnail_spec_from_bbox(None, focus, scene_bounds, width_px, height_px)
+        } else {
+            let zoom = scene.camera.zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+            LocalThumbnailSpec {
+                anchor_element_id: None,
+                focus_bounds: [
+                    scene.camera.x,
+                    scene.camera.y,
+                    scene.camera.x + width_px / zoom,
+                    scene.camera.y + height_px / zoom,
+                ],
+                scene_bounds: None,
+                camera: Camera {
+                    x: scene.camera.x,
+                    y: scene.camera.y,
+                    zoom,
+                },
+            }
+        };
+        Self { scene, spec }
+    }
+}
+
+fn scene_bbox_for_local_thumbnail(scene: &Scene) -> Option<(f32, f32, f32, f32)> {
+    let mut bounds = scene.elements.iter().map(|element| bbox(&element.kind));
+    let first = bounds.next()?;
+    Some(bounds.fold(first, |current, next| {
+        (
+            current.0.min(next.0),
+            current.1.min(next.1),
+            current.2.max(next.2),
+            current.3.max(next.3),
+        )
+    }))
+}
+
+fn local_thumbnail_spec_from_bbox(
+    anchor_element_id: Option<u64>,
+    focus: (f32, f32, f32, f32),
+    scene_bounds: Option<(f32, f32, f32, f32)>,
+    width_px: f32,
+    height_px: f32,
+) -> LocalThumbnailSpec {
+    let width_px = width_px.max(1.0);
+    let height_px = height_px.max(1.0);
+    let focus_w = (focus.2 - focus.0).abs().max(1.0);
+    let focus_h = (focus.3 - focus.1).abs().max(1.0);
+    let pad_x = (focus_w * 0.18).max(48.0);
+    let pad_y = (focus_h * 0.18).max(36.0);
+    let padded_w = (focus_w + pad_x * 2.0).max(1.0);
+    let padded_h = (focus_h + pad_y * 2.0).max(1.0);
+    let zoom = (width_px / padded_w)
+        .min(height_px / padded_h)
+        .clamp(MIN_ZOOM, MAX_ZOOM);
+    let center_x = (focus.0 + focus.2) * 0.5;
+    let center_y = (focus.1 + focus.3) * 0.5;
+    LocalThumbnailSpec {
+        anchor_element_id,
+        focus_bounds: [focus.0, focus.1, focus.2, focus.3],
+        scene_bounds: scene_bounds.map(|bounds| [bounds.0, bounds.1, bounds.2, bounds.3]),
+        camera: Camera {
+            x: center_x - width_px / (2.0 * zoom),
+            y: center_y - height_px / (2.0 * zoom),
+            zoom,
+        },
+    }
+}
+
 /// The active tool. UI state — not part of the persisted scene.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tool {
@@ -576,7 +768,10 @@ pub enum Tool {
     Hexagon,
     Line,
     Arrow,
+    DashedArrow,
     Text,
+    MindMap,
+    Flowchart,
     Embed,
     Image,
 }
@@ -600,7 +795,10 @@ impl Tool {
             Tool::Hexagon => "⬡",
             Tool::Line => "╱",
             Tool::Arrow => "↗",
+            Tool::DashedArrow => "⇢",
             Tool::Text => "T",
+            Tool::MindMap => "◎",
+            Tool::Flowchart => "⇅",
             Tool::Embed => "▤",
             Tool::Image => "▦",
         }
@@ -622,7 +820,10 @@ impl Tool {
             Tool::Hexagon => "Hexagon (X)",
             Tool::Line => "Line (L)",
             Tool::Arrow => "Arrow (A)",
+            Tool::DashedArrow => "Dashed arrow (K)",
             Tool::Text => "Text (T)",
+            Tool::MindMap => "Mind map (M)",
+            Tool::Flowchart => "Flowchart (F)",
             Tool::Embed => "Page card",
             Tool::Image => "Image (I) — click to place",
         }
@@ -643,7 +844,10 @@ impl Tool {
             "x" => Tool::Hexagon,
             "l" => Tool::Line,
             "a" => Tool::Arrow,
+            "k" => Tool::DashedArrow,
             "t" => Tool::Text,
+            "m" => Tool::MindMap,
+            "f" => Tool::Flowchart,
             "i" => Tool::Image,
             _ => return None,
         })
@@ -669,6 +873,8 @@ impl Tool {
         const LINE: &[u8] = include_bytes!("../assets/icons/line.svg");
         const ARROW: &[u8] = include_bytes!("../assets/icons/arrow.svg");
         const TEXT: &[u8] = include_bytes!("../assets/icons/text.svg");
+        const MINDMAP: &[u8] = include_bytes!("../assets/icons/mindmap.svg");
+        const FLOWCHART: &[u8] = include_bytes!("../assets/icons/flowchart.svg");
         const EMBED: &[u8] = include_bytes!("../assets/icons/embed.svg");
         const IMAGE: &[u8] = include_bytes!("../assets/icons/image.svg");
         match self {
@@ -684,7 +890,10 @@ impl Tool {
             Tool::Hexagon => Some(("wb-icon-hexagon", HEXAGON)),
             Tool::Line => Some(("wb-icon-line", LINE)),
             Tool::Arrow => Some(("wb-icon-arrow", ARROW)),
+            Tool::DashedArrow => None,
             Tool::Text => Some(("wb-icon-text", TEXT)),
+            Tool::MindMap => Some(("wb-icon-mindmap", MINDMAP)),
+            Tool::Flowchart => Some(("wb-icon-flowchart", FLOWCHART)),
             Tool::Embed => Some(("wb-icon-embed", EMBED)),
             Tool::Image => Some(("wb-icon-image", IMAGE)),
         }
@@ -719,8 +928,8 @@ impl ToolGroup {
                 Tool::Hexagon,
                 Tool::Star,
             ],
-            ToolGroup::Lines => &[Tool::Pen, Tool::Line, Tool::Arrow],
-            ToolGroup::PagesImages => &[Tool::Embed, Tool::Image],
+            ToolGroup::Lines => &[Tool::Pen, Tool::Line, Tool::Arrow, Tool::DashedArrow],
+            ToolGroup::PagesImages => &[Tool::MindMap, Tool::Flowchart, Tool::Embed, Tool::Image],
         }
     }
 
@@ -732,8 +941,8 @@ impl ToolGroup {
     fn representative(self) -> Tool {
         match self {
             ToolGroup::Shapes => Tool::Rect,
-            ToolGroup::Lines => Tool::Line,
-            ToolGroup::PagesImages => Tool::Embed,
+            ToolGroup::Lines => Tool::Arrow,
+            ToolGroup::PagesImages => Tool::Flowchart,
         }
     }
 
@@ -910,6 +1119,10 @@ pub type PickFontFn = Rc<dyn Fn(FontPick, &mut Window, &mut App)>;
 /// layout is per-session.
 pub type MoveToolbarFn = Rc<dyn Fn(Option<(f32, f32)>, bool, &mut Window, &mut App)>;
 
+/// Host callback fired by an embed view when the user requests "open / maximize
+/// for editing". The host owns the actual layout transition.
+pub type ExpandEmbedFn = Rc<dyn Fn(&mut Window, &mut App)>;
+
 /// A reusable group of elements the user can stamp onto a board. Element
 /// positions are normalized so the group's bounding box starts at the origin;
 /// applying re-bases them to the viewport. The host owns persistence and the
@@ -938,6 +1151,26 @@ impl Template {
 struct Pending {
     anchor: [f32; 2],
     kind: ElementKind,
+}
+
+/// A connector point shown on a hovered shape. `index` is 0/1/2/3 = top/right/bottom/left.
+#[derive(Clone, Copy, PartialEq)]
+struct ConnectPoint {
+    id: u64,
+    index: usize,
+    pos: [f32; 2],
+}
+
+/// A line being dragged from a shape connector while the Select tool is active.
+#[derive(Clone, Copy)]
+struct ConnectDrag {
+    from: ConnectPoint,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct AlignmentGuides {
+    vertical: Option<f32>,
+    horizontal: Option<f32>,
 }
 
 /// An in-progress resize of a single selected element by one of its handles.
@@ -1057,6 +1290,7 @@ enum PickerDrag {
 pub struct WhiteboardView {
     scene: Scene,
     style: WhiteboardStyleFn,
+    read_only: bool,
     on_change: Option<ChangeFn>,
     on_place_embed: Option<PlaceEmbedFn>,
     on_open: Option<OpenPageFn>,
@@ -1086,6 +1320,10 @@ pub struct WhiteboardView {
     /// The face used to render text as vector outlines. Defaults to the bundled
     /// JetBrains Mono; the host can swap in a custom/user-uploaded font.
     font: Font,
+    /// Camera-independent glyph outlines keyed by element id and text/style
+    /// signature. Panning and zooming can reuse these directly.
+    text_layout_cache: HashMap<u64, CachedTextLayout>,
+    label_layout_cache: HashMap<u64, CachedLabelLayout>,
     tool: Tool,
     /// Keyboard focus — grabbed while editing a text element.
     focus: FocusHandle,
@@ -1098,6 +1336,8 @@ pub struct WhiteboardView {
     sel_anchor: usize,
     /// A click-drag text selection is in progress (extends the selection on move).
     text_selecting: bool,
+    /// Active IME marked/composition byte range in the editing text.
+    marked_range: Option<Range<usize>>,
     /// Canvas bounds in window coords, captured each paint so input handlers can
     /// map window-relative event positions into the board.
     bounds: Rc<Cell<Bounds<Pixels>>>,
@@ -1107,6 +1347,10 @@ pub struct WhiteboardView {
     selected: Vec<u64>,
     /// In-progress marquee box (start, current) in world coords.
     marquee: Option<([f32; 2], [f32; 2])>,
+    /// Connector point currently under/near the mouse, painted on hovered shapes.
+    hovered_connector: Option<ConnectPoint>,
+    /// Line creation started by pressing a connector point.
+    connecting: Option<ConnectDrag>,
     /// The world point where an in-progress move-drag was grabbed (a *fixed*
     /// anchor — the move uses the total cursor delta from here, so grid-snapping
     /// stays cursor-synced and doesn't lose sub-grid motion).
@@ -1116,6 +1360,8 @@ pub struct WhiteboardView {
     move_origin: [f32; 2],
     /// Whether the current move-drag has actually moved (undo is pushed once).
     moved: bool,
+    /// Active world-space smart-alignment guides while moving a selection.
+    alignment_guides: AlignmentGuides,
     /// In-progress corner-resize of the selected box/stroke.
     resizing: Option<Resizing>,
     /// In-progress proportional resize of a multi-selection.
@@ -1184,6 +1430,23 @@ pub struct WhiteboardView {
     dirty: bool,
 }
 
+/// A read-only whiteboard embedding surface for use inside rich-text editors and
+/// other host containers. It overlays a small "edit / maximize" affordance and
+/// delegates the actual expansion behavior back to the host.
+pub struct BoardEmbedView {
+    board: Entity<WhiteboardView>,
+    style: WhiteboardStyleFn,
+    on_expand: Option<ExpandEmbedFn>,
+}
+
+/// A lightweight, chrome-free thumbnail renderer for embedding a local board
+/// snapshot in documents, lists, and rich-text blocks.
+pub struct BoardThumbnailView {
+    snapshot: LocalThumbnailSnapshot,
+    style: WhiteboardStyleFn,
+    font: Font,
+}
+
 impl WhiteboardView {
     /// Build a view over `scene`. Call inside `cx.new(|cx| WhiteboardView::new(..))`.
     pub fn new(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Self {
@@ -1196,6 +1459,7 @@ impl WhiteboardView {
         Self {
             scene,
             style,
+            read_only: false,
             on_change: None,
             on_place_embed: None,
             on_open: None,
@@ -1215,19 +1479,25 @@ impl WhiteboardView {
             ctx_text_sub: false,
             format_flyout: false,
             font: Font::default(),
+            text_layout_cache: HashMap::new(),
+            label_layout_cache: HashMap::new(),
             tool: Tool::Pan,
             focus: cx.focus_handle(),
             editing: None,
             caret: 0,
             sel_anchor: 0,
             text_selecting: false,
+            marked_range: None,
             bounds: Rc::new(Cell::new(Bounds::default())),
             pending: None,
             selected: Vec::new(),
             marquee: None,
+            hovered_connector: None,
+            connecting: None,
             drag_from: None,
             move_origin: [0.0, 0.0],
             moved: false,
+            alignment_guides: AlignmentGuides::default(),
             resizing: None,
             group_resizing: None,
             endpoint: None,
@@ -1261,6 +1531,15 @@ impl WhiteboardView {
             next_id,
             dirty: false,
         }
+    }
+
+    /// Build a read-only board view. Useful when embedding inside other editors
+    /// that should only preview the board and allow viewport movement.
+    pub fn new_read_only(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::new(scene, style, cx);
+        this.read_only = true;
+        this.tool = Tool::Pan;
+        this
     }
 
     /// Install the persistence hook (called with the serialized scene on change).
@@ -1329,6 +1608,35 @@ impl WhiteboardView {
     /// Install the toolbar-moved hook (the host persists the new position).
     pub fn set_on_move_toolbar(&mut self, f: MoveToolbarFn) {
         self.on_move_toolbar = Some(f);
+    }
+
+    /// Toggle read-only mode. In this mode the board behaves like a fixed move
+    /// tool: left-drag pans the canvas and edit interactions are ignored.
+    pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>) {
+        self.read_only = read_only;
+        if read_only {
+            self.tool = Tool::Pan;
+            self.selected.clear();
+            self.editing = None;
+            self.pending = None;
+            self.connecting = None;
+            self.hovered_connector = None;
+            self.context_menu = None;
+            self.open_group = None;
+            self.font_open = false;
+            self.width_open = false;
+            self.templates_open = false;
+            self.picker = None;
+            self.format_flyout = false;
+            self.text_selecting = false;
+            self.marked_range = None;
+        }
+        cx.notify();
+    }
+
+    /// Whether the board is currently in read-only (forced pan) mode.
+    pub fn read_only(&self) -> bool {
+        self.read_only
     }
 
     /// Set the toolbar's board-relative top-left (`None` = default top-center). The
@@ -1462,6 +1770,8 @@ impl WhiteboardView {
     /// with [`Font::from_bytes`].
     pub fn set_font(&mut self, font: Font, cx: &mut Context<Self>) {
         self.font = font;
+        self.text_layout_cache.clear();
+        self.label_layout_cache.clear();
         cx.notify();
     }
 
@@ -1517,6 +1827,7 @@ impl WhiteboardView {
             label: None,
             label_color: None,
             styles: Vec::new(),
+            mindmap: None,
         });
         self.selected = vec![id];
         self.tool = Tool::Select;
@@ -1560,10 +1871,984 @@ impl WhiteboardView {
             label: None,
             label_color: None,
             styles: Vec::new(),
+            mindmap: None,
         });
         self.selected = vec![id];
         self.tool = Tool::Select;
         cx.notify();
+    }
+
+    /// Insert a native mind-map seed built from whiteboard round-rect nodes and
+    /// anchored arrows. This stays entirely inside the whiteboard scene model, so
+    /// selection, movement, text editing, IME, and connector-follow all reuse the
+    /// existing whiteboard machinery.
+    pub fn add_mindmap_seed(&mut self, center_x: f32, center_y: f32, cx: &mut Context<Self>) {
+        self.push_undo();
+        let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+        let root_w = MINDMAP_ROOT_W / zoom;
+        let root_h = MINDMAP_ROOT_H / zoom;
+        let node_w = MINDMAP_NODE_W / zoom;
+        let node_h = MINDMAP_NODE_H / zoom;
+        let gap_x = MINDMAP_BRANCH_GAP_X / zoom;
+        let gap_y = MINDMAP_BRANCH_GAP_Y / zoom;
+        let stroke = Some(0x2563ebff);
+        let root_fill = Some(0xdbeafeff);
+        let node_fill = Some(0xffffffff);
+
+        let add_node = |scene: &mut Scene,
+                        next_id: &mut u64,
+                        x: f32,
+                        y: f32,
+                        w: f32,
+                        h: f32,
+                        label: &str,
+                        fill: Option<u32>,
+                        mindmap: Option<MindMapNodeMeta>| {
+            let id = *next_id;
+            *next_id += 1;
+            scene.elements.push(Element {
+                id,
+                kind: ElementKind::RoundRect(BoxGeom {
+                    x,
+                    y,
+                    w,
+                    h,
+                    width: NIB / zoom,
+                    rotation: 0.0,
+                }),
+                stroke,
+                fill,
+                label: Some(label.to_string()),
+                label_color: Some(0x0f172aff),
+                styles: Vec::new(),
+                mindmap,
+            });
+            id
+        };
+
+        let root_id = add_node(
+            &mut self.scene,
+            &mut self.next_id,
+            center_x - root_w / 2.0,
+            center_y - root_h / 2.0,
+            root_w,
+            root_h,
+            "Central topic",
+            root_fill,
+            Some(MindMapNodeMeta {
+                parent: None,
+                side: MindMapSide::Right,
+                order: 0,
+                root_direction: MindMapRootDirection::Both,
+                connector_style: MindMapConnectorStyle::Bezier,
+            }),
+        );
+        let right_top_id = add_node(
+            &mut self.scene,
+            &mut self.next_id,
+            center_x + root_w / 2.0 + gap_x,
+            center_y - gap_y - node_h / 2.0,
+            node_w,
+            node_h,
+            "Branch 1",
+            node_fill,
+            Some(MindMapNodeMeta {
+                parent: Some(root_id),
+                side: MindMapSide::Right,
+                order: 0,
+                root_direction: MindMapRootDirection::Both,
+                connector_style: MindMapConnectorStyle::Bezier,
+            }),
+        );
+        let right_bottom_id = add_node(
+            &mut self.scene,
+            &mut self.next_id,
+            center_x + root_w / 2.0 + gap_x,
+            center_y + gap_y - node_h / 2.0,
+            node_w,
+            node_h,
+            "Branch 2",
+            node_fill,
+            Some(MindMapNodeMeta {
+                parent: Some(root_id),
+                side: MindMapSide::Right,
+                order: 1,
+                root_direction: MindMapRootDirection::Both,
+                connector_style: MindMapConnectorStyle::Bezier,
+            }),
+        );
+        let left_top_id = add_node(
+            &mut self.scene,
+            &mut self.next_id,
+            center_x - root_w / 2.0 - gap_x - node_w,
+            center_y - gap_y - node_h / 2.0,
+            node_w,
+            node_h,
+            "Branch 3",
+            node_fill,
+            Some(MindMapNodeMeta {
+                parent: Some(root_id),
+                side: MindMapSide::Left,
+                order: 0,
+                root_direction: MindMapRootDirection::Both,
+                connector_style: MindMapConnectorStyle::Bezier,
+            }),
+        );
+        let left_bottom_id = add_node(
+            &mut self.scene,
+            &mut self.next_id,
+            center_x - root_w / 2.0 - gap_x - node_w,
+            center_y + gap_y - node_h / 2.0,
+            node_w,
+            node_h,
+            "Branch 4",
+            node_fill,
+            Some(MindMapNodeMeta {
+                parent: Some(root_id),
+                side: MindMapSide::Left,
+                order: 1,
+                root_direction: MindMapRootDirection::Both,
+                connector_style: MindMapConnectorStyle::Bezier,
+            }),
+        );
+
+        let add_branch = |scene: &mut Scene,
+                          next_id: &mut u64,
+                          from_id: u64,
+                          from_connector: usize,
+                          to_id: u64,
+                          to_connector: usize| {
+            let start_anchor = SegmentAnchor {
+                element_id: from_id,
+                connector: from_connector,
+            };
+            let end_anchor = SegmentAnchor {
+                element_id: to_id,
+                connector: to_connector,
+            };
+            let [x1, y1] =
+                connector_world_pos_in(&scene.elements, start_anchor).unwrap_or([0.0, 0.0]);
+            let [x2, y2] =
+                connector_world_pos_in(&scene.elements, end_anchor).unwrap_or([0.0, 0.0]);
+            let id = *next_id;
+            *next_id += 1;
+            scene.elements.push(Element {
+                id,
+                kind: ElementKind::Arrow(SegGeom {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    width: NIB / zoom,
+                    style: SegmentStyle::Solid,
+                    start_anchor: Some(start_anchor),
+                    end_anchor: Some(end_anchor),
+                }),
+                stroke,
+                fill: None,
+                label: None,
+                label_color: None,
+                styles: Vec::new(),
+                mindmap: None,
+            });
+        };
+
+        add_branch(
+            &mut self.scene,
+            &mut self.next_id,
+            root_id,
+            1,
+            right_top_id,
+            3,
+        );
+        add_branch(
+            &mut self.scene,
+            &mut self.next_id,
+            root_id,
+            1,
+            right_bottom_id,
+            3,
+        );
+        add_branch(
+            &mut self.scene,
+            &mut self.next_id,
+            root_id,
+            3,
+            left_top_id,
+            1,
+        );
+        add_branch(
+            &mut self.scene,
+            &mut self.next_id,
+            root_id,
+            3,
+            left_bottom_id,
+            1,
+        );
+
+        self.selected = vec![root_id];
+        self.tool = Tool::Select;
+        cx.notify();
+    }
+
+    pub fn add_mindmap_seed_at_viewport_center(&mut self, cx: &mut Context<Self>) {
+        let center = self.viewport_center();
+        self.add_mindmap_seed(center[0], center[1], cx);
+    }
+
+    /// Insert a native flowchart seed made from regular whiteboard nodes and
+    /// anchored arrows. This is the first structured flowchart primitive inside
+    /// the board and can later grow auto-layout / auto-branch behavior.
+    pub fn add_flowchart_seed(&mut self, center_x: f32, center_y: f32, cx: &mut Context<Self>) {
+        self.push_undo();
+        let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+        let node_w = FLOWCHART_NODE_W / zoom;
+        let node_h = FLOWCHART_NODE_H / zoom;
+        let gap_y = FLOWCHART_GAP_Y / zoom;
+        let branch_gap_x = FLOWCHART_BRANCH_GAP_X / zoom;
+        let stroke = Some(0x0f172aff);
+        let fill = Some(0xffffffff);
+
+        let add_box = |scene: &mut Scene, next_id: &mut u64, kind: ElementKind, label: &str| {
+            let id = *next_id;
+            *next_id += 1;
+            scene.elements.push(Element {
+                id,
+                kind,
+                stroke,
+                fill,
+                label: Some(label.to_string()),
+                label_color: Some(0x0f172aff),
+                styles: Vec::new(),
+                mindmap: None,
+            });
+            id
+        };
+        let add_arrow = |scene: &mut Scene,
+                         next_id: &mut u64,
+                         from_id: u64,
+                         from_connector: usize,
+                         to_id: u64,
+                         to_connector: usize| {
+            let start_anchor = SegmentAnchor {
+                element_id: from_id,
+                connector: from_connector,
+            };
+            let end_anchor = SegmentAnchor {
+                element_id: to_id,
+                connector: to_connector,
+            };
+            let [x1, y1] =
+                connector_world_pos_in(&scene.elements, start_anchor).unwrap_or([0.0, 0.0]);
+            let [x2, y2] =
+                connector_world_pos_in(&scene.elements, end_anchor).unwrap_or([0.0, 0.0]);
+            let id = *next_id;
+            *next_id += 1;
+            scene.elements.push(Element {
+                id,
+                kind: ElementKind::Arrow(SegGeom {
+                    x1,
+                    y1,
+                    x2,
+                    y2,
+                    width: NIB / zoom,
+                    style: SegmentStyle::Solid,
+                    start_anchor: Some(start_anchor),
+                    end_anchor: Some(end_anchor),
+                }),
+                stroke,
+                fill: None,
+                label: None,
+                label_color: None,
+                styles: Vec::new(),
+                mindmap: None,
+            });
+        };
+
+        let start_id = add_box(
+            &mut self.scene,
+            &mut self.next_id,
+            ElementKind::Ellipse(BoxGeom {
+                x: center_x - node_w / 2.0,
+                y: center_y - gap_y - node_h * 1.5,
+                w: node_w,
+                h: node_h,
+                width: NIB / zoom,
+                rotation: 0.0,
+            }),
+            "Start",
+        );
+        let process_id = add_box(
+            &mut self.scene,
+            &mut self.next_id,
+            ElementKind::RoundRect(BoxGeom {
+                x: center_x - node_w / 2.0,
+                y: center_y - node_h / 2.0,
+                w: node_w,
+                h: node_h,
+                width: NIB / zoom,
+                rotation: 0.0,
+            }),
+            "Process",
+        );
+        let decision_id = add_box(
+            &mut self.scene,
+            &mut self.next_id,
+            ElementKind::Diamond(BoxGeom {
+                x: center_x - node_w / 2.0,
+                y: center_y + gap_y - node_h / 2.0,
+                w: node_w,
+                h: node_h,
+                width: NIB / zoom,
+                rotation: 0.0,
+            }),
+            "Decision",
+        );
+        let branch_yes_id = add_box(
+            &mut self.scene,
+            &mut self.next_id,
+            ElementKind::RoundRect(BoxGeom {
+                x: center_x + branch_gap_x - node_w / 2.0,
+                y: center_y + gap_y - node_h / 2.0,
+                w: node_w,
+                h: node_h,
+                width: NIB / zoom,
+                rotation: 0.0,
+            }),
+            "Yes",
+        );
+        let branch_no_id = add_box(
+            &mut self.scene,
+            &mut self.next_id,
+            ElementKind::RoundRect(BoxGeom {
+                x: center_x - branch_gap_x - node_w / 2.0,
+                y: center_y + gap_y - node_h / 2.0,
+                w: node_w,
+                h: node_h,
+                width: NIB / zoom,
+                rotation: 0.0,
+            }),
+            "No",
+        );
+        let end_id = add_box(
+            &mut self.scene,
+            &mut self.next_id,
+            ElementKind::Ellipse(BoxGeom {
+                x: center_x - node_w / 2.0,
+                y: center_y + gap_y * 2.0 + node_h * 0.5,
+                w: node_w,
+                h: node_h,
+                width: NIB / zoom,
+                rotation: 0.0,
+            }),
+            "End",
+        );
+
+        add_arrow(
+            &mut self.scene,
+            &mut self.next_id,
+            start_id,
+            2,
+            process_id,
+            0,
+        );
+        add_arrow(
+            &mut self.scene,
+            &mut self.next_id,
+            process_id,
+            2,
+            decision_id,
+            0,
+        );
+        add_arrow(
+            &mut self.scene,
+            &mut self.next_id,
+            decision_id,
+            1,
+            branch_yes_id,
+            3,
+        );
+        add_arrow(
+            &mut self.scene,
+            &mut self.next_id,
+            decision_id,
+            3,
+            branch_no_id,
+            1,
+        );
+        add_arrow(
+            &mut self.scene,
+            &mut self.next_id,
+            branch_yes_id,
+            2,
+            end_id,
+            1,
+        );
+        add_arrow(
+            &mut self.scene,
+            &mut self.next_id,
+            branch_no_id,
+            2,
+            end_id,
+            3,
+        );
+
+        self.selected = vec![process_id];
+        self.tool = Tool::Select;
+        cx.notify();
+    }
+
+    pub fn add_flowchart_seed_at_viewport_center(&mut self, cx: &mut Context<Self>) {
+        let center = self.viewport_center();
+        self.add_flowchart_seed(center[0], center[1], cx);
+    }
+
+    fn mindmap_meta(&self, id: u64) -> Option<MindMapNodeMeta> {
+        self.scene
+            .elements
+            .iter()
+            .find(|element| element.id == id)
+            .and_then(|element| element.mindmap)
+    }
+
+    fn is_mindmap_node(&self, id: u64) -> bool {
+        self.mindmap_meta(id).is_some()
+    }
+
+    fn is_mindmap_root(&self, id: u64) -> bool {
+        self.mindmap_meta(id)
+            .is_some_and(|meta| meta.parent.is_none())
+    }
+
+    fn selected_mindmap_root(&self) -> Option<u64> {
+        self.selected_single()
+            .filter(|id| self.is_mindmap_root(*id))
+    }
+
+    fn mindmap_root_direction(&self, root_id: u64) -> MindMapRootDirection {
+        self.mindmap_meta(root_id)
+            .map(|meta| meta.root_direction)
+            .unwrap_or_default()
+    }
+
+    fn mindmap_connector_style_for_root(&self, root_id: u64) -> MindMapConnectorStyle {
+        self.mindmap_meta(root_id)
+            .map(|meta| meta.connector_style)
+            .unwrap_or_default()
+    }
+
+    fn mindmap_root_of(&self, id: u64) -> Option<u64> {
+        let mut current = id;
+        loop {
+            let meta = self.mindmap_meta(current)?;
+            match meta.parent {
+                Some(parent) => current = parent,
+                None => return Some(current),
+            }
+        }
+    }
+
+    fn mindmap_children(&self, parent: u64, side: MindMapSide) -> Vec<u64> {
+        let mut children: Vec<(usize, u64)> = self
+            .scene
+            .elements
+            .iter()
+            .filter_map(|element| {
+                let meta = element.mindmap?;
+                (meta.parent == Some(parent) && meta.side == side)
+                    .then_some((meta.order, element.id))
+            })
+            .collect();
+        children.sort_by_key(|(order, id)| (*order, *id));
+        children.into_iter().map(|(_, id)| id).collect()
+    }
+
+    fn set_mindmap_node_side(&mut self, id: u64, side: MindMapSide) {
+        if let Some(element) = self
+            .scene
+            .elements
+            .iter_mut()
+            .find(|element| element.id == id)
+            && let Some(meta) = &mut element.mindmap
+        {
+            meta.side = side;
+        }
+        self.sync_mindmap_parent_link(id);
+    }
+
+    fn sync_mindmap_parent_link(&mut self, child_id: u64) {
+        let Some(meta) = self.mindmap_meta(child_id) else {
+            return;
+        };
+        let Some(parent_id) = meta.parent else {
+            return;
+        };
+        let parent_connector = match meta.side {
+            MindMapSide::Right => 1,
+            MindMapSide::Left => 3,
+        };
+        let child_connector = match meta.side {
+            MindMapSide::Right => 3,
+            MindMapSide::Left => 1,
+        };
+        for element in &mut self.scene.elements {
+            let segment = match &mut element.kind {
+                ElementKind::Line(segment) | ElementKind::Arrow(segment) => segment,
+                _ => continue,
+            };
+            let start_id = segment.start_anchor.map(|anchor| anchor.element_id);
+            let end_id = segment.end_anchor.map(|anchor| anchor.element_id);
+            let links_parent_child = matches!((start_id, end_id), (Some(a), Some(b)) if (a == parent_id && b == child_id) || (a == child_id && b == parent_id));
+            if !links_parent_child {
+                continue;
+            }
+            if let Some(anchor) = &mut segment.start_anchor {
+                if anchor.element_id == parent_id {
+                    anchor.connector = parent_connector;
+                } else if anchor.element_id == child_id {
+                    anchor.connector = child_connector;
+                }
+            }
+            if let Some(anchor) = &mut segment.end_anchor {
+                if anchor.element_id == parent_id {
+                    anchor.connector = parent_connector;
+                } else if anchor.element_id == child_id {
+                    anchor.connector = child_connector;
+                }
+            }
+        }
+        self.sync_segment_anchors_for(&[parent_id, child_id]);
+    }
+
+    fn sync_mindmap_links_for_root(&mut self, root_id: u64) {
+        let child_ids: Vec<u64> = self
+            .scene
+            .elements
+            .iter()
+            .filter_map(|element| {
+                let meta = element.mindmap?;
+                meta.parent?;
+                (self.mindmap_root_of(element.id) == Some(root_id)).then_some(element.id)
+            })
+            .collect();
+        for child_id in &child_ids {
+            let Some(meta) = self.mindmap_meta(*child_id) else {
+                continue;
+            };
+            let Some(parent_id) = meta.parent else {
+                continue;
+            };
+            let parent_connector = match meta.side {
+                MindMapSide::Right => 1,
+                MindMapSide::Left => 3,
+            };
+            let child_connector = match meta.side {
+                MindMapSide::Right => 3,
+                MindMapSide::Left => 1,
+            };
+            for element in &mut self.scene.elements {
+                let segment = match &mut element.kind {
+                    ElementKind::Line(segment) | ElementKind::Arrow(segment) => segment,
+                    _ => continue,
+                };
+                let start_id = segment.start_anchor.map(|anchor| anchor.element_id);
+                let end_id = segment.end_anchor.map(|anchor| anchor.element_id);
+                let links_parent_child = matches!((start_id, end_id), (Some(a), Some(b)) if (a == parent_id && b == *child_id) || (a == *child_id && b == parent_id));
+                if !links_parent_child {
+                    continue;
+                }
+                if let Some(anchor) = &mut segment.start_anchor {
+                    if anchor.element_id == parent_id {
+                        anchor.connector = parent_connector;
+                    } else if anchor.element_id == *child_id {
+                        anchor.connector = child_connector;
+                    }
+                }
+                if let Some(anchor) = &mut segment.end_anchor {
+                    if anchor.element_id == parent_id {
+                        anchor.connector = parent_connector;
+                    } else if anchor.element_id == *child_id {
+                        anchor.connector = child_connector;
+                    }
+                }
+            }
+        }
+        self.sync_segment_anchors_for(&child_ids);
+    }
+
+    fn ordered_mindmap_children(&self, parent: u64) -> Vec<u64> {
+        let mut children: Vec<(f32, f32, usize, u64)> = self
+            .scene
+            .elements
+            .iter()
+            .filter_map(|element| {
+                let meta = element.mindmap?;
+                (meta.parent == Some(parent)).then(|| {
+                    let (x, y, _, h, _) =
+                        box_like(&element.kind).unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+                    (y + h / 2.0, x, meta.order, element.id)
+                })
+            })
+            .collect();
+        children.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then_with(|| a.1.total_cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+                .then_with(|| a.3.cmp(&b.3))
+        });
+        children.into_iter().map(|(_, _, _, id)| id).collect()
+    }
+
+    fn set_mindmap_children_side(&mut self, parent: u64, side: MindMapSide) {
+        for child_id in self.ordered_mindmap_children(parent) {
+            self.set_mindmap_node_side(child_id, side);
+        }
+    }
+
+    fn set_mindmap_children_side_alternating(&mut self, parent: u64) {
+        for (index, child_id) in self
+            .ordered_mindmap_children(parent)
+            .into_iter()
+            .enumerate()
+        {
+            let side = if index % 2 == 0 {
+                MindMapSide::Right
+            } else {
+                MindMapSide::Left
+            };
+            self.set_mindmap_node_side(child_id, side);
+        }
+    }
+
+    fn reindex_mindmap_children(&mut self, parent: u64) {
+        for side in [MindMapSide::Left, MindMapSide::Right] {
+            let children = self.mindmap_children(parent, side);
+            for (order, child_id) in children.into_iter().enumerate() {
+                if let Some(element) = self
+                    .scene
+                    .elements
+                    .iter_mut()
+                    .find(|element| element.id == child_id)
+                    && let Some(meta) = &mut element.mindmap
+                {
+                    meta.order = order;
+                }
+                self.reindex_mindmap_children(child_id);
+            }
+        }
+    }
+
+    fn set_mindmap_root_direction(
+        &mut self,
+        root_id: u64,
+        direction: MindMapRootDirection,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(element) = self
+            .scene
+            .elements
+            .iter_mut()
+            .find(|element| element.id == root_id)
+            && let Some(meta) = &mut element.mindmap
+        {
+            meta.root_direction = direction;
+        }
+        match direction {
+            MindMapRootDirection::Left => {
+                self.set_mindmap_children_side(root_id, MindMapSide::Left)
+            }
+            MindMapRootDirection::Right => {
+                self.set_mindmap_children_side(root_id, MindMapSide::Right)
+            }
+            MindMapRootDirection::Both => self.set_mindmap_children_side_alternating(root_id),
+        }
+        self.reindex_mindmap_children(root_id);
+        self.relayout_mindmap_tree(root_id);
+        cx.notify();
+    }
+
+    fn set_mindmap_connector_style(
+        &mut self,
+        root_id: u64,
+        style: MindMapConnectorStyle,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(element) = self
+            .scene
+            .elements
+            .iter_mut()
+            .find(|element| element.id == root_id)
+            && let Some(meta) = &mut element.mindmap
+        {
+            meta.connector_style = style;
+        }
+        cx.notify();
+    }
+
+    fn set_mindmap_node_position(&mut self, id: u64, x: f32, y: f32) {
+        if let Some(element) = self
+            .scene
+            .elements
+            .iter_mut()
+            .find(|element| element.id == id)
+            && let ElementKind::RoundRect(geom) = &mut element.kind
+        {
+            geom.x = x;
+            geom.y = y;
+        }
+    }
+
+    fn mindmap_node_size(&self, id: u64, zoom: f32) -> (f32, f32) {
+        self.scene
+            .elements
+            .iter()
+            .find(|element| element.id == id)
+            .and_then(|element| box_like(&element.kind).map(|(_, _, w, h, _)| (w, h)))
+            .unwrap_or((MINDMAP_NODE_W / zoom, MINDMAP_NODE_H / zoom))
+    }
+
+    fn side_stack_height(&self, parent: u64, side: MindMapSide, zoom: f32) -> f32 {
+        let children = self.mindmap_children(parent, side);
+        if children.is_empty() {
+            return 0.0;
+        }
+        let gap_y = MINDMAP_BRANCH_GAP_Y / zoom;
+        children
+            .into_iter()
+            .enumerate()
+            .fold(0.0, |acc, (index, child_id)| {
+                acc + if index > 0 { gap_y } else { 0.0 }
+                    + self.mindmap_subtree_height(child_id, zoom)
+            })
+    }
+
+    fn mindmap_subtree_height(&self, id: u64, zoom: f32) -> f32 {
+        let (_, node_h) = self.mindmap_node_size(id, zoom);
+        node_h.max(
+            self.side_stack_height(id, MindMapSide::Left, zoom)
+                .max(self.side_stack_height(id, MindMapSide::Right, zoom)),
+        )
+    }
+
+    fn relayout_mindmap_subtree(&mut self, node_id: u64, moved: &mut Vec<u64>, zoom: f32) {
+        self.relayout_mindmap_children(node_id, MindMapSide::Left, moved, zoom);
+        self.relayout_mindmap_children(node_id, MindMapSide::Right, moved, zoom);
+    }
+
+    fn relayout_mindmap_children(
+        &mut self,
+        parent_id: u64,
+        side: MindMapSide,
+        moved: &mut Vec<u64>,
+        zoom: f32,
+    ) {
+        let children = self.mindmap_children(parent_id, side);
+        if children.is_empty() {
+            return;
+        }
+        let Some((px, py, pw, ph, _)) = self
+            .scene
+            .elements
+            .iter()
+            .find(|element| element.id == parent_id)
+            .and_then(|element| box_like(&element.kind))
+        else {
+            return;
+        };
+        let gap_x = MINDMAP_BRANCH_GAP_X / zoom;
+        let gap_y = MINDMAP_BRANCH_GAP_Y / zoom;
+        let total_h = children
+            .iter()
+            .enumerate()
+            .fold(0.0, |acc, (index, child_id)| {
+                acc + if index > 0 { gap_y } else { 0.0 }
+                    + self.mindmap_subtree_height(*child_id, zoom)
+            });
+        let mut cursor_y = py + ph / 2.0 - total_h / 2.0;
+        for child_id in children {
+            let subtree_h = self.mindmap_subtree_height(child_id, zoom);
+            let (cw, ch) = self.mindmap_node_size(child_id, zoom);
+            let cy = cursor_y + subtree_h / 2.0;
+            let x = match side {
+                MindMapSide::Right => px + pw + gap_x,
+                MindMapSide::Left => px - gap_x - cw,
+            };
+            self.set_mindmap_node_position(child_id, x, cy - ch / 2.0);
+            moved.push(child_id);
+            self.relayout_mindmap_subtree(child_id, moved, zoom);
+            cursor_y += subtree_h + gap_y;
+        }
+    }
+
+    fn relayout_mindmap_tree(&mut self, root_id: u64) {
+        let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+        let mut moved = vec![root_id];
+        self.relayout_mindmap_subtree(root_id, &mut moved, zoom);
+        self.sync_mindmap_links_for_root(root_id);
+        self.sync_segment_anchors_for(&moved);
+    }
+
+    fn bump_mindmap_sibling_orders(&mut self, parent: u64, side: MindMapSide, from_order: usize) {
+        for element in &mut self.scene.elements {
+            if let Some(meta) = &mut element.mindmap
+                && meta.parent == Some(parent)
+                && meta.side == side
+                && meta.order >= from_order
+            {
+                meta.order += 1;
+            }
+        }
+    }
+
+    fn create_mindmap_node(
+        &mut self,
+        parent: u64,
+        side: MindMapSide,
+        order: usize,
+        label: &str,
+    ) -> u64 {
+        self.bump_mindmap_sibling_orders(parent, side, order);
+        let zoom = self.scene.camera.zoom.max(MIN_ZOOM);
+        let id = self.next_id;
+        self.next_id += 1;
+        let w = MINDMAP_NODE_W / zoom;
+        let h = MINDMAP_NODE_H / zoom;
+        let (x, y) = self
+            .scene
+            .elements
+            .iter()
+            .find(|element| element.id == parent)
+            .and_then(|element| box_like(&element.kind))
+            .map(|(px, py, pw, ph, _)| match side {
+                MindMapSide::Right => (
+                    px + pw + MINDMAP_BRANCH_GAP_X / zoom,
+                    py + ph / 2.0 - h / 2.0,
+                ),
+                MindMapSide::Left => (
+                    px - MINDMAP_BRANCH_GAP_X / zoom - w,
+                    py + ph / 2.0 - h / 2.0,
+                ),
+            })
+            .unwrap_or((0.0, 0.0));
+        self.scene.elements.push(Element {
+            id,
+            kind: ElementKind::RoundRect(BoxGeom {
+                x,
+                y,
+                w,
+                h,
+                width: NIB / zoom,
+                rotation: 0.0,
+            }),
+            stroke: Some(0x2563ebff),
+            fill: Some(0xffffffff),
+            label: Some(label.to_string()),
+            label_color: Some(0x0f172aff),
+            styles: Vec::new(),
+            mindmap: Some(MindMapNodeMeta {
+                parent: Some(parent),
+                side,
+                order,
+                root_direction: MindMapRootDirection::Both,
+                connector_style: MindMapConnectorStyle::Bezier,
+            }),
+        });
+        let start_anchor = SegmentAnchor {
+            element_id: parent,
+            connector: match side {
+                MindMapSide::Right => 1,
+                MindMapSide::Left => 3,
+            },
+        };
+        let end_anchor = SegmentAnchor {
+            element_id: id,
+            connector: match side {
+                MindMapSide::Right => 3,
+                MindMapSide::Left => 1,
+            },
+        };
+        let [x1, y1] = connector_world_pos_in(&self.scene.elements, start_anchor).unwrap_or([x, y]);
+        let [x2, y2] = connector_world_pos_in(&self.scene.elements, end_anchor).unwrap_or([x, y]);
+        let line_id = self.next_id;
+        self.next_id += 1;
+        self.scene.elements.push(Element {
+            id: line_id,
+            kind: ElementKind::Arrow(SegGeom {
+                x1,
+                y1,
+                x2,
+                y2,
+                width: NIB / zoom,
+                style: SegmentStyle::Solid,
+                start_anchor: Some(start_anchor),
+                end_anchor: Some(end_anchor),
+            }),
+            stroke: Some(0x2563ebff),
+            fill: None,
+            label: None,
+            label_color: None,
+            styles: Vec::new(),
+            mindmap: None,
+        });
+        if let Some(root_id) = self.mindmap_root_of(parent) {
+            self.relayout_mindmap_tree(root_id);
+        }
+        id
+    }
+
+    fn add_mindmap_relative(
+        &mut self,
+        source_id: u64,
+        sibling: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(meta) = self.mindmap_meta(source_id) else {
+            return false;
+        };
+        let (parent, side, order) = if sibling {
+            match meta.parent {
+                Some(parent) => (parent, meta.side, meta.order + 1),
+                None => (
+                    source_id,
+                    MindMapSide::Right,
+                    self.mindmap_children(source_id, MindMapSide::Right).len(),
+                ),
+            }
+        } else {
+            (
+                source_id,
+                meta.side,
+                self.mindmap_children(source_id, meta.side).len(),
+            )
+        };
+        self.push_undo();
+        let new_id = self.create_mindmap_node(parent, side, order, "");
+        self.selected = vec![new_id];
+        self.begin_text_edit(new_id, 0, window, cx);
+        self.dirty = true;
+        cx.notify();
+        true
+    }
+
+    fn mindmap_connector_style_for_element(
+        &self,
+        kind: &ElementKind,
+    ) -> Option<MindMapConnectorStyle> {
+        let seg = match kind {
+            ElementKind::Line(seg) | ElementKind::Arrow(seg) => seg,
+            _ => return None,
+        };
+        let start_root = seg
+            .start_anchor
+            .and_then(|anchor| self.mindmap_root_of(anchor.element_id));
+        let end_root = seg
+            .end_anchor
+            .and_then(|anchor| self.mindmap_root_of(anchor.element_id));
+        match (start_root, end_root) {
+            (Some(a), Some(b)) if a == b => Some(self.mindmap_connector_style_for_root(a)),
+            _ => None,
+        }
     }
 
     /// The world point at the center of the current viewport — where paste drops
@@ -1583,6 +2868,70 @@ impl WhiteboardView {
         &self.scene
     }
 
+    /// Build a local-thumbnail focus spec for the board. The board default has
+    /// no natural root, so `Auto` means:
+    ///
+    /// - selected content, if any
+    /// - otherwise the current viewport
+    /// - otherwise all content
+    pub fn local_thumbnail_spec(
+        &self,
+        width_px: f32,
+        height_px: f32,
+    ) -> Option<LocalThumbnailSpec> {
+        self.local_thumbnail_spec_for_mode(LocalThumbnailMode::Auto, width_px, height_px)
+    }
+
+    pub fn local_thumbnail_snapshot(
+        &self,
+        width_px: f32,
+        height_px: f32,
+    ) -> Option<LocalThumbnailSnapshot> {
+        self.local_thumbnail_snapshot_for_mode(LocalThumbnailMode::Auto, width_px, height_px)
+    }
+
+    pub fn local_thumbnail_spec_for_mode(
+        &self,
+        mode: LocalThumbnailMode,
+        width_px: f32,
+        height_px: f32,
+    ) -> Option<LocalThumbnailSpec> {
+        let scene_bounds = self.scene_bbox();
+        let (anchor_element_id, focus) = match mode {
+            LocalThumbnailMode::Auto => self
+                .selection_bbox()
+                .map(|bb| (self.selected_single(), bb))
+                .or_else(|| self.viewport_world_bbox().map(|bb| (None, bb)))
+                .or_else(|| scene_bounds.map(|bb| (None, bb)))?,
+            LocalThumbnailMode::Selection => {
+                let bb = self.selection_bbox()?;
+                (self.selected_single(), bb)
+            }
+            LocalThumbnailMode::Viewport => (None, self.viewport_world_bbox()?),
+            LocalThumbnailMode::AllContent => (None, scene_bounds?),
+            LocalThumbnailMode::Element(id) => (Some(id), self.element_bbox(id)?),
+        };
+        Some(self.thumbnail_spec_from_bbox(
+            anchor_element_id,
+            focus,
+            scene_bounds,
+            width_px,
+            height_px,
+        ))
+    }
+
+    pub fn local_thumbnail_snapshot_for_mode(
+        &self,
+        mode: LocalThumbnailMode,
+        width_px: f32,
+        height_px: f32,
+    ) -> Option<LocalThumbnailSnapshot> {
+        Some(LocalThumbnailSnapshot {
+            scene: self.scene.clone(),
+            spec: self.local_thumbnail_spec_for_mode(mode, width_px, height_px)?,
+        })
+    }
+
     /// The lone selected id, if exactly one element is selected. Single-element
     /// manipulation (resize, endpoints, edit) only applies then.
     fn selected_single(&self) -> Option<u64> {
@@ -1594,6 +2943,59 @@ impl WhiteboardView {
 
     fn is_selected(&self, id: u64) -> bool {
         self.selected.contains(&id)
+    }
+
+    fn element_bbox(&self, id: u64) -> Option<(f32, f32, f32, f32)> {
+        self.scene
+            .elements
+            .iter()
+            .find(|e| e.id == id)
+            .map(|e| bbox(&e.kind))
+    }
+
+    fn scene_bbox(&self) -> Option<(f32, f32, f32, f32)> {
+        scene_bbox_for_local_thumbnail(&self.scene)
+    }
+
+    fn viewport_world_bbox(&self) -> Option<(f32, f32, f32, f32)> {
+        let b = self.bounds.get();
+        let vw = f32::from(b.size.width);
+        let vh = f32::from(b.size.height);
+        if vw <= 1.0 || vh <= 1.0 {
+            return None;
+        }
+        let cam = self.scene.camera;
+        let z = cam.zoom.max(MIN_ZOOM);
+        Some((cam.x, cam.y, cam.x + vw / z, cam.y + vh / z))
+    }
+
+    fn render_viewport(&self, fallback_size: Option<gpui::Size<Pixels>>) -> Option<WorldViewport> {
+        let bounds = self.bounds.get();
+        let size = if f32::from(bounds.size.width) > 1.0 && f32::from(bounds.size.height) > 1.0 {
+            bounds.size
+        } else {
+            fallback_size?
+        };
+        let camera = self.scene.camera;
+        WorldViewport::from_canvas(
+            f32::from(size.width),
+            f32::from(size.height),
+            camera.x,
+            camera.y,
+            camera.zoom.max(MIN_ZOOM),
+            VIEWPORT_CULL_MARGIN_PX,
+        )
+    }
+
+    fn thumbnail_spec_from_bbox(
+        &self,
+        anchor_element_id: Option<u64>,
+        focus: (f32, f32, f32, f32),
+        scene_bounds: Option<(f32, f32, f32, f32)>,
+        width_px: f32,
+        height_px: f32,
+    ) -> LocalThumbnailSpec {
+        local_thumbnail_spec_from_bbox(anchor_element_id, focus, scene_bounds, width_px, height_px)
     }
 
     /// World-space bounds enclosing the whole selection, or `None` if empty.
@@ -1608,6 +3010,149 @@ impl WhiteboardView {
         Some(it.fold(first, |a, b| {
             (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
         }))
+    }
+
+    fn aligned_move_delta(&self, dx: f32, dy: f32) -> (f32, f32, AlignmentGuides) {
+        const SNAP_PX: f32 = 6.0;
+        let Some(selection) = self.selection_bbox() else {
+            return (dx, dy, AlignmentGuides::default());
+        };
+        let threshold = SNAP_PX / self.scene.camera.zoom.max(MIN_ZOOM);
+        let moving_x = [
+            selection.0 + dx,
+            (selection.0 + selection.2) / 2.0 + dx,
+            selection.2 + dx,
+        ];
+        let moving_y = [
+            selection.1 + dy,
+            (selection.1 + selection.3) / 2.0 + dy,
+            selection.3 + dy,
+        ];
+        let mut best_x: Option<(f32, f32)> = None;
+        let mut best_y: Option<(f32, f32)> = None;
+
+        for element in self
+            .scene
+            .elements
+            .iter()
+            .filter(|element| !self.selected.contains(&element.id))
+        {
+            let bb = bbox(&element.kind);
+            for moving in moving_x {
+                for target in [bb.0, (bb.0 + bb.2) / 2.0, bb.2] {
+                    let correction = target - moving;
+                    if correction.abs() <= threshold
+                        && best_x.is_none_or(|(best, _)| correction.abs() < best.abs())
+                    {
+                        best_x = Some((correction, target));
+                    }
+                }
+            }
+            for moving in moving_y {
+                for target in [bb.1, (bb.1 + bb.3) / 2.0, bb.3] {
+                    let correction = target - moving;
+                    if correction.abs() <= threshold
+                        && best_y.is_none_or(|(best, _)| correction.abs() < best.abs())
+                    {
+                        best_y = Some((correction, target));
+                    }
+                }
+            }
+        }
+
+        (
+            dx + best_x.map_or(0.0, |(correction, _)| correction),
+            dy + best_y.map_or(0.0, |(correction, _)| correction),
+            AlignmentGuides {
+                vertical: best_x.map(|(_, target)| target),
+                horizontal: best_y.map(|(_, target)| target),
+            },
+        )
+    }
+
+    fn sync_segment_anchors_for(&mut self, changed_ids: &[u64]) {
+        if changed_ids.is_empty() {
+            return;
+        }
+        let elements = self.scene.elements.clone();
+        for element in &mut self.scene.elements {
+            let segment = match &mut element.kind {
+                ElementKind::Line(segment) | ElementKind::Arrow(segment) => segment,
+                _ => continue,
+            };
+            if let Some(anchor) = segment.start_anchor
+                && changed_ids.contains(&anchor.element_id)
+                && let Some(pos) = connector_world_pos_in(&elements, anchor)
+            {
+                segment.x1 = pos[0];
+                segment.y1 = pos[1];
+            }
+            if let Some(anchor) = segment.end_anchor
+                && changed_ids.contains(&anchor.element_id)
+                && let Some(pos) = connector_world_pos_in(&elements, anchor)
+            {
+                segment.x2 = pos[0];
+                segment.y2 = pos[1];
+            }
+        }
+    }
+
+    fn detach_segment_bindings_for_move(&mut self, ids: &[u64]) {
+        for element in &mut self.scene.elements {
+            if !ids.contains(&element.id) {
+                continue;
+            }
+            if let ElementKind::Line(segment) | ElementKind::Arrow(segment) = &mut element.kind {
+                if segment
+                    .start_anchor
+                    .is_some_and(|anchor| !ids.contains(&anchor.element_id))
+                {
+                    segment.start_anchor = None;
+                }
+                if segment
+                    .end_anchor
+                    .is_some_and(|anchor| !ids.contains(&anchor.element_id))
+                {
+                    segment.end_anchor = None;
+                }
+            }
+        }
+    }
+
+    fn set_segment_endpoint_anchor(
+        &mut self,
+        segment_id: u64,
+        endpoint: usize,
+        anchor: Option<SegmentAnchor>,
+    ) {
+        let pos = anchor.and_then(|anchor| {
+            connector_world_pos_in(&self.scene.elements, anchor).map(|pos| (anchor, pos))
+        });
+        let Some(element) = self
+            .scene
+            .elements
+            .iter_mut()
+            .find(|element| element.id == segment_id)
+        else {
+            return;
+        };
+        let segment = match &mut element.kind {
+            ElementKind::Line(segment) | ElementKind::Arrow(segment) => segment,
+            _ => return,
+        };
+        if endpoint == 0 {
+            segment.start_anchor = anchor;
+            if let Some((_, pos)) = pos {
+                segment.x1 = pos[0];
+                segment.y1 = pos[1];
+            }
+        } else {
+            segment.end_anchor = anchor;
+            if let Some((_, pos)) = pos {
+                segment.x2 = pos[0];
+                segment.y2 = pos[1];
+            }
+        }
     }
 
     /// Whether a *group* rotation applies: more than one element selected, at
@@ -1629,6 +3174,13 @@ impl WhiteboardView {
     /// Switch the active drawing tool. Leaving Select clears the selection.
     /// Always closes an open tool flyout (the tool was just chosen).
     pub fn set_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+        if self.read_only {
+            self.tool = Tool::Pan;
+            self.selected.clear();
+            self.open_group = None;
+            cx.notify();
+            return;
+        }
         self.open_group = None;
         if self.tool != tool {
             self.tool = tool;
@@ -1925,7 +3477,7 @@ impl WhiteboardView {
                 for e in &elems {
                     let stroke = e.stroke.map_or(ink, u32_to_hsla);
                     let fill = e.fill.map(u32_to_hsla);
-                    paint_element(&e.kind, cam, bounds.origin, stroke, fill, window);
+                    paint_element(&e.kind, None, cam, bounds.origin, stroke, fill, window);
                 }
             },
         )
@@ -2002,23 +3554,16 @@ impl WhiteboardView {
         });
     }
 
-    /// Close every popover/flyout (only one shows at a time). Called at the top
-    /// of each `toggle_*` so each then only flips its own field.
-    fn close_popovers(&mut self) {
-        self.picker = None;
+    /// Open or close the color picker. Opening seeds the controls from the
+    /// stroke color (selection's, else active, else a default).
+    fn toggle_picker(&mut self, cx: &mut Context<Self>) {
         self.open_group = None;
         self.templates_open = false;
         self.width_open = false;
         self.font_open = false;
-        self.context_menu = None;
-    }
-
-    /// Open or close the color picker. Opening seeds the controls from the
-    /// stroke color (selection's, else active, else a default).
-    fn toggle_picker(&mut self, cx: &mut Context<Self>) {
-        let was_open = self.picker.is_some();
-        self.close_popovers();
-        if !was_open {
+        if self.picker.is_some() {
+            self.picker = None;
+        } else {
             self.seed_picker(PickerTarget::Stroke);
         }
         cx.notify();
@@ -2026,9 +3571,12 @@ impl WhiteboardView {
 
     /// Open / close the thickness-preset flyout (closing the other popovers).
     fn toggle_width(&mut self, cx: &mut Context<Self>) {
-        let open = !self.width_open;
-        self.close_popovers();
-        self.width_open = open;
+        self.picker = None;
+        self.open_group = None;
+        self.templates_open = false;
+        self.context_menu = None;
+        self.font_open = false;
+        self.width_open = !self.width_open;
         cx.notify();
     }
 
@@ -2070,30 +3618,38 @@ impl WhiteboardView {
     /// Open the given tool category's flyout (or close it if already open).
     /// Closes the color picker so only one popover shows at a time.
     fn toggle_group(&mut self, group: ToolGroup, cx: &mut Context<Self>) {
-        let next = if self.open_group == Some(group) {
+        self.picker = None;
+        self.templates_open = false;
+        self.width_open = false;
+        self.font_open = false;
+        self.open_group = if self.open_group == Some(group) {
             None
         } else {
             Some(group)
         };
-        self.close_popovers();
-        self.open_group = next;
         cx.notify();
     }
 
     /// Open / close the templates gallery modal (closing the other popovers).
     fn toggle_templates(&mut self, cx: &mut Context<Self>) {
-        let open = !self.templates_open;
-        self.close_popovers();
-        self.templates_open = open;
+        self.picker = None;
+        self.open_group = None;
+        self.width_open = false;
+        self.context_menu = None;
+        self.font_open = false;
+        self.templates_open = !self.templates_open;
         cx.notify();
     }
 
     /// Open / close the font flyout (upload a face / revert to default), closing
     /// the other popovers.
     fn toggle_font(&mut self, cx: &mut Context<Self>) {
-        let open = !self.font_open;
-        self.close_popovers();
-        self.font_open = open;
+        self.picker = None;
+        self.open_group = None;
+        self.width_open = false;
+        self.templates_open = false;
+        self.context_menu = None;
+        self.font_open = !self.font_open;
         cx.notify();
     }
 
@@ -2224,12 +3780,6 @@ impl WhiteboardView {
                 }
             }
             let wc = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
-            let off = [
-                (-SEL_PAD_PX, -SEL_PAD_PX),
-                (SEL_PAD_PX, -SEL_PAD_PX),
-                (-SEL_PAD_PX, SEL_PAD_PX),
-                (SEL_PAD_PX, SEL_PAD_PX),
-            ];
             let collect_orig = || -> Vec<(u64, ElementKind)> {
                 self.scene
                     .elements
@@ -2239,7 +3789,7 @@ impl WhiteboardView {
                     .collect()
             };
             for i in 0..4 {
-                if near(wc[i].0, wc[i].1, off[i].0, off[i].1) {
+                if near(wc[i].0, wc[i].1, 0.0, 0.0) {
                     let opp = wc[3 - i];
                     return Some(HandleGrab::GroupCorner(GroupResizing {
                         handle: ResizeHandle::Corner,
@@ -2254,30 +3804,10 @@ impl WhiteboardView {
             // the opposite edge: a left/right grip scales x, a top/bottom grip y.
             let (mx, my) = ((bb.0 + bb.2) / 2.0, (bb.1 + bb.3) / 2.0);
             let edges = [
-                (
-                    ResizeHandle::EdgeX,
-                    [bb.0, my],
-                    (-SEL_PAD_PX, 0.0),
-                    [bb.2, my],
-                ),
-                (
-                    ResizeHandle::EdgeX,
-                    [bb.2, my],
-                    (SEL_PAD_PX, 0.0),
-                    [bb.0, my],
-                ),
-                (
-                    ResizeHandle::EdgeY,
-                    [mx, bb.1],
-                    (0.0, -SEL_PAD_PX),
-                    [mx, bb.3],
-                ),
-                (
-                    ResizeHandle::EdgeY,
-                    [mx, bb.3],
-                    (0.0, SEL_PAD_PX),
-                    [mx, bb.1],
-                ),
+                (ResizeHandle::EdgeX, [bb.0, my], (0.0, 0.0), [bb.2, my]),
+                (ResizeHandle::EdgeX, [bb.2, my], (0.0, 0.0), [bb.0, my]),
+                (ResizeHandle::EdgeY, [mx, bb.1], (0.0, 0.0), [mx, bb.3]),
+                (ResizeHandle::EdgeY, [mx, bb.3], (0.0, 0.0), [mx, bb.1]),
             ];
             for (handle, from, (ox, oy), anchor) in edges {
                 if near(from[0], from[1], ox, oy) {
@@ -2319,9 +3849,8 @@ impl WhiteboardView {
         // resizes proportionally about the center — a similarity transform that
         // stays correct under rotation (set up here, applied in `on_move`).
         if let Some((x, y, w, h, rot)) = box_like(kind) {
-            let z = cam.zoom.max(MIN_ZOOM);
             let cu = box_padded_corners(x, y, w, h, rot, 0.0);
-            let cp = box_padded_corners(x, y, w, h, rot, SEL_PAD_PX / z);
+            let cp = cu;
             let center = [x + w / 2.0, y + h / 2.0];
             let rotated = rot.abs() > ROT_EPS;
             for i in 0..4 {
@@ -2362,14 +3891,8 @@ impl WhiteboardView {
         // Draw / Embed: corners on the padded AABB (offset the hit to match).
         let bb = bbox(kind);
         let wc = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
-        let off = [
-            (-SEL_PAD_PX, -SEL_PAD_PX),
-            (SEL_PAD_PX, -SEL_PAD_PX),
-            (-SEL_PAD_PX, SEL_PAD_PX),
-            (SEL_PAD_PX, SEL_PAD_PX),
-        ];
         for i in 0..4 {
-            if near(wc[i].0, wc[i].1, off[i].0, off[i].1) {
+            if near(wc[i].0, wc[i].1, 0.0, 0.0) {
                 let opp = wc[3 - i];
                 return Some(HandleGrab::Corner(Resizing {
                     id,
@@ -2411,10 +3934,10 @@ impl WhiteboardView {
         left: [f32; 2],
     ) -> Option<HandleGrab> {
         let edges = [
-            (ResizeHandle::EdgeY, top, (0.0, -SEL_PAD_PX), bottom),
-            (ResizeHandle::EdgeY, bottom, (0.0, SEL_PAD_PX), top),
-            (ResizeHandle::EdgeX, right, (SEL_PAD_PX, 0.0), left),
-            (ResizeHandle::EdgeX, left, (-SEL_PAD_PX, 0.0), right),
+            (ResizeHandle::EdgeY, top, (0.0, 0.0), bottom),
+            (ResizeHandle::EdgeY, bottom, (0.0, 0.0), top),
+            (ResizeHandle::EdgeX, right, (0.0, 0.0), left),
+            (ResizeHandle::EdgeX, left, (0.0, 0.0), right),
         ];
         for (handle, from, (ox, oy), anchor) in edges {
             if near(from[0], from[1], ox, oy) {
@@ -2429,6 +3952,55 @@ impl WhiteboardView {
             }
         }
         None
+    }
+
+    /// The topmost connector point under the cursor. Connectors are exposed on
+    /// box-like visual elements (closed shapes, text, image) at the midpoints of
+    /// their rotated top/right/bottom/left edges.
+    fn connector_at(&self, pos: Point<Pixels>) -> Option<ConnectPoint> {
+        let origin = self.bounds.get().origin;
+        let near_px = CONNECTOR_BUTTON_SIZE * 0.65;
+        let (sx, sy) = (f32::from(pos.x), f32::from(pos.y));
+        let id = self.selected_single()?;
+        let element = self
+            .scene
+            .elements
+            .iter()
+            .find(|element| element.id == id && connector_capable(&element.kind))?;
+        let points = connector_points(&element.kind);
+        let buttons = connector_button_centers(&element.kind, self.scene.camera, origin);
+        buttons.into_iter().enumerate().find_map(|(index, button)| {
+            let dx = f32::from(button.x) - sx;
+            let dy = f32::from(button.y) - sy;
+            (dx * dx + dy * dy <= near_px * near_px).then_some(ConnectPoint {
+                id,
+                index,
+                pos: points[index],
+            })
+        })
+    }
+
+    /// Update hover connector state and request repaint only when it changes.
+    fn update_hover_connector(&mut self, pos: Point<Pixels>, cx: &mut Context<Self>) {
+        let next = if self.tool == Tool::Select
+            && self.editing.is_none()
+            && self.pending.is_none()
+            && self.connecting.is_none()
+            && self.drag_from.is_none()
+            && self.resizing.is_none()
+            && self.group_resizing.is_none()
+            && self.endpoint.is_none()
+            && self.rotating.is_none()
+            && self.marquee.is_none()
+        {
+            self.connector_at(pos)
+        } else {
+            None
+        };
+        if self.hovered_connector != next {
+            self.hovered_connector = next;
+            cx.notify();
+        }
     }
 
     /// The topmost text element under a world point (within `pad`), if any.
@@ -2466,8 +4038,66 @@ impl WhiteboardView {
             })
     }
 
+    /// Nearest edge connector on another shape while a connection is being
+    /// dragged. This path is intentionally separate from `connector_at`, whose
+    /// hit targets are the selected source shape's outward arrow buttons.
+    fn snap_connector_at(
+        &self,
+        pos: Point<Pixels>,
+        source_id: u64,
+    ) -> Option<(ConnectPoint, bool)> {
+        const SHOW_DISTANCE_PX: f32 = 64.0;
+        const SNAP_DISTANCE_PX: f32 = 20.0;
+        let origin = self.bounds.get().origin;
+        let (sx, sy) = (f32::from(pos.x), f32::from(pos.y));
+        let world = self.event_to_world(pos);
+        let target = self
+            .scene
+            .elements
+            .iter()
+            .rev()
+            .filter(|element| element.id != source_id && connector_capable(&element.kind))
+            .find(|element| {
+                hit_test(
+                    &element.kind,
+                    world[0],
+                    world[1],
+                    SHOW_DISTANCE_PX / self.scene.camera.zoom.max(MIN_ZOOM),
+                )
+            })?;
+        connector_points(&target.kind)
+            .into_iter()
+            .enumerate()
+            .map(|(index, point)| {
+                let screen = to_screen(point[0], point[1], self.scene.camera, origin);
+                let dx = f32::from(screen.x) - sx;
+                let dy = f32::from(screen.y) - sy;
+                let distance_sq = dx * dx + dy * dy;
+                (
+                    distance_sq,
+                    ConnectPoint {
+                        id: target.id,
+                        index,
+                        pos: point,
+                    },
+                )
+            })
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(distance_sq, connector)| {
+                (
+                    connector,
+                    distance_sq <= SNAP_DISTANCE_PX * SNAP_DISTANCE_PX,
+                )
+            })
+    }
+
     fn on_left_down(&mut self, ev: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.panning {
+            return;
+        }
+        if self.read_only {
+            self.panning = true;
+            self.last = ev.position;
             return;
         }
 
@@ -2598,24 +4228,32 @@ impl WhiteboardView {
             self.commit_text(window, cx);
         }
 
+        // Ctrl + left-drag always pans the canvas, regardless of the active tool
+        // or what's under the pointer. Reuses the same panning state as the Pan
+        // tool and middle-button drag.
+        if ev.modifiers.control {
+            self.panning = true;
+            self.last = ev.position;
+            return;
+        }
+
         if ev.click_count >= 2 {
             self.pending = None;
+            // Existing text and shape labels have one consistent edit gesture:
+            // double-click, regardless of which tool happened to be active.
+            if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
+                self.selected = vec![id];
+                self.editing = Some(id);
+                self.place_caret_from_click(id, p, ev, window, cx);
+                return;
+            }
+            if let Some(id) = self.shape_at(p, SELECT_PAD / zoom) {
+                self.selected = vec![id];
+                self.editing = Some(id);
+                self.place_caret_from_click(id, p, ev, window, cx);
+                return;
+            }
             if self.tool == Tool::Select {
-                // Double-click a text element re-opens it for editing, selecting
-                // the word under the cursor.
-                if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
-                    self.selected = vec![id];
-                    self.editing = Some(id);
-                    self.place_caret_from_click(id, p, ev, window, cx);
-                    return;
-                }
-                // Double-click a closed shape edits its centered label.
-                if let Some(id) = self.shape_at(p, SELECT_PAD / zoom) {
-                    self.selected = vec![id];
-                    self.editing = Some(id);
-                    self.place_caret_from_click(id, p, ev, window, cx);
-                    return;
-                }
                 // Double-click a page-card opens its page.
                 if let Some((id, page_id)) = self.embed_at(p, SELECT_PAD / zoom) {
                     self.selected = vec![id];
@@ -2630,6 +4268,36 @@ impl WhiteboardView {
             return;
         }
 
+        // A single click on any existing element always means selection, even if
+        // a drawing/text tool is currently active. This prevents accidentally
+        // drawing over a shape when the user only meant to select it. A second
+        // click (handled above) is the sole path into text/label editing.
+        if self.tool != Tool::Select {
+            let pad = SELECT_PAD / zoom;
+            let hit = self
+                .scene
+                .elements
+                .iter()
+                .rev()
+                .find(|element| hit_test(&element.kind, p[0], p[1], pad))
+                .map(|element| element.id);
+            if let Some(id) = hit {
+                self.tool = Tool::Select;
+                if ev.modifiers.shift {
+                    if let Some(index) = self.selected.iter().position(|&selected| selected == id) {
+                        self.selected.remove(index);
+                    } else {
+                        self.selected.push(id);
+                    }
+                } else {
+                    self.selected = vec![id];
+                }
+                self.drag_from = None;
+                cx.notify();
+                return;
+            }
+        }
+
         // Pan tool: a left-drag pans the canvas (the default navigation tool;
         // double-click above still recenters). Reuses the middle-drag machinery.
         if self.tool == Tool::Pan {
@@ -2639,11 +4307,12 @@ impl WhiteboardView {
         }
 
         if self.tool == Tool::Text {
-            // Edit a text under the cursor (caret at the click), else create one.
+            // A single click on existing text only selects it. Editing existing
+            // content is deliberately double-click-only; clicking empty canvas
+            // still creates a fresh text element and immediately edits that.
             if let Some(id) = self.text_at(p, SELECT_PAD / zoom) {
                 self.selected = vec![id];
-                self.editing = Some(id);
-                self.place_caret_from_click(id, p, ev, window, cx);
+                cx.notify();
             } else {
                 self.push_undo();
                 let id = self.next_id;
@@ -2664,12 +4333,23 @@ impl WhiteboardView {
                     label: None,
                     label_color: None,
                     styles: Vec::new(),
+                    mindmap: None,
                 });
                 self.selected = vec![id];
                 self.begin_text_edit(id, 0, window, cx);
                 self.dirty = true;
                 cx.notify();
             }
+            return;
+        }
+
+        if self.tool == Tool::MindMap {
+            self.add_mindmap_seed(p[0], p[1], cx);
+            return;
+        }
+
+        if self.tool == Tool::Flowchart {
+            self.add_flowchart_seed(p[0], p[1], cx);
             return;
         }
 
@@ -2690,6 +4370,31 @@ impl WhiteboardView {
         }
 
         if self.tool == Tool::Select {
+            // A connector point on a hovered shape starts drawing a line from that
+            // exact side/midpoint without switching away from Select.
+            if let Some(cp) = self.connector_at(ev.position) {
+                let width = self.active_width / zoom;
+                self.pending = Some(Pending {
+                    anchor: cp.pos,
+                    kind: ElementKind::Arrow(SegGeom {
+                        x1: cp.pos[0],
+                        y1: cp.pos[1],
+                        x2: cp.pos[0],
+                        y2: cp.pos[1],
+                        width,
+                        style: SegmentStyle::Solid,
+                        start_anchor: Some(SegmentAnchor {
+                            element_id: cp.id,
+                            connector: cp.index,
+                        }),
+                        end_anchor: None,
+                    }),
+                });
+                self.connecting = Some(ConnectDrag { from: cp });
+                self.hovered_connector = Some(cp);
+                cx.notify();
+                return;
+            }
             // A handle on the current selection takes priority.
             if let Some(grab) = self.handle_hit(ev.position) {
                 self.push_undo();
@@ -2822,6 +4527,9 @@ impl WhiteboardView {
                 x2: anchor[0],
                 y2: anchor[1],
                 width,
+                style: SegmentStyle::Solid,
+                start_anchor: None,
+                end_anchor: None,
             }),
             Tool::Arrow => ElementKind::Arrow(SegGeom {
                 x1: anchor[0],
@@ -2829,9 +4537,28 @@ impl WhiteboardView {
                 x2: anchor[0],
                 y2: anchor[1],
                 width,
+                style: SegmentStyle::Solid,
+                start_anchor: None,
+                end_anchor: None,
+            }),
+            Tool::DashedArrow => ElementKind::Arrow(SegGeom {
+                x1: anchor[0],
+                y1: anchor[1],
+                x2: anchor[0],
+                y2: anchor[1],
+                width,
+                style: SegmentStyle::Dashed,
+                start_anchor: None,
+                end_anchor: None,
             }),
             // These tools don't create a drag-element here (handled earlier).
-            Tool::Pan | Tool::Select | Tool::Text | Tool::Embed | Tool::Image => return,
+            Tool::Pan
+            | Tool::Select
+            | Tool::Text
+            | Tool::MindMap
+            | Tool::Flowchart
+            | Tool::Embed
+            | Tool::Image => return,
         };
         self.pending = Some(Pending { anchor, kind });
         cx.notify();
@@ -2875,6 +4602,7 @@ impl WhiteboardView {
                 self.dirty = true;
             }
             self.moved = false;
+            self.alignment_guides = AlignmentGuides::default();
             cx.notify();
             self.flush(window, cx);
             return;
@@ -2894,6 +4622,7 @@ impl WhiteboardView {
             return;
         }
         if let Some(pending) = self.pending.take() {
+            let completed_connection = self.connecting.take().is_some();
             if committable(&pending.kind) {
                 self.push_undo();
                 let id = self.next_id;
@@ -2912,7 +4641,14 @@ impl WhiteboardView {
                     label: None,
                     label_color: self.active_text,
                     styles: Vec::new(),
+                    mindmap: None,
                 });
+                if completed_connection {
+                    // The newly-created connector becomes the active object so
+                    // its endpoints can be adjusted immediately.
+                    self.selected = vec![id];
+                    self.focus.focus(window, cx);
+                }
                 self.dirty = true;
             }
             cx.notify();
@@ -2923,6 +4659,11 @@ impl WhiteboardView {
     /// Right-click: with a selection (and a host save hook), open a small menu to
     /// save it as a template; otherwise just dismiss any open menu.
     fn on_right_down(&mut self, ev: &MouseDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            self.context_menu = None;
+            cx.notify();
+            return;
+        }
         // A right-click inside the open color picker (e.g. removing a saved swatch)
         // shouldn't also open the board context menu.
         if self.picker.is_some() && self.picker_bounds.get().contains(&ev.position) {
@@ -3017,6 +4758,42 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
+        // Dragging a line out of a connector point. Snaps the endpoint to another
+        // connector if the cursor is close to one, so shape-to-shape links land cleanly.
+        if let Some(conn) = self.connecting {
+            let target = self.snap_connector_at(ev.position, conn.from.id);
+            let cur = if let Some((target, snapped)) = target {
+                self.hovered_connector = Some(target);
+                if snapped {
+                    target.pos
+                } else {
+                    self.event_to_world(ev.position)
+                }
+            } else {
+                self.hovered_connector = None;
+                self.event_to_world(ev.position)
+            };
+            if let Some(pending) = self.pending.as_mut()
+                && let ElementKind::Line(s) | ElementKind::Arrow(s) = &mut pending.kind
+            {
+                s.x1 = conn.from.pos[0];
+                s.y1 = conn.from.pos[1];
+                s.x2 = cur[0];
+                s.y2 = cur[1];
+                s.start_anchor = Some(SegmentAnchor {
+                    element_id: conn.from.id,
+                    connector: conn.from.index,
+                });
+                s.end_anchor = target.and_then(|(target, snapped)| {
+                    snapped.then_some(SegmentAnchor {
+                        element_id: target.id,
+                        connector: target.index,
+                    })
+                });
+            }
+            cx.notify();
+            return;
+        }
         // Dragging inside the color picker (SV square, hue strip, alpha strip) or
         // the thickness flyout's width slider.
         if let Some(drag) = self.picker_drag {
@@ -3083,6 +4860,7 @@ impl WhiteboardView {
                     rotate_element(&mut e.kind, rot.center[0], rot.center[1], delta);
                 }
             }
+            self.sync_segment_anchors_for(&sel);
             rot.applied += delta;
             self.rotating = Some(rot);
             cx.notify();
@@ -3119,6 +4897,8 @@ impl WhiteboardView {
                     e.kind = kind;
                 }
             }
+            let changed: Vec<u64> = gr.orig.iter().map(|(id, _)| *id).collect();
+            self.sync_segment_anchors_for(&changed);
             self.group_resizing = Some(gr);
             cx.notify();
             return;
@@ -3173,6 +4953,7 @@ impl WhiteboardView {
                     t.measured_h = h;
                 }
             }
+            self.sync_segment_anchors_for(&[id]);
             cx.notify();
             return;
         }
@@ -3199,10 +4980,31 @@ impl WhiteboardView {
                 if ep.which == 0 {
                     s.x1 = nx;
                     s.y1 = ny;
+                    s.start_anchor = None;
                 } else {
                     s.x2 = nx;
                     s.y2 = ny;
+                    s.end_anchor = None;
                 }
+            }
+            if !ev.modifiers.shift && !ev.modifiers.alt {
+                if let Some((target, snapped)) = self.snap_connector_at(ev.position, ep.id)
+                    && snapped
+                {
+                    self.hovered_connector = Some(target);
+                    self.set_segment_endpoint_anchor(
+                        ep.id,
+                        ep.which,
+                        Some(SegmentAnchor {
+                            element_id: target.id,
+                            connector: target.index,
+                        }),
+                    );
+                } else {
+                    self.hovered_connector = None;
+                }
+            } else {
+                self.hovered_connector = None;
             }
             cx.notify();
             return;
@@ -3227,18 +5029,26 @@ impl WhiteboardView {
                     [x, y]
                 })
                 .unwrap_or(self.move_origin);
-            let (dx, dy) = (target[0] - cur_min[0], target[1] - cur_min[1]);
+            let (raw_dx, raw_dy) = (target[0] - cur_min[0], target[1] - cur_min[1]);
+            let (dx, dy, guides) = if ev.modifiers.alt {
+                (raw_dx, raw_dy, AlignmentGuides::default())
+            } else {
+                self.aligned_move_delta(raw_dx, raw_dy)
+            };
+            self.alignment_guides = guides;
             if dx != 0.0 || dy != 0.0 {
                 if !self.moved {
                     self.push_undo();
                     self.moved = true;
                 }
                 let sel = self.selected.clone();
+                self.detach_segment_bindings_for_move(&sel);
                 for e in self.scene.elements.iter_mut() {
                     if sel.contains(&e.id) {
                         translate(&mut e.kind, dx, dy);
                     }
                 }
+                self.sync_segment_anchors_for(&sel);
                 cx.notify();
             }
             return;
@@ -3297,6 +5107,7 @@ impl WhiteboardView {
             cx.notify();
             return;
         }
+        self.update_hover_connector(ev.position, cx);
         // Panning.
         if self.panning {
             let dx = f32::from(ev.position.x - self.last.x);
@@ -3420,6 +5231,7 @@ impl WhiteboardView {
             el.styles = splice_styles(&el.styles, s, e, ins.len(), insert_style);
             self.caret = s + ins.len();
             self.sel_anchor = self.caret;
+            self.marked_range = None;
             self.dirty = true;
             cx.notify();
         }
@@ -3429,6 +5241,86 @@ impl WhiteboardView {
     fn replace_selection(&mut self, id: u64, ins: &str, cx: &mut Context<Self>) {
         let (s, e) = self.sel_range();
         self.replace_range(id, s, e, ins, cx);
+    }
+
+    fn editing_content(&self) -> Option<String> {
+        self.editing
+            .and_then(|id| self.edit_target(id).map(|tg| tg.content))
+    }
+
+    // Kept byte-for-byte equivalent to gpui-markdown-editor's UTF-16 bridge.
+    fn utf16_to_utf8_in(text: &str, offset: usize) -> usize {
+        let mut utf8_offset = 0;
+        let mut utf16_count = 0;
+
+        for ch in text.chars() {
+            if utf16_count >= offset {
+                break;
+            }
+            utf16_count += ch.len_utf16();
+            utf8_offset += ch.len_utf8();
+        }
+
+        utf8_offset
+    }
+
+    fn utf8_to_utf16_in(text: &str, offset: usize) -> usize {
+        let mut utf16_offset = 0;
+        let mut utf8_count = 0;
+
+        for ch in text.chars() {
+            if utf8_count >= offset {
+                break;
+            }
+            utf8_count += ch.len_utf8();
+            utf16_offset += ch.len_utf16();
+        }
+
+        utf16_offset
+    }
+
+    fn utf16_range_to_utf8_in(text: &str, range_utf16: &Range<usize>) -> Range<usize> {
+        Self::utf16_to_utf8_in(text, range_utf16.start)
+            ..Self::utf16_to_utf8_in(text, range_utf16.end)
+    }
+
+    fn utf8_range_to_utf16_in(text: &str, range: &Range<usize>) -> Range<usize> {
+        Self::utf8_to_utf16_in(text, range.start)..Self::utf8_to_utf16_in(text, range.end)
+    }
+
+    /// Whiteboard storage adapter for the editor's `replace_text_in_visible_range`.
+    /// The full inserted text is the marked range; the IME's relative selection is
+    /// tracked independently, exactly as in gpui-markdown-editor.
+    fn replace_text_in_visible_range(
+        &mut self,
+        visible_range: Range<usize>,
+        new_text: &str,
+        selected_range_relative: Option<Range<usize>>,
+        mark_inserted_text: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(id) = self.editing else {
+            return;
+        };
+        let insert_start = visible_range.start;
+        self.replace_range(id, visible_range.start, visible_range.end, new_text, cx);
+
+        self.marked_range = if mark_inserted_text && !new_text.is_empty() {
+            Some(insert_start..insert_start + new_text.len())
+        } else {
+            None
+        };
+        let selected_range = selected_range_relative
+            .map(|relative| insert_start + relative.start..insert_start + relative.end);
+        self.caret = selected_range
+            .as_ref()
+            .map(|range| range.end)
+            .unwrap_or(insert_start + new_text.len());
+        self.sel_anchor = selected_range
+            .as_ref()
+            .map(|range| range.start)
+            .unwrap_or(self.caret);
+        cx.notify();
     }
 
     /// The formatting active across the current selection (or, collapsed, the
@@ -3588,6 +5480,9 @@ impl WhiteboardView {
         self.caret = floor_boundary(&content, self.caret);
         self.sel_anchor = floor_boundary(&content, self.sel_anchor);
         let ks = &ev.keystroke;
+        if ks.is_ime_in_progress() {
+            return;
+        }
         let cmd = ks.modifiers.platform || ks.modifiers.control;
         let shift = ks.modifiers.shift;
 
@@ -3625,6 +5520,17 @@ impl WhiteboardView {
                 }
                 _ => cx.propagate(), // ⌘Z / ⌘W / … belong to the host
             }
+            return;
+        }
+
+        if ks.key == "tab" && self.is_mindmap_node(id) {
+            self.commit_text(window, cx);
+            self.add_mindmap_relative(id, false, window, cx);
+            return;
+        }
+        if ks.key == "enter" && self.is_mindmap_node(id) {
+            self.commit_text(window, cx);
+            self.add_mindmap_relative(id, true, window, cx);
             return;
         }
 
@@ -3675,12 +5581,19 @@ impl WhiteboardView {
             }
             "enter" => self.replace_selection(id, "\n", cx),
             "tab" => cx.propagate(),
-            _ => match ks.key_char.as_deref() {
-                Some(c) if c.chars().next().is_some_and(|ch| !ch.is_control()) => {
-                    self.replace_selection(id, c, cx);
+            _ => {
+                // Printable text is handled by GPUI's ElementInputHandler path.
+                // Inserting `key_char` here duplicates IME composition: pinyin is
+                // inserted by keydown, then the committed Chinese text is inserted
+                // by the input handler. Keep keydown for navigation/deletion only.
+                if !ks
+                    .key_char
+                    .as_deref()
+                    .is_some_and(|c| c.chars().next().is_some_and(|ch| !ch.is_control()))
+                {
+                    cx.propagate();
                 }
-                _ => cx.propagate(),
-            },
+            }
         }
     }
 
@@ -3689,6 +5602,7 @@ impl WhiteboardView {
         self.editing = Some(id);
         self.caret = at;
         self.sel_anchor = at;
+        self.marked_range = None;
         self.focus.focus(window, cx);
     }
 
@@ -3734,6 +5648,9 @@ impl WhiteboardView {
             }
             self.text_selecting = true;
         }
+        // Clicking establishes a new native selection and cancels any stale
+        // composition range left by an IME that did not send `unmark_text`.
+        self.marked_range = None;
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -3742,6 +5659,7 @@ impl WhiteboardView {
     fn commit_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.text_selecting = false;
         self.pending_style = None;
+        self.marked_range = None;
         self.format_flyout = false;
         let Some(id) = self.editing.take() else {
             return;
@@ -3840,6 +5758,19 @@ impl WhiteboardView {
     }
 
     fn on_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            cx.propagate();
+            return;
+        }
+        // Escape cancels an in-progress connector without losing the source
+        // shape selection; its four direction buttons become visible again.
+        if ev.keystroke.key == "escape" && self.connecting.is_some() {
+            self.connecting = None;
+            self.pending = None;
+            self.hovered_connector = None;
+            cx.notify();
+            return;
+        }
         // Escape closes an open color picker or the templates modal (when the
         // board holds focus).
         if ev.keystroke.key == "escape" && (self.picker.is_some() || self.templates_open) {
@@ -3867,6 +5798,135 @@ impl WhiteboardView {
         }
         // Editing → full text-box key handling (caret, selection, edit, clipboard).
         self.text_edit_key(ev, window, cx);
+    }
+}
+
+impl BoardEmbedView {
+    /// Build a read-only embedded board view. The inner board starts in
+    /// read-only forced-pan mode.
+    pub fn new(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Self {
+        let board_style = style.clone();
+        let board = cx.new(|cx| WhiteboardView::new_read_only(scene, board_style, cx));
+        Self {
+            board,
+            style,
+            on_expand: None,
+        }
+    }
+
+    /// Access the inner board entity for host-driven inspection or updates.
+    pub fn board(&self) -> Entity<WhiteboardView> {
+        self.board.clone()
+    }
+
+    /// Install the callback fired by the embed view's "edit" affordance.
+    pub fn set_on_expand(&mut self, f: ExpandEmbedFn) {
+        self.on_expand = Some(f);
+    }
+}
+
+impl Render for BoardEmbedView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let st = (self.style)();
+        let ink = st.ink;
+        let panel = st.panel_strong;
+        let grid = st.grid;
+        let accent = st.accent;
+        let button = self.on_expand.as_ref().map(|_| {
+            div()
+                .id("board-embed-expand")
+                .absolute()
+                .top(px(10.0))
+                .right(px(10.0))
+                .h(px(30.0))
+                .px(px(10.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .gap(px(6.0))
+                .rounded(px(8.0))
+                .bg(panel)
+                .border_1()
+                .border_color(grid.opacity(0.5))
+                .hover(|s| s.bg(accent))
+                .text_size(px(12.0))
+                .text_color(ink)
+                .child("↗")
+                .child("Edit")
+                .on_click(cx.listener(|this, _ev, window, cx| {
+                    if let Some(f) = this.on_expand.clone() {
+                        f(window, cx);
+                    }
+                }))
+        });
+        div()
+            .size_full()
+            .relative()
+            .child(self.board.clone())
+            .children(button)
+    }
+}
+
+impl BoardThumbnailView {
+    pub fn new(snapshot: LocalThumbnailSnapshot, style: WhiteboardStyleFn) -> Self {
+        Self {
+            snapshot,
+            style,
+            font: Font::default(),
+        }
+    }
+
+    pub fn snapshot(&self) -> &LocalThumbnailSnapshot {
+        &self.snapshot
+    }
+
+    pub fn set_snapshot(&mut self, snapshot: LocalThumbnailSnapshot) {
+        self.snapshot = snapshot;
+    }
+}
+
+impl Render for BoardThumbnailView {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let WhiteboardStyle {
+            bg,
+            grid,
+            text,
+            ink,
+            panel,
+            ..
+        } = (self.style)();
+        let cam = self.snapshot.spec.camera;
+        let layers = build_thumbnail_layers(
+            &self.snapshot.scene,
+            &self.font,
+            cam,
+            ink,
+            text,
+            grid,
+            panel,
+            None,
+            None,
+            None,
+        );
+        let board_layer = canvas(
+            |_, _, _| {},
+            move |bounds, _, window, _| paint_board(bounds, cam, bg, grid, window),
+        )
+        .absolute()
+        .size_full();
+        let element_layers: Vec<gpui::AnyElement> = layers
+            .into_iter()
+            .map(|l| match l {
+                Layer::Band(es) => band_canvas(es, cam).into_any_element(),
+                Layer::Overlay(el) => el,
+            })
+            .collect();
+        div()
+            .size_full()
+            .relative()
+            .overflow_hidden()
+            .child(board_layer)
+            .children(element_layers)
     }
 }
 
@@ -4172,23 +6232,43 @@ fn rotate_element(kind: &mut ElementKind, cx: f32, cy: f32, delta: f32) {
     }
 }
 
-/// Screen position of a rotate handle: above a bounds' top-center. `handle_hit`
-/// and `paint_selection` agree via this one source (for single elements and for
-/// a group, whose bounds is the union of the selection).
+/// Screen position of a group's rotate button: the intersection of the top
+/// connector's horizontal guide and the right connector's vertical guide.
 fn rotate_handle_for_bbox(
     bb: (f32, f32, f32, f32),
     cam: Camera,
     origin: Point<Pixels>,
 ) -> (f32, f32) {
-    let top = to_screen((bb.0 + bb.2) / 2.0, bb.1, cam, origin);
+    let top_right = to_screen(bb.2, bb.1, cam, origin);
     (
-        f32::from(top.x),
-        f32::from(top.y) - SEL_PAD_PX - ROTATE_DIST,
+        f32::from(top_right.x) + CONNECTOR_BUTTON_GAP,
+        f32::from(top_right.y) - CONNECTOR_BUTTON_GAP,
     )
 }
 
-/// Screen position of a single element's rotate handle.
+/// Screen position of a single element's rotate button. For a rotated box the
+/// offset follows its local top/right outward directions.
 fn rotate_handle_screen(kind: &ElementKind, cam: Camera, origin: Point<Pixels>) -> (f32, f32) {
+    if let Some((x, y, w, h, rotation)) = box_like(kind) {
+        let corners = box_padded_corners(x, y, w, h, rotation, 0.0);
+        let top_right = to_screen(corners[1][0], corners[1][1], cam, origin);
+        let connectors = connector_points(kind);
+        let top = to_screen(connectors[0][0], connectors[0][1], cam, origin);
+        let right = to_screen(connectors[1][0], connectors[1][1], cam, origin);
+        let center = to_screen(x + w / 2.0, y + h / 2.0, cam, origin);
+        let unit = |point: Point<Pixels>| {
+            let dx = f32::from(point.x - center.x);
+            let dy = f32::from(point.y - center.y);
+            let length = (dx * dx + dy * dy).sqrt().max(1.0);
+            (dx / length, dy / length)
+        };
+        let up = unit(top);
+        let right = unit(right);
+        return (
+            f32::from(top_right.x) + (up.0 + right.0) * CONNECTOR_BUTTON_GAP,
+            f32::from(top_right.y) + (up.1 + right.1) * CONNECTOR_BUTTON_GAP,
+        );
+    }
     rotate_handle_for_bbox(bbox(kind), cam, origin)
 }
 
@@ -4241,6 +6321,46 @@ fn elements_extent(elems: &[Element]) -> (f32, f32) {
     } else {
         (0.0, 0.0)
     }
+}
+
+/// Whether an element exposes connector points while hovered.
+fn connector_capable(kind: &ElementKind) -> bool {
+    matches!(kind, ElementKind::Text(_) | ElementKind::Image(_)) || is_closed_shape(kind)
+}
+
+/// Connector points for a box-like element: top, right, bottom, left midpoints,
+/// rotated with the element. Empty for non-connectable kinds.
+fn connector_points(kind: &ElementKind) -> Vec<[f32; 2]> {
+    if !connector_capable(kind) {
+        return Vec::new();
+    }
+    let Some((x, y, w, h, rot)) = box_like(kind) else {
+        return Vec::new();
+    };
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    [
+        (x + w / 2.0, y),
+        (x + w, y + h / 2.0),
+        (x + w / 2.0, y + h),
+        (x, y + h / 2.0),
+    ]
+    .into_iter()
+    .map(|(px_, py_)| {
+        let (rx, ry) = rotate_pt(px_, py_, cx, cy, rot);
+        [rx, ry]
+    })
+    .collect()
+}
+
+fn connector_world_pos_in(elements: &[Element], anchor: SegmentAnchor) -> Option<[f32; 2]> {
+    elements
+        .iter()
+        .find(|element| element.id == anchor.element_id)
+        .and_then(|element| {
+            connector_points(&element.kind)
+                .get(anchor.connector)
+                .copied()
+        })
 }
 
 /// Whether `(wx, wy)` falls within an element's bounds, padded by `pad` (world).
@@ -4462,6 +6582,11 @@ fn block_local(x: f32, y: f32, rotation: f32, pivot: [f32; 2], p: [f32; 2]) -> [
     [rx - x, ry - y]
 }
 
+/// Block-local point → world space, applying rotation about the block/shape pivot.
+fn block_world(x: f32, y: f32, rotation: f32, pivot: [f32; 2], p: [f32; 2]) -> (f32, f32) {
+    rotate_pt(x + p[0], y + p[1], pivot[0], pivot[1], rotation)
+}
+
 /// Snap target `(tx, ty)` so its angle from `(ox, oy)` is a multiple of 45°,
 /// preserving the distance (the line-drawing constraint for endpoint drags).
 fn snap_45(ox: f32, oy: f32, tx: f32, ty: f32) -> (f32, f32) {
@@ -4527,25 +6652,6 @@ fn text_extent(t: &TextGeom) -> (f32, f32) {
     (cols * t.size * TEXT_CHAR_W, rows * t.size * TEXT_LINE_H)
 }
 
-/// Scale a `(x, y, w, h)` box in place by the per-axis maps `fx`/`fy`,
-/// normalizing to non-negative width/height. Shared by the box-shaped arms of
-/// [`resize_about`].
-fn resize_box(
-    x: &mut f32,
-    y: &mut f32,
-    w: &mut f32,
-    h: &mut f32,
-    fx: impl Fn(f32) -> f32,
-    fy: impl Fn(f32) -> f32,
-) {
-    let (x0, x1) = (fx(*x), fx(*x + *w));
-    let (y0, y1) = (fy(*y), fy(*y + *h));
-    *x = x0.min(x1);
-    *w = (x1 - x0).abs();
-    *y = y0.min(y1);
-    *h = (y1 - y0).abs();
-}
-
 /// Scale an element's geometry about `(ax, ay)` by `(sx, sy)` (world space).
 /// Stroke width is left unchanged.
 fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
@@ -4565,7 +6671,12 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
         | ElementKind::RoundRect(b)
         | ElementKind::Star(b)
         | ElementKind::Hexagon(b) => {
-            resize_box(&mut b.x, &mut b.y, &mut b.w, &mut b.h, fx, fy);
+            let (x0, x1) = (fx(b.x), fx(b.x + b.w));
+            let (y0, y1) = (fy(b.y), fy(b.y + b.h));
+            b.x = x0.min(x1);
+            b.w = (x1 - x0).abs();
+            b.y = y0.min(y1);
+            b.h = (y1 - y0).abs();
         }
         ElementKind::Line(s) | ElementKind::Arrow(s) => {
             s.x1 = fx(s.x1);
@@ -4583,10 +6694,20 @@ fn resize_about(kind: &mut ElementKind, ax: f32, ay: f32, sx: f32, sy: f32) {
             t.size = (t.size * (sx.abs() * sy.abs()).sqrt()).max(0.5);
         }
         ElementKind::Embed(em) => {
-            resize_box(&mut em.x, &mut em.y, &mut em.w, &mut em.h, fx, fy);
+            let (x0, x1) = (fx(em.x), fx(em.x + em.w));
+            let (y0, y1) = (fy(em.y), fy(em.y + em.h));
+            em.x = x0.min(x1);
+            em.w = (x1 - x0).abs();
+            em.y = y0.min(y1);
+            em.h = (y1 - y0).abs();
         }
         ElementKind::Image(im) => {
-            resize_box(&mut im.x, &mut im.y, &mut im.w, &mut im.h, fx, fy);
+            let (x0, x1) = (fx(im.x), fx(im.x + im.w));
+            let (y0, y1) = (fy(im.y), fy(im.y + im.h));
+            im.x = x0.min(x1);
+            im.w = (x1 - x0).abs();
+            im.y = y0.min(y1);
+            im.h = (y1 - y0).abs();
         }
     }
 }
@@ -4642,6 +6763,7 @@ struct ElemPaint {
     stroke: Hsla,
     fill: Option<Hsla>,
     text: Option<TextOutline>,
+    mindmap_connector_style: Option<MindMapConnectorStyle>,
 }
 
 /// One slice of the board's z-order paint stack. Canvas-drawn elements collect
@@ -4664,7 +6786,15 @@ fn band_canvas(elems: Vec<ElemPaint>, cam: Camera) -> impl IntoElement {
                 // Shapes / lines / pen paint here; Text elements are a no-op in
                 // `paint_element`. Any text outline — a Text element's content or
                 // a shape's label — then paints on top.
-                paint_element(&ep.kind, cam, bounds.origin, ep.stroke, ep.fill, window);
+                paint_element(
+                    &ep.kind,
+                    ep.mindmap_connector_style,
+                    cam,
+                    bounds.origin,
+                    ep.stroke,
+                    ep.fill,
+                    window,
+                );
                 if let Some(t) = &ep.text {
                     paint_text(t, cam, bounds.origin, window);
                 }
@@ -4675,13 +6805,418 @@ fn band_canvas(elems: Vec<ElemPaint>, cam: Camera) -> impl IntoElement {
     .size_full()
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_thumbnail_layers(
+    scene: &Scene,
+    font: &Font,
+    cam: Camera,
+    ink: Hsla,
+    text: Hsla,
+    grid: Hsla,
+    panel: Hsla,
+    viewport: Option<WorldViewport>,
+    mut text_layout_cache: Option<&mut HashMap<u64, CachedTextLayout>>,
+    mut label_layout_cache: Option<&mut HashMap<u64, CachedLabelLayout>>,
+) -> Vec<Layer> {
+    let mindmap_connector_styles: HashMap<u64, MindMapConnectorStyle> = scene
+        .elements
+        .iter()
+        .filter_map(|element| {
+            thumbnail_mindmap_connector_style_for_element(scene, &element.kind)
+                .map(|style| (element.id, style))
+        })
+        .collect();
+    let mut layers: Vec<Layer> = Vec::new();
+    let mut band: Vec<ElemPaint> = Vec::new();
+    for e in &scene.elements {
+        if viewport.is_some_and(|viewport| !viewport.intersects(bbox(&e.kind))) {
+            continue;
+        }
+        let id = e.id;
+        let stroke = e.stroke.map_or(ink, u32_to_hsla);
+        let fill = e.fill.map(u32_to_hsla);
+        let label = e.label.as_deref();
+        let label_color = e.label_color;
+        let styles = e.styles.as_slice();
+        match &e.kind {
+            ElementKind::Embed(em) => {
+                if !band.is_empty() {
+                    layers.push(Layer::Band(std::mem::take(&mut band)));
+                }
+                layers.push(Layer::Overlay(
+                    div()
+                        .absolute()
+                        .left(px((em.x - cam.x) * cam.zoom.max(MIN_ZOOM)))
+                        .top(px((em.y - cam.y) * cam.zoom.max(MIN_ZOOM)))
+                        .w(px(em.w * cam.zoom.max(MIN_ZOOM)))
+                        .h(px(em.h * cam.zoom.max(MIN_ZOOM)))
+                        .bg(panel)
+                        .border_1()
+                        .border_color(grid)
+                        .rounded(px(8.0))
+                        .overflow_hidden()
+                        .p(px(10.0 * cam.zoom.max(MIN_ZOOM)))
+                        .flex()
+                        .flex_col()
+                        .gap(px(3.0 * cam.zoom.max(MIN_ZOOM)))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.0 * cam.zoom.max(MIN_ZOOM)))
+                                .text_size(px(14.0 * cam.zoom.max(MIN_ZOOM)))
+                                .text_color(ink)
+                                .child(div().child("▤"))
+                                .child(SharedString::from(em.title.clone())),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(11.0 * cam.zoom.max(MIN_ZOOM)))
+                                .text_color(text)
+                                .child("Page"),
+                        )
+                        .into_any_element(),
+                ));
+            }
+            ElementKind::Image(im) => {
+                if !band.is_empty() {
+                    layers.push(Layer::Band(std::mem::take(&mut band)));
+                }
+                let rot = snap_quarter(im.rotation);
+                let (bx, by, bw, bh) = if rot.abs() < ROT_EPS {
+                    (im.x, im.y, im.w, im.h)
+                } else {
+                    let c = box_padded_corners(im.x, im.y, im.w, im.h, rot, 0.0);
+                    let (x0, y0, x1, y1) = aabb(&c);
+                    (x0, y0, x1 - x0, y1 - y0)
+                };
+                let zoom = cam.zoom.max(MIN_ZOOM);
+                layers.push(Layer::Overlay(
+                    div()
+                        .absolute()
+                        .left(px((bx - cam.x) * zoom))
+                        .top(px((by - cam.y) * zoom))
+                        .w(px(bw * zoom))
+                        .h(px(bh * zoom))
+                        .rounded(px(2.0))
+                        .bg(panel)
+                        .border_1()
+                        .border_color(grid)
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            div()
+                                .text_size(px(11.0 * zoom))
+                                .text_color(text)
+                                .child("Image"),
+                        )
+                        .into_any_element(),
+                ));
+            }
+            kind => {
+                let text_outline = thumbnail_text_outline(
+                    font,
+                    kind,
+                    stroke,
+                    label,
+                    label_color,
+                    styles,
+                    id,
+                    text_layout_cache.as_deref_mut(),
+                    label_layout_cache.as_deref_mut(),
+                );
+                band.push(ElemPaint {
+                    kind: kind.clone(),
+                    stroke,
+                    fill,
+                    text: text_outline,
+                    mindmap_connector_style: mindmap_connector_styles.get(&id).copied(),
+                });
+            }
+        }
+    }
+    if !band.is_empty() {
+        layers.push(Layer::Band(band));
+    }
+    layers
+}
+
+#[allow(clippy::too_many_arguments)]
+fn thumbnail_text_outline(
+    font: &Font,
+    kind: &ElementKind,
+    stroke: Hsla,
+    label: Option<&str>,
+    label_color: Option<u32>,
+    styles: &[StyleSpan],
+    element_id: u64,
+    mut text_layout_cache: Option<&mut HashMap<u64, CachedTextLayout>>,
+    label_layout_cache: Option<&mut HashMap<u64, CachedLabelLayout>>,
+) -> Option<TextOutline> {
+    if let ElementKind::Text(t) = kind {
+        let layout = match text_layout_cache.as_deref_mut() {
+            Some(cache) => {
+                cached_text_layout(cache, font, element_id, &t.content, t.size, None, styles)
+            }
+            None => prepare_text_layout(font, &t.content, t.size, None, styles, 0),
+        };
+        return Some(TextOutline {
+            segs: layout.segs.clone(),
+            bold_segs: layout.bold_segs.clone(),
+            bold_width: layout.bold_width,
+            color: stroke,
+            x: t.x,
+            y: t.y,
+            rotation: t.rotation,
+            pivot: [t.x + layout.width / 2.0, t.y + layout.height / 2.0],
+            line_height: layout.line_height,
+            caret: None,
+            selection: Vec::new(),
+            sel_color: hsla(0.0, 0.0, 0.0, 0.0),
+            decorations: layout.decorations.clone(),
+        });
+    }
+    if is_closed_shape(kind)
+        && let Some((bx, by, bw, bh, rot)) = box_like(kind)
+        && label.is_some_and(|s| !s.trim().is_empty())
+    {
+        let text = label.map_or("", str::trim);
+        let cached_label = label_layout_cache.map(|cache| {
+            cached_label_layout(cache, font, element_id, kind, bx, by, bw, bh, text, styles)
+        });
+        let (x, y, layout) = if let Some(label) = cached_label {
+            (bx + label.offset_x, by + label.offset_y, label.text)
+        } else {
+            let block = shape_label_block(font, kind, bx, by, bw, bh, text);
+            let layout = match text_layout_cache {
+                Some(cache) => cached_text_layout(
+                    cache,
+                    font,
+                    element_id,
+                    text,
+                    block.size,
+                    Some(block.wrap),
+                    styles,
+                ),
+                None => prepare_text_layout(font, text, block.size, Some(block.wrap), styles, 0),
+            };
+            (block.x, block.y, layout)
+        };
+        return Some(TextOutline {
+            segs: layout.segs.clone(),
+            bold_segs: layout.bold_segs.clone(),
+            bold_width: layout.bold_width,
+            color: label_color.map_or(stroke, u32_to_hsla),
+            x,
+            y,
+            rotation: rot,
+            pivot: [bx + bw / 2.0, by + bh / 2.0],
+            line_height: layout.line_height,
+            caret: None,
+            selection: Vec::new(),
+            sel_color: hsla(0.0, 0.0, 0.0, 0.0),
+            decorations: layout.decorations.clone(),
+        });
+    }
+    None
+}
+
+fn thumbnail_mindmap_meta(scene: &Scene, id: u64) -> Option<MindMapNodeMeta> {
+    scene
+        .elements
+        .iter()
+        .find(|e| e.id == id)
+        .and_then(|e| e.mindmap)
+}
+
+fn thumbnail_mindmap_root_of(scene: &Scene, id: u64) -> Option<u64> {
+    let mut current = id;
+    loop {
+        let meta = thumbnail_mindmap_meta(scene, current)?;
+        match meta.parent {
+            Some(parent) => current = parent,
+            None => return Some(current),
+        }
+    }
+}
+
+fn thumbnail_mindmap_connector_style_for_root(
+    scene: &Scene,
+    root_id: u64,
+) -> MindMapConnectorStyle {
+    thumbnail_mindmap_meta(scene, root_id)
+        .map(|meta| meta.connector_style)
+        .unwrap_or_default()
+}
+
+fn thumbnail_mindmap_connector_style_for_element(
+    scene: &Scene,
+    kind: &ElementKind,
+) -> Option<MindMapConnectorStyle> {
+    let seg = match kind {
+        ElementKind::Line(seg) | ElementKind::Arrow(seg) => seg,
+        _ => return None,
+    };
+    let start_root = seg
+        .start_anchor
+        .and_then(|anchor| thumbnail_mindmap_root_of(scene, anchor.element_id));
+    let end_root = seg
+        .end_anchor
+        .and_then(|anchor| thumbnail_mindmap_root_of(scene, anchor.element_id));
+    match (start_root, end_root) {
+        (Some(a), Some(b)) if a == b => Some(thumbnail_mindmap_connector_style_for_root(scene, a)),
+        _ => None,
+    }
+}
+
 /// A text element's glyph outlines (text-local space) plus placement, captured
 /// for the paint closure to transform (camera + rotation) and fill.
+#[derive(Clone)]
+struct CachedTextLayout {
+    signature: u64,
+    segs: Arc<[font::Seg]>,
+    bold_segs: Arc<[font::Seg]>,
+    bold_width: f32,
+    decorations: Arc<[font::Decoration]>,
+    width: f32,
+    height: f32,
+    line_height: f32,
+}
+
+#[derive(Clone)]
+struct CachedLabelLayout {
+    signature: u64,
+    offset_x: f32,
+    offset_y: f32,
+    size: f32,
+    wrap: f32,
+    text: CachedTextLayout,
+}
+
+fn hash_text_styles(styles: &[StyleSpan], hasher: &mut impl Hasher) {
+    for span in styles {
+        span.start.hash(hasher);
+        span.end.hash(hasher);
+        span.style.bold.hash(hasher);
+        span.style.italic.hash(hasher);
+        span.style.underline.hash(hasher);
+        span.style.strike.hash(hasher);
+        span.style.highlight.hash(hasher);
+    }
+}
+
+fn text_layout_signature(
+    content: &str,
+    size: f32,
+    max_width: Option<f32>,
+    styles: &[StyleSpan],
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    size.to_bits().hash(&mut hasher);
+    max_width.map(f32::to_bits).hash(&mut hasher);
+    hash_text_styles(styles, &mut hasher);
+    hasher.finish()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cached_label_layout(
+    cache: &mut HashMap<u64, CachedLabelLayout>,
+    font: &Font,
+    element_id: u64,
+    kind: &ElementKind,
+    bx: f32,
+    by: f32,
+    bw: f32,
+    bh: f32,
+    content: &str,
+    styles: &[StyleSpan],
+) -> CachedLabelLayout {
+    let mut hasher = DefaultHasher::new();
+    content.hash(&mut hasher);
+    bw.to_bits().hash(&mut hasher);
+    bh.to_bits().hash(&mut hasher);
+    std::mem::discriminant(kind).hash(&mut hasher);
+    hash_text_styles(styles, &mut hasher);
+    let signature = hasher.finish();
+    if let Some(layout) = cache
+        .get(&element_id)
+        .filter(|layout| layout.signature == signature)
+    {
+        return layout.clone();
+    }
+
+    let block = shape_label_block(font, kind, bx, by, bw, bh, content);
+    let text = prepare_text_layout(
+        font,
+        content,
+        block.size,
+        Some(block.wrap),
+        styles,
+        signature,
+    );
+    let cached = CachedLabelLayout {
+        signature,
+        offset_x: block.x - bx,
+        offset_y: block.y - by,
+        size: block.size,
+        wrap: block.wrap,
+        text,
+    };
+    cache.insert(element_id, cached.clone());
+    cached
+}
+
+fn cached_text_layout(
+    cache: &mut HashMap<u64, CachedTextLayout>,
+    font: &Font,
+    element_id: u64,
+    content: &str,
+    size: f32,
+    max_width: Option<f32>,
+    styles: &[StyleSpan],
+) -> CachedTextLayout {
+    let signature = text_layout_signature(content, size, max_width, styles);
+    if let Some(layout) = cache
+        .get(&element_id)
+        .filter(|layout| layout.signature == signature)
+    {
+        return layout.clone();
+    }
+    let cached = prepare_text_layout(font, content, size, max_width, styles, signature);
+    cache.insert(element_id, cached.clone());
+    cached
+}
+
+fn prepare_text_layout(
+    font: &Font,
+    content: &str,
+    size: f32,
+    max_width: Option<f32>,
+    styles: &[StyleSpan],
+    signature: u64,
+) -> CachedTextLayout {
+    let layout = font.layout_styled(content, size, max_width, |byte| {
+        glyph_style(style_at(styles, byte))
+    });
+    CachedTextLayout {
+        signature,
+        segs: layout.segs.into(),
+        bold_segs: layout.bold_segs.into(),
+        bold_width: layout.bold_width,
+        decorations: layout.decorations.into(),
+        width: layout.width,
+        height: layout.height,
+        line_height: layout.line_height,
+    }
+}
+
 struct TextOutline {
-    segs: Vec<font::Seg>,
+    segs: Arc<[font::Seg]>,
     /// Bold glyphs' outlines, stroked over the fill (synthetic bold), + the
     /// local stroke width.
-    bold_segs: Vec<font::Seg>,
+    bold_segs: Arc<[font::Seg]>,
     bold_width: f32,
     /// Glyph fill color — a Text element's ink, or a shape label's color.
     color: Hsla,
@@ -4699,7 +7234,7 @@ struct TextOutline {
     /// Fill color for the selection highlight.
     sel_color: Hsla,
     /// Underline / strikethrough / highlight runs (text-local), from the styling.
-    decorations: Vec<font::Decoration>,
+    decorations: Arc<[font::Decoration]>,
 }
 
 /// Paint a text element's vector outlines (and, when editing, its caret). Local
@@ -4733,7 +7268,7 @@ fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, window: &mut 
         pb.build().ok()
     };
     // Highlights, then the editing selection — both behind the glyphs.
-    for d in &t.decorations {
+    for d in t.decorations.iter() {
         if let font::DecoKind::Highlight(c) = d.kind
             && let Some(path) = rect_path(d.rect)
         {
@@ -4790,7 +7325,7 @@ fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, window: &mut 
         }
     }
     // Underline / strikethrough bars, in the text color, over the glyphs.
-    for d in &t.decorations {
+    for d in t.decorations.iter() {
         if matches!(d.kind, font::DecoKind::Underline | font::DecoKind::Strike)
             && let Some(path) = rect_path(d.rect)
         {
@@ -4810,6 +7345,7 @@ fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, window: &mut 
 /// Paint one element at the current camera.
 fn paint_element(
     kind: &ElementKind,
+    mindmap_connector_style: Option<MindMapConnectorStyle>,
     cam: Camera,
     origin: Point<Pixels>,
     ink: Hsla,
@@ -4831,8 +7367,24 @@ fn paint_element(
         ElementKind::Hexagon(b) => {
             paint_box_polygon(b, &hexagon_unit(), cam, origin, ink, fill, window)
         }
-        ElementKind::Line(s) => paint_segment(s, false, cam, origin, ink, window),
-        ElementKind::Arrow(s) => paint_segment(s, true, cam, origin, ink, window),
+        ElementKind::Line(s) => paint_segment(
+            s,
+            false,
+            mindmap_connector_style.unwrap_or(MindMapConnectorStyle::Straight),
+            cam,
+            origin,
+            ink,
+            window,
+        ),
+        ElementKind::Arrow(s) => paint_segment(
+            s,
+            true,
+            mindmap_connector_style.unwrap_or(MindMapConnectorStyle::Straight),
+            cam,
+            origin,
+            ink,
+            window,
+        ),
         // Text / cards / images are drawn as overlay elements in render(), not here.
         ElementKind::Text(_) | ElementKind::Embed(_) | ElementKind::Image(_) => {}
     }
@@ -4860,31 +7412,6 @@ fn paint_stroke(
     }
 }
 
-/// Fill (when `fill` is `Some`) then stroke a closed path built by `trace`.
-/// The stroke width is the world `width` scaled to screen by `z`, floored at
-/// 0.5px. Shared epilogue of the box-shape painters.
-fn fill_then_stroke(
-    trace: impl Fn(&mut PathBuilder),
-    width: f32,
-    z: f32,
-    ink: Hsla,
-    fill: Option<Hsla>,
-    window: &mut Window,
-) {
-    if let Some(fill) = fill {
-        let mut fb = PathBuilder::fill();
-        trace(&mut fb);
-        if let Ok(path) = fb.build() {
-            window.paint_path(path, fill);
-        }
-    }
-    let mut pb = PathBuilder::stroke(px((width * z).max(0.5)));
-    trace(&mut pb);
-    if let Ok(path) = pb.build() {
-        window.paint_path(path, ink);
-    }
-}
-
 fn paint_rect(
     b: &BoxGeom,
     cam: Camera,
@@ -4902,7 +7429,18 @@ fn paint_rect(
         pb.line_to(to_screen(c[3][0], c[3][1], cam, origin));
         pb.close();
     };
-    fill_then_stroke(trace, b.width, z, ink, fill, window);
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    trace(&mut pb);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
 }
 
 fn paint_ellipse(
@@ -4931,7 +7469,18 @@ fn paint_ellipse(
         pb.cubic_bezier_to(s(cx + rx, cy), s(cx + kx, cy - ry), s(cx + rx, cy - ky));
         pb.close();
     };
-    fill_then_stroke(trace, b.width, z, ink, fill, window);
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    trace(&mut pb);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
 }
 
 /// Vertices of box-fitting polygons in box-relative coords: `(±1, ±1)` is the
@@ -4994,7 +7543,18 @@ fn paint_box_polygon(
             pb.close();
         }
     };
-    fill_then_stroke(trace, b.width, z, ink, fill, window);
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    trace(&mut pb);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
 }
 
 /// A rounded rectangle: straight edges joined by quarter-circle corners (radius
@@ -5029,12 +7589,24 @@ fn paint_round_rect(
         pb.cubic_bezier_to(s(x0 + r, y0), s(x0, y0 + r - k), s(x0 + r - k, y0));
         pb.close();
     };
-    fill_then_stroke(trace, b.width, z, ink, fill, window);
+    if let Some(fill) = fill {
+        let mut fb = PathBuilder::fill();
+        trace(&mut fb);
+        if let Ok(path) = fb.build() {
+            window.paint_path(path, fill);
+        }
+    }
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    trace(&mut pb);
+    if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
 }
 
 fn paint_segment(
     seg: &SegGeom,
     arrow: bool,
+    style: MindMapConnectorStyle,
     cam: Camera,
     origin: Point<Pixels>,
     ink: Hsla,
@@ -5043,16 +7615,48 @@ fn paint_segment(
     let z = cam.zoom.max(MIN_ZOOM);
     let p1 = to_screen(seg.x1, seg.y1, cam, origin);
     let p2 = to_screen(seg.x2, seg.y2, cam, origin);
-    let mut pb = PathBuilder::stroke(px((seg.width * z).max(0.5)));
-    pb.move_to(p1);
-    pb.line_to(p2);
-    if let Ok(path) = pb.build() {
-        window.paint_path(path, ink);
-    }
+    let p1f = [f32::from(p1.x), f32::from(p1.y)];
+    let p2f = [f32::from(p2.x), f32::from(p2.y)];
+    let stroke_px = (seg.width * z).max(0.5);
+    let mut points = vec![p1f];
+    let (dxw, _dyw) = (seg.x2 - seg.x1, seg.y2 - seg.y1);
+    let (end_dx, end_dy) = match style {
+        MindMapConnectorStyle::Straight => {
+            points.push(p2f);
+            (p2f[0] - p1f[0], p2f[1] - p1f[1])
+        }
+        MindMapConnectorStyle::Bezier => {
+            let cx1 = seg.x1 + dxw * 0.35;
+            let cy1 = seg.y1;
+            let cx2 = seg.x2 - dxw * 0.35;
+            let cy2 = seg.y2;
+            let c1 = to_screen(cx1, cy1, cam, origin);
+            let c2 = to_screen(cx2, cy2, cam, origin);
+            let c1f = [f32::from(c1.x), f32::from(c1.y)];
+            let c2f = [f32::from(c2.x), f32::from(c2.y)];
+            for i in 1..=24 {
+                let t = i as f32 / 24.0;
+                points.push(cubic_point(p1f, c1f, c2f, p2f, t));
+            }
+            (3.0 * (p2f[0] - c2f[0]), 3.0 * (p2f[1] - c2f[1]))
+        }
+        MindMapConnectorStyle::Orthogonal => {
+            let mid_x = seg.x1 + dxw * 0.5;
+            let m1 = to_screen(mid_x, seg.y1, cam, origin);
+            let m2 = to_screen(mid_x, seg.y2, cam, origin);
+            let m1f = [f32::from(m1.x), f32::from(m1.y)];
+            let m2f = [f32::from(m2.x), f32::from(m2.y)];
+            points.push(m1f);
+            points.push(m2f);
+            points.push(p2f);
+            (p2f[0] - m2f[0], p2f[1] - m2f[1])
+        }
+    };
+    paint_polyline(points.as_slice(), stroke_px, seg.style, ink, window);
     if !arrow {
         return;
     }
-    let (dx, dy) = (f32::from(p2.x - p1.x), f32::from(p2.y - p1.y));
+    let (dx, dy) = (end_dx, end_dy);
     let len = (dx * dx + dy * dy).sqrt();
     if len < 1.0 {
         return;
@@ -5076,34 +7680,164 @@ fn paint_segment(
     }
 }
 
-/// A solid accent square handle centered at a screen point.
-fn draw_handle(hx: f32, hy: f32, color: Hsla, window: &mut Window) {
-    let h = HANDLE_HALF;
-    window.paint_quad(fill(
-        Bounds {
-            origin: point(px(hx - h), px(hy - h)),
-            size: size(px(h * 2.0), px(h * 2.0)),
-        },
-        color,
-    ));
+fn cubic_point(p0: [f32; 2], p1: [f32; 2], p2: [f32; 2], p3: [f32; 2], t: f32) -> [f32; 2] {
+    let mt = 1.0 - t;
+    let a = mt * mt * mt;
+    let b = 3.0 * mt * mt * t;
+    let c = 3.0 * mt * t * t;
+    let d = t * t * t;
+    [
+        a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+        a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1],
+    ]
 }
 
-/// A filled circular handle (distinct from the square resize handles) marking
-/// the rotation grip, centered at a screen point.
-fn draw_rotate_handle(hx: f32, hy: f32, color: Hsla, window: &mut Window) {
-    let r = HANDLE_HALF + 0.5;
-    const K: f32 = 0.552_284_8;
-    let k = r * K;
-    let p = |x: f32, y: f32| point(px(x), px(y));
-    let mut pb = PathBuilder::fill();
-    pb.move_to(p(hx + r, hy));
-    pb.cubic_bezier_to(p(hx, hy + r), p(hx + r, hy + k), p(hx + k, hy + r));
-    pb.cubic_bezier_to(p(hx - r, hy), p(hx - k, hy + r), p(hx - r, hy + k));
-    pb.cubic_bezier_to(p(hx, hy - r), p(hx - r, hy - k), p(hx - k, hy - r));
-    pb.cubic_bezier_to(p(hx + r, hy), p(hx + k, hy - r), p(hx + r, hy - k));
-    pb.close();
+fn paint_polyline(
+    points: &[[f32; 2]],
+    stroke_px: f32,
+    style: SegmentStyle,
+    ink: Hsla,
+    window: &mut Window,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let mut pb = PathBuilder::stroke(px(stroke_px));
+    match style {
+        SegmentStyle::Solid => {
+            pb.move_to(point(px(points[0][0]), px(points[0][1])));
+            for p in &points[1..] {
+                pb.line_to(point(px(p[0]), px(p[1])));
+            }
+        }
+        SegmentStyle::Dashed => {
+            let dash = (stroke_px * 4.5).max(10.0);
+            let gap = (stroke_px * 2.5).max(6.0);
+            let cycle = dash + gap;
+            let mut traveled = 0.0;
+            for seg in points.windows(2) {
+                let a = seg[0];
+                let b = seg[1];
+                let dx = b[0] - a[0];
+                let dy = b[1] - a[1];
+                let len = (dx * dx + dy * dy).sqrt();
+                if len <= 0.01 {
+                    continue;
+                }
+                let ux = dx / len;
+                let uy = dy / len;
+                let mut local = 0.0;
+                while local < len {
+                    let at = traveled + local;
+                    let phase = at % cycle;
+                    let draw = if phase < dash { dash - phase } else { 0.0 };
+                    if draw > 0.0 {
+                        let s = local;
+                        let e = (local + draw).min(len);
+                        let p0 = [a[0] + ux * s, a[1] + uy * s];
+                        let p1 = [a[0] + ux * e, a[1] + uy * e];
+                        pb.move_to(point(px(p0[0]), px(p0[1])));
+                        pb.line_to(point(px(p1[0]), px(p1[1])));
+                        local = e;
+                    } else {
+                        local = (local + (cycle - phase)).min(len);
+                    }
+                }
+                traveled += len;
+            }
+        }
+    }
     if let Ok(path) = pb.build() {
+        window.paint_path(path, ink);
+    }
+}
+
+fn draw_filled_circle(hx: f32, hy: f32, radius: f32, color: Hsla, window: &mut Window) {
+    const K: f32 = 0.552_284_8;
+    let k = radius * K;
+    let p = |x: f32, y: f32| point(px(x), px(y));
+    let mut path = PathBuilder::fill();
+    path.move_to(p(hx + radius, hy));
+    path.cubic_bezier_to(
+        p(hx, hy + radius),
+        p(hx + radius, hy + k),
+        p(hx + k, hy + radius),
+    );
+    path.cubic_bezier_to(
+        p(hx - radius, hy),
+        p(hx - k, hy + radius),
+        p(hx - radius, hy + k),
+    );
+    path.cubic_bezier_to(
+        p(hx, hy - radius),
+        p(hx - radius, hy - k),
+        p(hx - k, hy - radius),
+    );
+    path.cubic_bezier_to(
+        p(hx + radius, hy),
+        p(hx + k, hy - radius),
+        p(hx + radius, hy - k),
+    );
+    path.close();
+    if let Ok(path) = path.build() {
         window.paint_path(path, color);
+    }
+}
+
+/// Compact circular resize handle matching the whiteboard connector controls.
+fn draw_handle(hx: f32, hy: f32, color: Hsla, window: &mut Window) {
+    draw_filled_circle(hx, hy, HANDLE_HALF + 1.0, hsla(0.0, 0.0, 1.0, 1.0), window);
+    draw_filled_circle(hx, hy, HANDLE_HALF, color, window);
+}
+
+/// Screen-space centers for the top/right/bottom/left connector buttons. Each
+/// button is pushed outward from the selected element while its line still
+/// starts at the true edge connector point.
+fn connector_button_centers(
+    kind: &ElementKind,
+    cam: Camera,
+    origin: Point<Pixels>,
+) -> [Point<Pixels>; 4] {
+    let points = connector_points(kind);
+    let edges = [
+        to_screen(points[0][0], points[0][1], cam, origin),
+        to_screen(points[1][0], points[1][1], cam, origin),
+        to_screen(points[2][0], points[2][1], cam, origin),
+        to_screen(points[3][0], points[3][1], cam, origin),
+    ];
+    let center = edges.iter().fold((0.0, 0.0), |(x, y), point| {
+        (x + f32::from(point.x), y + f32::from(point.y))
+    });
+    let center = (center.0 / 4.0, center.1 / 4.0);
+    edges.map(|edge| {
+        let dx = f32::from(edge.x) - center.0;
+        let dy = f32::from(edge.y) - center.1;
+        let length = (dx * dx + dy * dy).sqrt().max(1.0);
+        point(
+            edge.x + px(dx / length * CONNECTOR_BUTTON_GAP),
+            edge.y + px(dy / length * CONNECTOR_BUTTON_GAP),
+        )
+    })
+}
+
+fn paint_snap_points(
+    kind: &ElementKind,
+    active: usize,
+    cam: Camera,
+    origin: Point<Pixels>,
+    color: Hsla,
+    window: &mut Window,
+) {
+    for (index, point) in connector_points(kind).into_iter().enumerate() {
+        let screen = to_screen(point[0], point[1], cam, origin);
+        let radius = if index == active {
+            HANDLE_HALF + 1.5
+        } else {
+            HANDLE_HALF
+        };
+        let (x, y) = (f32::from(screen.x), f32::from(screen.y));
+        draw_filled_circle(x, y, radius + 1.0, hsla(0.0, 0.0, 1.0, 1.0), window);
+        draw_filled_circle(x, y, radius, color, window);
     }
 }
 
@@ -5121,26 +7855,14 @@ fn paint_selection(
             let p = to_screen(wx, wy, cam, origin);
             draw_handle(f32::from(p.x), f32::from(p.y), color, window);
         }
-        let (rx, ry) = rotate_handle_screen(kind, cam, origin);
-        draw_rotate_handle(rx, ry, color, window);
         return;
     }
     // Box-like (rect/ellipse/text): the (possibly rotated) box outline, four
     // corner handles, and a rotate grip. Edge-midpoint handles (per-axis stretch)
     // show only when upright — a rotated box's edges aren't world-axis-aligned.
     if let Some((x, y, w, h, rot)) = box_like(kind) {
-        let z = cam.zoom.max(MIN_ZOOM);
-        let s = box_padded_corners(x, y, w, h, rot, SEL_PAD_PX / z)
-            .map(|p| to_screen(p[0], p[1], cam, origin));
-        let mut pb = PathBuilder::stroke(px(1.5));
-        pb.move_to(s[0]);
-        pb.line_to(s[1]);
-        pb.line_to(s[2]);
-        pb.line_to(s[3]);
-        pb.close();
-        if let Ok(path) = pb.build() {
-            window.paint_path(path, color);
-        }
+        let s =
+            box_padded_corners(x, y, w, h, rot, 0.0).map(|p| to_screen(p[0], p[1], cam, origin));
         for p in &s {
             draw_handle(f32::from(p.x), f32::from(p.y), color, window);
         }
@@ -5160,8 +7882,6 @@ fn paint_selection(
                 draw_handle(hx, hy, color, window);
             }
         }
-        let (rx, ry) = rotate_handle_screen(kind, cam, origin);
-        draw_rotate_handle(rx, ry, color, window);
         return;
     }
     // Draw / Embed: a padded AABB box + four corner handles. Freehand strokes
@@ -5169,18 +7889,9 @@ fn paint_selection(
     let bb = bbox(kind);
     let tl = to_screen(bb.0, bb.1, cam, origin);
     let br = to_screen(bb.2, bb.3, cam, origin);
-    let m = SEL_PAD_PX;
+    let m = 0.0;
     let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
     let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
-    let mut pb = PathBuilder::stroke(px(1.5));
-    pb.move_to(point(px(x0), px(y0)));
-    pb.line_to(point(px(x1), px(y0)));
-    pb.line_to(point(px(x1), px(y1)));
-    pb.line_to(point(px(x0), px(y1)));
-    pb.close();
-    if let Ok(path) = pb.build() {
-        window.paint_path(path, color);
-    }
     let (mx, my) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
     for (hx, hy) in [
         (x0, y0),
@@ -5193,35 +7904,6 @@ fn paint_selection(
         (x0, my),
     ] {
         draw_handle(hx, hy, color, window);
-    }
-    if rotatable(kind) {
-        let (rx, ry) = rotate_handle_screen(kind, cam, origin);
-        draw_rotate_handle(rx, ry, color, window);
-    }
-}
-
-/// A thin selection outline (no handles) — used for each element in a
-/// multi-selection.
-fn paint_box_outline(
-    bb: (f32, f32, f32, f32),
-    cam: Camera,
-    origin: Point<Pixels>,
-    color: Hsla,
-    window: &mut Window,
-) {
-    let tl = to_screen(bb.0, bb.1, cam, origin);
-    let br = to_screen(bb.2, bb.3, cam, origin);
-    let m = SEL_PAD_PX;
-    let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
-    let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
-    let mut pb = PathBuilder::stroke(px(1.5));
-    pb.move_to(point(px(x0), px(y0)));
-    pb.line_to(point(px(x1), px(y0)));
-    pb.line_to(point(px(x1), px(y1)));
-    pb.line_to(point(px(x0), px(y1)));
-    pb.close();
-    if let Ok(p) = pb.build() {
-        window.paint_path(p, color);
     }
 }
 
@@ -5262,8 +7944,335 @@ fn paint_marquee(
     }
 }
 
+fn paint_alignment_guides(
+    guides: AlignmentGuides,
+    bounds: Bounds<Pixels>,
+    cam: Camera,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let mut color = color;
+    color.a = 0.8;
+    if let Some(x) = guides.vertical {
+        let screen = to_screen(x, 0.0, cam, bounds.origin);
+        let mut path = PathBuilder::stroke(px(1.0));
+        path.move_to(point(screen.x, bounds.top()));
+        path.line_to(point(screen.x, bounds.bottom()));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
+    }
+    if let Some(y) = guides.horizontal {
+        let screen = to_screen(0.0, y, cam, bounds.origin);
+        let mut path = PathBuilder::stroke(px(1.0));
+        path.move_to(point(bounds.left(), screen.y));
+        path.line_to(point(bounds.right(), screen.y));
+        if let Ok(path) = path.build() {
+            window.paint_path(path, color);
+        }
+    }
+}
+
+impl EntityInputHandler for WhiteboardView {
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        actual_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let text = self.editing_content()?;
+        let range = Self::utf16_range_to_utf8_in(&text, &range_utf16);
+        actual_range.replace(Self::utf8_range_to_utf16_in(&text, &range));
+        Some(text[range].to_string())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let text = self.editing_content()?;
+        let range = {
+            let (s, e) = self.sel_range();
+            s..e
+        };
+        Some(UTF16Selection {
+            range: Self::utf8_range_to_utf16_in(&text, &range),
+            reversed: self.caret < self.sel_anchor,
+        })
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
+        let text = self.editing_content()?;
+        self.marked_range
+            .as_ref()
+            .map(|range| Self::utf8_range_to_utf16_in(&text, range))
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.marked_range = None;
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = self.editing_content() else {
+            return;
+        };
+        let visible_range = range_utf16
+            .as_ref()
+            .map(|range| Self::utf16_range_to_utf8_in(&text, range))
+            .or(self.marked_range.clone())
+            .unwrap_or_else(|| {
+                let (start, end) = self.sel_range();
+                start..end
+            });
+        self.replace_text_in_visible_range(visible_range, new_text, None, false, cx);
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range_utf16: Option<Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = self.editing_content() else {
+            return;
+        };
+        let visible_range = range_utf16
+            .as_ref()
+            .map(|range| Self::utf16_range_to_utf8_in(&text, range))
+            .or(self.marked_range.clone())
+            .unwrap_or_else(|| {
+                let (start, end) = self.sel_range();
+                start..end
+            });
+        let selected_range_relative = new_selected_range_utf16
+            .as_ref()
+            .map(|range_utf16| Self::utf16_range_to_utf8_in(new_text, range_utf16))
+            .map(|relative| relative.start..relative.end);
+
+        self.replace_text_in_visible_range(
+            visible_range,
+            new_text,
+            selected_range_relative,
+            !new_text.is_empty(),
+            cx,
+        );
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        bounds: Bounds<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let id = self.editing?;
+        let tg = self.edit_target(id)?;
+        let range = Self::utf16_range_to_utf8_in(&tg.content, &range_utf16);
+        let caret = self
+            .font
+            .caret_pos_wrapped(&tg.content, tg.size, tg.wrap, range.end);
+        let (wx, wy) = block_world(tg.x, tg.y, tg.rotation, tg.pivot, caret);
+        let sp = to_screen(wx, wy, self.scene.camera, bounds.origin);
+        Some(Bounds {
+            origin: sp,
+            size: size(
+                px(1.0),
+                px((tg.size * self.scene.camera.zoom.max(MIN_ZOOM)).max(12.0)),
+            ),
+        })
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        pt: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        let id = self.editing?;
+        let tg = self.edit_target(id)?;
+        let p = self.event_to_world(pt);
+        let local = block_local(tg.x, tg.y, tg.rotation, tg.pivot, p);
+        let idx = self
+            .font
+            .index_at_wrapped(&tg.content, tg.size, tg.wrap, local);
+        Some(Self::utf8_to_utf16_in(&tg.content, idx))
+    }
+}
+
+struct WhiteboardInputElement {
+    input: Entity<WhiteboardView>,
+}
+
+impl WhiteboardInputElement {
+    fn new(input: Entity<WhiteboardView>) -> Self {
+        Self { input }
+    }
+}
+
+impl IntoElement for WhiteboardInputElement {
+    type Element = Self;
+
+    fn into_element(self) -> Self::Element {
+        self
+    }
+}
+
+impl gpui::Element for WhiteboardInputElement {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, Self::RequestLayoutState) {
+        let mut style = Style::default();
+        style.size.width = relative(1.0).into();
+        style.size.height = relative(1.0).into();
+        (window.request_layout(style, [], cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _window: &mut Window,
+        _cx: &mut App,
+    ) -> Self::PrepaintState {
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _request_layout: &mut Self::RequestLayoutState,
+        _prepaint: &mut Self::PrepaintState,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let focus_handle = self.input.read(cx).focus.clone();
+        if focus_handle.is_focused(window) {
+            window.handle_input(
+                &focus_handle,
+                ElementInputHandler::new(bounds, self.input.clone()),
+                cx,
+            );
+        }
+    }
+}
+
+impl WhiteboardView {
+    fn render_read_only(&mut self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
+        let WhiteboardStyle {
+            bg,
+            grid,
+            text,
+            ink,
+            panel,
+            ..
+        } = (self.style)();
+        let camera = self.scene.camera;
+        let bounds_cell = self.bounds.clone();
+        let render_viewport = self.render_viewport(Some(window.viewport_size()));
+        let visible_element_ids = self
+            .scene
+            .elements
+            .iter()
+            .filter(|element| {
+                render_viewport.is_none_or(|viewport| viewport.intersects(bbox(&element.kind)))
+            })
+            .map(|element| element.id)
+            .collect::<HashSet<_>>();
+        self.text_layout_cache
+            .retain(|element_id, _| visible_element_ids.contains(element_id));
+        self.label_layout_cache
+            .retain(|element_id, _| visible_element_ids.contains(element_id));
+        let layers = build_thumbnail_layers(
+            &self.scene,
+            &self.font,
+            camera,
+            ink,
+            text,
+            grid,
+            panel,
+            render_viewport,
+            Some(&mut self.text_layout_cache),
+            Some(&mut self.label_layout_cache),
+        );
+        let board_layer = canvas(
+            move |bounds, _, _| bounds_cell.set(bounds),
+            move |bounds, _, window, _| paint_board(bounds, camera, bg, grid, window),
+        )
+        .absolute()
+        .size_full();
+        let element_layers = layers.into_iter().map(|layer| match layer {
+            Layer::Band(elements) => band_canvas(elements, camera).into_any_element(),
+            Layer::Overlay(element) => element,
+        });
+
+        div()
+            .size_full()
+            .relative()
+            .overflow_hidden()
+            .cursor(if self.panning {
+                CursorStyle::ClosedHand
+            } else {
+                CursorStyle::OpenHand
+            })
+            .child(board_layer)
+            .children(element_layers)
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::on_left_down))
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::on_left_up))
+            .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_down))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_middle_up))
+            .on_mouse_move(cx.listener(Self::on_move))
+            .on_pinch(cx.listener(Self::on_pinch))
+            .child(
+                div()
+                    .absolute()
+                    .left(px(10.0))
+                    .bottom(px(8.0))
+                    .text_size(px(11.0))
+                    .text_color(text)
+                    .child(SharedString::from(format!("{:.0}%", camera.zoom * 100.0))),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for WhiteboardView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.read_only {
+            return self.render_read_only(window, cx);
+        }
         let WhiteboardStyle {
             bg,
             grid,
@@ -5278,6 +8287,21 @@ impl Render for WhiteboardView {
         let cam = self.scene.camera;
         let zoom = cam.zoom.max(MIN_ZOOM);
         let bounds_cell = self.bounds.clone();
+        let board_bounds = self.bounds.get();
+        let render_viewport = self.render_viewport(Some(window.viewport_size()));
+        let visible_element_ids = self
+            .scene
+            .elements
+            .iter()
+            .filter(|element| {
+                render_viewport.is_none_or(|viewport| viewport.intersects(bbox(&element.kind)))
+            })
+            .map(|element| element.id)
+            .collect::<HashSet<_>>();
+        self.text_layout_cache
+            .retain(|element_id, _| visible_element_ids.contains(element_id));
+        self.label_layout_cache
+            .retain(|element_id, _| visible_element_ids.contains(element_id));
 
         // Decoded bitmaps for image elements, fetched from the host (which decodes
         // off-thread and re-renders when ready). Pre-fetched here — before the
@@ -5292,6 +8316,7 @@ impl Render for WhiteboardView {
                 .scene
                 .elements
                 .iter()
+                .filter(|element| visible_element_ids.contains(&element.id))
                 .filter_map(|e| match &e.kind {
                     ElementKind::Image(im) => {
                         Some((e.id, im.src.clone(), snap_quarter(im.rotation)))
@@ -5316,15 +8341,31 @@ impl Render for WhiteboardView {
         // or page-card flushes the band and adds its overlay div, so a shape can
         // sit above or below an image. Text is laid out here (measured extent for
         // selection/hit-test + outline segments) so it z-orders and rotates with
-        // shapes. Re-laid each frame for now; see the path-cache note at the top.
+        // shapes. Camera-independent glyph outlines are cached by content/style;
+        // camera movement only rebuilds their screen-space paths.
         let font = self.font.clone();
         let editing = self.editing;
         let (caret_at, sel_anchor) = (self.caret, self.sel_anchor);
         // A translucent accent fills the selected glyphs (kept readable).
         let sel_fill = gpui::hsla(selection.h, selection.s, selection.l, 0.30);
+        let mindmap_connector_styles: HashMap<u64, MindMapConnectorStyle> = self
+            .scene
+            .elements
+            .iter()
+            .filter(|element| visible_element_ids.contains(&element.id))
+            .filter_map(|element| {
+                self.mindmap_connector_style_for_element(&element.kind)
+                    .map(|style| (element.id, style))
+            })
+            .collect();
+        let text_layout_cache = &mut self.text_layout_cache;
+        let label_layout_cache = &mut self.label_layout_cache;
         let mut layers: Vec<Layer> = Vec::new();
         let mut band: Vec<ElemPaint> = Vec::new();
         for e in self.scene.elements.iter_mut() {
+            if !visible_element_ids.contains(&e.id) {
+                continue;
+            }
             let id = e.id;
             let stroke = e.stroke.map_or(ink, u32_to_hsla);
             let fill = e.fill.map(u32_to_hsla);
@@ -5429,9 +8470,15 @@ impl Render for WhiteboardView {
                 // Canvas-drawn kinds: shapes / lines / pen / text.
                 kind => {
                     let text = if let ElementKind::Text(t) = kind {
-                        let layout = font.layout_styled(&t.content, t.size, None, |b| {
-                            glyph_style(style_at(styles, b))
-                        });
+                        let layout = cached_text_layout(
+                            text_layout_cache,
+                            &font,
+                            id,
+                            &t.content,
+                            t.size,
+                            None,
+                            styles,
+                        );
                         t.measured_w = layout.width;
                         t.measured_h = layout.height;
                         // While editing: the caret at its byte offset and the
@@ -5445,8 +8492,8 @@ impl Render for WhiteboardView {
                             Vec::new()
                         };
                         Some(TextOutline {
-                            segs: layout.segs,
-                            bold_segs: layout.bold_segs,
+                            segs: layout.segs.clone(),
+                            bold_segs: layout.bold_segs.clone(),
                             bold_width: layout.bold_width,
                             color: stroke,
                             x: t.x,
@@ -5457,7 +8504,7 @@ impl Render for WhiteboardView {
                             caret,
                             selection,
                             sel_color: sel_fill,
-                            decorations: layout.decorations,
+                            decorations: layout.decorations.clone(),
                         })
                     } else if is_closed_shape(kind)
                         && let Some((bx, by, bw, bh, rot)) = box_like(kind)
@@ -5471,33 +8518,52 @@ impl Render for WhiteboardView {
                         // moment you double-click (before the first keystroke).
                         let active = editing == Some(id);
                         let text = label.map_or("", str::trim);
-                        let blk = shape_label_block(&font, kind, bx, by, bw, bh, text);
-                        let layout = font.layout_styled(text, blk.size, Some(blk.wrap), |b| {
-                            glyph_style(style_at(styles, b))
-                        });
+                        let label_layout = cached_label_layout(
+                            label_layout_cache,
+                            &font,
+                            id,
+                            kind,
+                            bx,
+                            by,
+                            bw,
+                            bh,
+                            text,
+                            styles,
+                        );
                         let caret = active.then(|| {
-                            font.caret_pos_wrapped(text, blk.size, Some(blk.wrap), caret_at)
+                            font.caret_pos_wrapped(
+                                text,
+                                label_layout.size,
+                                Some(label_layout.wrap),
+                                caret_at,
+                            )
                         });
                         let (s, e) = (caret_at.min(sel_anchor), caret_at.max(sel_anchor));
                         let selection = if active {
-                            font.selection_rects_wrapped(text, blk.size, Some(blk.wrap), s, e)
+                            font.selection_rects_wrapped(
+                                text,
+                                label_layout.size,
+                                Some(label_layout.wrap),
+                                s,
+                                e,
+                            )
                         } else {
                             Vec::new()
                         };
                         Some(TextOutline {
-                            segs: layout.segs,
-                            bold_segs: layout.bold_segs,
-                            bold_width: layout.bold_width,
+                            segs: label_layout.text.segs.clone(),
+                            bold_segs: label_layout.text.bold_segs.clone(),
+                            bold_width: label_layout.text.bold_width,
                             color: label_color.map_or(stroke, u32_to_hsla),
-                            x: blk.x,
-                            y: blk.y,
+                            x: bx + label_layout.offset_x,
+                            y: by + label_layout.offset_y,
                             rotation: rot,
                             pivot: [bx + bw / 2.0, by + bh / 2.0],
-                            line_height: layout.line_height,
+                            line_height: label_layout.text.line_height,
                             caret,
                             selection,
                             sel_color: sel_fill,
-                            decorations: layout.decorations,
+                            decorations: label_layout.text.decorations.clone(),
                         })
                     } else {
                         None
@@ -5507,6 +8573,7 @@ impl Render for WhiteboardView {
                         stroke,
                         fill,
                         text,
+                        mindmap_connector_style: mindmap_connector_styles.get(&id).copied(),
                     });
                 }
             }
@@ -5534,12 +8601,102 @@ impl Render for WhiteboardView {
             .flatten()
             .map(|bb| (bb, self.group_rotatable()));
         let marquee = self.marquee;
+        let alignment_guides = self.alignment_guides;
+        let snap_target = self.connecting.and_then(|connection| {
+            self.hovered_connector
+                .filter(|target| target.id != connection.from.id)
+                .and_then(|target| {
+                    self.scene
+                        .elements
+                        .iter()
+                        .find(|element| element.id == target.id)
+                        .map(|element| (element.kind.clone(), target.index))
+                })
+        });
+        const CONNECTOR_ICONS: [(&str, &[u8]); 4] = [
+            ("wb-connector-up", include_bytes!("../assets/icons/up.svg")),
+            (
+                "wb-connector-right",
+                include_bytes!("../assets/icons/right.svg"),
+            ),
+            (
+                "wb-connector-down",
+                include_bytes!("../assets/icons/down.svg"),
+            ),
+            (
+                "wb-connector-left",
+                include_bytes!("../assets/icons/left.svg"),
+            ),
+        ];
+        let connector_buttons: Vec<gpui::AnyElement> = single_sel
+            .as_ref()
+            .filter(|_| self.connecting.is_none() && self.pending.is_none())
+            .filter(|kind| connector_capable(kind))
+            .map(|kind| {
+                connector_button_centers(kind, cam, board_bounds.origin)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, center)| {
+                        let (key, bytes) = CONNECTOR_ICONS[index];
+                        div()
+                            .id(("wb-connector-button", index))
+                            .absolute()
+                            .left(
+                                center.x - board_bounds.origin.x - px(CONNECTOR_BUTTON_SIZE / 2.0),
+                            )
+                            .top(center.y - board_bounds.origin.y - px(CONNECTOR_BUTTON_SIZE / 2.0))
+                            .size(px(CONNECTOR_BUTTON_SIZE))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_full()
+                            .bg(panel_strong)
+                            .text_color(selection)
+                            .shadow_sm()
+                            .cursor_pointer()
+                            .child(svg_icon(key, bytes, selection, CONNECTOR_BUTTON_SIZE))
+                            .into_any_element()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        const ROTATE_ICON: &[u8] = include_bytes!("../assets/icons/refresh.svg");
+        let rotate_position = single_sel
+            .as_ref()
+            .filter(|kind| rotatable(kind))
+            .map(|kind| rotate_handle_screen(kind, cam, board_bounds.origin))
+            .or_else(|| {
+                group_sel
+                    .filter(|(_, can_rotate)| *can_rotate)
+                    .map(|(bounds, _)| rotate_handle_for_bbox(bounds, cam, board_bounds.origin))
+            });
+        let rotate_button = rotate_position.map(|(x, y)| {
+            div()
+                .id("wb-rotate-button")
+                .absolute()
+                .left(px(x) - board_bounds.origin.x - px(CONNECTOR_BUTTON_SIZE / 2.0))
+                .top(px(y) - board_bounds.origin.y - px(CONNECTOR_BUTTON_SIZE / 2.0))
+                .size(px(CONNECTOR_BUTTON_SIZE))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_full()
+                .bg(panel_strong)
+                .shadow_sm()
+                .cursor_pointer()
+                .child(svg_icon(
+                    "wb-icon-refresh",
+                    ROTATE_ICON,
+                    selection,
+                    CONNECTOR_BUTTON_SIZE - 4.0,
+                ))
+        });
+        let selected_mindmap_root = self.selected_mindmap_root();
 
         // Tool palette + actions (top-center). The pill `occlude()`s so a press
         // on a button doesn't also act on the board beneath it. Layout, left→right:
-        //   pan · select · color │ shapes&text▾ · pages&images▾ │ undo · redo · delete
-        // The two bracketed buttons are categories: clicking one opens a flyout
-        // (built below) of that group's tools, keeping the main bar trim.
+        //   pan · select · mindmap · color │ shapes&text▾ · pages&images▾ │ undo · redo · delete
+        // `MindMap` is promoted to a first-class toolbar button in the main tool area.
         let active = self.tool;
         let open_group = self.open_group;
 
@@ -5809,7 +8966,7 @@ impl Render for WhiteboardView {
         if vertical {
             pill = pill.flex_col();
         }
-        let pill = pill
+        let mut pill = pill
             .child(
                 canvas(move |b, _, _| pill_cell.set(b), |_, _, _, _| {})
                     .absolute()
@@ -5827,15 +8984,193 @@ impl Render for WhiteboardView {
                 tool_btn(Tool::Select)
                     .tooltip(self.tip(Tool::Select.label()))
                     .on_click(cx.listener(|this, _ev, _w, cx| this.set_tool(Tool::Select, cx))),
-            )
-            .child(color_btn)
-            .child(width_btn)
-            .children(font_btn)
-            .children(format_btn)
-            .child(toolbar_divider(grid, vertical))
-            // tool categories (each opens a flyout of its tools)
-            .children(cats)
-            .child(templates_btn)
+            );
+        if let Some(root_id) = selected_mindmap_root {
+            let direction = self.mindmap_root_direction(root_id);
+            let connector_style = self.mindmap_connector_style_for_root(root_id);
+            let chip = |id: &'static str, active: bool, icon: gpui::AnyElement| {
+                let mut d = div()
+                    .id(id)
+                    .px(px(8.0))
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .text_size(px(11.0))
+                    .text_color(ink);
+                if active {
+                    d = d.bg(accent);
+                } else {
+                    d = d.hover(|s| s.bg(grid));
+                }
+                d.child(icon)
+            };
+            let icon_color = ink;
+            let draw_mm_icon = move |_id: &'static str, kind: &'static str| -> gpui::AnyElement {
+                canvas(
+                    |_, _, _| {},
+                    move |bounds, _, window, _| {
+                        let w = f32::from(bounds.size.width);
+                        let h = f32::from(bounds.size.height);
+                        let ox = f32::from(bounds.origin.x);
+                        let oy = f32::from(bounds.origin.y);
+                        let p = |x: f32, y: f32| point(px(ox + x), px(oy + y));
+                        let mut stroke = |segments: &[([f32; 2], [f32; 2])]| {
+                            let mut pb = PathBuilder::stroke(px(1.75));
+                            for &([x1, y1], [x2, y2]) in segments {
+                                pb.move_to(p(x1, y1));
+                                pb.line_to(p(x2, y2));
+                            }
+                            if let Ok(path) = pb.build() {
+                                window.paint_path(path, icon_color);
+                            }
+                        };
+                        match kind {
+                            "dir-both" => stroke(&[
+                                ([3.0, h / 2.0], [w - 3.0, h / 2.0]),
+                                ([3.0, h / 2.0], [6.0, h / 2.0 - 3.0]),
+                                ([3.0, h / 2.0], [6.0, h / 2.0 + 3.0]),
+                                ([w - 3.0, h / 2.0], [w - 6.0, h / 2.0 - 3.0]),
+                                ([w - 3.0, h / 2.0], [w - 6.0, h / 2.0 + 3.0]),
+                            ]),
+                            "dir-right" => stroke(&[
+                                ([3.0, h / 2.0], [w - 3.0, h / 2.0]),
+                                ([w - 3.0, h / 2.0], [w - 6.0, h / 2.0 - 3.0]),
+                                ([w - 3.0, h / 2.0], [w - 6.0, h / 2.0 + 3.0]),
+                            ]),
+                            "dir-left" => stroke(&[
+                                ([3.0, h / 2.0], [w - 3.0, h / 2.0]),
+                                ([3.0, h / 2.0], [6.0, h / 2.0 - 3.0]),
+                                ([3.0, h / 2.0], [6.0, h / 2.0 + 3.0]),
+                            ]),
+                            "line-straight" => stroke(&[([3.0, h / 2.0], [w - 3.0, h / 2.0])]),
+                            "line-bezier" => {
+                                let mut pb = PathBuilder::stroke(px(1.75));
+                                pb.move_to(p(2.5, h - 4.0));
+                                pb.cubic_bezier_to(
+                                    p(w - 2.5, 4.0),
+                                    p(w * 0.35, h - 4.0),
+                                    p(w * 0.65, 4.0),
+                                );
+                                if let Ok(path) = pb.build() {
+                                    window.paint_path(path, icon_color);
+                                }
+                            }
+                            "line-orthogonal" => stroke(&[
+                                ([3.0, h - 4.0], [w * 0.45, h - 4.0]),
+                                ([w * 0.45, h - 4.0], [w * 0.45, 4.0]),
+                                ([w * 0.45, 4.0], [w - 3.0, 4.0]),
+                            ]),
+                            _ => {}
+                        }
+                    },
+                )
+                .w(px(14.0))
+                .h(px(14.0))
+                .into_any_element()
+            };
+            pill = pill
+                .child(toolbar_divider(grid, vertical))
+                .child(
+                    div()
+                        .px(px(4.0))
+                        .text_size(px(11.0))
+                        .text_color(text)
+                        .child("Direction"),
+                )
+                .child(
+                    chip(
+                        "wb-mm-dir-both",
+                        direction == MindMapRootDirection::Both,
+                        draw_mm_icon("wb-mm-dir-both-icon", "dir-both"),
+                    )
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.set_mindmap_root_direction(root_id, MindMapRootDirection::Both, cx);
+                    })),
+                )
+                .child(
+                    chip(
+                        "wb-mm-dir-right",
+                        direction == MindMapRootDirection::Right,
+                        draw_mm_icon("wb-mm-dir-right-icon", "dir-right"),
+                    )
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.set_mindmap_root_direction(root_id, MindMapRootDirection::Right, cx);
+                    })),
+                )
+                .child(
+                    chip(
+                        "wb-mm-dir-left",
+                        direction == MindMapRootDirection::Left,
+                        draw_mm_icon("wb-mm-dir-left-icon", "dir-left"),
+                    )
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.set_mindmap_root_direction(root_id, MindMapRootDirection::Left, cx);
+                    })),
+                )
+                .child(toolbar_divider(grid, vertical))
+                .child(
+                    div()
+                        .px(px(4.0))
+                        .text_size(px(11.0))
+                        .text_color(text)
+                        .child("Connector"),
+                )
+                .child(
+                    chip(
+                        "wb-mm-line-straight",
+                        connector_style == MindMapConnectorStyle::Straight,
+                        draw_mm_icon("wb-mm-line-straight-icon", "line-straight"),
+                    )
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.set_mindmap_connector_style(
+                            root_id,
+                            MindMapConnectorStyle::Straight,
+                            cx,
+                        );
+                    })),
+                )
+                .child(
+                    chip(
+                        "wb-mm-line-bezier",
+                        connector_style == MindMapConnectorStyle::Bezier,
+                        draw_mm_icon("wb-mm-line-bezier-icon", "line-bezier"),
+                    )
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.set_mindmap_connector_style(
+                            root_id,
+                            MindMapConnectorStyle::Bezier,
+                            cx,
+                        );
+                    })),
+                )
+                .child(
+                    chip(
+                        "wb-mm-line-orthogonal",
+                        connector_style == MindMapConnectorStyle::Orthogonal,
+                        draw_mm_icon("wb-mm-line-orthogonal-icon", "line-orthogonal"),
+                    )
+                    .on_click(cx.listener(move |this, _ev, _window, cx| {
+                        this.set_mindmap_connector_style(
+                            root_id,
+                            MindMapConnectorStyle::Orthogonal,
+                            cx,
+                        );
+                    })),
+                );
+        } else {
+            pill = pill
+                .child(color_btn)
+                .child(width_btn)
+                .children(font_btn)
+                .children(format_btn)
+                .child(toolbar_divider(grid, vertical))
+                // tool categories (each opens a flyout of its tools)
+                .children(cats)
+                .child(templates_btn);
+        }
+        let pill = pill
             .child(toolbar_divider(grid, vertical))
             // actions
             .child(
@@ -5904,25 +9239,27 @@ impl Render for WhiteboardView {
         // group is open. Occluded like the main bar; picking a tool activates it
         // and closes the flyout (via `set_tool`), and a press elsewhere on the
         // canvas closes it (see `on_left_down`).
-        let flyout = open_group.map(|g| {
-            let mut row = div()
-                .flex()
-                .items_center()
-                .gap(px(2.0))
-                .p(px(3.0))
-                .rounded(px(9.0))
-                .bg(panel_strong)
-                .shadow_lg()
-                .occlude();
-            for &t in g.tools() {
-                row = row.child(
-                    tool_btn(t)
-                        .tooltip(self.tip(t.label()))
-                        .on_click(cx.listener(move |this, _ev, _w, cx| this.set_tool(t, cx))),
-                );
-            }
-            popover_anchor().child(row)
-        });
+        let flyout =
+            open_group.map(|g| {
+                let mut row = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(2.0))
+                    .p(px(3.0))
+                    .rounded(px(9.0))
+                    .bg(panel_strong)
+                    .shadow_lg()
+                    .occlude();
+                for &t in g.tools() {
+                    row = row.child(tool_btn(t).tooltip(self.tip(t.label())).on_click(
+                        cx.listener(move |this, _ev, window, cx| {
+                            this.focus.focus(window, cx);
+                            this.set_tool(t, cx);
+                        }),
+                    ));
+                }
+                popover_anchor().child(row)
+            });
 
         // The toolbar's text-formatting fly-out (the same panel as the right-click
         // submenu), shown while the "Format" button is toggled on during a text edit.
@@ -6716,18 +10053,28 @@ impl Render for WhiteboardView {
             |_, _, _| {},
             move |bounds, _, window, _| {
                 if let Some(k) = &pending {
-                    paint_element(k, cam, bounds.origin, pending_ink, pending_fill, window);
+                    paint_element(
+                        k,
+                        None,
+                        cam,
+                        bounds.origin,
+                        pending_ink,
+                        pending_fill,
+                        window,
+                    );
                 }
                 if let Some(k) = &single_sel {
                     paint_selection(k, cam, bounds.origin, selection, window);
                 }
-                // Group: an enclosing box with resize corners, plus a shared
-                // rotate grip above it when the group can rotate.
-                if let Some((bb, can_rotate)) = group_sel {
-                    paint_box_outline(bb, cam, bounds.origin, selection, window);
+                if let Some((kind, active)) = &snap_target {
+                    paint_snap_points(kind, *active, cam, bounds.origin, selection, window);
+                }
+                // Group: resize handles without an enclosing blue frame, plus a
+                // shared rotate grip when the group can rotate.
+                if let Some((bb, _can_rotate)) = group_sel {
                     let tl = to_screen(bb.0, bb.1, cam, bounds.origin);
                     let br = to_screen(bb.2, bb.3, cam, bounds.origin);
-                    let m = SEL_PAD_PX;
+                    let m = 0.0;
                     let (x0, y0) = (f32::from(tl.x) - m, f32::from(tl.y) - m);
                     let (x1, y1) = (f32::from(br.x) + m, f32::from(br.y) + m);
                     // Four corners (proportional) plus four edge midpoints (per-axis
@@ -6745,34 +10092,43 @@ impl Render for WhiteboardView {
                     ] {
                         draw_handle(hx, hy, selection, window);
                     }
-                    if can_rotate {
-                        let (rx, ry) = rotate_handle_for_bbox(bb, cam, bounds.origin);
-                        draw_rotate_handle(rx, ry, selection, window);
-                    }
                 }
                 if let Some((a, b)) = marquee {
                     paint_marquee(a, b, cam, bounds.origin, selection, window);
                 }
+                paint_alignment_guides(alignment_guides, bounds, cam, selection, window);
             },
         )
         .absolute()
         .size_full();
 
-        div()
+        let root = div()
             .track_focus(&self.focus)
             .size_full()
             .relative()
             .overflow_hidden()
             .cursor(board_cursor)
             .child(board_layer)
+            .children(connector_buttons)
+            .children(rotate_button)
+            .child(
+                div()
+                    .absolute()
+                    .size_full()
+                    .child(WhiteboardInputElement::new(cx.entity())),
+            )
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_left_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_left_up))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_down))
             .on_mouse_up(MouseButton::Middle, cx.listener(Self::on_middle_up))
-            .on_mouse_move(cx.listener(Self::on_move))
-            .on_scroll_wheel(cx.listener(Self::on_scroll))
-            .on_pinch(cx.listener(Self::on_pinch))
+            .on_mouse_move(cx.listener(Self::on_move));
+        let root = if accepts_wheel_input(self.read_only) {
+            root.on_scroll_wheel(cx.listener(Self::on_scroll))
+        } else {
+            root
+        };
+        root.on_pinch(cx.listener(Self::on_pinch))
             .on_key_down(cx.listener(Self::on_key))
             // Files dragged from the OS land as `ExternalPaths`; hand them to the
             // host (which imports any images) at the drop point.
@@ -6804,6 +10160,7 @@ impl Render for WhiteboardView {
                     .text_color(text)
                     .child(SharedString::from(format!("{:.0}%", cam.zoom * 100.0))),
             )
+            .into_any_element()
     }
 }
 
@@ -6812,12 +10169,101 @@ mod tests {
     use super::*;
 
     #[test]
+    fn text_layout_cache_reuses_outlines_until_content_changes() {
+        let font = Font::default();
+        let mut cache = HashMap::new();
+        let first = cached_text_layout(&mut cache, &font, 9, "hello", 16.0, None, &[]);
+        let reused = cached_text_layout(&mut cache, &font, 9, "hello", 16.0, None, &[]);
+        let changed = cached_text_layout(&mut cache, &font, 9, "hello!", 16.0, None, &[]);
+
+        assert!(Arc::ptr_eq(&first.segs, &reused.segs));
+        assert!(!Arc::ptr_eq(&first.segs, &changed.segs));
+    }
+
+    #[test]
+    fn shape_label_cache_survives_movement_and_invalidates_on_resize() {
+        let font = Font::default();
+        let mut cache = HashMap::new();
+        let kind = ElementKind::RoundRect(BoxGeom {
+            x: 10.0,
+            y: 20.0,
+            w: 180.0,
+            h: 60.0,
+            width: 2.0,
+            rotation: 0.0,
+        });
+        let first = cached_label_layout(
+            &mut cache,
+            &font,
+            3,
+            &kind,
+            10.0,
+            20.0,
+            180.0,
+            60.0,
+            "Node",
+            &[],
+        );
+        let moved = cached_label_layout(
+            &mut cache,
+            &font,
+            3,
+            &kind,
+            80.0,
+            90.0,
+            180.0,
+            60.0,
+            "Node",
+            &[],
+        );
+        let resized = cached_label_layout(
+            &mut cache,
+            &font,
+            3,
+            &kind,
+            80.0,
+            90.0,
+            240.0,
+            80.0,
+            "Node",
+            &[],
+        );
+
+        assert!(Arc::ptr_eq(&first.text.segs, &moved.text.segs));
+        assert!(!Arc::ptr_eq(&first.text.segs, &resized.text.segs));
+    }
+
+    #[test]
+    fn read_only_embed_does_not_accept_wheel_input() {
+        assert!(!accepts_wheel_input(true));
+        assert!(accepts_wheel_input(false));
+    }
+
+    #[test]
     fn empty_or_garbage_loads_a_blank_board() {
         for s in ["", "   ", "not json", "{}", r#"{"camera":{"zoom":0}}"#] {
             let scene = Scene::from_json(s);
             assert_eq!(scene.camera.zoom, 1.0, "input {s:?}");
             assert!(scene.elements.is_empty(), "input {s:?}");
         }
+    }
+
+    #[test]
+    fn ime_offsets_bridge_utf16_and_utf8() {
+        // Chinese uses one UTF-16 code unit but three UTF-8 bytes; emoji uses a
+        // surrogate pair. These are the offsets GPUI's native IME APIs exchange.
+        let text = "A中😀B";
+        let utf8_boundaries = [0, 1, 4, 8, 9];
+        let utf16_boundaries = [0, 1, 2, 4, 5];
+        for (utf8, utf16) in utf8_boundaries.into_iter().zip(utf16_boundaries) {
+            assert_eq!(WhiteboardView::utf8_to_utf16_in(text, utf8), utf16);
+            assert_eq!(WhiteboardView::utf16_to_utf8_in(text, utf16), utf8);
+        }
+
+        // Like the editor bridge, offsets inside a code point advance to the next
+        // valid boundary, so slicing the scene's UTF-8 string remains safe.
+        assert_eq!(WhiteboardView::utf8_to_utf16_in(text, 3), 2);
+        assert_eq!(WhiteboardView::utf16_to_utf8_in(text, 3), 8);
     }
 
     #[test]
@@ -6836,6 +10282,46 @@ mod tests {
     }
 
     #[test]
+    fn all_content_thumbnail_snapshot_uses_scene_bounds_without_mounting_view() {
+        let scene = Scene {
+            elements: vec![Element {
+                id: 1,
+                kind: ElementKind::Rect(BoxGeom {
+                    x: 10.0,
+                    y: 20.0,
+                    w: 100.0,
+                    h: 60.0,
+                    width: 2.0,
+                    rotation: 0.0,
+                }),
+                stroke: None,
+                fill: None,
+                label: None,
+                label_color: None,
+                styles: Vec::new(),
+                mindmap: None,
+            }],
+            ..Scene::default()
+        };
+
+        let snapshot = LocalThumbnailSnapshot::for_scene_all_content(scene, 320.0, 180.0);
+
+        assert_eq!(snapshot.spec.scene_bounds, Some([10.0, 20.0, 110.0, 80.0]));
+        assert_eq!(snapshot.spec.focus_bounds, [10.0, 20.0, 110.0, 80.0]);
+        assert!(snapshot.spec.camera.zoom > 0.0);
+    }
+
+    #[test]
+    fn empty_scene_still_builds_a_renderable_thumbnail_snapshot() {
+        let snapshot =
+            LocalThumbnailSnapshot::for_scene_all_content(Scene::default(), 320.0, 180.0);
+
+        assert_eq!(snapshot.spec.scene_bounds, None);
+        assert_eq!(snapshot.spec.focus_bounds, [0.0, 0.0, 320.0, 180.0]);
+        assert_eq!(snapshot.spec.camera.zoom, 1.0);
+    }
+
+    #[test]
     fn every_element_kind_round_trips_through_json() {
         let scene = Scene {
             camera: Camera::default(),
@@ -6851,6 +10337,7 @@ mod tests {
                     label: None,
                     label_color: None,
                     styles: Vec::new(),
+                    mindmap: None,
                 },
                 Element {
                     id: 2,
@@ -6867,6 +10354,7 @@ mod tests {
                     label: Some("hi".into()),
                     label_color: Some(0x112233ff),
                     styles: Vec::new(),
+                    mindmap: None,
                 },
                 Element {
                     id: 3,
@@ -6876,12 +10364,16 @@ mod tests {
                         x2: 2.0,
                         y2: 8.0,
                         width: 2.5,
+                        style: SegmentStyle::Solid,
+                        start_anchor: None,
+                        end_anchor: None,
                     }),
                     stroke: None,
                     fill: None,
                     label: None,
                     label_color: None,
                     styles: Vec::new(),
+                    mindmap: None,
                 },
             ],
         };
@@ -7073,6 +10565,7 @@ mod tests {
                     ..Default::default()
                 },
             }],
+            mindmap: None,
         };
         let back: Element = serde_json::from_str(&serde_json::to_string(&el).unwrap()).unwrap();
         assert_eq!(back.styles.len(), 1);
@@ -7115,6 +10608,9 @@ mod tests {
             x2: 10.0,
             y2: 4.0,
             width: 1.0,
+            style: SegmentStyle::Solid,
+            start_anchor: None,
+            end_anchor: None,
         });
         assert_eq!(bbox(&k), (0.0, 0.0, 10.0, 4.0));
         translate(&mut k, 5.0, -2.0);
@@ -7305,6 +10801,9 @@ mod tests {
             x2: 10.0,
             y2: 0.0,
             width: 1.0,
+            style: SegmentStyle::Solid,
+            start_anchor: None,
+            end_anchor: None,
         });
         rotate_element(&mut seg, 0.0, 0.0, FRAC_PI_2);
         match seg {
@@ -7457,6 +10956,7 @@ mod tests {
             label: None,
             label_color: None,
             styles: Vec::new(),
+            mindmap: None,
         };
         let json = serde_json::to_string(&elem).unwrap();
         assert!(json.contains("\"image\""), "{json}");
@@ -7506,6 +11006,7 @@ mod tests {
                 label: None,
                 label_color: None,
                 styles: Vec::new(),
+                mindmap: None,
             };
             let json = serde_json::to_string(&elem).unwrap();
             assert!(json.contains(tag), "{tag} not in json: {json}");
