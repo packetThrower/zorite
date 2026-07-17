@@ -73,7 +73,6 @@ pub enum SlashTarget {
 pub struct Slash {
     pub target: SlashTarget,
     pub trigger: Trigger,
-    pub query: String,
     /// Byte offset of the `/` in the editor text.
     pub start: usize,
     /// Caret bounds (window space) used to anchor the popup.
@@ -83,6 +82,13 @@ pub struct Slash {
     pub level: SlashLevel,
     /// Filtered entries for the current level + query.
     pub items: Vec<PaletteItem>,
+    /// Whether the category flyout panel is shown. Off on a fresh `/` (so the
+    /// submenu doesn't pop the instant you type) — turned on only when the user
+    /// deliberately targets a category (hover, arrow onto it, or Enter).
+    pub flyout_shown: bool,
+    /// Keyboard focus inside the flyout (`None` = the main list has focus);
+    /// tracks which flyout row is highlighted once `flyout_shown`.
+    pub flyout: Option<usize>,
 }
 
 /// Detect a completion trigger ending at the caret: the trigger, the byte
