@@ -5595,7 +5595,10 @@ fn shape_document(
                                 .iter()
                                 .filter_map(|(r, style)| {
                                     let (a, b) = (r.start.max(start), r.end.min(end));
-                                    (a < b).then_some((a - start..b - start, *style))
+                                    // `then` (lazy), not `then_some`: the arg is
+                                    // evaluated eagerly, and `b - start` underflows
+                                    // for a token wholly before this line.
+                                    (a < b).then(|| (a - start..b - start, *style))
                                 })
                                 .collect();
                             if !in_line.is_empty() {
