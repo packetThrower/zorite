@@ -55,22 +55,22 @@ Findings from a full sweep of JYChen-8866's Cditor codebase against zorite
 His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 
 **Bugs (fix first — 1–6 make a good single batch):**
-- [ ] **Table column insert/delete corrupts `\|` cells** — `rewrite_table_columns`
+- [x] **Table column insert/delete corrupts `\|` cells** — `rewrite_table_columns`
   splits raw + rejoins without re-escaping; a cell containing a pipe becomes two
   cells / shifts columns (data loss). Lift Cditor's `escape_table_cell`
   unescape-on-split / re-escape-on-join. (S)
-- [ ] **Editor splits table cells on escaped `\|`** — `table_cells` is a blind
+- [x] **Editor splits table cells on escaped `\|`** — `table_cells` is a blind
   `split('|')`; the reader (GFM) treats `\|` as a literal pipe → grid, caret,
   and click hit-tests disagree with the rendered table. (S/M)
-- [ ] **CRLF paste** — no `\r\n` normalization anywhere in gpui-editor; Windows/
+- [x] **CRLF paste** — no `\r\n` normalization anywhere in gpui-editor; Windows/
   browser pastes inject literal `\r` (garbled render + column-math desync).
   Normalize in `paste` + IME `replace_text_in_range`. (S)
-- [ ] **Paste into a table cell breaks the row** — paste inserts `\n`/`|`
+- [x] **Paste into a table cell breaks the row** — paste inserts `\n`/`|`
   verbatim even though Enter is carefully guarded (`caret_in_table`); sanitize
   (newline→space, escape pipes) or route like Cditor's cell paste. (M)
-- [ ] **Double-backtick code spans** — `` ``a`b`` `` closes at the wrong
+- [x] **Double-backtick code spans** — `` ``a`b`` `` closes at the wrong
   backtick (only single-` matched); detect the backtick-run length first. (S)
-- [ ] **Backslash escapes ignored for `*` `` ` `` `~` `[`** — only `_` checks;
+- [x] **Backslash escapes ignored for `*` `` ` `` `~` `[`** — only `_` checks;
   `\*text\*` styles in WYSIWYG but shows literal in the reader. Shared
   `is_escaped` helper (one exists for math). (S/M)
 - [ ] **Nested inline inside emphasis dropped** — `**bold *italic* bold**` /
