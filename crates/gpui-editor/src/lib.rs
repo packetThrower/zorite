@@ -2006,7 +2006,31 @@ impl EditorState {
                 .any(|e| matches!(e, gpui::ClipboardEntry::ExternalPaths(_)))
         });
         match item.and_then(|i| i.text()).filter(|_| !has_files) {
-            Some(text) => self.replace_text_in_range(None, &text, window, cx),
+            Some(text) => {
+                // Normalize foreign line endings — a Windows/browser copy
+                // carries \r\n (or bare \r), and a literal \r in the buffer
+                // garbles rendering + desyncs the \n-based column math.
+                let mut text = if text.contains('\r') {
+                    text.replace("\r\n", "\n").replace('\r', "\n")
+                } else {
+                    text
+                };
+                // Inside a table cell, a raw paste of newlines/pipes would
+                // break the `| … |` row markup (Enter is guarded the same
+                // way): flatten newlines and escape pipes so the paste stays
+                // one cell's content.
+                if self.caret_in_table() && text.contains(['\n', '|']) {
+                    // Unescape-then-escape so text already carrying `\|`
+                    // doesn't double up into `\\|` (an escaped backslash
+                    // followed by a live separator).
+                    text = text
+                        .trim_end_matches('\n')
+                        .replace('\n', " ")
+                        .replace("\\|", "|")
+                        .replace('|', "\\|");
+                }
+                self.replace_text_in_range(None, &text, window, cx);
+            }
             None => cx.propagate(),
         }
     }
