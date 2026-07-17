@@ -4772,6 +4772,10 @@ struct TableRow {
 
 /// A per-line "gutter" decoration: a left-margin treatment that hides its source
 /// marker and renders something in its place, with the body text inset to make
+/// Task checkbox edge, as a fraction of the line's font size — shared by the
+/// shaping (body inset), the pointer hitbox, and the paint so they agree.
+const CHECKBOX_SCALE: f32 = 0.9;
+
 /// room. Covers blockquotes now; list bullets + task checkboxes reuse it.
 #[derive(Clone, Copy)]
 enum LineMark {
@@ -4816,6 +4820,8 @@ enum LineMark {
         text_inset: Pixels,
         checked: bool,
         color: Hsla,
+        /// Fill for a done box (the host's link/accent color; white check on top).
+        accent: Hsla,
     },
     /// Thematic break (`---`): a full-width muted divider painted in place of the
     /// source; the line has no body text (reveal-on-caret shows the raw `---`).
@@ -5859,7 +5865,7 @@ fn shape_document(
                 // Reader-style geometry: each nesting level advances by
                 // marker + gap + (spaces × 4.5), not the raw spaces' width.
                 let depth = indent as f32 / tab_indent.max(1) as f32;
-                let box_w = base_font_size * 0.78;
+                let box_w = base_font_size * CHECKBOX_SCALE;
                 let level =
                     box_w + px(LIST_TEXT_GAP) + px(LIST_LEVEL_PER_SPACE) * tab_indent as f32;
                 let bullet_x = level * depth;
@@ -5871,6 +5877,7 @@ fn shape_document(
                         text_inset,
                         checked,
                         color: st.quote,
+                        accent: st.link,
                     },
                 ))
             } else if let Some((plen, indent, ordered, _)) = markdown_syntax::list_prefix(line) {
@@ -6047,6 +6054,24 @@ fn shape_document(
                 reveal_inline,
                 st,
             );
+            // A checked task's body renders struck through + muted (the reader
+            // does the same) — a whole-line restyle over the finished runs.
+            let (disp, runs, m) = if matches!(mark, Some(LineMark::Check { checked: true, .. })) {
+                let runs = runs
+                    .into_iter()
+                    .map(|mut r| {
+                        r.strikethrough = Some(gpui::StrikethroughStyle {
+                            thickness: px(1.0),
+                            color: None,
+                        });
+                        r.color = st.quote;
+                        r
+                    })
+                    .collect();
+                (disp, runs, m)
+            } else {
+                (disp, runs, m)
+            };
             // Inline `$…$` math AND `![](src)` images: swap each ready one's
             // glyphs for a spacer to paint the raster over (shared machinery).
             let (disp, runs, m) = match (block_math, block_math_em) {
@@ -7268,7 +7293,7 @@ impl Element for EditorElement {
         let mut alert_fold_grips = Vec::new();
         for (i, lh) in line_heights.iter().enumerate() {
             if let Some(LineMark::Check { bullet_x, .. }) = marks.get(i).copied().flatten() {
-                let sz = font_size * 0.78;
+                let sz = font_size * CHECKBOX_SCALE;
                 let pad = px(4.);
                 let bx = bounds.origin.x + bullet_x;
                 let by = bounds.origin.y + line_tops[i] + (*lh - sz) / 2.;
@@ -8120,10 +8145,11 @@ impl Element for EditorElement {
                 bullet_x,
                 checked,
                 color,
+                accent,
                 ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
-                let sz = font_size * 0.78; // ~cap height
+                let sz = font_size * CHECKBOX_SCALE;
                 let bx = origin.x + bullet_x;
                 let by = origin.y + (*lh - sz) / 2.; // vertically centered on the line
                 let box_bounds = Bounds::new(point(bx, by), size(sz, sz));
@@ -8135,12 +8161,18 @@ impl Element for EditorElement {
                 {
                     window.set_cursor_style(CursorStyle::PointingHand, hb);
                 }
+                // Done: a solid accent fill with a white check (Notion-style).
+                // Open: an empty outline.
                 window.paint_quad(PaintQuad {
                     bounds: box_bounds,
                     corner_radii: Corners::all(px(3.)),
-                    background: hsla(0., 0., 0., 0.).into(),
+                    background: if checked {
+                        accent.into()
+                    } else {
+                        hsla(0., 0., 0., 0.).into()
+                    },
                     border_widths: Edges::all(px(1.5)),
-                    border_color: color,
+                    border_color: if checked { accent } else { color },
                     border_style: BorderStyle::Solid,
                 });
                 if checked {
@@ -8150,7 +8182,7 @@ impl Element for EditorElement {
                     pb.line_to(point(bx + px(s * 0.42), by + px(s * 0.70)));
                     pb.line_to(point(bx + px(s * 0.76), by + px(s * 0.28)));
                     if let Ok(path) = pb.build() {
-                        window.paint_path(path, color);
+                        window.paint_path(path, gpui::white());
                     }
                 }
             }

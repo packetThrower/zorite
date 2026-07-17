@@ -736,6 +736,7 @@ impl RenderOnce for MarkdownView {
             folded_headings: self.folded_headings,
             on_heading_toggle: self.on_heading_toggle,
             suppress_heading_top: false,
+            strike_done: false,
             embed_depth: 0,
         };
 
@@ -847,6 +848,9 @@ struct Ctx {
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
     suppress_heading_top: bool,
+    /// Set while rendering a checked task item's content: inline text renders
+    /// struck through + muted (Notion-style done state).
+    strike_done: bool,
     /// Transclusion nesting level — embeds inside embeds stop at a small cap,
     /// which also breaks A-embeds-B-embeds-A cycles.
     embed_depth: usize,
@@ -1350,10 +1354,10 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
         let mdast::Node::ListItem(li) = item else {
             continue;
         };
-        // GFM task items (`- [ ]` / `- [x]`) carry `checked`; render a box
-        // instead of a bullet/number.
-        let marker = if let Some(done) = li.checked {
-            (if done { "☑" } else { "☐" }).to_string()
+        // GFM task items (`- [ ]` / `- [x]`) carry `checked`; a drawn box
+        // renders instead of a bullet/number (see below).
+        let marker = if li.checked.is_some() {
+            String::new()
         } else if list.ordered {
             // Word-style depth markers, counted from 1 — the WYSIWYG editor
             // numbers the same way, and source digits are display-irrelevant.
@@ -1372,11 +1376,14 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
                     // Drop a leading heading's top margin so the bullet lines up
                     // with the heading; later blocks in the item keep theirs.
                     let prev = ctx.suppress_heading_top;
+                    let prev_strike = ctx.strike_done;
                     ctx.suppress_heading_top = ci == 0;
+                    ctx.strike_done = li.checked == Some(true);
                     if let Some(el) = render_block(other, ctx, window) {
                         content = content.child(el);
                     }
                     ctx.suppress_heading_top = prev;
+                    ctx.strike_done = prev_strike;
                 }
             }
         }
@@ -1391,13 +1398,46 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
         };
         let marker_top = px(f32::from(ctx.style.text_size) * (lead_scale - 1.0) * 1.618_034 / 2.0);
 
-        // The marker is a plain glyph, except a task's ☐/☑ is clickable: a click
-        // calls back with the item's source offset so the host can flip + persist.
-        let mut marker_el = div()
-            .flex_shrink_0()
-            .pt(marker_top)
-            .text_color(ctx.style.muted_color)
-            .child(marker);
+        // The marker is a plain glyph, except a task's box, which is drawn (a
+        // rounded square, accent-filled with a white check when done — the
+        // editor paints the same) and clickable: a click calls back with the
+        // item's source offset so the host can flip + persist.
+        let mut marker_el = if let Some(done) = li.checked {
+            let sz = px(f32::from(ctx.style.text_size) * 0.9);
+            let line_h = px(f32::from(ctx.style.text_size) * ctx.style.line_height);
+            let bx = if done {
+                div()
+                    .size(sz)
+                    .rounded(px(3.0))
+                    .bg(ctx.style.link_color)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(gpui::white())
+                    .text_size(sz * 0.72)
+                    .child("✓")
+            } else {
+                div()
+                    .size(sz)
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(ctx.style.muted_color)
+            };
+            // Center the box on the item's first text line.
+            div()
+                .flex_shrink_0()
+                .pt(marker_top)
+                .h(line_h)
+                .flex()
+                .items_center()
+                .child(bx)
+        } else {
+            div()
+                .flex_shrink_0()
+                .pt(marker_top)
+                .text_color(ctx.style.muted_color)
+                .child(marker)
+        };
         if li.checked.is_some()
             && let (Some(off), Some(toggle)) = (
                 li.position.as_ref().map(|p| p.start.offset),
@@ -1484,9 +1524,18 @@ impl Inline {
 
 fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     let mut inl = Inline::default();
+    // A checked task's text renders struck through + muted (Notion-style).
+    let mut base = HighlightStyle::default();
+    if ctx.strike_done {
+        base.strikethrough = Some(StrikethroughStyle {
+            thickness: px(1.0),
+            color: None,
+        });
+        base.color = Some(ctx.style.muted_color);
+    }
     build_inline(
         nodes,
-        HighlightStyle::default(),
+        base,
         &ctx.style,
         &ctx.definitions,
         ctx.on_inline_math.as_ref(),
