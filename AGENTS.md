@@ -116,5 +116,9 @@ Conventional commits with a scope: `fix(math): …`, `refactor: …`, `docs(chan
 
 Stable = add a `## [x.y.z]` section to `CHANGELOG.md` and push an **annotated** tag
 `vX.Y.Z` (no `Cargo.toml` bump — the version comes from the tag). Pre-release = a
-`-suffix` tag (e.g. `v0.4.0-beta.1`). `release.yml` builds every platform; winget
-submission for a stable tag is a manual `gh workflow run after_release.yml -f tag_name=vX.Y.Z`.
+`-suffix` tag (e.g. `v0.4.0-beta.1`). `release.yml` builds every platform; the
+winget submission fires automatically when it completes on a stable tag
+(`after_release.yml`, a `workflow_run` trigger — a manual
+`gh workflow run after_release.yml -f tag_name=vX.Y.Z` remains as the fallback
+if a run flakes). Homebrew tap + Scoop bucket bumps stay manual (version +
+hashes from the release's SHA256SUMS).
