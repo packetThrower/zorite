@@ -1031,7 +1031,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                 .flex_row()
                 .items_center()
                 .gap(px(8.0))
-                .text_size(px(11.0))
+                .text_size(px(13.0))
                 .text_color(chip_fg)
                 .children(
                     c.lang

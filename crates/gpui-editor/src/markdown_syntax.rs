@@ -1234,31 +1234,6 @@ pub(crate) fn line_scale(line: &str) -> f32 {
     }
 }
 
-/// Fenced code-block regions (W4b/W6): each ` ``` ` line toggles a block;
-/// returns the line-index range `start..end` covering both fences (and the body
-/// between). An unclosed fence runs to the last line.
-pub(crate) fn code_regions(content: &str) -> Vec<Range<usize>> {
-    let mut out = Vec::new();
-    let mut open: Option<usize> = None;
-    let mut last = 0;
-    for (i, line) in content.split('\n').enumerate() {
-        last = i;
-        if line.trim_start().starts_with("```") {
-            match open {
-                None => open = Some(i),
-                Some(s) => {
-                    out.push(s..i + 1);
-                    open = None;
-                }
-            }
-        }
-    }
-    if let Some(s) = open {
-        out.push(s..last + 1);
-    }
-    out
-}
-
 /// Fenced ` ```mermaid ` blocks: each entry is `(line_range, source)` — the line
 /// range covering both fences (so it can collapse), and the diagram source (the
 /// lines between the fences, joined). Used to render the block as a diagram.

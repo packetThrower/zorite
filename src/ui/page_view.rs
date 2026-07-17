@@ -175,6 +175,12 @@ pub(crate) fn line_gutter(
             let font = window.text_style().font();
             let viewport_h = window.viewport_size().height;
             for (i, &(top, row_h)) in layout.iter().enumerate() {
+                // A collapsed row — a folded body line, or a hidden ``` fence
+                // (which still advances by the code card's pad) — gets no
+                // number; painting one would reveal the hidden line.
+                if row_h <= px(0.5) {
+                    continue;
+                }
                 // A fold collapsed this row (no vertical advance) — skip it.
                 if let Some(&(next_top, _)) = layout.get(i + 1)
                     && next_top - top <= px(0.5)

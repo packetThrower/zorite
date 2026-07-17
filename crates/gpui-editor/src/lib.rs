@@ -614,6 +614,11 @@ pub struct EditorState {
     /// code block, keyed by the opening-fence row) — clicks route here before
     /// caret placement.
     code_chip_rects: Vec<CodeChipHit>,
+    /// Full card bounds of each code block from the last paint (`(first body
+    /// line, rect)`), for hover tracking — the chrome is hover-revealed.
+    code_card_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// The hovered code block's first body line, if any (chrome shows there).
+    code_chip_hover: Option<usize>,
     /// Open language picker for a code block: `(opening fence row, anchor)`.
     code_lang_menu: Option<(usize, Point<Pixels>)>,
     code_lang_scroll: ScrollHandle,
@@ -738,6 +743,8 @@ impl EditorState {
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
             code_chip_rects: Vec::new(),
+            code_card_rects: Vec::new(),
+            code_chip_hover: None,
             code_lang_menu: None,
             code_lang_scroll: ScrollHandle::new(),
             code_langs: Vec::new(),
@@ -2667,6 +2674,16 @@ impl EditorState {
             self.heading_hover_row = hrow;
             cx.notify();
         }
+        // Repaint the code card's chrome (lang tag + Copy) when the pointer
+        // enters/leaves a card — it's hover-revealed.
+        let ccard = self
+            .code_card_rects
+            .iter()
+            .find_map(|(row, b)| b.contains(&event.position).then_some(*row));
+        if ccard != self.code_chip_hover {
+            self.code_chip_hover = ccard;
+            cx.notify();
+        }
     }
 
     /// Persist a finished grip drag: replace the resized image's source line with
@@ -3067,7 +3084,18 @@ impl EditorState {
         let total = self.line_tops[last]
             + self.line_h(last) * (self.wrapped[last].wrap_boundaries().len() + 1) as f32;
         if target_y >= total {
-            return self.content.len();
+            // Landing at the very end would park the caret on a trailing
+            // collapsed row (a hidden closing ``` fence) and reveal it — clamp
+            // to the end of the last VISIBLE row instead.
+            let mut r = last;
+            while r > 0 && self.line_h(r) <= px(0.) {
+                r -= 1;
+            }
+            return if r == last {
+                self.content.len()
+            } else {
+                self.line_end(r)
+            };
         }
         let mut trow = last;
         for i in 0..self.wrapped.len() {
@@ -3100,6 +3128,30 @@ impl EditorState {
             };
             if skip < self.wrapped.len() {
                 trow = skip;
+            }
+        }
+        // A collapsed row (a hidden ``` fence, a folded body line) has no visual
+        // height — landing there reveals it. Keep stepping in the direction of
+        // travel so the caret skips over it; if the document runs out that way,
+        // stay put.
+        if self.line_h(trow) <= px(0.) {
+            let step = |r: usize| {
+                if dir >= 0 {
+                    (r + 1 < self.wrapped.len()).then_some(r + 1)
+                } else {
+                    r.checked_sub(1)
+                }
+            };
+            let mut r = trow;
+            loop {
+                match step(r) {
+                    Some(n) if self.line_h(n) <= px(0.) => r = n,
+                    Some(n) => {
+                        trow = n;
+                        break;
+                    }
+                    None => return self.cursor_offset(),
+                }
             }
         }
         let rel = point(goal, (target_y - self.line_tops[trow]).max(px(0.)));
@@ -3291,6 +3343,11 @@ impl EditorState {
         let indent = &line[..line.len() - trimmed.len()];
         let new_line = format!("{indent}```{}", if lang == "text" { "" } else { lang });
         self.replace_range(start..end, &new_line, cx);
+        // replace_range parks the caret at the fence line's end, which reveals
+        // the raw ``` marker (reveal-on-caret). Step onto the body's first
+        // line instead so the fence stays hidden.
+        let caret = (start + new_line.len() + 1).min(self.content.len());
+        self.selected_range = caret..caret;
         cx.emit(EditorEvent::Changed);
     }
 
@@ -5395,11 +5452,6 @@ fn shape_document(
     // Ordered items paint their computed CommonMark position, not their
     // literal source digits (the reader renumbers the same way).
     let ordered_nums = markdown_syntax::ordered_numbers(&lines);
-    // Fenced-code-block regions; a block's ``` fence lines collapse (W6) unless
-    // the caret is inside that block (then they show, so they stay editable).
-    let code_regions = md
-        .map(|_| markdown_syntax::code_regions(content))
-        .unwrap_or_default();
     // Rows a (non-empty) selection touches. A selected block reveals its raw
     // source just like the caret's block does, so what's highlighted is what a
     // copy carries — the per-line pass below already reveals inline markers on
@@ -5842,10 +5894,10 @@ fn shape_document(
         // A ``` fence line collapses (height 0, no text) unless the caret is in
         // its block — so a code block reads as just its boxed body (W6), with the
         // fences re-appearing while you edit inside it.
-        let collapse_fence = is_fence
-            && !code_regions.iter().any(|r| {
-                r.contains(&idx) && (caret_row.is_some_and(|cr| r.contains(&cr)) || sel_hits(r))
-            });
+        // A fence stays hidden even while editing inside the block (the card's
+        // language tag shows/edits the language) — it reveals only with the
+        // caret or a selection on the fence line itself.
+        let collapse_fence = is_fence && caret_row != Some(idx) && !sel_hits(&(idx..idx + 1));
         // A `<!-- table:STYLE -->` or `<!-- math:ALIGN -->` marker line collapses (hidden)
         // too, unless the caret lands on it — so the marker stays out of the way but editable.
         let collapse_marker = caret_row != Some(idx)
@@ -7191,8 +7243,11 @@ struct PrepaintState {
     /// grips' resize cursor). Set in paint via `set_cursor_style`.
     checkbox_grips: Vec<(usize, Hitbox)>,
     /// Per-code-block chrome (lang tag + Copy), laid out here so paint and the
-    /// click rects agree.
+    /// click rects agree. Hover-revealed: only the hovered card's chips.
     code_chips: Vec<CodeChip>,
+    /// Every code card's full bounds (`(first body line, rect)`), committed for
+    /// the hover tracking in `on_mouse_move`.
+    code_card_rects: Vec<(usize, Bounds<Pixels>)>,
     chip_grips: Vec<(usize, Hitbox)>,
     /// Pointer-cursor hitboxes over foldable-callout chevrons, keyed by line.
     alert_fold_grips: Vec<(usize, Hitbox)>,
@@ -7548,14 +7603,15 @@ impl Element for EditorElement {
         // button at each code block's top-right, inside the padded box. Laid
         // out here (paint draws at these bounds; hitboxes flip the cursor).
         let mut code_chips = Vec::new();
+        let mut code_card_rects = Vec::new();
         if let Some(st) = editor
             .markdown_style
             .as_ref()
             .filter(|_| !editor.content.is_empty())
         {
             let starts = editor.line_starts();
-            let chip_fs = px(11.);
-            let chip_h = px(16.);
+            let chip_fs = px(13.);
+            let chip_h = px(20.);
             let shape = |window: &mut Window, text: &SharedString, color: Hsla| {
                 let run = TextRun {
                     len: text.len(),
@@ -7574,6 +7630,32 @@ impl Element for EditorElement {
                 let Some(cb) = bg.as_ref().filter(|cb| cb.top) else {
                     continue;
                 };
+                // The card's full bounds (for hover tracking): first body line's
+                // padded top through the last block line's padded bottom.
+                let mut last = i;
+                while last + 1 < backgrounds.len() && backgrounds[last + 1].is_some() {
+                    last += 1;
+                    if backgrounds[last].as_ref().is_some_and(|b| b.bottom) {
+                        break;
+                    }
+                }
+                let (top_pad, _) = code_pads(Some(*cb));
+                let (_, last_bot_pad) = code_pads(backgrounds[last]);
+                let card_top = bounds.origin.y + line_tops[i] - top_pad;
+                let card_bottom = bounds.origin.y
+                    + line_tops[last]
+                    + line_heights[last] * (wrapped[last].wrap_boundaries().len() + 1) as f32
+                    + last_bot_pad;
+                let card = Bounds::new(
+                    point(bounds.origin.x, card_top),
+                    size(cb.width, card_bottom - card_top),
+                );
+                code_card_rects.push((i, card));
+                // The chrome itself is hover-revealed: only the hovered card
+                // lays out (and hit-tests) its chips.
+                if editor.code_chip_hover != Some(i) {
+                    continue;
+                }
                 // The opening fence row: this row if the fence is revealed, else
                 // the nearest ``` row above (hidden fences collapse to height 0).
                 let Some(fence_row) = (0..=i).rev().find(|&r| {
@@ -7597,7 +7679,6 @@ impl Element for EditorElement {
                 let copy_text: SharedString = "Copy".into();
                 let lang_w = shape(window, &lang_text, st.quote) + px(12.);
                 let copy_w = shape(window, &copy_text, st.quote) + px(12.);
-                let (top_pad, _) = code_pads(Some(*cb));
                 let right = bounds.origin.x + cb.width - px(6.);
                 let y = bounds.origin.y + line_tops[i] - top_pad + px(3.);
                 let copy_bounds = Bounds::new(point(right - copy_w, y), size(copy_w, chip_h));
@@ -7612,7 +7693,9 @@ impl Element for EditorElement {
                     lang_bounds,
                     copy_bounds,
                     fence_row,
-                    bg: cb.color,
+                    // The popover surface (opaque) — the card tint is
+                    // translucent, and the labels must cover the code text.
+                    bg: st.popover_bg,
                     fg: st.quote,
                     lang_hb,
                     copy_hb,
@@ -8107,6 +8190,7 @@ impl Element for EditorElement {
             image_grips,
             checkbox_grips,
             code_chips,
+            code_card_rects,
             chip_grips,
             alert_fold_grips,
             heading_chevrons,
@@ -8739,7 +8823,7 @@ impl Element for EditorElement {
                 };
                 let shaped = window
                     .text_system()
-                    .shape_line(text.clone(), px(11.), &[run], None);
+                    .shape_line(text.clone(), px(13.), &[run], None);
                 let _ = shaped.paint(
                     point(
                         bounds_.origin.x + (bounds_.size.width - shaped.width()) / 2.,
@@ -8786,6 +8870,7 @@ impl Element for EditorElement {
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
             editor.code_chip_rects = code_chip_rects;
+            editor.code_card_rects = std::mem::take(&mut prepaint.code_card_rects);
             editor.alert_fold_rects = alert_fold_rects;
             editor.heading_fold_rects = heading_fold_rects;
             editor.heading_row_rects = std::mem::take(&mut prepaint.heading_row_rects);
