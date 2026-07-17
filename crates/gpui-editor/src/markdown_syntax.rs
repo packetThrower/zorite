@@ -540,29 +540,61 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
     while i < end {
         let c = b[i];
         // Inline code: `code` — backticks are hideable markers, the body a
-        // highlight (code color on a tint, body font) matching the reading view.
-        if c == b'`'
-            && let Some(close) = find1(b, i + 1, end, b'`')
-        {
-            fmt_marker(out, i..i + 1, st.marker);
-            push(
-                out,
-                i + 1..close,
-                Style {
-                    color: Some(st.code),
-                    bg: Some(st.code_bg),
-                    ..Default::default()
-                },
-            );
-            fmt_marker(out, close..close + 1, st.marker);
-            i = close + 1;
+        // highlight (code color on a tint, body font) matching the reading
+        // view. CommonMark run matching: an opening run of N backticks closes
+        // at the next run of EXACTLY N, so ``a`b`` keeps its inner backtick
+        // (backslashes are literal INSIDE a span; only the opener can be
+        // escaped).
+        if c == b'`' && !is_backslash_escaped(b, i) {
+            let mut n = 1;
+            while i + n < end && b[i + n] == b'`' {
+                n += 1;
+            }
+            let mut j = i + n;
+            let mut close = None;
+            while j < end {
+                if b[j] == b'`' {
+                    let mut m = 1;
+                    while j + m < end && b[j + m] == b'`' {
+                        m += 1;
+                    }
+                    if m == n {
+                        close = Some(j);
+                        break;
+                    }
+                    j += m;
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some(close) = close {
+                fmt_marker(out, i..i + n, st.marker);
+                push(
+                    out,
+                    i + n..close,
+                    Style {
+                        color: Some(st.code),
+                        bg: Some(st.code_bg),
+                        ..Default::default()
+                    },
+                );
+                fmt_marker(out, close..close + n, st.marker);
+                i = close + n;
+                continue;
+            }
+            // No matching run: the whole backtick STRING is one token
+            // (CommonMark) — skip past it so a shorter run inside it can't
+            // start a span the reader wouldn't.
+            i += n;
             continue;
         }
-        // Bold: **text** (check before single-* italic).
+        // Bold: **text** (check before single-* italic). A `\*` (escaped)
+        // opener or closer is literal text, matching the reader's CommonMark.
         if c == b'*'
+            && !is_backslash_escaped(b, i)
             && i + 1 < end
             && b[i + 1] == b'*'
-            && let Some(close) = find2(b, i + 2, end, b'*', b'*')
+            && let Some(close) = find2_unescaped(b, i + 2, end, b'*', b'*')
         {
             fmt_marker(out, i..i + 2, st.marker);
             push(
@@ -577,9 +609,10 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             i = close + 2;
             continue;
         }
-        // Italic: *text*.
+        // Italic: *text* — escaped `\*` stays literal.
         if c == b'*'
-            && let Some(close) = find1(b, i + 1, end, b'*')
+            && !is_backslash_escaped(b, i)
+            && let Some(close) = find1_unescaped(b, i + 1, end, b'*')
             && close > i + 1
         {
             fmt_marker(out, i..i + 1, st.marker);
@@ -643,9 +676,10 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         // Strikethrough: ~~text~~
         if c == b'~'
+            && !is_backslash_escaped(b, i)
             && i + 1 < end
             && b[i + 1] == b'~'
-            && let Some(close) = find2(b, i + 2, end, b'~', b'~')
+            && let Some(close) = find2_unescaped(b, i + 2, end, b'~', b'~')
         {
             fmt_marker(out, i..i + 2, st.marker);
             push(
@@ -663,6 +697,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         // Footnote reference: [^label] — rendered `[label]` in link color (the
         // `^` hidden), matching the reading view's resolved marker.
         if c == b'['
+            && !is_backslash_escaped(b, i)
             && i + 1 < end
             && b[i + 1] == b'^'
             && let Some(rb) = find1(b, i + 2, end, b']')
@@ -690,6 +725,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         }
         // Wiki-link: [[Page]] (check before single-[ link).
         if c == b'['
+            && !is_backslash_escaped(b, i)
             && i + 1 < end
             && b[i + 1] == b'['
             && let Some(close) = find2(b, i + 2, end, b']', b']')
@@ -745,6 +781,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         // image, so an empty-alt `![](src)` hides cleanly instead of leaving a
         // bare unhidden `!`.
         if c == b'['
+            && !is_backslash_escaped(b, i)
             && let Some(rb) = find1(b, i + 1, end, b']')
             && rb + 1 < end
             && b[rb + 1] == b'('
@@ -771,6 +808,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         // Reference link: [text][id] — `text` colored, brackets + `[id]` dimmed.
         // (Inline `[text](url)` is handled just above; this is the `][` form.)
         if c == b'['
+            && !is_backslash_escaped(b, i)
             && let Some(rb) = find1(b, i + 1, end, b']')
             && rb + 1 < end
             && b[rb + 1] == b'['
@@ -884,9 +922,21 @@ fn find1(b: &[u8], from: usize, end: usize, c: u8) -> Option<usize> {
     (from..end).find(|&k| b[k] == c)
 }
 
+/// First UNESCAPED index of byte `c` — a `\`-escaped occurrence (odd
+/// preceding backslash run) is literal text, not a marker (CommonMark).
+fn find1_unescaped(b: &[u8], from: usize, end: usize, c: u8) -> Option<usize> {
+    (from..end).find(|&k| b[k] == c && !is_backslash_escaped(b, k))
+}
+
 /// First index of the pair `c1 c2` in `b[from..end]`.
 fn find2(b: &[u8], from: usize, end: usize, c1: u8, c2: u8) -> Option<usize> {
     (from..end.saturating_sub(1)).find(|&k| b[k] == c1 && b[k + 1] == c2)
+}
+
+/// First UNESCAPED index of the pair — see [`find1_unescaped`].
+fn find2_unescaped(b: &[u8], from: usize, end: usize, c1: u8, c2: u8) -> Option<usize> {
+    (from..end.saturating_sub(1))
+        .find(|&k| b[k] == c1 && b[k + 1] == c2 && !is_backslash_escaped(b, k))
 }
 
 /// A "word" byte for `_`-emphasis flanking: ASCII alphanumerics, plus any
@@ -2481,6 +2531,55 @@ mod tests {
         // the caret isn't in it; inline markers still hide unless under the caret.
         let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, 0, false, &st);
         assert_eq!(disp, "> a b");
+    }
+
+    #[test]
+    fn backtick_runs_match_commonmark() {
+        let st = test_style();
+        // ``a`b`` — a double-backtick span keeps its inner backtick as body.
+        let line = "``a`b`` x";
+        let mut out = Vec::new();
+        scan_line(line, 0, line.len(), &st, &mut out);
+        assert!(
+            out.iter()
+                .any(|s| s.range == (2..5) && s.style.bg.is_some()),
+            "body a`b styled as code"
+        );
+        // An unclosed run stays plain (no half-matched span).
+        let mut out = Vec::new();
+        scan_line("``a` x", 0, 6, &st, &mut out);
+        assert!(out.iter().all(|s| s.style.bg.is_none()));
+    }
+
+    #[test]
+    fn backslash_escapes_stay_literal() {
+        let st = test_style();
+        // \*text\* must NOT style — the reader shows literal asterisks.
+        for line in [
+            r"\*text\*",
+            r"a \`x\` b",
+            r"\~~s\~~",
+            r"\[[Page]]",
+            r"\[t](u)",
+        ] {
+            let mut out = Vec::new();
+            scan_line(line, 0, line.len(), &st, &mut out);
+            assert!(
+                out.iter().all(|s| !s.style.bold
+                    && !s.style.italic
+                    && !s.style.strike
+                    && s.style.bg.is_none()
+                    && s.style.color.is_none()),
+                "{line:?} styled: {:?}",
+                out.iter().map(|s| s.range.clone()).collect::<Vec<_>>()
+            );
+        }
+        // An escaped closer doesn't close: **a \** stays unstyled (no pair),
+        // while the reader treats it the same.
+        let mut out = Vec::new();
+        let line = r"**a \** x";
+        scan_line(line, 0, line.len(), &st, &mut out);
+        assert!(out.iter().all(|s| !s.style.bold), "escaped closer ignored");
     }
 
     #[test]
