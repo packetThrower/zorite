@@ -8,6 +8,7 @@ use gpui::{
 };
 use gpui_component::Sizable;
 use gpui_component::input::Input;
+use gpui_component::scroll::Scrollbar;
 
 use crate::app::{AppView, PageEditor, PageFind};
 use crate::hierarchy;
@@ -45,77 +46,97 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .children(app.page_find.as_ref().map(|pf| find_bar(pf, cx)))
         .child(
             div()
-                .id("page-scroll")
+                .relative()
                 .flex_1()
                 .min_h_0()
                 .w_full()
-                .overflow_y_scroll()
-                .track_scroll(&app.page_scroll)
-                // Drop image files onto the page to add them.
-                .on_drop(cx.listener(
-                    move |this: &mut AppView, paths: &ExternalPaths, window, cx| {
-                        this.insert_dropped_files(
-                            SlashTarget::Page(page_id),
-                            paths.paths(),
-                            false,
-                            window,
-                            cx,
-                        );
-                    },
-                ))
                 .child(
                     div()
-                        // Match the journal feed: uniform padding, left-aligned.
-                        .p(px(28.0))
-                        // The gutter rail lives inside the left padding.
-                        .when_some(gutter_w, |d, w| d.pl(w.max(px(28.0))))
-                        .flex()
-                        .flex_col()
-                        // Fill the viewport so the open area below the content
-                        // is clickable all the way down.
-                        .min_h(relative(1.0))
-                        .child(page_title(
-                            pe,
-                            parent_breadcrumb(&pe.title, cx).map(IntoElement::into_any_element),
+                        .id("page-scroll")
+                        .size_full()
+                        .overflow_y_scroll()
+                        .track_scroll(&app.page_scroll)
+                        // Drop image files onto the page to add them.
+                        .on_drop(cx.listener(
+                            move |this: &mut AppView, paths: &ExternalPaths, window, cx| {
+                                this.insert_dropped_files(
+                                    SlashTarget::Page(page_id),
+                                    paths.paths(),
+                                    false,
+                                    window,
+                                    cx,
+                                );
+                            },
                         ))
-                        // WYSIWYG on → the live editor is the only view; off → the
-                        // reader view, swapped for the editor while editing.
-                        .child(if app.wysiwyg() || app.is_page_editing() {
-                            // gpui-editor draws no chrome; the wrapper sets the
-                            // ambient text style it inherits when shaping lines.
-                            // The gutter — the page's margin rail (line numbers
-                            // today; room for more per-line UI later) — is an
-                            // absolute child hanging left into the padding, so
-                            // rows and rail share a coordinate origin.
-                            let editor = div()
-                                .relative()
-                                .text_size(app.text_size())
-                                .text_color(theme::text_primary())
-                                .child(pe.state.clone());
-                            match gutter_w {
-                                Some(w) => editor
-                                    .child(line_gutter(pe.state.clone(), app.text_size(), w))
-                                    .into_any_element(),
-                                None => editor.into_any_element(),
-                            }
-                        } else {
-                            page_rendered(app, pe, cx).into_any_element()
-                        })
-                        // A large editable surface right under the content (like the
-                        // journal's open day area), so the page stays easy to click
-                        // into even when a PDF chip fills the body and sub-page /
-                        // reference sections sit below. It grows to fill, pushing
-                        // those sections to the bottom.
-                        .child(page_open_area(page_id, cx))
-                        .when(!children.is_empty(), |this| {
-                            this.child(sub_pages_section(&pe.title, &children, cx))
-                        })
-                        .when(!pe.backlinks.is_empty(), |this| {
-                            this.child(backlinks_section(&pe.backlinks, app, cx))
-                        })
-                        .when(!pe.unlinked.is_empty(), |this| {
-                            this.child(unlinked_section(&pe.unlinked, cx))
-                        }),
+                        .child(
+                            div()
+                                // Match the journal feed: uniform padding, left-aligned.
+                                .p(px(28.0))
+                                // The gutter rail lives inside the left padding.
+                                .when_some(gutter_w, |d, w| d.pl(w.max(px(28.0))))
+                                .flex()
+                                .flex_col()
+                                // Fill the viewport so the open area below the content
+                                // is clickable all the way down.
+                                .min_h(relative(1.0))
+                                .child(page_title(
+                                    pe,
+                                    parent_breadcrumb(&pe.title, cx)
+                                        .map(IntoElement::into_any_element),
+                                ))
+                                // WYSIWYG on → the live editor is the only view; off → the
+                                // reader view, swapped for the editor while editing.
+                                .child(if app.wysiwyg() || app.is_page_editing() {
+                                    // gpui-editor draws no chrome; the wrapper sets the
+                                    // ambient text style it inherits when shaping lines.
+                                    // The gutter — the page's margin rail (line numbers
+                                    // today; room for more per-line UI later) — is an
+                                    // absolute child hanging left into the padding, so
+                                    // rows and rail share a coordinate origin.
+                                    let editor = div()
+                                        .relative()
+                                        .text_size(app.text_size())
+                                        .text_color(theme::text_primary())
+                                        .child(pe.state.clone());
+                                    match gutter_w {
+                                        Some(w) => editor
+                                            .child(line_gutter(
+                                                pe.state.clone(),
+                                                app.text_size(),
+                                                w,
+                                            ))
+                                            .into_any_element(),
+                                        None => editor.into_any_element(),
+                                    }
+                                } else {
+                                    page_rendered(app, pe, cx).into_any_element()
+                                })
+                                // A large editable surface right under the content (like the
+                                // journal's open day area), so the page stays easy to click
+                                // into even when a PDF chip fills the body and sub-page /
+                                // reference sections sit below. It grows to fill, pushing
+                                // those sections to the bottom.
+                                .child(page_open_area(page_id, cx))
+                                .when(!children.is_empty(), |this| {
+                                    this.child(sub_pages_section(&pe.title, &children, cx))
+                                })
+                                .when(!pe.backlinks.is_empty(), |this| {
+                                    this.child(backlinks_section(&pe.backlinks, app, cx))
+                                })
+                                .when(!pe.unlinked.is_empty(), |this| {
+                                    this.child(unlinked_section(&pe.unlinked, cx))
+                                }),
+                        ),
+                )
+                // A visible scrollbar over the page's right edge (Cditor-inspired).
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .bottom_0()
+                        .child(Scrollbar::vertical(&app.page_scroll).id("page-scrollbar")),
                 ),
         )
         .into_any_element()

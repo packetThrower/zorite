@@ -9,6 +9,7 @@ use gpui::{
 };
 use gpui_component::Sizable;
 use gpui_component::input::Input;
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{Icon, IconName};
 use gpui_editor::EditorState;
 
@@ -138,6 +139,16 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                         .children(sections)
                         .child(load_older(cx)),
                 ),
+        )
+        // A visible scrollbar over the feed's right edge (Cditor-inspired).
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .child(Scrollbar::vertical(&app.feed_scroll).id("feed-scrollbar")),
         )
         .children(find_bar)
         .when(scrolled, |this| {
