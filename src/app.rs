@@ -9510,6 +9510,13 @@ fn make_editor(
         editor.set_block_math_em(crate::math::FONT_SIZE);
         // Tab / Shift+Tab indent by the configured number of spaces per level.
         editor.set_tab_indent(list_indent);
+        // The code card's language picker offers the compiled grammar set.
+        editor.set_code_languages(
+            crate::highlight::LANGUAGES
+                .iter()
+                .map(|l| gpui::SharedString::from(*l))
+                .collect(),
+        );
         editor
     });
     // Live-preview markdown styling when WYSIWYG is on — mirrors the rendered

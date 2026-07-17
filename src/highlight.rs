@@ -18,6 +18,38 @@ use gpui_component::highlighter::{HighlightTheme, SyntaxHighlighter};
 
 type Styles = Rc<Vec<(Range<usize>, HighlightStyle)>>;
 
+/// The languages the editor's code-block picker offers: `text` (no
+/// highlighting), `mermaid` (renders as a diagram), and every grammar compiled
+/// in (the tree-sitter feature list on the `gpui-component` dependency, plus
+/// json in its base crate). Keep in step with Cargo.toml when features change.
+pub const LANGUAGES: &[&str] = &[
+    "text",
+    "mermaid",
+    "bash",
+    "c",
+    "cpp",
+    "csharp",
+    "css",
+    "diff",
+    "go",
+    "html",
+    "java",
+    "javascript",
+    "json",
+    "kotlin",
+    "lua",
+    "php",
+    "python",
+    "ruby",
+    "rust",
+    "sql",
+    "swift",
+    "toml",
+    "tsx",
+    "typescript",
+    "yaml",
+];
+
 /// Cache of highlighted blocks, keyed by `(language, code hash)`. Styles bake
 /// the active theme's colors in, so a theme switch clears it (`set_theme`).
 #[derive(Default)]

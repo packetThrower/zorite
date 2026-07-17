@@ -610,6 +610,16 @@ pub struct EditorState {
     /// Window-space bounds of each painted task checkbox, with its logical line —
     /// so a click on the box toggles `[ ]`↔`[x]` instead of placing the caret.
     checkbox_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// Painted code-card chrome bounds from the last frame (lang tag + Copy per
+    /// code block, keyed by the opening-fence row) — clicks route here before
+    /// caret placement.
+    code_chip_rects: Vec<CodeChipHit>,
+    /// Open language picker for a code block: `(opening fence row, anchor)`.
+    code_lang_menu: Option<(usize, Point<Pixels>)>,
+    code_lang_scroll: ScrollHandle,
+    /// Languages the host's highlighter supports, offered in the code block's
+    /// language picker. Empty (the default) disables the picker.
+    code_langs: Vec<SharedString>,
     /// Painted chevron bounds of foldable callouts (`(line, rect)`, from the
     /// last paint) — a click flips the marker's `-`/`+` fold char.
     alert_fold_rects: Vec<(usize, Bounds<Pixels>)>,
@@ -727,6 +737,10 @@ impl EditorState {
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
+            code_chip_rects: Vec::new(),
+            code_lang_menu: None,
+            code_lang_scroll: ScrollHandle::new(),
+            code_langs: Vec::new(),
             alert_fold_rects: Vec::new(),
             image_resize: None,
             editing_block: None,
@@ -814,6 +828,13 @@ impl EditorState {
     /// tag formatting then renders as you type — markers stay in the text,
     /// dimmed. Without it the editor is the raw view: plain text, spell-check
     /// underlines only.
+    /// Languages offered in a code block's language picker (the host's
+    /// highlighter set, e.g. its compiled tree-sitter grammars). Empty — the
+    /// default — leaves the tag click-inert.
+    pub fn set_code_languages(&mut self, langs: Vec<SharedString>) {
+        self.code_langs = langs;
+    }
+
     pub fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>) {
         self.markdown_style = Some(style);
         cx.notify();
@@ -2284,6 +2305,20 @@ impl EditorState {
             }
             return;
         }
+        // A press on a code card's chrome: Copy writes the block's body to the
+        // clipboard; the language tag opens the picker — neither places the caret.
+        if let Some((on_copy, fence_row)) = self.code_chip_at(event.position) {
+            if on_copy {
+                if let Some((_, body)) = self.code_block_at(fence_row) {
+                    let text = self.content[body].to_string();
+                    self.write_clipboard(text, cx);
+                }
+            } else if !self.code_langs.is_empty() {
+                self.code_lang_menu = Some((fence_row, event.position));
+                cx.notify();
+            }
+            return;
+        }
         // A press on a foldable callout's chevron flips its `-`/`+` fold char
         // (folding/unfolding the body) instead of placing the caret — the same
         // toggle-in-source model as the task checkbox.
@@ -2484,6 +2519,7 @@ impl EditorState {
         self.table_menu = None;
         self.image_menu = None;
         self.prop_menu = None;
+        self.code_lang_menu = None;
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
@@ -2829,6 +2865,7 @@ impl EditorState {
             || self.table_menu.take().is_some()
             || self.image_menu.take().is_some()
             || self.prop_menu.take().is_some()
+            || self.code_lang_menu.take().is_some()
         {
             cx.notify();
         }
@@ -3202,6 +3239,61 @@ impl EditorState {
     /// If `position` lands on a task checkbox painted last frame, the logical line
     /// of that task — so a click can toggle it. The hit area is the box padded a
     /// little, to stay easy to tap without swallowing the body text beside it.
+    /// The code block whose opening fence is `fence_row`: its language token
+    /// (empty for none) and the byte range of the body between the fences.
+    fn code_block_at(&self, fence_row: usize) -> Option<(String, Range<usize>)> {
+        let starts = self.line_starts();
+        let &start = starts.get(fence_row)?;
+        let fence_line = &self.content[start..self.line_end(fence_row)];
+        let trimmed = fence_line.trim_start();
+        let lang = trimmed.strip_prefix("```")?.trim().to_string();
+        let body_start = (self.line_end(fence_row) + 1).min(self.content.len());
+        let mut body_end = self.content.len();
+        for (row, &row_start) in starts.iter().enumerate().skip(fence_row + 1) {
+            if self.content[row_start..self.line_end(row)]
+                .trim_start()
+                .starts_with("```")
+            {
+                body_end = row_start.saturating_sub(1).max(body_start);
+                break;
+            }
+        }
+        Some((lang, body_start..body_end))
+    }
+
+    /// If `position` lands on a code card's chrome painted last frame:
+    /// `(on_copy, fence_row)` — `true` = the Copy button, `false` = the
+    /// language tag.
+    fn code_chip_at(&self, position: Point<Pixels>) -> Option<(bool, usize)> {
+        self.code_chip_rects.iter().find_map(|c| {
+            if c.copy.contains(&position) {
+                Some((true, c.fence_row))
+            } else if c.lang.contains(&position) {
+                Some((false, c.fence_row))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Rewrite the block's opening fence to carry `lang` (one undo step).
+    fn set_code_lang(&mut self, fence_row: usize, lang: &str, cx: &mut Context<Self>) {
+        let starts = self.line_starts();
+        let Some(&start) = starts.get(fence_row) else {
+            return;
+        };
+        let end = self.line_end(fence_row);
+        let line = &self.content[start..end];
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("```") {
+            return;
+        }
+        let indent = &line[..line.len() - trimmed.len()];
+        let new_line = format!("{indent}```{}", if lang == "text" { "" } else { lang });
+        self.replace_range(start..end, &new_line, cx);
+        cx.emit(EditorEvent::Changed);
+    }
+
     fn checkbox_at(&self, position: Point<Pixels>) -> Option<usize> {
         let pad = px(4.);
         self.checkbox_rects.iter().find_map(|&(line, rect)| {
@@ -4552,6 +4644,96 @@ impl Render for EditorState {
                     ),
                 )
             }))
+            .children(self.code_lang_menu.map(|(row, anchor)| {
+                // The code block's language picker (Cditor-inspired): the host's
+                // highlighter languages, scrollable past the cap, current one
+                // checked. Selecting rewrites the opening fence (one undo step).
+                let st = self.markdown_style.as_ref();
+                let menu_bg = st.map_or(rgb(0x26262b).into(), |s| s.popover_bg);
+                let menu_border = st.map_or(rgb(0x45454c).into(), |s| s.popover_border);
+                let menu_fg = st.map_or(rgb(0xe6e6e6).into(), |s| s.popover_fg);
+                let hover = st.map_or(rgba(0x2f6fd628).into(), |s| s.popover_hover);
+                let mut thumb_c = st.map_or(rgba(0xffffff66).into(), |s| s.marker);
+                thumb_c.a = 0.5;
+                let current = self.code_block_at(row).map(|(l, _)| l).unwrap_or_default();
+                const ROW_H: f32 = 22.0;
+                const MAX_H: f32 = 260.0;
+                const PAD: f32 = 4.0;
+                let langs = self.code_langs.clone();
+                let rows_h = langs.len() as f32 * ROW_H;
+                let view_h = MAX_H - 2.0 * PAD;
+                let thumb = (rows_h > view_h).then(|| {
+                    let scrolled =
+                        (-f32::from(self.code_lang_scroll.offset().y)).clamp(0.0, rows_h - view_h);
+                    let thumb_h = (view_h * view_h / rows_h).max(24.0);
+                    let thumb_top = PAD + scrolled / (rows_h - view_h) * (view_h - thumb_h);
+                    div()
+                        .absolute()
+                        .top(px(thumb_top))
+                        .right(px(2.))
+                        .w(px(6.))
+                        .h(px(thumb_h))
+                        .rounded(px(3.))
+                        .bg(thumb_c)
+                });
+                gpui::deferred(
+                    gpui::anchored().position(anchor).snap_to_window().child(
+                        div()
+                            .relative()
+                            .occlude()
+                            .min_w(px(140.))
+                            .cursor(CursorStyle::Arrow)
+                            .bg(menu_bg)
+                            .border_1()
+                            .border_color(menu_border)
+                            .rounded(px(6.))
+                            .overflow_hidden()
+                            .text_color(menu_fg)
+                            .text_size(px(13.))
+                            .py(px(PAD))
+                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                                editor.code_lang_menu = None;
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .id("code-lang-list")
+                                    .max_h(px(MAX_H - 2.0 * PAD))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.code_lang_scroll)
+                                    .children(langs.into_iter().enumerate().map(|(i, lang)| {
+                                        let is_current = *lang == current
+                                            || (current.is_empty() && *lang == *"text");
+                                        let label: SharedString = if is_current {
+                                            format!("{lang} ✓").into()
+                                        } else {
+                                            lang.clone()
+                                        };
+                                        div()
+                                            .id(("code-lang-row", i))
+                                            .flex_shrink_0()
+                                            .h(px(ROW_H))
+                                            .px(px(10.))
+                                            .py(px(2.))
+                                            .hover(move |s| s.bg(hover))
+                                            .child(label)
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(
+                                                    move |editor, _: &MouseDownEvent, _, cx| {
+                                                        cx.stop_propagation();
+                                                        editor.code_lang_menu = None;
+                                                        editor.set_code_lang(row, &lang, cx);
+                                                    },
+                                                ),
+                                            )
+                                            .into_any_element()
+                                    })),
+                            )
+                            .children(thumb),
+                    ),
+                )
+            }))
     }
 }
 
@@ -4736,6 +4918,30 @@ impl Block {
 /// full editor width). Each line carries the block color, the shared box width
 /// (back-patched once the block's extent is known), and whether it's the
 /// first/last visible line (to round the box's top/bottom corners).
+/// Last-frame hit rects for one code card's chrome (see `code_chip_rects`).
+#[derive(Clone)]
+struct CodeChipHit {
+    lang: Bounds<Pixels>,
+    copy: Bounds<Pixels>,
+    fence_row: usize,
+}
+
+/// A code card's top-right chrome, laid out in prepaint: the language tag and
+/// Copy button (Cditor-inspired, issue #16). Geometry is window-space; paint
+/// draws at these bounds and the hitboxes flip the cursor.
+struct CodeChip {
+    lang_text: SharedString,
+    lang_bounds: Bounds<Pixels>,
+    copy_bounds: Bounds<Pixels>,
+    fence_row: usize,
+    /// Card background — the labels sit on an opaque pill of it so they stay
+    /// readable over a long first line.
+    bg: Hsla,
+    fg: Hsla,
+    lang_hb: Hitbox,
+    copy_hb: Hitbox,
+}
+
 #[derive(Clone, Copy)]
 struct CodeBg {
     color: Hsla,
@@ -6981,6 +7187,9 @@ struct PrepaintState {
     /// and file chips, so the cursor flips to a hand over them (like the image
     /// grips' resize cursor). Set in paint via `set_cursor_style`.
     checkbox_grips: Vec<(usize, Hitbox)>,
+    /// Per-code-block chrome (lang tag + Copy), laid out here so paint and the
+    /// click rects agree.
+    code_chips: Vec<CodeChip>,
     chip_grips: Vec<(usize, Hitbox)>,
     /// Pointer-cursor hitboxes over foldable-callout chevrons, keyed by line.
     alert_fold_grips: Vec<(usize, Hitbox)>,
@@ -7329,6 +7538,82 @@ impl Element for EditorElement {
                     size(bounds.size.width, *lh),
                 );
                 chip_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+        }
+
+        // Code-card chrome (Cditor-inspired, issue #16): a language tag + Copy
+        // button at each code block's top-right, inside the padded box. Laid
+        // out here (paint draws at these bounds; hitboxes flip the cursor).
+        let mut code_chips = Vec::new();
+        if let Some(st) = editor
+            .markdown_style
+            .as_ref()
+            .filter(|_| !editor.content.is_empty())
+        {
+            let starts = editor.line_starts();
+            let chip_fs = px(11.);
+            let chip_h = px(16.);
+            let shape = |window: &mut Window, text: &SharedString, color: Hsla| {
+                let run = TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                window
+                    .text_system()
+                    .shape_line(text.clone(), chip_fs, &[run], None)
+                    .width()
+            };
+            for (i, bg) in backgrounds.iter().enumerate() {
+                let Some(cb) = bg.as_ref().filter(|cb| cb.top) else {
+                    continue;
+                };
+                // The opening fence row: this row if the fence is revealed, else
+                // the nearest ``` row above (hidden fences collapse to height 0).
+                let Some(fence_row) = (0..=i).rev().find(|&r| {
+                    starts.get(r).is_some_and(|&s| {
+                        editor.content[s..editor.line_end(r)]
+                            .trim_start()
+                            .starts_with("```")
+                    })
+                }) else {
+                    continue;
+                };
+                let lang = editor
+                    .code_block_at(fence_row)
+                    .map(|(l, _)| l)
+                    .unwrap_or_default();
+                let lang_text: SharedString = if lang.is_empty() {
+                    "text ▾".into()
+                } else {
+                    format!("{lang} ▾").into()
+                };
+                let copy_text: SharedString = "Copy".into();
+                let lang_w = shape(window, &lang_text, st.quote) + px(12.);
+                let copy_w = shape(window, &copy_text, st.quote) + px(12.);
+                let (top_pad, _) = code_pads(Some(*cb));
+                let right = bounds.origin.x + cb.width - px(6.);
+                let y = bounds.origin.y + line_tops[i] - top_pad + px(3.);
+                let copy_bounds = Bounds::new(point(right - copy_w, y), size(copy_w, chip_h));
+                let lang_bounds = Bounds::new(
+                    point(right - copy_w - px(4.) - lang_w, y),
+                    size(lang_w, chip_h),
+                );
+                let lang_hb = window.insert_hitbox(lang_bounds, HitboxBehavior::Normal);
+                let copy_hb = window.insert_hitbox(copy_bounds, HitboxBehavior::Normal);
+                code_chips.push(CodeChip {
+                    lang_text,
+                    lang_bounds,
+                    copy_bounds,
+                    fence_row,
+                    bg: cb.color,
+                    fg: st.quote,
+                    lang_hb,
+                    copy_hb,
+                });
             }
         }
 
@@ -7818,6 +8103,7 @@ impl Element for EditorElement {
             inline_maths,
             image_grips,
             checkbox_grips,
+            code_chips,
             chip_grips,
             alert_fold_grips,
             heading_chevrons,
@@ -8421,6 +8707,56 @@ impl Element for EditorElement {
                 _ => None,
             })
             .collect();
+        // Code-card chrome: the language tag + Copy button laid out in prepaint.
+        // Each label sits on an opaque pill of the card color so it stays
+        // readable over a long first line; hover brightens it.
+        let mut code_chip_rects = Vec::new();
+        for chip in &prepaint.code_chips {
+            for (bounds_, text, hb) in [
+                (chip.lang_bounds, &chip.lang_text, &chip.lang_hb),
+                (chip.copy_bounds, &SharedString::from("Copy"), &chip.copy_hb),
+            ] {
+                let hovered = hb.is_hovered(window);
+                window.paint_quad(PaintQuad {
+                    bounds: bounds_,
+                    corner_radii: Corners::all(px(4.)),
+                    background: chip.bg.into(),
+                    border_widths: Edges::all(px(0.)),
+                    border_color: chip.fg,
+                    border_style: BorderStyle::Solid,
+                });
+                let color = if hovered { text_color } else { chip.fg };
+                let run = TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window
+                    .text_system()
+                    .shape_line(text.clone(), px(11.), &[run], None);
+                let _ = shaped.paint(
+                    point(
+                        bounds_.origin.x + (bounds_.size.width - shaped.width()) / 2.,
+                        bounds_.origin.y + px(1.),
+                    ),
+                    bounds_.size.height - px(2.),
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                window.set_cursor_style(CursorStyle::PointingHand, hb);
+            }
+            code_chip_rects.push(CodeChipHit {
+                lang: chip.lang_bounds,
+                copy: chip.copy_bounds,
+                fence_row: chip.fence_row,
+            });
+        }
+
         // Hovering an inline link shows a hand, like the reading view (the
         // hitboxes come from prepaint; cursor styles must be set during paint).
         for hb in &prepaint.link_grips {
@@ -8446,6 +8782,7 @@ impl Element for EditorElement {
             editor.prop_pill_rects = prop_pill_rects;
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
+            editor.code_chip_rects = code_chip_rects;
             editor.alert_fold_rects = alert_fold_rects;
             editor.heading_fold_rects = heading_fold_rects;
             editor.heading_row_rects = std::mem::take(&mut prepaint.heading_row_rects);

@@ -11,11 +11,11 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Bounds, Corners, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement, InteractiveText, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas, div, point,
-    prelude::FluentBuilder, px, relative, rgb, rgba, size, svg,
+    AnyElement, App, Bounds, ClipboardItem, Corners, ElementId, FontStyle, FontWeight,
+    HighlightStyle, Hsla, InteractiveElement, InteractiveText, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas,
+    div, point, prelude::FluentBuilder, px, relative, rgb, rgba, size, svg,
 };
 use markdown::mdast;
 
@@ -1013,6 +1013,51 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                         .width()
                 })
                 .fold(px(0.0), Pixels::max);
+            // Hover chrome at the card's top-right (Cditor-inspired): the
+            // language tag and a Copy button (writes the raw code to the
+            // clipboard). The WYSIWYG editor paints the same chip.
+            ctx.counter += 1;
+            let group: SharedString = format!("{}-code-{}", ctx.id_base, ctx.counter).into();
+            let code_text: SharedString = c.value.clone().into();
+            let mut chip_fg = ctx.style.muted_color;
+            chip_fg.a *= 0.9;
+            let chrome = div()
+                .absolute()
+                .top(px(4.0))
+                .right(px(6.0))
+                .invisible()
+                .group_hover(group.clone(), |s| s.visible())
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .text_size(px(11.0))
+                .text_color(chip_fg)
+                .children(
+                    c.lang
+                        .clone()
+                        .filter(|l| !l.is_empty())
+                        .map(|l| div().child(SharedString::from(l))),
+                )
+                .child(
+                    div()
+                        .id(ElementId::Name(format!("{group}-copy").into()))
+                        .px(px(6.0))
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(ctx.style.mark_bg))
+                        .on_mouse_down(MouseButton::Left, {
+                            let code_text = code_text.clone();
+                            move |_: &MouseDownEvent, _window, app| {
+                                app.stop_propagation();
+                                app.write_to_clipboard(ClipboardItem::new_string(
+                                    code_text.to_string(),
+                                ));
+                            }
+                        })
+                        .child("Copy"),
+                );
             Some(
                 div()
                     .w(widest + px(26.0))
@@ -1023,7 +1068,10 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     .py(px(8.0))
                     .font_family(ctx.style.mono_font.clone())
                     .text_color(color)
+                    .relative()
+                    .group(group)
                     .child(text)
+                    .child(chrome)
                     .into_any_element(),
             )
         }

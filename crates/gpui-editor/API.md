@@ -44,6 +44,7 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`EditorState::set_diagnostics`](#set_diagnostics) | method | `fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>)` | Replace the underlined spans |
 | [`EditorState::on_suggest`](#on_suggest) | method | `fn on_suggest(&mut self, provider: impl Fn(&str) -> Vec<String> + 'static)` | Lazy right-click suggestion provider |
 | [`EditorState::set_markdown_style`](#set_markdown_style) | method | `fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>)` | Turn on WYSIWYG styling |
+| [`EditorState::set_code_languages`](#set_code_languages) | method | `fn set_code_languages(&mut self, langs: Vec<SharedString>)` | Languages for the code card's picker |
 | [`EditorState::clear_markdown_style`](#clear_markdown_style) | method | `fn clear_markdown_style(&mut self, cx: &mut Context<Self>)` | Back to plain text at runtime |
 | [`EditorState::set_block_image_provider`](#set_block_image_provider) | method | `fn set_block_image_provider(&mut self, impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)` | Standalone `![](src)` → decoded image |
 | [`EditorState::set_block_chip_provider`](#set_block_chip_provider) | method | `fn set_block_chip_provider(&mut self, impl Fn(&str) -> Option<SharedString> + 'static)` | Classify `![](src)` as a file chip + label |
@@ -497,6 +498,19 @@ revealed only around the caret, lists/quotes/alerts/rules drawn, tables
 gridded. Without it the editor is the **raw** view: plain text, spell
 squiggles only. The block providers below are each independently optional on
 top of this.
+
+#### `set_code_languages`
+
+```rust
+pub fn set_code_languages(&mut self, langs: Vec<SharedString>)
+```
+
+The languages offered in a code block's language picker — the tag at the
+card's top-right (next to its Copy button) opens a scrollable menu of these;
+selecting one rewrites the opening fence (` ```lang `) as one undo step.
+Supply the host highlighter's grammar set (a `"text"` entry maps to no
+language). Empty — the default — leaves the tag click-inert. The Copy button
+needs no setup: it writes the block's body through the clipboard writer.
 
 #### `clear_markdown_style`
 
