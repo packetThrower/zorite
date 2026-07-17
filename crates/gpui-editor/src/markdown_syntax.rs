@@ -539,6 +539,19 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
     }
     while i < end {
         let c = b[i];
+        // A backslash escape (`\*`, `\|`, `\\`, … — any ASCII punctuation):
+        // the backslash is a hideable marker (the reader consumes it), the
+        // escaped character is literal content — skip it so no construct
+        // opens on it. Reveal-on-caret shows the backslash for editing.
+        if c == b'\\'
+            && i + 1 < end
+            && b[i + 1].is_ascii_punctuation()
+            && !is_backslash_escaped(b, i)
+        {
+            marker(out, i..i + 1, st.marker);
+            i += 2;
+            continue;
+        }
         // Inline code: `code` — backticks are hideable markers, the body a
         // highlight (code color on a tint, body font) matching the reading
         // view. CommonMark run matching: an opening run of N backticks closes
@@ -2564,12 +2577,14 @@ mod tests {
         ] {
             let mut out = Vec::new();
             scan_line(line, 0, line.len(), &st, &mut out);
+            // Escape backslashes become (hidden) marker spans; nothing may
+            // carry actual STYLING.
             assert!(
                 out.iter().all(|s| !s.style.bold
                     && !s.style.italic
                     && !s.style.strike
                     && s.style.bg.is_none()
-                    && s.style.color.is_none()),
+                    && (s.style.hide || s.style.color.is_none())),
                 "{line:?} styled: {:?}",
                 out.iter().map(|s| s.range.clone()).collect::<Vec<_>>()
             );
@@ -2580,6 +2595,23 @@ mod tests {
         let line = r"**a \** x";
         scan_line(line, 0, line.len(), &st, &mut out);
         assert!(out.iter().all(|s| !s.style.bold), "escaped closer ignored");
+    }
+
+    #[test]
+    fn escape_backslash_hides_like_the_reader() {
+        // The reader consumes the `\` of an escape — the editor hides it the
+        // same way (a marker span), leaving the escaped char as content.
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+        let (disp, _, _) = hidden_runs(r"\*text\*", &font, c, &[], None, 0, 0, false, &st);
+        assert_eq!(disp, "*text*");
+        // `\\` shows a single backslash.
+        let (disp, _, _) = hidden_runs(r"a \\ b", &font, c, &[], None, 0, 0, false, &st);
+        assert_eq!(disp, r"a \ b");
+        // CommonMark: \**bold** = literal *, italic "bold", literal *.
+        let (disp, _, _) = hidden_runs(r"\**bold**", &font, c, &[], None, 0, 0, false, &st);
+        assert_eq!(disp, "*bold*");
     }
 
     #[test]
