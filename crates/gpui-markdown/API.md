@@ -31,6 +31,8 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 | [`TableStyle`](#enum-tablestyle) | enum | `Grid \| Striped \| Header \| Minimal` | Per-table visual design (default `Grid`) | — |
 | [`TableStyle::from_name`](#tablestylefrom_name) | method | `fn from_name(name: &str) -> Option<Self>` | Parse a style name (`"striped"` …) | — |
 | [`table_style_marker`](#table_style_marker) | fn | `fn table_style_marker(text: &str) -> Option<TableStyle>` | Parse a `<!-- table:STYLE -->` marker comment | — |
+| [`table_col_widths`](#table_col_widths) | fn | `fn table_col_widths(text: &str) -> Option<Vec<f32>>` | Explicit column widths from a marker's `cols=` | — |
+| [`table_marker_text`](#table_marker_text) | fn | `fn table_marker_text(style: TableStyle, widths: Option<&[f32]>) -> Option<String>` | Write a marker line (the parsers' inverse) | — |
 | [`heading_scale`](#heading_scale) | fn | `fn heading_scale(depth: u8) -> f32` | Font-size multiplier for h1–h6 | — |
 | [`ordered_marker`](#ordered_marker) | fn | `fn ordered_marker(depth: usize, n: u32) -> String` | Word-style list marker (`1.` → `a.` → `i.`) | — |
 | [`LinkHit`](#enum-linkhit) | enum | `Page(String) \| Url(String)` | What a clicked link-like construct targets | — |
@@ -333,7 +335,35 @@ Parse a `<!-- table:STYLE -->` marker into its [`TableStyle`](#enum-tablestyle).
 
 **Returns** — the style, or `None` for anything unrecognized (no comment
 delimiters, no `table:` prefix, unknown style name) — so an unknown marker
-stays a plain HTML comment.
+stays a plain HTML comment. Attribute tokens after the style name (`cols=…`)
+are tolerated and ignored here.
+
+---
+
+## `table_col_widths`
+
+```rust
+pub fn table_col_widths(text: &str) -> Option<Vec<f32>>
+```
+
+Explicit column widths (logical px) from a table marker's `cols=` attribute —
+`<!-- table:grid cols=120,80,200 -->` — written by the editor's
+drag-to-resize. Both renderers apply them over the content measurement.
+
+**Returns** — the widths, or `None` when the attribute is absent or malformed
+(non-numeric, non-positive, or empty) — the table stays content-measured.
+
+---
+
+## `table_marker_text`
+
+```rust
+pub fn table_marker_text(style: TableStyle, widths: Option<&[f32]>) -> Option<String>
+```
+
+The marker line for `style` plus optional explicit column widths (rounded to
+whole px) — the inverse of the two parsers above. **Returns** `None` when the
+marker would say nothing (Grid style, no widths): the default needs no marker.
 
 ---
 
