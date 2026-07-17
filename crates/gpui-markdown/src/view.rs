@@ -19,7 +19,9 @@ use gpui::{
 };
 use markdown::mdast;
 
-use crate::syntax::{AlertKind, TableStyle, alert_marker, heading_scale, table_style_marker};
+use crate::syntax::{
+    AlertKind, TableStyle, alert_marker, heading_scale, table_col_widths, table_style_marker,
+};
 
 /// Visual configuration for the renderer. The host fills this from its
 /// own theme; defaults are a neutral dark palette.
@@ -780,16 +782,12 @@ impl RenderOnce for MarkdownView {
                     if let mdast::Node::Html(h) = node
                         && let Some(style) = table_style_marker(&h.value)
                     {
-                        pending_style = Some(style);
+                        pending_style = Some((style, table_col_widths(&h.value)));
                         continue;
                     }
                     if let mdast::Node::Table(t) = node {
-                        col = col.child(render_table(
-                            t,
-                            &mut ctx,
-                            pending_style.take().unwrap_or_default(),
-                            window,
-                        ));
+                        let (style, widths) = pending_style.take().unwrap_or_default();
+                        col = col.child(render_table(t, &mut ctx, style, widths, window));
                         continue;
                     }
                     pending_style = None;
@@ -1211,7 +1209,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
         ),
         // Top-level tables get their style from a preceding marker (see the root
         // loop); a nested/standalone table here renders as the default Grid.
-        mdast::Node::Table(t) => Some(render_table(t, ctx, TableStyle::default(), window)),
+        mdast::Node::Table(t) => Some(render_table(t, ctx, TableStyle::default(), None, window)),
         // A footnote definition: `[label] <content>`, rendered muted/smaller
         // where it sits (authors put these at the bottom).
         mdast::Node::FootnoteDefinition(f) => {
@@ -2146,16 +2144,12 @@ fn render_embed(
             if let mdast::Node::Html(h) = node
                 && let Some(style) = table_style_marker(&h.value)
             {
-                pending_style = Some(style);
+                pending_style = Some((style, table_col_widths(&h.value)));
                 continue;
             }
             if let mdast::Node::Table(t) = node {
-                body = body.child(render_table(
-                    t,
-                    ctx,
-                    pending_style.take().unwrap_or_default(),
-                    window,
-                ));
+                let (style, widths) = pending_style.take().unwrap_or_default();
+                body = body.child(render_table(t, ctx, style, widths, window));
                 continue;
             }
             pending_style = None;
@@ -2346,6 +2340,7 @@ fn render_table(
     table: &mdast::Table,
     ctx: &mut Ctx,
     style: TableStyle,
+    explicit_widths: Option<Vec<f32>>,
     window: &mut Window,
 ) -> AnyElement {
     let border = ctx.style.muted_color;
@@ -2402,6 +2397,13 @@ fn render_table(
     }
     for w in &mut widths {
         *w = (*w).max(px(48.0));
+    }
+    // The marker's `cols=` widths (the editor's drag-to-resize) override the
+    // measurement, floored so a column can't vanish.
+    if let Some(explicit) = &explicit_widths {
+        for (ci, w) in explicit.iter().enumerate().take(ncols) {
+            widths[ci] = px(w.max(24.0));
+        }
     }
     // The grid must be sized explicitly: gpui's default stretch alignment
     // would otherwise fill the parent's full width, leaving a void after the
@@ -2743,6 +2745,31 @@ mod search_tests {
         );
         assert_eq!(table_style_marker("<!-- table:nope -->"), None);
         assert_eq!(table_style_marker("<!-- ordinary -->"), None);
+        // Width attributes ride along without breaking the style parse.
+        assert_eq!(
+            table_style_marker("<!-- table:striped cols=120,80 -->"),
+            Some(TableStyle::Striped)
+        );
+        assert_eq!(
+            table_col_widths("<!-- table:grid cols=120,80.5 -->"),
+            Some(vec![120.0, 80.5])
+        );
+        assert_eq!(table_col_widths("<!-- table:grid -->"), None);
+        assert_eq!(table_col_widths("<!-- table:grid cols=x,1 -->"), None);
+        assert_eq!(table_col_widths("<!-- table:grid cols=0,1 -->"), None);
+        // The writer round-trips: Grid + no widths needs no marker at all.
+        assert_eq!(
+            crate::syntax::table_marker_text(TableStyle::Grid, None),
+            None
+        );
+        assert_eq!(
+            crate::syntax::table_marker_text(TableStyle::Grid, Some(&[100.4, 50.0])),
+            Some("<!-- table:grid cols=100,50 -->".to_string())
+        );
+        assert_eq!(
+            crate::syntax::table_marker_text(TableStyle::Minimal, None),
+            Some("<!-- table:minimal -->".to_string())
+        );
     }
 
     #[test]

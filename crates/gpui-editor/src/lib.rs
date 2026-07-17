@@ -632,6 +632,14 @@ pub struct EditorState {
     /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
     /// that image paints at the live width and other mouse handling is suppressed.
     image_resize: Option<ImageResize>,
+    /// An in-progress table column-border drag (drag-to-resize, issue #16):
+    /// the column resizes live; release persists `cols=` into the table's
+    /// marker line. `None` = no drag.
+    table_col_resize: Option<TableColResize>,
+    /// Last-paint column-resize grip bands: `(band, header row, column, width)`.
+    table_col_resize_rects: Vec<(Bounds<Pixels>, usize, usize, f32)>,
+    /// The band index the pointer is on (repaint-on-change for its accent line).
+    table_resize_hover: Option<usize>,
     /// A `$$…$$` block being edited in-line: its byte range + the host-supplied view (the
     /// structural editor) painted in a reserved gap at the block's spot. `None` = none.
     editing_block: Option<EditingBlock>,
@@ -751,6 +759,9 @@ impl EditorState {
             code_langs: Vec::new(),
             alert_fold_rects: Vec::new(),
             image_resize: None,
+            table_col_resize: None,
+            table_col_resize_rects: Vec::new(),
+            table_resize_hover: None,
             editing_block: None,
             inline_math_rects: Vec::new(),
             editing_inline: None,
@@ -2532,6 +2543,24 @@ impl EditorState {
             }
             return;
         }
+        // A press on a column border's resize band starts a drag — the column
+        // resizes live; release persists the width (issue #16).
+        if let Some(&(_, header_row, col, width)) = self
+            .table_col_resize_rects
+            .iter()
+            .find(|(band, ..)| band.contains(&event.position))
+        {
+            self.table_col_resize = Some(TableColResize {
+                header_row,
+                col,
+                start_x: event.position.x,
+                orig: width,
+                width,
+            });
+            self.is_selecting = false;
+            cx.notify();
+            return;
+        }
         // A click on a table cell drops the caret inside the cell, not in the raw
         // `| … |` source.
         let offset = self
@@ -2618,6 +2647,13 @@ impl EditorState {
             cx.notify();
             return;
         }
+        // End a column-border drag by persisting every column's width into the
+        // table marker's `cols=` list (one undo step, emits Changed).
+        if let Some(resize) = self.table_col_resize.take() {
+            self.commit_table_col_widths(resize, cx);
+            cx.notify();
+            return;
+        }
         self.is_selecting = false;
     }
 
@@ -2633,6 +2669,18 @@ impl EditorState {
         // matches `block_img`, no snap-back on release, and it can't run off the
         // page). The paint reads this live width for the dragged image (aspect
         // preserved).
+        // While dragging a table column's border, track the pointer: the new
+        // width is the grab width plus the travel, floored so the column can't
+        // vanish. Shaping applies it live (see `table_column_widths`).
+        if let Some(resize) = self.table_col_resize {
+            let dx = f32::from(event.position.x - resize.start_x);
+            let width = (resize.orig + dx).max(24.);
+            if let Some(r) = self.table_col_resize.as_mut() {
+                r.width = width;
+            }
+            cx.notify();
+            return;
+        }
         if let Some(resize) = self.image_resize {
             let avail = self
                 .last_bounds
@@ -2667,6 +2715,16 @@ impl EditorState {
         if region != self.table_hover_region || cell != self.table_hover_cell {
             self.table_hover_region = region;
             self.table_hover_cell = cell;
+            cx.notify();
+        }
+        // Repaint the column-resize border accent as the pointer crosses a band
+        // (the cursor comes from the hitbox; the painted line needs a frame).
+        let on_band = self
+            .table_col_resize_rects
+            .iter()
+            .position(|(b, ..)| b.contains(&event.position));
+        if on_band != self.table_resize_hover {
+            self.table_resize_hover = on_band;
             cx.notify();
         }
         // Repaint the property-panel hover border when the pointer moves between
@@ -3548,14 +3606,25 @@ impl EditorState {
         let cw = t.col_widths[cell];
         let cf = cell_font(&font, t.is_header);
         let full_w = measure_width(window, content, &cf, font_size);
-        let avail = (cw - pad * 2.).max(px(0.));
-        let align_off = match t.aligns.get(cell) {
-            Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
-            Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
-            _ => px(0.),
+        let avail = (cw - pad * 2.).max(px(8.));
+        // Alignment shifts only unwrapped content (a wrapped cell fills its width).
+        let align_off = if full_w > avail {
+            px(0.)
+        } else {
+            match t.aligns.get(cell) {
+                Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
+                Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
+                _ => px(0.),
+            }
         };
-        let target = (rel.x - cx - pad - align_off).max(px(0.));
-        let in_cell = cell_offset_for_x(content, target, &cf, font_size, window);
+        // In-cell y: from the row's top, minus the cell's constant 6px top pad
+        // (`table_row_h` = line height + 12, text centered → 6 above).
+        let pad_y = px(6.);
+        let target = point(
+            (rel.x - cx - pad - align_off).max(px(0.)),
+            rel.y - self.line_tops[row] - pad_y,
+        );
+        let in_cell = cell_offset_for_point(content, target, avail, &cf, font_size, window);
         Some(self.line_starts()[row] + t.cell_ranges.get(cell)?.start + in_cell)
     }
 
@@ -3971,31 +4040,33 @@ impl EditorState {
     /// Set the caret table's visual style by rewriting its
     /// `<!-- table:STYLE -->` marker line: `Some(name)` writes/replaces the
     /// marker, `None` (Grid, the default) removes it. One undo step.
-    pub fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>) {
-        let Some(region) = self.caret_table_region() else {
-            return;
-        };
+    /// Rewrite (or insert/remove) the marker line above `region` to say
+    /// `marker` (`None` = no marker needed). The caret keeps its cell. One
+    /// undo step; shared by the style menu and drag-to-resize.
+    fn rewrite_table_marker(
+        &mut self,
+        region: &markdown_syntax::TableRegion,
+        marker: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
         let starts = self.line_starts();
-        let (range, new) = match (region.marker_line, name) {
+        let (range, new) = match (region.marker_line, marker) {
             // Marker present → replace its line, or remove it (with the newline).
-            (Some(m), Some(name)) => (
-                starts[m]..self.line_end(m),
-                format!("<!-- table:{name} -->"),
-            ),
+            (Some(m), Some(text)) => (starts[m]..self.line_end(m), text),
             (Some(m), None) => (starts[m]..self.line_end(m) + 1, String::new()),
-            // No marker → insert one above the header; Grid is already implicit.
-            (None, Some(name)) => (
+            // No marker → insert one above the header.
+            (None, Some(text)) => (
                 starts[region.lines.start]..starts[region.lines.start],
-                format!("<!-- table:{name} -->\n"),
+                format!("{text}\n"),
             ),
             (None, None) => return,
         };
         let (row, cell, in_cell) = self.caret_table_cell_pos().unwrap_or((0, 0, 0));
         // The marker edit adds/removes one line ABOVE the table (or replaces in
         // place) — shift the caret's row index to keep it in its cell.
-        let row_shift: isize = match (region.marker_line, name) {
-            (Some(_), None) => -1,
-            (None, Some(_)) => 1,
+        let row_shift: isize = match (region.marker_line, new.is_empty()) {
+            (Some(_), true) => -1,
+            (None, false) => 1,
             _ => 0,
         };
         self.record_edit(&range, &new);
@@ -4007,6 +4078,44 @@ impl EditorState {
         self.table_menu = None;
         cx.emit(EditorEvent::Changed);
         cx.notify();
+    }
+
+    /// Set the caret table's visual style (`None` = Grid, the default),
+    /// preserving any drag-resized `cols=` widths in the marker.
+    pub fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>) {
+        let Some(region) = self.caret_table_region() else {
+            return;
+        };
+        let style = gpui_markdown::syntax::TableStyle::from_name(name.unwrap_or("grid"))
+            .unwrap_or_default();
+        let marker =
+            gpui_markdown::syntax::table_marker_text(style, region.col_widths_attr.as_deref());
+        self.rewrite_table_marker(&region, marker, cx);
+    }
+
+    /// Persist a finished column-border drag: every column's current display
+    /// width goes into the marker's `cols=` list (style preserved).
+    fn commit_table_col_widths(&mut self, resize: TableColResize, cx: &mut Context<Self>) {
+        let Some(region) = markdown_syntax::table_regions(&self.content)
+            .into_iter()
+            .find(|r| r.lines.start == resize.header_row)
+        else {
+            return;
+        };
+        // The header row's committed display widths already carry the live drag.
+        let Some(t) = self
+            .table_rows
+            .get(resize.header_row)
+            .and_then(Option::as_ref)
+        else {
+            return;
+        };
+        let mut widths: Vec<f32> = t.col_widths.iter().map(|w| f32::from(*w)).collect();
+        if let Some(w) = widths.get_mut(resize.col) {
+            *w = resize.width.max(24.);
+        }
+        let marker = gpui_markdown::syntax::table_marker_text(region.style, Some(&widths));
+        self.rewrite_table_marker(&region, marker, cx);
     }
 
     /// The caret's table position as `(row, cell_index, offset_within_cell)`, or
@@ -5780,6 +5889,8 @@ fn shape_document(
     // here (driving its row height) so the layout reflows live, rather than the
     // image painting over a stale, saved-size row.
     resize: Option<ImageResize>,
+    // An in-progress column-border drag: that column takes the live width.
+    col_resize: Option<TableColResize>,
     // Collapsed headings (trimmed source lines) — their section lines fold to
     // height 0 like a folded callout's body.
     folded_headings: &std::collections::HashSet<String>,
@@ -5954,6 +6065,7 @@ fn shape_document(
             base_font_size,
             base_color,
             wrap_width,
+            col_resize,
         ));
     }
     let table_row_h = base_font_size * LINE_HEIGHT_RATIO + px(12.);
@@ -6735,7 +6847,19 @@ fn shape_document(
                     // renderer doesn't show it; the first body row's top divider
                     // becomes the header/body border.
                     Some(t) if t.is_separator => px(0.),
-                    Some(_) => table_row_h,
+                    // A drag-narrowed column wraps its cells — the row grows to
+                    // the tallest cell's wrap rows.
+                    Some(t) => {
+                        let rows = table_row_wrap_rows(
+                            window,
+                            &t.cells,
+                            &t.col_widths,
+                            t.is_header,
+                            base_font,
+                            base_font_size,
+                        );
+                        table_row_h + base_font_size * LINE_HEIGHT_RATIO * (rows - 1) as f32
+                    }
                     None => match widget.as_ref() {
                         // Reserve a little space around an inline image so a list
                         // of photos doesn't stack edge-to-edge.
@@ -7213,6 +7337,7 @@ fn table_column_widths(
     font_size: Pixels,
     color: Hsla,
     wrap_width: Option<Pixels>,
+    col_resize: Option<TableColResize>,
 ) -> Vec<Pixels> {
     let cols = region.aligns.len().max(1);
     let pad = px(TABLE_CELL_PAD);
@@ -7257,6 +7382,19 @@ fn table_column_widths(
     for w in &mut widths {
         *w = (*w).max(px(48.));
     }
+    // Explicit widths — the marker's `cols=` list (drag-to-resize persisted),
+    // then the live drag — override the measurement (floored so a column can't
+    // vanish). Content-measured columns keep the 48px floor above.
+    if let Some(attr) = &region.col_widths_attr {
+        for (c, w) in attr.iter().enumerate().take(cols) {
+            widths[c] = px(w.max(24.));
+        }
+    }
+    if let Some(r) = col_resize.filter(|r| r.header_row == region.lines.start)
+        && r.col < cols
+    {
+        widths[r.col] = px(r.width.max(24.));
+    }
     if let Some(avail) = wrap_width {
         let total = widths.iter().sum::<Pixels>();
         if total > avail && total > px(0.) {
@@ -7292,11 +7430,13 @@ fn shape_cell(
     content: &str,
     font: &Font,
     font_size: Pixels,
+    wrap: Option<Pixels>,
+    color: Hsla,
 ) -> Option<WrappedLine> {
     let run = TextRun {
         len: content.len(),
         font: font.clone(),
-        color: Hsla::default(),
+        color,
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -7312,12 +7452,40 @@ fn shape_cell(
             SharedString::from(content.to_string()),
             font_size,
             runs,
-            None,
+            wrap,
             None,
         )
         .ok()?
         .into_iter()
         .next()
+}
+
+/// How many wrap rows table row `cells` need at `col_widths` — 1 for content
+/// that fits; more once a drag-narrowed column forces its text to wrap.
+fn table_row_wrap_rows(
+    window: &mut Window,
+    cells: &[SharedString],
+    col_widths: &[Pixels],
+    is_header: bool,
+    font: &Font,
+    font_size: Pixels,
+) -> usize {
+    let pad = px(TABLE_CELL_PAD);
+    let cf = cell_font(font, is_header);
+    let mut rows = 1;
+    for (c, cell) in cells.iter().enumerate() {
+        if cell.is_empty() {
+            continue;
+        }
+        let Some(&cw) = col_widths.get(c) else {
+            continue;
+        };
+        let avail = (cw - pad * 2.).max(px(8.));
+        if let Some(wl) = shape_cell(window, cell, &cf, font_size, Some(avail), Hsla::default()) {
+            rows = rows.max(wl.wrap_boundaries().len() + 1);
+        }
+    }
+    rows
 }
 
 /// The cell a source column `col` (line-local) falls in for a table row — clamped
@@ -7339,7 +7507,7 @@ fn table_caret_pos(
     font: &Font,
     font_size: Pixels,
     window: &mut Window,
-) -> Option<(Pixels, usize, usize)> {
+) -> Option<(Pixels, Pixels, usize, usize)> {
     if t.cell_ranges.is_empty() {
         return None;
     }
@@ -7351,38 +7519,64 @@ fn table_caret_pos(
     let cell_x = left + t.col_widths[..cell].iter().sum::<Pixels>();
     let cw = t.col_widths.get(cell).copied().unwrap_or(px(0.));
     // The header is bold, so shape with the bold font or the caret lands left of
-    // the (wider) bold glyphs; position_for_index gives the exact kerned x.
+    // the (wider) bold glyphs; position_for_index gives the exact kerned x — and,
+    // shaped at the cell's width, the wrap row's y for drag-narrowed columns.
     let cf = cell_font(font, t.is_header);
     let line_h = font_size * LINE_HEIGHT_RATIO;
-    let wl = shape_cell(window, content, &cf, font_size)?;
-    let prefix_w = wl
-        .position_for_index(in_cell, line_h)
-        .map_or(px(0.), |p| p.x);
+    let avail = (cw - pad * 2.).max(px(8.));
+    let wl = shape_cell(
+        window,
+        content,
+        &cf,
+        font_size,
+        Some(avail),
+        Hsla::default(),
+    )?;
+    let pos = wl.position_for_index(in_cell, line_h).unwrap_or_default();
+    let wrapped = !wl.wrap_boundaries().is_empty();
     let full_w = wl.width();
-    let avail = (cw - pad * 2.).max(px(0.));
-    let align_off = match t.aligns.get(cell) {
-        Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
-        Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
-        _ => px(0.),
+    // Alignment shifts only unwrapped content (a wrapped cell fills its width).
+    let align_off = if wrapped {
+        px(0.)
+    } else {
+        match t.aligns.get(cell) {
+            Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
+            Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
+            _ => px(0.),
+        }
     };
-    Some((cell_x + pad + align_off + prefix_w, cell, in_cell))
+    Some((cell_x + pad + align_off + pos.x, pos.y, cell, in_cell))
 }
 
 /// The byte offset within `content` whose rendered x (from the text's left edge)
 /// is closest to `target` — hit-tests a click inside a table cell, using the
 /// shaped line so it matches the kerned glyphs.
-fn cell_offset_for_x(
+fn cell_offset_for_point(
     content: &str,
-    target: Pixels,
+    target: Point<Pixels>,
+    wrap: Pixels,
     font: &Font,
     font_size: Pixels,
     window: &mut Window,
 ) -> usize {
     let line_h = font_size * LINE_HEIGHT_RATIO;
-    let Some(wl) = shape_cell(window, content, font, font_size) else {
+    let Some(wl) = shape_cell(
+        window,
+        content,
+        font,
+        font_size,
+        Some(wrap),
+        Hsla::default(),
+    ) else {
         return 0;
     };
-    match wl.closest_index_for_position(point(target, line_h / 2.), line_h) {
+    match wl.closest_index_for_position(
+        point(
+            target.x,
+            target.y.max(px(0.)).min(wl.size(line_h).height - px(1.)),
+        ),
+        line_h,
+    ) {
         Ok(i) | Err(i) => i,
     }
 }
@@ -7452,30 +7646,30 @@ fn paint_table_row(
             ));
         }
         if let Some(cell) = t.cells.get(c).filter(|s| !s.is_empty()) {
-            let run = TextRun {
-                len: cell.len(),
-                font: cell_font.clone(),
-                color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let shaped = window
-                .text_system()
-                .shape_line(cell.clone(), font_size, &[run], None);
-            let align = match t.aligns.get(c) {
-                Some(markdown_syntax::Align::Center) => gpui::TextAlign::Center,
-                Some(markdown_syntax::Align::Right) => gpui::TextAlign::Right,
-                _ => gpui::TextAlign::Left,
-            };
-            let _ = shaped.paint(
-                point(x + pad, origin.y + (row_h - line_h) / 2.),
-                line_h,
-                align,
-                Some(cw - pad * 2.),
-                window,
-                cx,
-            );
+            // Shaped at the cell's width so a drag-narrowed column word-wraps
+            // (the row height already reserves the wrap rows). Top-anchored at
+            // the single-line pad, not centered — wraps grow downward.
+            let avail = (cw - pad * 2.).max(px(8.));
+            if let Some(shaped) =
+                shape_cell(window, cell, &cell_font, font_size, Some(avail), color)
+            {
+                let align = match t.aligns.get(c) {
+                    Some(markdown_syntax::Align::Center) => gpui::TextAlign::Center,
+                    Some(markdown_syntax::Align::Right) => gpui::TextAlign::Right,
+                    _ => gpui::TextAlign::Left,
+                };
+                let _ = shaped.paint(
+                    point(x + pad, origin.y + px(6.)),
+                    line_h,
+                    align,
+                    Some(Bounds::new(
+                        point(x + pad, origin.y + px(6.)),
+                        size(avail, (row_h - px(12.)).max(line_h)),
+                    )),
+                    window,
+                    cx,
+                );
+            }
         }
         x += cw;
     }
@@ -7552,6 +7746,34 @@ fn paint_table_pill(a: &TableAffordance, sep_h: bool, mouse: Point<Pixels>, wind
 /// measured layout (it depends on the resolved width once soft-wrap is applied).
 struct EditorElement {
     editor: Entity<EditorState>,
+}
+
+/// An in-progress table column-border drag (issue #16): identifies the column
+/// by its table's header line + index, and carries the live width the shaping
+/// applies each frame; release writes it into the marker's `cols=` list.
+#[derive(Clone, Copy)]
+struct TableColResize {
+    header_row: usize,
+    col: usize,
+    start_x: Pixels,
+    orig: f32,
+    width: f32,
+}
+
+/// A column-resize grip: a slim band over one column's right border in the
+/// hovered table (issue #16). Dragging it resizes that column live.
+struct ColResizeGrip {
+    band: Bounds<Pixels>,
+    hit: Hitbox,
+    header_row: usize,
+    col: usize,
+    width: f32,
+    /// The border's x + the table's vertical extent, for painting the accent
+    /// line while hovered/dragged.
+    x: Pixels,
+    top: Pixels,
+    bottom: Pixels,
+    accent: Hsla,
 }
 
 /// The hovered row's / column's affordance (issue #16, Cditor-style): an accent
@@ -7634,6 +7856,10 @@ struct PrepaintState {
     col_aff: Option<TableAffordance>,
     /// The caret's cell, outlined in the accent color (Cditor-style).
     caret_cell: Option<(Bounds<Pixels>, Hsla)>,
+    /// Column-resize grip bands over the hovered table's vertical borders:
+    /// `(band, hitbox, header row, column, current width, border x, table top,
+    /// table bottom, accent)`.
+    col_resize_grips: Vec<ColResizeGrip>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
     /// Find-match highlight quads, painted beneath the selection.
@@ -7740,6 +7966,7 @@ impl Element for EditorElement {
                     sf,
                     selection,
                     editor.image_resize,
+                    editor.table_col_resize,
                     &editor.folded_headings,
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
@@ -7858,6 +8085,7 @@ impl Element for EditorElement {
                     sf,
                     selection,
                     editor.image_resize,
+                    editor.table_col_resize,
                     &editor.folded_headings,
                 )
             };
@@ -8208,6 +8436,8 @@ impl Element for EditorElement {
         let mut table_zones: Vec<Bounds<Pixels>> = Vec::new();
         let mut row_aff: Option<TableAffordance> = None;
         let mut col_aff: Option<TableAffordance> = None;
+        let mut col_resize_grips: Vec<ColResizeGrip> = Vec::new();
+        let dragging_col = editor.table_col_resize;
         let mut caret_cell: Option<(Bounds<Pixels>, Hsla)> = None;
         let caret_pos = editor.caret_table_cell_pos();
         let mut tbl_top: Option<Pixels> = None;
@@ -8250,6 +8480,28 @@ impl Element for EditorElement {
                     caret_cell = Some((rect, accent));
                 }
 
+                // Column-resize grips: a slim band on each column's right
+                // border (hover-gated; kept while a drag on this table is live).
+                if zone.contains(&mouse) || dragging_col.is_some_and(|r| r.header_row == tbl_header)
+                {
+                    let mut xacc = left;
+                    for (col, &cw) in t.col_widths.iter().enumerate() {
+                        xacc += cw;
+                        let band =
+                            Bounds::new(point(xacc - px(3.), top), size(px(6.), bottom - top));
+                        col_resize_grips.push(ColResizeGrip {
+                            band,
+                            hit: window.insert_hitbox(band, HitboxBehavior::Normal),
+                            header_row: tbl_header,
+                            col,
+                            width: f32::from(cw),
+                            x: xacc,
+                            top,
+                            bottom,
+                            accent,
+                        });
+                    }
+                }
                 if zone.contains(&mouse) {
                     // Hovered BODY row → outline + a vertical pill on its left border.
                     for line in tbl_header..=i {
@@ -8317,6 +8569,12 @@ impl Element for EditorElement {
                 }
                 tbl_top = None;
             }
+        }
+        // A border drag (or the pointer on a resize band) owns the interaction —
+        // the row/column outlines + pills would just flicker under it.
+        if dragging_col.is_some() || col_resize_grips.iter().any(|gr| gr.band.contains(&mouse)) {
+            row_aff = None;
+            col_aff = None;
         }
 
         // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
@@ -8485,7 +8743,7 @@ impl Element for EditorElement {
                 );
                 (Some(c), Vec::new())
             } else if let Some(t) = tables.get(row).and_then(Option::as_ref)
-                && let Some((x, _, _)) = table_caret_pos(
+                && let Some((x, y_off, _, _)) = table_caret_pos(
                     t,
                     col,
                     bounds.left() + px(TABLE_GUTTER),
@@ -8494,7 +8752,8 @@ impl Element for EditorElement {
                     window,
                 )
             {
-                let y = bounds.top() + top + (lh - base_lh) / 2.;
+                // Top pad + the wrap row's y (0 for unwrapped cells).
+                let y = bounds.top() + top + px(6.) + y_off;
                 let c = fill(
                     Bounds::new(point(x, y), size(px(CARET_WIDTH), base_lh)),
                     text_color,
@@ -8577,6 +8836,7 @@ impl Element for EditorElement {
             row_aff,
             col_aff,
             caret_cell,
+            col_resize_grips,
             cursor,
             selections,
             search,
@@ -9127,6 +9387,25 @@ impl Element for EditorElement {
             table_col_add_rects.push((a.plus, a.row, a.col));
             table_col_del = Some((a.minus, a.row, a.col));
         }
+        // Column-resize grips: a resize cursor over each border band; the
+        // hovered/dragged border draws in the accent color.
+        let mut table_col_resize_rects: Vec<(Bounds<Pixels>, usize, usize, f32)> = Vec::new();
+        let dragging = self.editor.read(cx).table_col_resize;
+        for gr in &prepaint.col_resize_grips {
+            window.set_cursor_style(CursorStyle::ResizeLeftRight, &gr.hit);
+            table_col_resize_rects.push((gr.band, gr.header_row, gr.col, gr.width));
+            let active = dragging.is_some_and(|d| d.header_row == gr.header_row && d.col == gr.col)
+                || (dragging.is_none() && gr.band.contains(&mouse));
+            if active {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(gr.x - px(1.), gr.top),
+                        size(px(2.), gr.bottom - gr.top),
+                    ),
+                    gr.accent,
+                ));
+            }
+        }
 
         let wrapped = std::mem::take(&mut prepaint.wrapped);
         let line_tops = std::mem::take(&mut prepaint.line_tops);
@@ -9229,6 +9508,7 @@ impl Element for EditorElement {
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
             editor.code_chip_rects = code_chip_rects;
+            editor.table_col_resize_rects = table_col_resize_rects;
             editor.code_card_rects = std::mem::take(&mut prepaint.code_card_rects);
             editor.alert_fold_rects = alert_fold_rects;
             editor.heading_fold_rects = heading_fold_rects;

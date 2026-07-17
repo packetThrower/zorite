@@ -1584,45 +1584,15 @@ pub(crate) enum Align {
     Right,
 }
 
-/// Visual style of a GFM table, chosen per-table via a `<!-- table:STYLE -->`
-/// marker comment on the line directly above it. `Grid` is the default (no
-/// marker). The renderers honor it; standard Markdown viewers ignore the comment
-/// and show a plain table.
-#[derive(Clone, Copy, PartialEq, Debug, Default)]
-pub(crate) enum TableStyle {
-    /// Full outer box + all row/column gridlines.
-    #[default]
-    Grid,
-    /// Alternate body rows shaded; no gridlines; a rule under the header.
-    Striped,
-    /// Only the header row shaded; no gridlines.
-    Header,
-    /// No box or gridlines — just a rule under the header.
-    Minimal,
-}
-
-impl TableStyle {
-    fn from_name(name: &str) -> Option<Self> {
-        match name {
-            "grid" => Some(Self::Grid),
-            "striped" => Some(Self::Striped),
-            "header" => Some(Self::Header),
-            "minimal" => Some(Self::Minimal),
-            _ => None,
-        }
-    }
-}
+/// The shared table-style enum — recognition lives in `gpui_markdown::syntax`
+/// (the sanctioned dependency), including the marker's `cols=` widths.
+pub(crate) use gpui_markdown::syntax::TableStyle;
 
 /// Parse a `<!-- table:STYLE -->` marker line into its [`TableStyle`]. `None` if
 /// the line isn't a recognized table-style marker (so an unknown marker stays a
 /// plain HTML comment).
 pub(crate) fn table_style_marker(line: &str) -> Option<TableStyle> {
-    let inner = line
-        .trim()
-        .strip_prefix("<!--")?
-        .strip_suffix("-->")?
-        .trim();
-    TableStyle::from_name(inner.strip_prefix("table:")?.trim())
+    gpui_markdown::syntax::table_style_marker(line)
 }
 
 /// A detected GFM table region: the half-open range of logical line indices it
@@ -1635,6 +1605,9 @@ pub(crate) struct TableRegion {
     /// Index of the style-marker comment line above the header, if present — the
     /// editor hides it (revealed only when the caret lands on it).
     pub marker_line: Option<usize>,
+    /// Explicit column widths (logical px) from the marker's `cols=` attribute
+    /// — written by drag-to-resize; `None` = content-measured.
+    pub col_widths_attr: Option<Vec<f32>>,
 }
 
 /// Detect GFM table regions in `content` (W4c). A region is a row line (trimmed
@@ -1670,11 +1643,14 @@ pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
                 Some((m, Some(s))) => (s, Some(m)),
                 _ => (TableStyle::Grid, None),
             };
+            let col_widths_attr =
+                marker_line.and_then(|m| gpui_markdown::syntax::table_col_widths(lines[m]));
             out.push(TableRegion {
                 lines: start..end,
                 aligns,
                 style,
                 marker_line,
+                col_widths_attr,
             });
             i = end;
         } else {
