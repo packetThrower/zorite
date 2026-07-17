@@ -1394,7 +1394,7 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        let off = self.previous_boundary(self.cursor_offset());
+        let off = self.prev_visible_boundary(self.cursor_offset());
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1437,7 +1437,7 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        let off = self.next_boundary(self.cursor_offset());
+        let off = self.next_visible_boundary(self.cursor_offset());
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1559,12 +1559,12 @@ impl EditorState {
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.previous_boundary(self.cursor_offset()), cx);
+        self.select_to(self.prev_visible_boundary(self.cursor_offset()), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.next_boundary(self.cursor_offset()), cx);
+        self.select_to(self.next_visible_boundary(self.cursor_offset()), cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -4323,6 +4323,49 @@ impl EditorState {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
     }
 
+    /// One VISIBLE position left of `offset`: a grapheme step, extended while
+    /// the display column doesn't change — always-hidden formatting markers
+    /// (`**`, `~~`, …) are zero-width on screen, so crossing one must not cost
+    /// extra keypresses. Rows without a display map (raw/code) step plainly.
+    fn prev_visible_boundary(&self, offset: usize) -> usize {
+        let (row0, col0) = self.row_col(offset);
+        let d0 = self.display_col(row0, col0);
+        let mut off = self.previous_boundary(offset);
+        loop {
+            if off == 0 {
+                return off;
+            }
+            let (row, col) = self.row_col(off);
+            if row != row0
+                || self.offset_maps.get(row).and_then(Option::as_ref).is_none()
+                || self.display_col(row, col) != d0
+            {
+                return off;
+            }
+            off = self.previous_boundary(off);
+        }
+    }
+
+    /// One VISIBLE position right of `offset` — see [`Self::prev_visible_boundary`].
+    fn next_visible_boundary(&self, offset: usize) -> usize {
+        let (row0, col0) = self.row_col(offset);
+        let d0 = self.display_col(row0, col0);
+        let mut off = self.next_boundary(offset);
+        loop {
+            if off >= self.content.len() {
+                return self.content.len();
+            }
+            let (row, col) = self.row_col(off);
+            if row != row0
+                || self.offset_maps.get(row).and_then(Option::as_ref).is_none()
+                || self.display_col(row, col) != d0
+            {
+                return off;
+            }
+            off = self.next_boundary(off);
+        }
+    }
+
     fn previous_boundary(&self, offset: usize) -> usize {
         self.content
             .grapheme_indices(true)
@@ -6505,7 +6548,10 @@ fn shape_document(
         let chip_line =
             md.is_some() && img_row.is_some() && !matches!(widget, Some(Block::Image(_)));
         let sel_touches = !sel_empty && selection.0 <= line_end && selection.1 >= line_start;
-        let full_source = sel_touches || (caret_col.is_some() && chip_line);
+        // A selection no longer reveals raw source (Cditor-style: formatting
+        // markers are hidden everywhere) — selected lines keep the hidden view;
+        // structural markers still come back via `reveal_inline`.
+        let full_source = caret_col.is_some() && chip_line;
         // This line's diagnostics, clipped + shifted to line-local byte offsets —
         // used as spell-check squiggles whether the line shows source or hides its
         // markers.
@@ -6664,7 +6710,7 @@ fn shape_document(
         // indent mid-select. The BODY still reveals its inline markers (see
         // `reveal_inline` below) so what's highlighted is what's copied.
         let full_source = full_source && gutter.is_none();
-        let reveal_inline = sel_touches && gutter.is_some();
+        let reveal_inline = sel_touches;
         let mark = if is_rule {
             md.map(|st| LineMark::Rule(st.rule))
         } else {

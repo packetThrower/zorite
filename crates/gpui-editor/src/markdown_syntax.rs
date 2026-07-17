@@ -89,6 +89,12 @@ struct Style {
     /// A syntax marker (`**`, `#`, `[`, …) — dimmed when shown, and removed
     /// entirely when the line's markers are hidden (W6, reveal-on-caret).
     hide: bool,
+    /// A formatting marker (`**`, `*`, `~~`, `` ` ``, `<mark>`, `<u>`) stays
+    /// hidden even with the caret inside its construct — Cditor-style: the
+    /// styling IS the feedback, and the toggles (⌘B/I/U/…, the selection
+    /// format bar) edit it. Structural markers (links, headings, math) keep
+    /// the reveal, since their raw text is the only way to edit them.
+    always_hide: bool,
     /// What a hidden marker paints in its place (e.g. a block link's `#^`
     /// shows ` → `): every replacement byte maps back to the span's start, so
     /// the display↔source maps stay consistent. `None` = plain removal.
@@ -299,7 +305,8 @@ pub(crate) fn hidden_runs(
         let in_construct = reveal.start <= span.range.start && span.range.end <= reveal.end;
         let in_prefix = span.range.end <= reveal_prefix;
         let force = span.range.end <= hide_prefix;
-        let hidden = span.style.hide && (force || (!reveal_inline && !in_construct && !in_prefix));
+        let hidden = span.style.hide
+            && (span.style.always_hide || force || (!reveal_inline && !in_construct && !in_prefix));
         if !hidden {
             segs.push((span.range.clone(), Some(&span.style), None));
         } else if let Some(rep) = span.style.replace {
@@ -395,6 +402,20 @@ fn marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
     });
 }
 
+/// A formatting marker that NEVER reveals (not even with the caret inside its
+/// construct) — see [`Style::always_hide`].
+fn fmt_marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
+    out.push(Span {
+        range,
+        style: Style {
+            color: Some(color),
+            hide: true,
+            always_hide: true,
+            ..Default::default()
+        },
+    });
+}
+
 /// Heading styling (`#`..`######` + a space) for `text[from..end]`: dim the
 /// marker, bold the rest. The larger heading SIZE is applied per line at
 /// layout time (variable line heights), not here — so the rest of the line
@@ -482,7 +503,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         if c == b'`'
             && let Some(close) = find1(b, i + 1, end, b'`')
         {
-            marker(out, i..i + 1, st.marker);
+            fmt_marker(out, i..i + 1, st.marker);
             push(
                 out,
                 i + 1..close,
@@ -492,7 +513,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     ..Default::default()
                 },
             );
-            marker(out, close..close + 1, st.marker);
+            fmt_marker(out, close..close + 1, st.marker);
             i = close + 1;
             continue;
         }
@@ -502,7 +523,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && b[i + 1] == b'*'
             && let Some(close) = find2(b, i + 2, end, b'*', b'*')
         {
-            marker(out, i..i + 2, st.marker);
+            fmt_marker(out, i..i + 2, st.marker);
             push(
                 out,
                 i + 2..close,
@@ -511,7 +532,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     ..Default::default()
                 },
             );
-            marker(out, close..close + 2, st.marker);
+            fmt_marker(out, close..close + 2, st.marker);
             i = close + 2;
             continue;
         }
@@ -520,7 +541,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && let Some(close) = find1(b, i + 1, end, b'*')
             && close > i + 1
         {
-            marker(out, i..i + 1, st.marker);
+            fmt_marker(out, i..i + 1, st.marker);
             push(
                 out,
                 i + 1..close,
@@ -529,7 +550,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     ..Default::default()
                 },
             );
-            marker(out, close..close + 1, st.marker);
+            fmt_marker(out, close..close + 1, st.marker);
             i = close + 1;
             continue;
         }
@@ -547,7 +568,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 && b[i + 2] != b' '
                 && let Some(close) = find_underscore_close(b, i + 2, end, true)
             {
-                marker(out, i..i + 2, st.marker);
+                fmt_marker(out, i..i + 2, st.marker);
                 push(
                     out,
                     i + 2..close,
@@ -556,7 +577,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                         ..Default::default()
                     },
                 );
-                marker(out, close..close + 2, st.marker);
+                fmt_marker(out, close..close + 2, st.marker);
                 i = close + 2;
                 continue;
             }
@@ -565,7 +586,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 && b[i + 1] != b' '
                 && let Some(close) = find_underscore_close(b, i + 1, end, false)
             {
-                marker(out, i..i + 1, st.marker);
+                fmt_marker(out, i..i + 1, st.marker);
                 push(
                     out,
                     i + 1..close,
@@ -574,7 +595,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                         ..Default::default()
                     },
                 );
-                marker(out, close..close + 1, st.marker);
+                fmt_marker(out, close..close + 1, st.marker);
                 i = close + 1;
                 continue;
             }
@@ -585,7 +606,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && b[i + 1] == b'~'
             && let Some(close) = find2(b, i + 2, end, b'~', b'~')
         {
-            marker(out, i..i + 2, st.marker);
+            fmt_marker(out, i..i + 2, st.marker);
             push(
                 out,
                 i + 2..close,
@@ -594,7 +615,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     ..Default::default()
                 },
             );
-            marker(out, close..close + 2, st.marker);
+            fmt_marker(out, close..close + 2, st.marker);
             i = close + 2;
             continue;
         }
@@ -735,7 +756,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         {
             let body = i + 6;
             let close = body + rel;
-            marker(out, i..body, st.marker);
+            fmt_marker(out, i..body, st.marker);
             push(
                 out,
                 body..close,
@@ -744,7 +765,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     ..Default::default()
                 },
             );
-            marker(out, close..close + 7, st.marker);
+            fmt_marker(out, close..close + 7, st.marker);
             i = close + 7;
             continue;
         }
@@ -756,7 +777,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         {
             let body = i + 3;
             let close = body + rel;
-            marker(out, i..body, st.marker);
+            fmt_marker(out, i..body, st.marker);
             push(
                 out,
                 body..close,
@@ -765,7 +786,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     ..Default::default()
                 },
             );
-            marker(out, close..close + 4, st.marker);
+            fmt_marker(out, close..close + 4, st.marker);
             i = close + 4;
             continue;
         }
@@ -1800,11 +1821,14 @@ mod tests {
     fn selection_reveal_shows_inline_but_not_prefix() {
         let (font, c, st) = (Font::default(), Hsla::default(), test_style());
         // A selected list line: the `- ` prefix stays hidden behind its
-        // painted bullet, while inline markers come back so highlighted
-        // glyphs equal copied bytes.
+        // painted bullet — and formatting markers stay hidden too now
+        // (always_hide wins over the selection reveal; structural markers
+        // like links still come back).
         let (disp, _, _) = hidden_runs("- a **b** c", &font, c, &[], None, 0, 2, true, &st);
-        assert_eq!(disp, "a **b** c");
-        // Same line unselected: both prefix and inline markers hidden.
+        assert_eq!(disp, "a b c");
+        let (disp, _, _) = hidden_runs("- [t](u) c", &font, c, &[], None, 0, 2, true, &st);
+        assert_eq!(disp, "[t](u) c");
+        // Same line unselected: everything hidden.
         let (disp, _, _) = hidden_runs("- a **b** c", &font, c, &[], None, 0, 2, false, &st);
         assert_eq!(disp, "a b c");
     }
@@ -2322,18 +2346,23 @@ mod tests {
         let st = test_style();
 
         let line = "**bold** *it*";
-        // Caret in "bold" reveals the bold markers; the italic stays hidden.
+        // Formatting markers never reveal — not even under the caret
+        // (Cditor-style; see `formatting_markers_never_reveal`).
         let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(4), 0, 0, false, &st);
-        assert_eq!(disp, "**bold** it");
-        // Caret in "it" reveals the italic; the bold hides.
-        let (disp, _, _) = hidden_runs(line, &font, c, &[], Some(11), 0, 0, false, &st);
-        assert_eq!(disp, "bold *it*");
-        // Caret in plain text reveals nothing.
+        assert_eq!(disp, "bold it");
+        // Caret in plain text reveals nothing either.
         let (disp, _, _) = hidden_runs("a **b**", &font, c, &[], Some(0), 0, 0, false, &st);
         assert_eq!(disp, "a b");
         // No caret on the line → fully hidden (W6).
         let (disp, _, _) = hidden_runs(line, &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "bold it");
+        // STRUCTURAL constructs keep the per-construct caret reveal: the
+        // caret inside a link shows its brackets/URL; outside, hidden.
+        let link = "a [t](u) b";
+        let (disp, _, _) = hidden_runs(link, &font, c, &[], Some(3), 0, 0, false, &st);
+        assert_eq!(disp, "a [t](u) b");
+        let (disp, _, _) = hidden_runs(link, &font, c, &[], Some(0), 0, 0, false, &st);
+        assert_eq!(disp, "a t b");
     }
 
     #[test]
@@ -2366,6 +2395,31 @@ mod tests {
         // the caret isn't in it; inline markers still hide unless under the caret.
         let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, 0, false, &st);
         assert_eq!(disp, "> a b");
+    }
+
+    #[test]
+    fn formatting_markers_never_reveal() {
+        // Cditor-style: even with the caret INSIDE the construct, formatting
+        // markers stay hidden (the styling is the feedback; toggles edit it).
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let st = test_style();
+        for (line, disp) in [
+            ("**bold** x", "bold x"),
+            ("*it* x", "it x"),
+            ("~~s~~ x", "s x"),
+            ("`c` x", "c x"),
+            ("<u>u</u> x", "u x"),
+            ("<mark>m</mark> x", "m x"),
+        ] {
+            let caret_inside = Some(3.min(line.len() - 1));
+            let (d, _, _) = hidden_runs(line, &font, c, &[], caret_inside, 0, 0, false, &st);
+            assert_eq!(d, disp, "{line:?}");
+        }
+        // Structural constructs keep the caret reveal: a wiki link's brackets
+        // show while the caret is inside it.
+        let (d, _, _) = hidden_runs("[[Page]] x", &font, c, &[], Some(4), 0, 0, false, &st);
+        assert_eq!(d, "[[Page]] x");
     }
 
     #[test]
