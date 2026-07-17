@@ -1767,7 +1767,33 @@ pub(crate) fn table_cells(line: &str) -> Vec<&str> {
     let t = line.trim();
     let t = t.strip_prefix('|').unwrap_or(t);
     let t = t.strip_suffix('|').unwrap_or(t);
-    t.split('|').map(str::trim).collect()
+    split_unescaped_pipes(t).map(str::trim).collect()
+}
+
+/// Split `s` at its UNESCAPED `|` bytes — a `\|` (odd run of preceding
+/// backslashes) is literal cell content per GFM, not a cell separator. The
+/// escape stays in the returned slices (cells are verbatim source), so cell
+/// ranges and caret math keep their exact source mapping, and a rewrite that
+/// re-joins the cells round-trips the escape.
+fn split_unescaped_pipes(s: &str) -> impl Iterator<Item = &str> {
+    let b = s.as_bytes();
+    let mut cuts = vec![0usize];
+    for (i, &c) in b.iter().enumerate() {
+        if c == b'|' && !is_backslash_escaped(b, i) {
+            cuts.push(i + 1);
+        }
+    }
+    cuts.push(s.len() + 1);
+    (0..cuts.len() - 1).map(move |k| &s[cuts[k]..cuts[k + 1] - 1])
+}
+
+/// Whether the byte at `i` is escaped: preceded by an ODD number of `\`s.
+fn is_backslash_escaped(b: &[u8], i: usize) -> bool {
+    let mut n = 0;
+    while n < i && b[i - 1 - n] == b'\\' {
+        n += 1;
+    }
+    n % 2 == 1
 }
 
 /// The byte range of each cell's *trimmed content* within `line` (line-local), in
@@ -1785,7 +1811,7 @@ pub(crate) fn table_cell_ranges(line: &str) -> Vec<Range<usize>> {
     let inner = &line[base..last];
     let mut out = Vec::new();
     let mut seg = 0; // offset of the current cell within `inner`
-    for piece in inner.split('|') {
+    for piece in split_unescaped_pipes(inner) {
         let lead = piece.len() - piece.trim_start().len();
         let trail = piece.len() - piece.trim_end().len();
         let start = base + seg + lead;
@@ -2112,6 +2138,25 @@ mod tests {
     fn cells_split_and_trim() {
         assert_eq!(table_cells("| a | b |"), vec!["a", "b"]);
         assert_eq!(table_cells("|  |  |"), vec!["", ""]);
+    }
+
+    #[test]
+    fn escaped_pipes_are_cell_content() {
+        // GFM: `\|` is a literal pipe in the cell, not a separator — the
+        // reader (GFM parser) agrees; a blind split miscounted cells and
+        // column rewrites then corrupted the row.
+        assert_eq!(
+            table_cells(r"| left \| right | ok |"),
+            vec![r"left \| right", "ok"]
+        );
+        // A double backslash escapes the backslash — that pipe IS a separator.
+        assert_eq!(table_cells(r"| a \\| b |"), vec![r"a \\", "b"]);
+        // Ranges walk the same split: two ranges, first spans the escape.
+        let line = r"| left \| right | ok |";
+        let ranges = table_cell_ranges(line);
+        assert_eq!(ranges.len(), 2);
+        assert_eq!(&line[ranges[0].clone()], r"left \| right");
+        assert_eq!(&line[ranges[1].clone()], "ok");
     }
 
     #[test]
