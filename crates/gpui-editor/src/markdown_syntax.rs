@@ -391,6 +391,47 @@ fn scan(text: &str, st: &SyntaxStyle) -> Vec<Span> {
     out
 }
 
+/// The always-hidden formatting-marker PAIRS on a line, as
+/// `(opening range, closing range)` per construct — for the editor's
+/// Cditor-style delete (skip the invisible bytes; collapse an emptied pair).
+/// Constructs don't nest in span space (the scanner consumes a construct
+/// wholesale), so pairing is a left-to-right walk: an always-hidden span, at
+/// most one body span, then its always-hidden closer.
+pub(crate) fn fmt_marker_pairs(line: &str, st: &SyntaxStyle) -> Vec<(Range<usize>, Range<usize>)> {
+    let mut spans = scan(line, st);
+    spans.sort_by_key(|s| s.range.start);
+    let mut pairs = Vec::new();
+    let mut i = 0;
+    while i < spans.len() {
+        if !spans[i].style.always_hide {
+            i += 1;
+            continue;
+        }
+        let open = spans[i].range.clone();
+        // Optional single body span directly after the opener.
+        let mut j = i + 1;
+        let mut body_end = open.end;
+        if let Some(b) = spans
+            .get(j)
+            .filter(|b| !b.style.always_hide && b.range.start == open.end)
+        {
+            body_end = b.range.end;
+            j += 1;
+        }
+        match spans
+            .get(j)
+            .filter(|c| c.style.always_hide && c.range.start == body_end)
+        {
+            Some(c) => {
+                pairs.push((open, c.range.clone()));
+                i = j + 1;
+            }
+            None => i += 1,
+        }
+    }
+    pairs
+}
+
 fn marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
     out.push(Span {
         range,
@@ -2395,6 +2436,22 @@ mod tests {
         // the caret isn't in it; inline markers still hide unless under the caret.
         let (disp, _, _) = hidden_runs("> a **b**", &font, c, &[], Some(3), 2, 0, false, &st);
         assert_eq!(disp, "> a b");
+    }
+
+    #[test]
+    fn fmt_marker_pairs_stay_per_construct() {
+        let st = test_style();
+        // Adjacent constructs pair up separately — a delete between them must
+        // never fuse one's closer with the other's opener.
+        assert_eq!(
+            fmt_marker_pairs("**a**~~b~~", &st),
+            vec![(0..2, 3..5), (5..7, 8..10)]
+        );
+        // An empty pair (post-delete state) is still a pair.
+        assert_eq!(fmt_marker_pairs("****", &st), vec![(0..2, 2..4)]);
+        // Structural markers (links) aren't formatting pairs.
+        assert_eq!(fmt_marker_pairs("[t](u)", &st), vec![]);
+        assert_eq!(fmt_marker_pairs("<u>x</u>", &st), vec![(0..3, 4..8)]);
     }
 
     #[test]
