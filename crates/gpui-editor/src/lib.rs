@@ -504,7 +504,7 @@ pub struct EditorState {
     /// the last paint, committed only while the table is hovered; hit-tested on
     /// mouse-down.
     table_row_add_rects: Vec<(Bounds<Pixels>, usize)>,
-    table_col_add_rects: Vec<(Bounds<Pixels>, usize)>,
+    table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)>,
     /// Each table's hover zone (grid + a thin margin), committed every paint so
     /// `on_mouse_move` can repaint when the pointer's table-affordance region
     /// changes (the editor otherwise only repaints on the caret blink).
@@ -2499,9 +2499,9 @@ impl EditorState {
             }
             return;
         }
-        if let Some(row) = self.table_add_col_at(event.position) {
+        if let Some((row, col)) = self.table_add_col_at(event.position) {
             let keep = self.caret_table_cell_pos();
-            if let Some(off) = self.last_cell_start_offset(row) {
+            if let Some(off) = self.cell_start_offset(row, col) {
                 self.selected_range = off..off;
                 self.insert_table_column(true, cx);
             }
@@ -3425,7 +3425,7 @@ impl EditorState {
         } else if self
             .table_col_add_rects
             .iter()
-            .any(|(b, _)| b.contains(&pos))
+            .any(|(b, _, _)| b.contains(&pos))
         {
             2
         } else {
@@ -3481,32 +3481,25 @@ impl EditorState {
         Some((row, t.col_widths.len() - 1))
     }
 
-    /// Hit-test the table add-row "+" strips → the row a new row lands after.
+    /// Hit-test the hovered row's border "+" → the row a new row lands after.
     fn table_add_row_at(&self, position: Point<Pixels>) -> Option<usize> {
         self.table_row_add_rects
             .iter()
             .find_map(|&(rect, row)| rect.contains(&position).then_some(row))
     }
 
-    /// Hit-test the table add-column "+" strips → a row of that table (to seat the
-    /// caret in its last cell).
-    fn table_add_col_at(&self, position: Point<Pixels>) -> Option<usize> {
+    /// Hit-test the hovered column's border "+" → `(header row, column)` — a new
+    /// column lands right of it.
+    fn table_add_col_at(&self, position: Point<Pixels>) -> Option<(usize, usize)> {
         self.table_col_add_rects
             .iter()
-            .find_map(|&(rect, row)| rect.contains(&position).then_some(row))
+            .find_map(|&(rect, row, col)| rect.contains(&position).then_some((row, col)))
     }
 
     /// Source offset at the start of `cell`'s content in table `row` (last paint).
     fn cell_start_offset(&self, row: usize, cell: usize) -> Option<usize> {
         let t = self.table_rows.get(row).and_then(Option::as_ref)?;
         Some(self.line_starts()[row] + t.cell_ranges.get(cell)?.start)
-    }
-
-    /// Source offset at the start of the last cell's content in table `row`.
-    fn last_cell_start_offset(&self, row: usize) -> Option<usize> {
-        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
-        let last = t.cell_ranges.len().checked_sub(1)?;
-        Some(self.line_starts()[row] + t.cell_ranges.get(last)?.start)
     }
 
     /// If `position` lands on a table grid row (not the separator), the source
@@ -7492,42 +7485,66 @@ fn paint_table_row(
 /// "+". Subtle by default; on hover a faint fill + a brighter glyph.
 /// Paint a row/column delete handle: a small rounded button with a "−". Filled on
 /// hover, a muted glyph otherwise.
-fn paint_del_handle(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
-    let mut bg = border;
-    bg.a = if hot { 0.22 } else { 0.10 };
-    window.paint_quad(fill(bounds, bg).corner_radii(Corners::all(px(4.))));
-    let mut glyph = border;
-    glyph.a = if hot { 0.95 } else { 0.6 };
-    let cx = bounds.origin.x + bounds.size.width / 2.;
-    let cy = bounds.origin.y + bounds.size.height / 2.;
-    let arm = px(5.);
-    let th = px(1.5);
-    window.paint_quad(fill(
-        Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
-        glyph,
-    ));
+/// An accent border (no fill) around a hovered row/column or the caret's cell
+/// (issue #16, Cditor-style).
+fn paint_table_outline(bounds: Bounds<Pixels>, accent: Hsla, window: &mut Window) {
+    window.paint_quad(PaintQuad {
+        bounds,
+        corner_radii: Corners::all(px(2.)),
+        background: hsla(0., 0., 0., 0.).into(),
+        border_widths: Edges::all(px(1.5)),
+        border_color: accent,
+        border_style: BorderStyle::Solid,
+    });
 }
 
-fn paint_add_strip(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
-    // A rounded box matching the delete handles — filled faintly, brighter on hover
-    // — with a centered "+".
-    let mut bg = border;
-    bg.a = if hot { 0.22 } else { 0.10 };
-    window.paint_quad(fill(bounds, bg).corner_radii(Corners::all(px(4.))));
-    let mut glyph = border;
-    glyph.a = if hot { 0.95 } else { 0.6 };
-    let cx = bounds.origin.x + bounds.size.width / 2.;
-    let cy = bounds.origin.y + bounds.size.height / 2.;
-    let arm = px(5.);
+/// The hovered row/column's border pill: an accent-filled capsule holding "+"
+/// and "−" halves (white glyphs; the hovered half full-strength). `sep_h` =
+/// true when the two halves sit side-by-side (a column's top-border pill).
+fn paint_table_pill(a: &TableAffordance, sep_h: bool, mouse: Point<Pixels>, window: &mut Window) {
+    let pill = a.plus.union(&a.minus);
+    window.paint_quad(fill(pill, a.accent).corner_radii(Corners::all(px(6.))));
+    let white = hsla(0., 0., 1., 1.);
+    let arm = px(4.);
     let th = px(1.5);
-    window.paint_quad(fill(
-        Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
-        glyph,
-    ));
-    window.paint_quad(fill(
-        Bounds::new(point(cx - th / 2., cy - arm), size(th, arm * 2.)),
-        glyph,
-    ));
+    let glyph = |b: &Bounds<Pixels>, plus: bool, window: &mut Window| {
+        let mut c = white;
+        c.a = if b.contains(&mouse) { 1.0 } else { 0.75 };
+        let cx = b.origin.x + b.size.width / 2.;
+        let cy = b.origin.y + b.size.height / 2.;
+        window.paint_quad(fill(
+            Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
+            c,
+        ));
+        if plus {
+            window.paint_quad(fill(
+                Bounds::new(point(cx - th / 2., cy - arm), size(th, arm * 2.)),
+                c,
+            ));
+        }
+    };
+    glyph(&a.plus, true, window);
+    glyph(&a.minus, false, window);
+    // A hairline between the halves so the two targets read separately.
+    let mut div_c = white;
+    div_c.a = 0.35;
+    if sep_h {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(a.minus.origin.x, pill.origin.y + px(3.)),
+                size(px(1.), pill.size.height - px(6.)),
+            ),
+            div_c,
+        ));
+    } else {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(pill.origin.x + px(3.), a.minus.origin.y),
+                size(pill.size.width - px(6.), px(1.)),
+            ),
+            div_c,
+        ));
+    }
 }
 
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
@@ -7537,33 +7554,21 @@ struct EditorElement {
     editor: Entity<EditorState>,
 }
 
-/// Per-table hover-revealed "+" affordances (issue #16): a hover zone (the table
-/// plus a thin margin) that gates visibility, plus the below/right "+" strips with
-/// their own hitboxes (hover cursor) and the table row to seat the caret in.
-struct TableAdds {
-    zone: Bounds<Pixels>,
-    below: Bounds<Pixels>,
-    below_hit: Hitbox,
-    below_row: usize,
-    right: Bounds<Pixels>,
-    right_hit: Hitbox,
-    right_row: usize,
-    border: Hsla,
-}
-
-/// A per-row or per-column delete handle for the hovered table cell (issue #16):
-/// where to paint the "−", its hover-cursor hitbox, and the row/column to remove.
-struct DelHandle {
-    bounds: Bounds<Pixels>,
-    /// The whole row's / column's cell rect, tinted on hover so the delete target
-    /// is obvious.
-    highlight: Bounds<Pixels>,
-    hit: Hitbox,
+/// The hovered row's / column's affordance (issue #16, Cditor-style): an accent
+/// OUTLINE around it (no fill) and a small pill sitting ON the table border —
+/// "+" (insert after) and "−" (delete) — instead of outside strips/handles.
+struct TableAffordance {
+    /// The whole row's / column's rect, outlined in the accent color.
+    outline: Bounds<Pixels>,
+    plus: Bounds<Pixels>,
+    minus: Bounds<Pixels>,
+    plus_hit: Hitbox,
+    minus_hit: Hitbox,
+    /// The hovered body row (rows) / the table's header line (columns) — where
+    /// the caret seats to run the caret-driven insert/delete APIs.
     row: usize,
     col: usize,
-    border: Hsla,
-    /// Paint the row/column tint (kept for borderless tables to show the grid).
-    show_highlight: bool,
+    accent: Hsla,
 }
 
 struct PrepaintState {
@@ -7622,11 +7627,13 @@ struct PrepaintState {
     /// Icon asset paths for alert marker lines, cloned from the style so the
     /// paint can draw them next to the labels.
     alert_icons: Option<markdown_syntax::AlertIcons>,
-    /// Per-table hover-revealed add-row/add-column "+" affordances (issue #16).
-    table_adds: Vec<TableAdds>,
-    /// Hovered-cell delete handles (issue #16): the "−" for the hovered row + column.
-    row_del: Option<DelHandle>,
-    col_del: Option<DelHandle>,
+    /// Per-table hover zones (the grid plus pill reach) — repaint gating.
+    table_zones: Vec<Bounds<Pixels>>,
+    /// Hovered-row / hovered-column border pills + outlines (issue #16).
+    row_aff: Option<TableAffordance>,
+    col_aff: Option<TableAffordance>,
+    /// The caret's cell, outlined in the accent color (Cditor-style).
+    caret_cell: Option<(Bounds<Pixels>, Hsla)>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
     /// Find-match highlight quads, painted beneath the selection.
@@ -8192,17 +8199,22 @@ impl Element for EditorElement {
             }
         }
 
-        // Per-table add-row / add-column "+" affordances (issue #16), revealed on
-        // hover. Each table contributes a hover zone (the grid + a thin margin) plus
-        // a "+" strip below (adds a row) and to the right (adds a column); bounds
-        // follow the painted rows. Paint shows/cursors them only while the zone is
-        // hovered; on_mouse_down hit-tests the committed strip rects.
+        // Table interaction (issue #16, Cditor-style): the hovered row/column
+        // gets an ACCENT OUTLINE (no fill) plus a small pill ON the table border
+        // — "+" inserts after it, "−" deletes it. The caret's cell is outlined
+        // too. Paint shows/cursors them only while hovered; on_mouse_down
+        // hit-tests the committed pill rects.
         let mouse = window.mouse_position();
-        let mut table_adds: Vec<TableAdds> = Vec::new();
-        let mut row_del: Option<DelHandle> = None;
-        let mut col_del: Option<DelHandle> = None;
+        let mut table_zones: Vec<Bounds<Pixels>> = Vec::new();
+        let mut row_aff: Option<TableAffordance> = None;
+        let mut col_aff: Option<TableAffordance> = None;
+        let mut caret_cell: Option<(Bounds<Pixels>, Hsla)> = None;
+        let caret_pos = editor.caret_table_cell_pos();
         let mut tbl_top: Option<Pixels> = None;
         let mut tbl_header = 0usize;
+        // Pill geometry: thickness across the border, length along it.
+        const PILL_ACROSS: f32 = 16.;
+        const PILL_ALONG: f32 = 36.;
         for (i, slot) in tables.iter().enumerate() {
             let Some(t) = slot else { continue };
             if t.is_header {
@@ -8214,35 +8226,32 @@ impl Element for EditorElement {
                 let bottom = bounds.origin.y + line_tops[i] + line_heights[i];
                 let left = bounds.origin.x + px(TABLE_GUTTER);
                 let width: Pixels = t.col_widths.iter().copied().sum();
-                // Full-edge "+" tabs: a strip along the bottom (adds a row) and the
-                // right (adds a column), each the table's full extent like the box.
-                // paint rounds the two outer corners so the edge bulging away from
-                // the table reads as a half-moon.
-                let r = (line_heights[i] * 0.75).max(px(12.));
-                let below = Bounds::new(point(left, bottom), size(width, r));
-                let right = Bounds::new(point(left + width, top), size(r, bottom - top));
-                let zone = Bounds::new(point(left, top), size(width + r, (bottom - top) + r));
-                table_adds.push(TableAdds {
-                    zone,
-                    below,
-                    below_hit: window.insert_hitbox(below, HitboxBehavior::Normal),
-                    below_row: i,
-                    right,
-                    right_hit: window.insert_hitbox(right, HitboxBehavior::Normal),
-                    right_row: tbl_header,
-                    border: t.border,
-                });
+                let accent = editor.markdown_style.as_ref().map_or(t.border, |s| s.link);
+                let g = px(PILL_ACROSS);
+                let zone = Bounds::new(
+                    point(left - g, top - g),
+                    size(width + g * 2., (bottom - top) + g * 2.),
+                );
+                table_zones.push(zone);
 
-                // Per-row + per-column delete "−" handles (issue #16): full-height in
-                // the left gutter, full-width in the top gutter. Hover bands reach
-                // into the gutters so moving onto a handle keeps it shown.
-                let g = px(TABLE_GUTTER);
-                // Always available on hover (people delete rows/columns while editing,
-                // too). The highlight stays for borderless (lineless) tables so the
-                // otherwise-invisible grid still shows.
-                let has_lines = matches!(t.style, markdown_syntax::TableStyle::Grid);
-                let show_highlight = !has_lines;
-                if mouse.x >= bounds.origin.x && mouse.x < left + width {
+                // The caret's cell (this table only), outlined like Cditor's.
+                if let Some((crow, ccell, _)) = caret_pos
+                    && crow >= tbl_header
+                    && crow <= i
+                    && let Some(rt) = tables.get(crow).and_then(Option::as_ref)
+                    && !rt.col_widths.is_empty()
+                {
+                    let cc = ccell.min(rt.col_widths.len() - 1);
+                    let x: Pixels = left + rt.col_widths[..cc].iter().copied().sum::<Pixels>();
+                    let rect = Bounds::new(
+                        point(x, bounds.origin.y + line_tops[crow]),
+                        size(rt.col_widths[cc], line_heights[crow]),
+                    );
+                    caret_cell = Some((rect, accent));
+                }
+
+                if zone.contains(&mouse) {
+                    // Hovered BODY row → outline + a vertical pill on its left border.
                     for line in tbl_header..=i {
                         let Some(rt) = tables.get(line).and_then(Option::as_ref) else {
                             continue;
@@ -8253,47 +8262,57 @@ impl Element for EditorElement {
                         let rtop = bounds.origin.y + line_tops[line];
                         let rh = line_heights[line];
                         if mouse.y >= rtop && mouse.y < rtop + rh {
-                            let rb = Bounds::new(
-                                point(bounds.origin.x + px(2.), rtop + px(1.)),
-                                size((g - px(5.)).max(px(12.)), (rh - px(2.)).max(px(8.))),
-                            );
-                            row_del = Some(DelHandle {
-                                bounds: rb,
-                                highlight: Bounds::new(point(left, rtop), size(width, rh)),
-                                hit: window.insert_hitbox(rb, HitboxBehavior::Normal),
+                            let ph = px(PILL_ALONG).min(rh - px(2.));
+                            let py0 = rtop + (rh - ph) / 2.;
+                            let pill = Bounds::new(point(left - g / 2., py0), size(g, ph));
+                            let plus = Bounds::new(pill.origin, size(g, ph / 2.));
+                            let minus =
+                                Bounds::new(point(pill.origin.x, py0 + ph / 2.), size(g, ph / 2.));
+                            row_aff = Some(TableAffordance {
+                                outline: Bounds::new(point(left, rtop), size(width, rh)),
+                                plus,
+                                minus,
+                                plus_hit: window.insert_hitbox(plus, HitboxBehavior::Normal),
+                                minus_hit: window.insert_hitbox(minus, HitboxBehavior::Normal),
                                 row: line,
                                 col: 0,
-                                border: rt.border,
-                                show_highlight,
+                                accent,
                             });
                             break;
                         }
                     }
-                }
-                if mouse.y >= top - g
-                    && mouse.y < bottom
-                    && mouse.x >= left
-                    && mouse.x < left + width
-                {
-                    let mut colx = left;
-                    for (col, &cw) in t.col_widths.iter().enumerate() {
-                        if mouse.x < colx + cw || col + 1 == t.col_widths.len() {
-                            let cb = Bounds::new(
-                                point(colx + px(2.), top - g + px(2.)),
-                                size((cw - px(4.)).max(px(12.)), (g - px(4.)).max(px(8.))),
-                            );
-                            col_del = Some(DelHandle {
-                                bounds: cb,
-                                highlight: Bounds::new(point(colx, top), size(cw, bottom - top)),
-                                hit: window.insert_hitbox(cb, HitboxBehavior::Normal),
-                                row: tbl_header,
-                                col,
-                                border: t.border,
-                                show_highlight,
-                            });
-                            break;
+                    // Hovered column → outline + a horizontal pill on the top border.
+                    // Not while the pointer is ON the row's pill — the column
+                    // highlight under it is noise when you're about to click.
+                    let on_row_pill = row_aff
+                        .as_ref()
+                        .is_some_and(|a| a.plus.contains(&mouse) || a.minus.contains(&mouse));
+                    if !on_row_pill && mouse.x >= left && mouse.x < left + width {
+                        let mut colx = left;
+                        for (col, &cw) in t.col_widths.iter().enumerate() {
+                            if mouse.x < colx + cw || col + 1 == t.col_widths.len() {
+                                let pw = px(PILL_ALONG).min(cw - px(2.));
+                                let px0 = colx + (cw - pw) / 2.;
+                                let pill = Bounds::new(point(px0, top - g / 2.), size(pw, g));
+                                let plus = Bounds::new(pill.origin, size(pw / 2., g));
+                                let minus = Bounds::new(
+                                    point(px0 + pw / 2., pill.origin.y),
+                                    size(pw / 2., g),
+                                );
+                                col_aff = Some(TableAffordance {
+                                    outline: Bounds::new(point(colx, top), size(cw, bottom - top)),
+                                    plus,
+                                    minus,
+                                    plus_hit: window.insert_hitbox(plus, HitboxBehavior::Normal),
+                                    minus_hit: window.insert_hitbox(minus, HitboxBehavior::Normal),
+                                    row: tbl_header,
+                                    col,
+                                    accent,
+                                });
+                                break;
+                            }
+                            colx += cw;
                         }
-                        colx += cw;
                     }
                 }
                 tbl_top = None;
@@ -8554,9 +8573,10 @@ impl Element for EditorElement {
                 .markdown_style
                 .as_ref()
                 .and_then(|st| st.alert_icons.clone()),
-            table_adds,
-            row_del,
-            col_del,
+            table_zones,
+            row_aff,
+            col_aff,
+            caret_cell,
             cursor,
             selections,
             search,
@@ -9077,47 +9097,35 @@ impl Element for EditorElement {
         // otherwise only repaints on the caret blink). Zones are committed every
         // frame so on_mouse_move knows where the tables are.
         let mouse = window.mouse_position();
-        let mut table_hover_zones: Vec<Bounds<Pixels>> = Vec::new();
+        let table_hover_zones: Vec<Bounds<Pixels>> = prepaint.table_zones.clone();
         let mut table_row_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
-        let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
-        for ta in &prepaint.table_adds {
-            table_hover_zones.push(ta.zone);
-            // Commit the strip rects EVERY frame — a click can land before any
-            // hovered paint ran (a fast flick-click), and on_mouse_down checks
-            // these rects. Only the visuals below stay hover-gated.
-            table_row_add_rects.push((ta.below, ta.below_row));
-            table_col_add_rects.push((ta.right, ta.right_row));
-            if !ta.zone.contains(&mouse) {
-                continue;
-            }
-            paint_add_strip(ta.below, ta.border, ta.below.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &ta.below_hit);
-            paint_add_strip(ta.right, ta.border, ta.right.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &ta.right_hit);
-        }
-
-        // Per-row / per-column delete "−" handles for the hovered cell (issue #16).
+        let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)> = Vec::new();
         let mut table_row_del = None;
-        if let Some(d) = &prepaint.row_del {
-            if d.show_highlight {
-                let mut hi = d.border;
-                hi.a = 0.10;
-                window.paint_quad(fill(d.highlight, hi));
-            }
-            paint_del_handle(d.bounds, d.border, d.bounds.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &d.hit);
-            table_row_del = Some((d.bounds, d.row));
-        }
         let mut table_col_del = None;
-        if let Some(d) = &prepaint.col_del {
-            if d.show_highlight {
-                let mut hi = d.border;
-                hi.a = 0.10;
-                window.paint_quad(fill(d.highlight, hi));
-            }
-            paint_del_handle(d.bounds, d.border, d.bounds.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &d.hit);
-            table_col_del = Some((d.bounds, d.row, d.col));
+        // The caret's cell: a quiet accent outline (under the hover outlines).
+        if let Some((rect, accent)) = prepaint.caret_cell {
+            let mut c = accent;
+            c.a *= 0.55;
+            paint_table_outline(rect, c, window);
+        }
+        // Hovered row/column: accent outline + a border pill with "+" / "−"
+        // (Cditor-style — no fill highlight). Rects are committed for
+        // on_mouse_down's hit-tests.
+        if let Some(a) = &prepaint.row_aff {
+            paint_table_outline(a.outline, a.accent, window);
+            paint_table_pill(a, false, mouse, window);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.plus_hit);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.minus_hit);
+            table_row_add_rects.push((a.plus, a.row));
+            table_row_del = Some((a.minus, a.row));
+        }
+        if let Some(a) = &prepaint.col_aff {
+            paint_table_outline(a.outline, a.accent, window);
+            paint_table_pill(a, true, mouse, window);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.plus_hit);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.minus_hit);
+            table_col_add_rects.push((a.plus, a.row, a.col));
+            table_col_del = Some((a.minus, a.row, a.col));
         }
 
         let wrapped = std::mem::take(&mut prepaint.wrapped);
