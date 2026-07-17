@@ -83,6 +83,8 @@ actions!(
         Outdent,
         Bold,
         Italic,
+        Underline,
+        Strike,
         Code,
         Dismiss,
     ]
@@ -132,6 +134,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-i", Italic, ctx),
         KeyBinding::new("cmd-e", Code, ctx),
         KeyBinding::new("ctrl-e", Code, ctx),
+        KeyBinding::new("cmd-shift-x", Strike, ctx),
+        KeyBinding::new("ctrl-shift-x", Strike, ctx),
+        KeyBinding::new("cmd-u", Underline, ctx),
+        KeyBinding::new("ctrl-u", Underline, ctx),
         KeyBinding::new("escape", Dismiss, ctx),
     ]);
 }
@@ -1813,40 +1819,45 @@ impl EditorState {
     }
 
     /// Toggle an inline wrapping marker (`**` bold, `*` italic, `` ` `` code)
+    /// around the selection — the symmetric case of [`Self::toggle_wrap_pair`].
+    fn toggle_wrap(&mut self, marker: &str, cx: &mut Context<Self>) {
+        self.toggle_wrap_pair(marker, marker, cx);
+    }
+
+    /// Toggle an open/close marker pair (`<u>`/`</u>`, or a symmetric `**`)
     /// around the selection. No-op on an empty selection. Unwraps when the
     /// selection is already wrapped (markers just inside or just outside it),
     /// otherwise wraps — keeping the same text selected so presses toggle.
-    fn toggle_wrap(&mut self, marker: &str, cx: &mut Context<Self>) {
+    fn toggle_wrap_pair(&mut self, open: &str, close: &str, cx: &mut Context<Self>) {
         let sel = self.selected_range.clone();
         if sel.start >= sel.end {
             return;
         }
-        let ml = marker.len();
+        let (ol, cl) = (open.len(), close.len());
         let sel_text = &self.content[sel.clone()];
-        let (range, new, new_sel) = if sel_text.len() >= 2 * ml
-            && sel_text.starts_with(marker)
-            && sel_text.ends_with(marker)
-        {
-            // `**foo**` selected → strip the markers inside the selection.
-            let inner = self.content[sel.start + ml..sel.end - ml].to_string();
-            (sel.clone(), inner, sel.start..sel.end - 2 * ml)
-        } else if self.content[..sel.start].ends_with(marker)
-            && self.content[sel.end..].starts_with(marker)
-        {
-            // `foo` selected with the markers just outside → strip them.
-            (
-                sel.start - ml..sel.end + ml,
-                sel_text.to_string(),
-                sel.start - ml..sel.end - ml,
-            )
-        } else {
-            // Plain → wrap.
-            (
-                sel.clone(),
-                format!("{marker}{sel_text}{marker}"),
-                sel.start + ml..sel.end + ml,
-            )
-        };
+        let (range, new, new_sel) =
+            if sel_text.len() >= ol + cl && sel_text.starts_with(open) && sel_text.ends_with(close)
+            {
+                // `**foo**` selected → strip the markers inside the selection.
+                let inner = self.content[sel.start + ol..sel.end - cl].to_string();
+                (sel.clone(), inner, sel.start..sel.end - ol - cl)
+            } else if self.content[..sel.start].ends_with(open)
+                && self.content[sel.end..].starts_with(close)
+            {
+                // `foo` selected with the markers just outside → strip them.
+                (
+                    sel.start - ol..sel.end + cl,
+                    sel_text.to_string(),
+                    sel.start - ol..sel.end - ol,
+                )
+            } else {
+                // Plain → wrap.
+                (
+                    sel.clone(),
+                    format!("{open}{sel_text}{close}"),
+                    sel.start + ol..sel.end + ol,
+                )
+            };
         self.record_edit(&range, &new);
         self.content.replace_range(range.clone(), &new);
         self.selected_range = new_sel;
@@ -1867,6 +1878,15 @@ impl EditorState {
 
     fn code(&mut self, _: &Code, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_wrap("`", cx);
+    }
+
+    fn strike(&mut self, _: &Strike, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_wrap("~~", cx);
+    }
+
+    fn underline(&mut self, _: &Underline, _: &mut Window, cx: &mut Context<Self>) {
+        // Markdown has no underline — the `<u>` tag, which both views honor.
+        self.toggle_wrap_pair("<u>", "</u>", cx);
     }
 
     /// Tab: on a list/quote item, indent the whole item one level (`tab_indent`
@@ -4295,6 +4315,8 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::bold))
             .on_action(cx.listener(Self::italic))
+            .on_action(cx.listener(Self::underline))
+            .on_action(cx.listener(Self::strike))
             .on_action(cx.listener(Self::code))
             .on_action(cx.listener(Self::indent))
             .on_action(cx.listener(Self::outdent))
@@ -4449,6 +4471,101 @@ impl Render for EditorState {
                     }),
                 ));
 
+                // Inline-format bar (Cditor-style): with a selection, a strip of
+                // B / I / S / <> buttons across the menu's top — each toggles its
+                // markdown wrap on the selection and closes the menu.
+                let fmt_btn = |id: &'static str| {
+                    div()
+                        .id(id)
+                        .w(px(28.))
+                        .h(px(24.))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .hover(move |s| s.bg(hover))
+                };
+                let format_bar = has_sel.then(|| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(2.))
+                        .px(px(6.))
+                        .py(px(4.))
+                        .child(
+                            fmt_btn("menu-fmt-bold")
+                                .font_weight(FontWeight::BOLD)
+                                .child("B")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.bold(&Bold, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-italic")
+                                .italic()
+                                .child("I")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.italic(&Italic, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-underline")
+                                .underline()
+                                .child("U")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.underline(&Underline, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-strike")
+                                .line_through()
+                                .child("S")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.strike(&Strike, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-code")
+                                .font_family(
+                                    self.markdown_style
+                                        .as_ref()
+                                        .map(|s| s.mono.family.clone())
+                                        .unwrap_or_else(|| "monospace".into()),
+                                )
+                                .text_size(px(12.))
+                                .child("<>")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.code(&Code, window, cx);
+                                    }),
+                                ),
+                        )
+                });
+
                 // Deferred + anchored to a window-space top layer with `.occlude()`,
                 // so it renders above the page chrome and captures the wheel — else a
                 // scroll over the popup scrolls the page behind it.
@@ -4465,6 +4582,7 @@ impl Render for EditorState {
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             // Clip rows + thumb to the rounded box.
                             .overflow_hidden()
                             .text_color(menu_fg)
@@ -4474,6 +4592,8 @@ impl Render for EditorState {
                                 editor.menu = None;
                                 cx.notify();
                             }))
+                            .children(format_bar)
+                            .children(has_sel.then(|| div().h(px(1.)).bg(menu_border)))
                             .children((count > 0).then(|| {
                                 // The scroll viewport: shows ~6 rows, the rest scroll.
                                 div()
@@ -4571,6 +4691,7 @@ impl Render for EditorState {
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(menu_fg)
                             .text_size(px(13.))
@@ -4623,6 +4744,7 @@ impl Render for EditorState {
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(menu_fg)
                             .text_size(px(13.))
@@ -4674,6 +4796,7 @@ impl Render for EditorState {
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(menu_fg)
                             .text_size(px(13.))
@@ -4744,6 +4867,7 @@ impl Render for EditorState {
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(menu_fg)
                             .text_size(px(13.))

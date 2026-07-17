@@ -109,9 +109,10 @@ works on macOS, Windows, and Linux): backspace/delete/enter; arrows,
 home/end; `shift-` + any movement to extend the selection;
 `alt-left`/`alt-right` (± `shift`) word-wise; `cmd-a` select all;
 `cmd-c`/`cmd-x`/`cmd-v`; `cmd-z` undo, `cmd-shift-z`/`ctrl-y` redo;
-`tab`/`shift-tab` indent/outdent; `cmd-b`/`cmd-i`/`cmd-e`
-bold/italic/inline-code; `ctrl-cmd-space` character palette; `escape`
-dismisses the built-in right-click menus.
+`tab`/`shift-tab` indent/outdent; `cmd-b`/`cmd-i`/`cmd-u`/`cmd-e`/
+`cmd-shift-x` bold/italic/underline (`<u>`)/inline-code/strikethrough;
+`ctrl-cmd-space` character palette; `escape` dismisses the built-in
+right-click menus.
 
 ---
 

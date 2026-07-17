@@ -83,6 +83,7 @@ fn meta(label: &str) -> (&'static str, Option<&'static str>) {
         "Inline code" => ("<>", Some("Code within a sentence.")),
         "Inline math" => ("$", Some("A formula within a sentence.")),
         "Highlight" => ("==", Some("Highlighted text.")),
+        "Underline" => ("U", Some("Underlined text.")),
         "Link" => ("↗", Some("A web link.")),
         "Property" => ("::", Some("Add a key:: value property.")),
         "Markdown" => ("≡", Some("All markdown blocks.")),
@@ -248,6 +249,7 @@ pub fn render(
         .border_1()
         .border_color(theme::border_subtle())
         .rounded(px(8.0))
+        .shadow_md()
         .overflow_hidden()
         .child(col)
         .children(thumb);
@@ -359,6 +361,7 @@ pub fn render(
             .border_1()
             .border_color(theme::border_subtle())
             .rounded(px(8.0))
+            .shadow_md()
             .overflow_hidden()
             .child(fcol)
             .children(fthumb)

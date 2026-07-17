@@ -188,7 +188,11 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                         .w(relative(1.0))
                         .min_h(px(48.0))
                         .context_menu(|menu, _window, _cx| {
-                            menu.menu("New page", Box::new(NewPage))
+                            menu.menu_with_icon(
+                                "New page",
+                                super::menu_icon("sticky-note-plus"),
+                                Box::new(NewPage),
+                            )
                         }),
                 ),
         )

@@ -334,6 +334,11 @@ pub const SNIPPETS: &[Snippet] = &[
         caret: 6,
     },
     Snippet {
+        label: "Underline",
+        snippet: "<u></u>",
+        caret: 3,
+    },
+    Snippet {
         label: "Link",
         snippet: "[]()",
         caret: 1,
@@ -1872,14 +1877,23 @@ fn build_inline(
                         .push((start..end, LinkTarget::Url(url.clone().into())));
                 }
             }
-            // Inline raw HTML stays literal (never executed) — except `<mark>`, a
-            // safe highlight tag: toggle a background on the runs it wraps.
+            // Inline raw HTML stays literal (never executed) — except `<mark>`
+            // (a safe highlight tag) and `<u>` (underline — markdown has none
+            // natively): each toggles its style on the runs it wraps.
             mdast::Node::Html(h) => {
                 let tag = h.value.trim().to_ascii_lowercase();
                 if tag == "<mark>" || tag.starts_with("<mark ") {
                     cur.background_color = Some(style.mark_bg);
                 } else if tag == "</mark>" {
                     cur.background_color = None;
+                } else if tag == "<u>" {
+                    cur.underline = Some(gpui::UnderlineStyle {
+                        thickness: px(1.0),
+                        color: None,
+                        wavy: false,
+                    });
+                } else if tag == "</u>" {
+                    cur.underline = None;
                 } else {
                     push_run(&h.value, cur, out);
                 }

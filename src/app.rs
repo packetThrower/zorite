@@ -9016,24 +9016,37 @@ impl Render for AppView {
         let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
             // Action ids: 0..=2 formula copy/export, 3 day/page Edit, 4..=6 align L/C/R (only
             // while editing the formula, where the in-line editor can re-justify it live).
-            let items: Vec<(&str, usize)> = match &menu.kind {
+            // `(label, icon face, action id)` — icons match the popup menus'.
+            let items: Vec<(&str, &str, usize)> = match &menu.kind {
                 CtxKind::Formula { alignable, .. } => {
-                    let mut v = vec![("Copy LaTeX", 0), ("Export PNG…", 1), ("Export SVG…", 2)];
+                    let mut v = vec![
+                        ("Copy LaTeX", "copy", 0),
+                        ("Export PNG…", "file-down", 1),
+                        ("Export SVG…", "file-down", 2),
+                    ];
                     if *alignable {
-                        v.extend([("Align left", 4), ("Align center", 5), ("Align right", 6)]);
+                        v.extend([
+                            ("Align left", "align-left", 4),
+                            ("Align center", "align-center", 5),
+                            ("Align right", "align-right", 6),
+                        ]);
                     }
                     v
                 }
-                CtxKind::Edit(_) => vec![("Edit", 3)],
+                CtxKind::Edit(_) => vec![("Edit", "pencil", 3)],
             };
             let mut rows = div().flex().flex_col().py(px(4.0));
-            for (label, action_id) in items {
+            for (label, face, action_id) in items {
                 rows = rows.child(
                     div()
                         .id(("ctx-menu-row", action_id))
                         .px(px(10.0))
                         .py(px(3.0))
                         .text_size(px(13.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::accent_tint()))
                         .on_mouse_down(
@@ -9051,6 +9064,11 @@ impl Render for AppView {
                                 }
                             }),
                         )
+                        .child(
+                            ui::menu_icon(face)
+                                .size_4()
+                                .text_color(theme::text_secondary()),
+                        )
                         .child(label),
                 );
             }
@@ -9061,11 +9079,12 @@ impl Render for AppView {
                     .child(
                         div()
                             .occlude()
-                            .min_w(px(140.0))
+                            .min_w(px(150.0))
                             .bg(theme::bg_sidebar())
                             .border_1()
                             .border_color(theme::border_subtle())
                             .rounded(px(8.0))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(theme::text_primary())
                             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {

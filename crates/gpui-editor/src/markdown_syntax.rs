@@ -80,6 +80,7 @@ struct Style {
     bold: bool,
     italic: bool,
     strike: bool,
+    underline: bool,
     mono: bool,
     color: Option<Hsla>,
     bg: Option<Hsla>,
@@ -164,7 +165,15 @@ pub(crate) fn styled_runs(
             font,
             color: style.and_then(|s| s.color).unwrap_or(base_color),
             background_color: style.and_then(|s| s.bg),
-            underline: underline.then_some(squiggle),
+            underline: if underline {
+                Some(squiggle)
+            } else {
+                style.filter(|s| s.underline).map(|_| UnderlineStyle {
+                    thickness: px(1.0),
+                    color: None,
+                    wavy: false,
+                })
+            },
             strikethrough: style.filter(|s| s.strike).map(|_| StrikethroughStyle {
                 thickness: px(1.5),
                 color: None,
@@ -201,7 +210,13 @@ fn run_for(
         font,
         color: style.and_then(|s| s.color).unwrap_or(base_color),
         background_color: style.and_then(|s| s.bg),
-        underline,
+        underline: underline.or_else(|| {
+            style.filter(|s| s.underline).map(|_| UnderlineStyle {
+                thickness: px(1.0),
+                color: None,
+                wavy: false,
+            })
+        }),
         strikethrough: style.filter(|s| s.strike).map(|_| StrikethroughStyle {
             thickness: px(1.5),
             color: None,
@@ -710,7 +725,7 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             i = rb2 + 1;
             continue;
         }
-        // <mark>…</mark>: a highlight — the one safe inline-HTML tag the reading
+        // <mark>…</mark>: a highlight — a safe inline-HTML tag the reading
         // view honors. Tags hidden, body gets a highlight background.
         if c == b'<'
             && b[i..end].starts_with(b"<mark>")
@@ -729,6 +744,27 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             );
             marker(out, close..close + 7, st.marker);
             i = close + 7;
+            continue;
+        }
+        // <u>…</u>: underline (markdown has none natively) — the other safe
+        // inline-HTML tag, same treatment as <mark>.
+        if c == b'<'
+            && b[i..end].starts_with(b"<u>")
+            && let Some(rel) = text[i + 3..end].find("</u>")
+        {
+            let body = i + 3;
+            let close = body + rel;
+            marker(out, i..body, st.marker);
+            push(
+                out,
+                body..close,
+                Style {
+                    underline: true,
+                    ..Default::default()
+                },
+            );
+            marker(out, close..close + 4, st.marker);
+            i = close + 4;
             continue;
         }
         // Bare URL: colored like a link (it clicks like one — see the shared
@@ -1846,6 +1882,22 @@ mod tests {
         // The shruggie's arms are backslash-escaped underscores.
         assert_eq!(emphasis_spans(r"¯\_(ツ)_/¯"), vec![]);
         assert_eq!(emphasis_spans(r"\_not italic\_"), vec![]);
+    }
+
+    #[test]
+    fn underline_tags_hide_and_style_the_body() {
+        let text = "an <u>underlined</u> word";
+        let st = test_style();
+        let mut out = Vec::new();
+        scan_line(text, 0, text.len(), &st, &mut out);
+        // Tags are hidden markers; the body span carries the underline.
+        let open = text.find("<u>").unwrap();
+        let body = open + 3;
+        assert!(out.iter().any(|s| s.range == (open..body) && s.style.hide));
+        assert!(
+            out.iter()
+                .any(|s| s.range.start == body && s.style.underline)
+        );
     }
 
     #[test]
