@@ -76,8 +76,11 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`EditorState::insert_table_column`](#insert_table_column) | method | `fn insert_table_column(&mut self, right: bool, cx: &mut Context<Self>)` | Empty column left/right of the caret's |
 | [`EditorState::delete_table_column`](#delete_table_column) | method | `fn delete_table_column(&mut self, cx: &mut Context<Self>)` | Delete the caret's column (not the last) |
 | [`EditorState::delete_table`](#delete_table) | method | `fn delete_table(&mut self, cx: &mut Context<Self>)` | Delete the whole table block |
+| [`EditorState::duplicate_table_row`](#duplicate_table_row) | method | `fn duplicate_table_row(&mut self, cx: &mut Context<Self>)` | Copy the caret's row below itself |
+| [`EditorState::copy_table`](#copy_table) | method | `fn copy_table(&mut self, cx: &mut Context<Self>)` | Whole table to the clipboard (markdown) |
+| [`EditorState::set_table_style`](#set_table_style) | method | `fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>)` | Rewrite the table's style marker |
 | [`EditorEvent`](#enum-editorevent) | enum | 8 variants | Everything the editor asks the host to do |
-| [`SyntaxStyle`](#struct-syntaxstyle) | struct | 21 public fields | Colors + fonts + icon hooks for WYSIWYG |
+| [`SyntaxStyle`](#struct-syntaxstyle) | struct | 22 public fields | Colors + fonts + icon hooks for WYSIWYG |
 | [`AlertIcons`](#struct-alerticons) | struct | 5 public fields | SVG asset paths for alert title icons |
 | [`Diagnostic`](#struct-diagnostic) | struct | `pub range: Range<usize>` | A flagged (underlined) span |
 | [`CellAlign`](#enum-cellalign) | enum | `Left · Center · Right` | A table column's alignment |
@@ -895,6 +898,38 @@ Set the caret column's alignment by rewriting the table's `|---|` separator
 row (`:--` / `:-:` / `--:`); the caret stays put. No-op outside a table or on
 the separator row itself.
 
+#### `duplicate_table_row`
+
+```rust
+pub fn duplicate_table_row(&mut self, cx: &mut Context<Self>)
+```
+
+Duplicate the caret's row directly below itself (a duplicated header lands
+below the separator, as the first body row). The caret lands in the copy —
+same cell, same in-cell offset. No-op on the separator or outside a table.
+
+#### `copy_table`
+
+```rust
+pub fn copy_table(&mut self, cx: &mut Context<Self>)
+```
+
+Copy the caret's whole table — its grid source plus any
+`<!-- table:STYLE -->` marker line — to the clipboard through the installed
+clipboard writer (plain markdown, pasteable anywhere). No-op outside a table.
+
+#### `set_table_style`
+
+```rust
+pub fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>)
+```
+
+Set the caret table's visual style by rewriting the `<!-- table:STYLE -->`
+marker line above its header: `Some("striped" | "header" | "minimal")`
+writes/replaces the marker, `None` (Grid — the default style) removes it. One
+undo step; the caret stays in its cell. Offered in the built-in right-click
+table menu with the current style checked.
+
 #### `insert_table_row`
 
 ```rust
@@ -1076,6 +1111,7 @@ every field explicit. All fields are `gpui::Hsla` unless noted.
 | `popover_fg` | `Hsla` | menu text |
 | `popover_hover` | `Hsla` | menu hovered-row background |
 | `popover_divider` | `Hsla` | menu group divider |
+| `popover_danger` | `Hsla` | menu destructive rows (Delete …) |
 | `mono` | `gpui::Font` | monospace font for inline code + code blocks |
 | `property_icon` | `Option<PropertyIconFn>` | property key → icon asset path for the property panel; `None` = no icons |
 

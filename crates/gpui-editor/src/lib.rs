@@ -269,6 +269,7 @@ enum ColEdit {
 enum TableMenuAction {
     InsertRowAbove,
     InsertRowBelow,
+    DuplicateRow,
     InsertColLeft,
     InsertColRight,
     DeleteRow,
@@ -276,27 +277,19 @@ enum TableMenuAction {
     AlignLeft,
     AlignCenter,
     AlignRight,
+    /// Rewrite the table's `<!-- table:STYLE -->` marker (`None` = the
+    /// default Grid, which has no marker).
+    SetStyle(Option<&'static str>),
+    CopyTable,
     DeleteTable,
 }
 
 impl TableMenuAction {
-    const ITEMS: &'static [(&'static str, TableMenuAction)] = &[
-        ("Insert row above", TableMenuAction::InsertRowAbove),
-        ("Insert row below", TableMenuAction::InsertRowBelow),
-        ("Insert column left", TableMenuAction::InsertColLeft),
-        ("Insert column right", TableMenuAction::InsertColRight),
-        ("Delete row", TableMenuAction::DeleteRow),
-        ("Delete column", TableMenuAction::DeleteColumn),
-        ("Align left", TableMenuAction::AlignLeft),
-        ("Align center", TableMenuAction::AlignCenter),
-        ("Align right", TableMenuAction::AlignRight),
-        ("Delete table", TableMenuAction::DeleteTable),
-    ];
-
     fn apply(self, editor: &mut EditorState, cx: &mut Context<EditorState>) {
         match self {
             TableMenuAction::InsertRowAbove => editor.insert_table_row(false, cx),
             TableMenuAction::InsertRowBelow => editor.insert_table_row(true, cx),
+            TableMenuAction::DuplicateRow => editor.duplicate_table_row(cx),
             TableMenuAction::InsertColLeft => editor.insert_table_column(false, cx),
             TableMenuAction::InsertColRight => editor.insert_table_column(true, cx),
             TableMenuAction::DeleteRow => editor.delete_table_row(cx),
@@ -304,6 +297,8 @@ impl TableMenuAction {
             TableMenuAction::AlignLeft => editor.set_caret_table_align(CellAlign::Left, cx),
             TableMenuAction::AlignCenter => editor.set_caret_table_align(CellAlign::Center, cx),
             TableMenuAction::AlignRight => editor.set_caret_table_align(CellAlign::Right, cx),
+            TableMenuAction::SetStyle(name) => editor.set_table_style(name, cx),
+            TableMenuAction::CopyTable => editor.copy_table(cx),
             TableMenuAction::DeleteTable => editor.delete_table(cx),
         }
     }
@@ -3925,6 +3920,102 @@ impl EditorState {
         cx.notify();
     }
 
+    /// The caret row's table region, when inside one.
+    fn caret_table_region(&self) -> Option<markdown_syntax::TableRegion> {
+        let (row, _) = self.row_col(self.cursor_offset());
+        markdown_syntax::table_regions(&self.content)
+            .into_iter()
+            .find(|r| r.lines.contains(&row))
+    }
+
+    /// Duplicate the caret's row below itself (the header duplicates as the
+    /// first body row). The caret lands in the copy, same cell + offset.
+    pub fn duplicate_table_row(&mut self, cx: &mut Context<Self>) {
+        let Some((row, cell, in_cell)) = self.caret_table_cell_pos() else {
+            return;
+        };
+        let Some((_header, sep, _end, _cols)) = self.caret_table_block() else {
+            return;
+        };
+        if row == sep {
+            return;
+        }
+        let starts = self.line_starts();
+        let line = self.content[starts[row]..self.line_end(row)].to_string();
+        // A duplicated header lands below the separator (as a body row).
+        let after = if row + 1 == sep { sep } else { row };
+        let insert = format!("\n{line}");
+        let pos = self.line_end(after);
+        let range = pos..pos;
+        self.record_edit(&range, &insert);
+        self.content = self.content[..pos].to_owned() + &insert + &self.content[pos..];
+        self.remap_diagnostics(&range, insert.len());
+        let caret = self.caret_pos_for_cell(after + 1, cell, in_cell);
+        self.selected_range = caret..caret;
+        self.table_menu = None;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    /// Copy the caret's table — its grid source plus any `<!-- table:STYLE -->`
+    /// marker — to the clipboard (markdown, pasteable anywhere).
+    pub fn copy_table(&mut self, cx: &mut Context<Self>) {
+        let Some(region) = self.caret_table_region() else {
+            return;
+        };
+        let starts = self.line_starts();
+        let first = region.marker_line.unwrap_or(region.lines.start);
+        let Some(&start) = starts.get(first) else {
+            return;
+        };
+        let end = self.line_end(region.lines.end - 1);
+        let text = self.content[start..end].to_string();
+        self.table_menu = None;
+        self.write_clipboard(text, cx);
+        cx.notify();
+    }
+
+    /// Set the caret table's visual style by rewriting its
+    /// `<!-- table:STYLE -->` marker line: `Some(name)` writes/replaces the
+    /// marker, `None` (Grid, the default) removes it. One undo step.
+    pub fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>) {
+        let Some(region) = self.caret_table_region() else {
+            return;
+        };
+        let starts = self.line_starts();
+        let (range, new) = match (region.marker_line, name) {
+            // Marker present → replace its line, or remove it (with the newline).
+            (Some(m), Some(name)) => (
+                starts[m]..self.line_end(m),
+                format!("<!-- table:{name} -->"),
+            ),
+            (Some(m), None) => (starts[m]..self.line_end(m) + 1, String::new()),
+            // No marker → insert one above the header; Grid is already implicit.
+            (None, Some(name)) => (
+                starts[region.lines.start]..starts[region.lines.start],
+                format!("<!-- table:{name} -->\n"),
+            ),
+            (None, None) => return,
+        };
+        let (row, cell, in_cell) = self.caret_table_cell_pos().unwrap_or((0, 0, 0));
+        // The marker edit adds/removes one line ABOVE the table (or replaces in
+        // place) — shift the caret's row index to keep it in its cell.
+        let row_shift: isize = match (region.marker_line, name) {
+            (Some(_), None) => -1,
+            (None, Some(_)) => 1,
+            _ => 0,
+        };
+        self.record_edit(&range, &new);
+        self.content.replace_range(range.clone(), &new);
+        self.remap_diagnostics(&range, new.len());
+        let same_row = (row as isize + row_shift).max(0) as usize;
+        let caret = self.caret_pos_for_cell(same_row, cell, in_cell);
+        self.selected_range = caret..caret;
+        self.table_menu = None;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
     /// The caret's table position as `(row, cell_index, offset_within_cell)`, or
     /// `None` outside a table. Lets structural edits keep the caret put.
     fn caret_table_cell_pos(&self) -> Option<(usize, usize, usize)> {
@@ -4628,13 +4719,125 @@ impl Render for EditorState {
                 const ROW_H: f32 = 24.0;
                 const DIV_H: f32 = 9.0;
                 const PAD: f32 = 4.0;
-                const MAX_H: f32 = 240.0;
-                // Rows in three groups (insert / delete / align) with a divider before
-                // the delete group (index 4) and the align group (index 6).
+                const MAX_H: f32 = 480.0;
+                // Cditor-style grouped rows: a glyph column, a checkmark on the
+                // current align/style, and the destructive group in red.
+                let danger = st.map_or(rgb(0xE5484D).into(), |s| s.popover_danger);
+                let cur_align = self.caret_table_align();
+                let cur_style = self
+                    .caret_table_region()
+                    .map(|r| r.style)
+                    .unwrap_or_default();
+                use markdown_syntax::TableStyle as TS;
+                enum Row {
+                    Div,
+                    Item {
+                        glyph: &'static str,
+                        label: &'static str,
+                        action: TableMenuAction,
+                        red: bool,
+                        checked: bool,
+                    },
+                }
+                let item = |glyph, label, action| Row::Item {
+                    glyph,
+                    label,
+                    action,
+                    red: false,
+                    checked: false,
+                };
+                let specs = [
+                    item("↑", "Insert row above", TableMenuAction::InsertRowAbove),
+                    item("↓", "Insert row below", TableMenuAction::InsertRowBelow),
+                    item("⧉", "Duplicate row", TableMenuAction::DuplicateRow),
+                    Row::Div,
+                    item("←", "Insert column left", TableMenuAction::InsertColLeft),
+                    item("→", "Insert column right", TableMenuAction::InsertColRight),
+                    Row::Div,
+                    Row::Item {
+                        glyph: "",
+                        label: "Align left",
+                        action: TableMenuAction::AlignLeft,
+                        red: false,
+                        checked: cur_align == Some(CellAlign::Left),
+                    },
+                    Row::Item {
+                        glyph: "",
+                        label: "Align center",
+                        action: TableMenuAction::AlignCenter,
+                        red: false,
+                        checked: cur_align == Some(CellAlign::Center),
+                    },
+                    Row::Item {
+                        glyph: "",
+                        label: "Align right",
+                        action: TableMenuAction::AlignRight,
+                        red: false,
+                        checked: cur_align == Some(CellAlign::Right),
+                    },
+                    Row::Div,
+                    Row::Item {
+                        glyph: "▦",
+                        label: "Grid style",
+                        action: TableMenuAction::SetStyle(None),
+                        red: false,
+                        checked: cur_style == TS::Grid,
+                    },
+                    Row::Item {
+                        glyph: "▤",
+                        label: "Striped style",
+                        action: TableMenuAction::SetStyle(Some("striped")),
+                        red: false,
+                        checked: cur_style == TS::Striped,
+                    },
+                    Row::Item {
+                        glyph: "▥",
+                        label: "Header style",
+                        action: TableMenuAction::SetStyle(Some("header")),
+                        red: false,
+                        checked: cur_style == TS::Header,
+                    },
+                    Row::Item {
+                        glyph: "─",
+                        label: "Minimal style",
+                        action: TableMenuAction::SetStyle(Some("minimal")),
+                        red: false,
+                        checked: cur_style == TS::Minimal,
+                    },
+                    Row::Div,
+                    item("⊞", "Copy as Markdown", TableMenuAction::CopyTable),
+                    Row::Div,
+                    Row::Item {
+                        glyph: "✕",
+                        label: "Delete row",
+                        action: TableMenuAction::DeleteRow,
+                        red: true,
+                        checked: false,
+                    },
+                    Row::Item {
+                        glyph: "✕",
+                        label: "Delete column",
+                        action: TableMenuAction::DeleteColumn,
+                        red: true,
+                        checked: false,
+                    },
+                    Row::Item {
+                        glyph: "✕",
+                        label: "Delete table",
+                        action: TableMenuAction::DeleteTable,
+                        red: true,
+                        checked: false,
+                    },
+                ];
+                let n_items = specs
+                    .iter()
+                    .filter(|r| matches!(r, Row::Item { .. }))
+                    .count();
+                let n_divs = specs.len() - n_items;
                 let mut rows: Vec<gpui::AnyElement> = Vec::new();
-                for (i, &(label, action)) in TableMenuAction::ITEMS.iter().enumerate() {
-                    if i == 4 || i == 6 || i == 9 {
-                        rows.push(
+                for (i, spec) in specs.into_iter().enumerate() {
+                    match spec {
+                        Row::Div => rows.push(
                             div()
                                 .flex_shrink_0()
                                 .h(px(1.))
@@ -4642,29 +4845,53 @@ impl Render for EditorState {
                                 .mx(px(8.))
                                 .bg(divider)
                                 .into_any_element(),
-                        );
+                        ),
+                        Row::Item {
+                            glyph,
+                            label,
+                            action,
+                            red,
+                            checked,
+                        } => {
+                            let fg = if red { danger } else { menu_fg };
+                            let mut glyph_c = fg;
+                            glyph_c.a *= 0.7;
+                            rows.push(
+                                div()
+                                    .id(("table-menu-row", i))
+                                    .flex_shrink_0()
+                                    .px(px(10.))
+                                    .py(px(3.))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .text_color(fg)
+                                    .hover(move |s| s.bg(hover))
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .flex_none()
+                                            .text_color(glyph_c)
+                                            .child(glyph),
+                                    )
+                                    .child(div().flex_1().child(SharedString::from(label)))
+                                    .children(checked.then(|| div().text_color(glyph_c).child("✓")))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            action.apply(editor, cx);
+                                        }),
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
                     }
-                    rows.push(
-                        div()
-                            .id(("table-menu-row", i))
-                            .flex_shrink_0()
-                            .px(px(10.))
-                            .py(px(3.))
-                            .hover(move |s| s.bg(hover))
-                            .child(SharedString::from(label))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    action.apply(editor, cx);
-                                }),
-                            )
-                            .into_any_element(),
-                    );
                 }
                 // Scrollbar thumb, shown when the items overflow the cap — sized from
                 // the content height + positioned from the live scroll offset.
-                let rows_h = TableMenuAction::ITEMS.len() as f32 * ROW_H + 3.0 * DIV_H;
+                let rows_h = n_items as f32 * ROW_H + n_divs as f32 * DIV_H;
                 let view_h = MAX_H - 2.0 * PAD;
                 let thumb = (rows_h > view_h).then(|| {
                     let scrolled =
@@ -4685,7 +4912,7 @@ impl Render for EditorState {
                         div()
                             .relative()
                             .occlude()
-                            .min_w(px(170.))
+                            .min_w(px(190.))
                             .cursor(CursorStyle::Arrow)
                             .bg(menu_bg)
                             .border_1()

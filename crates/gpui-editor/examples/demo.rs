@@ -77,6 +77,7 @@ fn demo_markdown_style() -> SyntaxStyle {
         popover_fg: hsla(0., 0., 0.9, 1.),           // menu text
         popover_hover: hsla(0.58, 0.75, 0.66, 0.16), // soft accent tint
         popover_divider: hsla(0., 0., 1., 0.18),     // group divider
+        popover_danger: gpui::rgb(0xE5484D).into(),  // destructive rows
         mono: font("Menlo"),
         property_icon: None,
     }

@@ -62,6 +62,8 @@ pub struct SyntaxStyle {
     pub popover_hover: Hsla,
     /// Popover/menu group divider.
     pub popover_divider: Hsla,
+    /// Popover/menu destructive rows ("Delete …" — label + glyph in red).
+    pub popover_danger: Hsla,
     /// Monospace font for inline code.
     pub mono: Font,
     /// Resolves a property key (`tags`, `status`, …) to an icon shown before it
@@ -2208,6 +2210,7 @@ mod tests {
             popover_fg: c,
             popover_hover: c,
             popover_divider: c,
+            popover_danger: c,
             mono: gpui::font("monospace"),
             property_icon: None,
         }
