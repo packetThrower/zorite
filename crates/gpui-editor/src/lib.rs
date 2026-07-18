@@ -3960,8 +3960,10 @@ impl EditorState {
             }
             cx += cw;
         }
+        // A click in a spanned trailing column lands in the short row's last cell.
+        let cell = cell.min(t.cells.len().saturating_sub(1));
         let content = t.cells.get(cell)?;
-        let cw = t.col_widths[cell];
+        let cw = cell_span_width(&t.col_widths, t.cells.len(), cell);
         let cf = cell_font(&font, t.is_header);
         let full_w = measure_width(window, content, &cf, font_size);
         let avail = (cw - pad * 2.).max(px(8.));
@@ -8064,7 +8066,18 @@ fn table_column_widths(
     wrap_width: Option<Pixels>,
     col_resize: Option<TableColResize>,
 ) -> Vec<Pixels> {
-    let cols = region.aligns.len().max(1);
+    // Reader parity: a row with MORE cells than the header widens the grid —
+    // extra columns render (the short rows' last cells span the remainder)
+    // instead of hiding the excess.
+    let cols = region
+        .lines
+        .clone()
+        .filter(|&li| li != region.lines.start + 1)
+        .map(|li| markdown_syntax::table_cells(lines[li]).len())
+        .max()
+        .unwrap_or(0)
+        .max(region.aligns.len())
+        .max(1);
     let pad = px(TABLE_CELL_PAD);
     let mut widths = vec![px(0.); cols];
     for li in region.lines.clone() {
@@ -8187,6 +8200,17 @@ fn shape_cell(
 
 /// How many wrap rows table row `cells` need at `col_widths` — 1 for content
 /// that fits; more once a drag-narrowed column forces its text to wrap.
+/// The width available to cell `c` of a row with `cells_len` cells: a short
+/// row's LAST cell spans the remaining columns (reader parity — e.g. a
+/// two-cell header over a wider body), otherwise its own column.
+fn cell_span_width(col_widths: &[Pixels], cells_len: usize, c: usize) -> Pixels {
+    if c + 1 == cells_len && cells_len < col_widths.len() {
+        col_widths[c..].iter().copied().sum()
+    } else {
+        col_widths.get(c).copied().unwrap_or(px(0.))
+    }
+}
+
 fn table_row_wrap_rows(
     window: &mut Window,
     cells: &[SharedString],
@@ -8202,9 +8226,10 @@ fn table_row_wrap_rows(
         if cell.is_empty() {
             continue;
         }
-        let Some(&cw) = col_widths.get(c) else {
+        let cw = cell_span_width(col_widths, cells.len(), c);
+        if cw == px(0.) {
             continue;
-        };
+        }
         let avail = (cw - pad * 2.).max(px(8.));
         if let Some(wl) = shape_cell(window, cell, &cf, font_size, Some(avail), Hsla::default()) {
             rows = rows.max(wl.wrap_boundaries().len() + 1);
@@ -8241,8 +8266,11 @@ fn table_caret_pos(
     let range = t.cell_ranges.get(cell)?;
     let content = t.cells.get(cell)?;
     let in_cell = col.saturating_sub(range.start).min(content.len());
-    let cell_x = left + t.col_widths[..cell].iter().sum::<Pixels>();
-    let cw = t.col_widths.get(cell).copied().unwrap_or(px(0.));
+    let cell_x = left
+        + t.col_widths[..cell.min(t.col_widths.len())]
+            .iter()
+            .sum::<Pixels>();
+    let cw = cell_span_width(&t.col_widths, t.cell_ranges.len(), cell);
     // The header is bold, so shape with the bold font or the caret lands left of
     // the (wider) bold glyphs; position_for_index gives the exact kerned x — and,
     // shaped at the cell's width, the wrap row's y for drag-narrowed columns.
@@ -8363,8 +8391,9 @@ fn paint_table_row(
     let mut x = origin.x;
     for (c, &cw) in t.col_widths.iter().enumerate() {
         // Inner cell separator at the left of every cell except the first (Grid
-        // only; the other styles drop vertical lines).
-        if vlines && c > 0 {
+        // only; the other styles drop vertical lines). A short row draws no
+        // dividers past its last cell — that cell spans the remaining columns.
+        if vlines && c > 0 && c < t.cells.len() {
             window.paint_quad(fill(
                 Bounds::new(point(x, origin.y), size(thick, row_h)),
                 t.border,
@@ -8373,7 +8402,9 @@ fn paint_table_row(
         if let Some(cell) = t.cells.get(c).filter(|s| !s.is_empty()) {
             // Shaped at the cell's width so a drag-narrowed column word-wraps
             // (the row height already reserves the wrap rows). Top-anchored at
-            // the single-line pad, not centered — wraps grow downward.
+            // the single-line pad, not centered — wraps grow downward. A short
+            // row's last cell spans the remaining columns.
+            let cw = cell_span_width(&t.col_widths, t.cells.len(), c);
             let avail = (cw - pad * 2.).max(px(8.));
             if let Some(shaped) =
                 shape_cell(window, cell, &cell_font, font_size, Some(avail), color)
@@ -9349,7 +9380,10 @@ impl Element for EditorElement {
                     let x: Pixels = left + rt.col_widths[..cc].iter().copied().sum::<Pixels>();
                     let rect = Bounds::new(
                         point(x, bounds.origin.y + line_tops[crow]),
-                        size(rt.col_widths[cc], line_heights[crow]),
+                        size(
+                            cell_span_width(&rt.col_widths, rt.cells.len(), cc),
+                            line_heights[crow],
+                        ),
                     );
                     caret_cell = Some((rect, accent));
                 }
