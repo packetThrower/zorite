@@ -647,6 +647,13 @@ pub struct EditorState {
     scan_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<ScanData>)>>,
     /// See [`ScrollCompensatorFn`].
     scroll_compensator: Option<ScrollCompensatorFn>,
+    /// Cross-frame cache of each markdown line's `hidden_runs` output — the
+    /// residual per-frame cost after the scan cache (gpui's own layout cache
+    /// already absorbs glyph shaping): building every line's display string +
+    /// run list on every repaint. Keyed by a hash of the line + its reveal
+    /// state; edits miss only the lines they changed. Capacity-capped in
+    /// `shape_document`.
+    line_run_cache: std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
     /// `content_gen` as of the last paint — a measure with the SAME generation
     /// but different heights means an async (non-edit) height change, the
     /// scroll-anchoring trigger.
@@ -786,6 +793,7 @@ impl EditorState {
             scan_cache: std::cell::RefCell::new(None),
             scroll_compensator: None,
             last_paint_gen: 0,
+            line_run_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
@@ -6140,6 +6148,8 @@ fn shape_document(
     col_resize: Option<TableColResize>,
     // The content's cached structural scans (see [`ScanData`]).
     scan: &ScanData,
+    // Cross-frame per-line run cache (see `EditorState::line_run_cache`).
+    line_cache: &std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
     // Collapsed headings (trimmed source lines) — their section lines fold to
     // height 0 like a folded callout's body.
     folded_headings: &std::collections::HashSet<String>,
@@ -6310,6 +6320,8 @@ fn shape_document(
     };
     // Table regions (W4c); content-fit column widths shared by each region's rows.
     let regions: &[markdown_syntax::TableRegion] = if md.is_some() { &scan.tables } else { &[] };
+    // Shared component of the per-line run-cache key (see `CachedLineRuns`).
+    let run_epoch = line_run_epoch(base_font, md);
     let mut region_cols: Vec<Vec<Pixels>> = Vec::with_capacity(regions.len());
     for r in regions {
         region_cols.push(table_column_widths(
@@ -7018,17 +7030,60 @@ fn shape_document(
         {
             // Markers hidden (except the caret's construct): shape the display
             // string + keep a map back to source.
-            let (disp, runs, m) = markdown_syntax::hidden_runs(
-                line,
-                base_font,
-                line_base,
-                &line_diags,
-                caret_col,
-                reveal_prefix,
-                hide_prefix,
-                reveal_inline,
-                st,
-            );
+            // Cross-frame cache: most repaints (caret blink, hover, another
+            // editor's edit) rebuild identical lines — reuse the built display
+            // string + runs when the line and its reveal state are unchanged.
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                line.hash(&mut h);
+                line_base.a.to_bits().hash(&mut h);
+                line_base.h.to_bits().hash(&mut h);
+                line_base.s.to_bits().hash(&mut h);
+                line_base.l.to_bits().hash(&mut h);
+                caret_col.hash(&mut h);
+                reveal_prefix.hash(&mut h);
+                hide_prefix.hash(&mut h);
+                reveal_inline.hash(&mut h);
+                for d in &line_diags {
+                    d.range.start.hash(&mut h);
+                    d.range.end.hash(&mut h);
+                }
+                run_epoch.hash(&mut h);
+                h.finish()
+            };
+            let cached = line_cache
+                .borrow()
+                .get(&key)
+                .filter(|c| c.src == line && c.line_base == line_base)
+                .map(|c| (c.disp.clone(), c.runs.clone(), c.map.clone()));
+            let (disp, runs, m) = match cached {
+                Some(v) => v,
+                None => {
+                    let (disp, runs, m) = markdown_syntax::hidden_runs(
+                        line,
+                        base_font,
+                        line_base,
+                        &line_diags,
+                        caret_col,
+                        reveal_prefix,
+                        hide_prefix,
+                        reveal_inline,
+                        st,
+                    );
+                    line_cache.borrow_mut().insert(
+                        key,
+                        CachedLineRuns {
+                            src: line.to_string(),
+                            line_base,
+                            disp: disp.clone(),
+                            runs: runs.clone(),
+                            map: m.clone(),
+                        },
+                    );
+                    (disp, runs, m)
+                }
+            };
             // A checked task's body renders struck through + muted (the reader
             // does the same) — a whole-line restyle over the finished runs.
             let (disp, runs, m) = if matches!(mark, Some(LineMark::Check { checked: true, .. })) {
@@ -7170,6 +7225,16 @@ fn shape_document(
                 cb.width = bw;
                 cb.bottom = bi == last;
             }
+        }
+    }
+    // Cap the run cache: edits retire entries (each changed line re-keys), so
+    // without a bound it grows one dead entry per keystroke. Clearing wholesale
+    // is fine — the next frame rebuilds only what's visible… which is
+    // everything today, but each rebuild re-primes the cache.
+    {
+        let mut cache = line_cache.borrow_mut();
+        if cache.len() > lines.len() * 2 + 64 {
+            cache.clear();
         }
     }
     (
@@ -8051,6 +8116,41 @@ struct TableAffordance {
     accent: Hsla,
 }
 
+/// One markdown line's built display + runs, cached across frames (see
+/// `EditorState::line_run_cache`). `src` and `line_base` verify a hash hit —
+/// the rest of the inputs are folded into the key's hash.
+struct CachedLineRuns {
+    src: String,
+    line_base: Hsla,
+    disp: String,
+    runs: Vec<TextRun>,
+    map: Vec<usize>,
+}
+
+/// A hash of the inputs shared by every line's run build (font + palette) —
+/// part of the per-line cache key, so a theme or font change misses cleanly.
+fn line_run_epoch(font: &Font, st: Option<&SyntaxStyle>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    font.family.hash(&mut h);
+    font.weight.0.to_bits().hash(&mut h);
+    let hash_hsla = |c: Hsla, h: &mut std::collections::hash_map::DefaultHasher| {
+        c.h.to_bits().hash(h);
+        c.s.to_bits().hash(h);
+        c.l.to_bits().hash(h);
+        c.a.to_bits().hash(h);
+    };
+    if let Some(st) = st {
+        for c in [
+            st.marker, st.code, st.code_bg, st.link, st.tag, st.quote, st.mark_bg,
+        ] {
+            hash_hsla(c, &mut h);
+        }
+        st.mono.family.hash(&mut h);
+    }
+    h.finish()
+}
+
 /// Host hook for scroll anchoring: called from the measure pass when an
 /// ASYNC height change (a math/mermaid/image raster arriving) lands ABOVE
 /// the window's viewport, with the height delta — the host shifts its scroll
@@ -8269,6 +8369,7 @@ impl Element for EditorElement {
                     editor.image_resize,
                     editor.table_col_resize,
                     &scan,
+                    &editor.line_run_cache,
                     &editor.folded_headings,
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
@@ -8442,6 +8543,7 @@ impl Element for EditorElement {
                     editor.image_resize,
                     editor.table_col_resize,
                     &editor.scan_data(),
+                    &editor.line_run_cache,
                     &editor.folded_headings,
                 )
             };
