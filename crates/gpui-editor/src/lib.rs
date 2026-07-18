@@ -9744,6 +9744,13 @@ impl Element for EditorElement {
         let mouse = window.mouse_position();
         let mut grip: Option<(usize, Bounds<Pixels>)> = None;
         let mut grip_hb: Option<Hitbox> = None;
+        // While a drag is live, a viewport-sized hitbox (inserted after the
+        // editor's own, so it sits on top) keeps the closed-hand cursor
+        // everywhere — otherwise the text I-beam takes over mid-drag.
+        if editor.line_drag.is_some() {
+            let all = Bounds::new(gpui::Point::default(), window.viewport_size());
+            grip_hb = Some(window.insert_hitbox(all, HitboxBehavior::Normal));
+        }
         let grip_left = bounds.origin.x - px(22.) - editor.grip_inset;
         if editor.markdown_style.is_some()
             && editor.line_drag.is_none()
