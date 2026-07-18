@@ -645,6 +645,12 @@ pub struct EditorState {
     shape_memo: std::cell::RefCell<Option<ShapeMemo>>,
     /// See [`ScanData`].
     scan_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<ScanData>)>>,
+    /// See [`ScrollCompensatorFn`].
+    scroll_compensator: Option<ScrollCompensatorFn>,
+    /// `content_gen` as of the last paint — a measure with the SAME generation
+    /// but different heights means an async (non-edit) height change, the
+    /// scroll-anchoring trigger.
+    last_paint_gen: u64,
     /// Bumped on every content mutation — cheap staleness key for caches
     /// (the UTF-16 conversion anchor below; a shape cache later).
     content_gen: u64,
@@ -778,6 +784,8 @@ impl EditorState {
             table_resize_hover: None,
             shape_memo: std::cell::RefCell::new(None),
             scan_cache: std::cell::RefCell::new(None),
+            scroll_compensator: None,
+            last_paint_gen: 0,
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
@@ -871,6 +879,14 @@ impl EditorState {
     /// default — leaves the tag click-inert.
     pub fn set_code_languages(&mut self, langs: Vec<SharedString>) {
         self.code_langs = langs;
+    }
+
+    /// Install the scroll-anchoring hook (see [`ScrollCompensatorFn`]): when
+    /// an async block render (math/mermaid/image) changes heights above the
+    /// window viewport, the host receives the delta and shifts its scroll
+    /// offset so the visible content stays put (Cditor's anchor-restore).
+    pub fn set_scroll_compensator(&mut self, f: impl Fn(Pixels, &mut Window, &mut App) + 'static) {
+        self.scroll_compensator = Some(std::rc::Rc::new(f));
     }
 
     pub fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>) {
@@ -8035,6 +8051,12 @@ struct TableAffordance {
     accent: Hsla,
 }
 
+/// Host hook for scroll anchoring: called from the measure pass when an
+/// ASYNC height change (a math/mermaid/image raster arriving) lands ABOVE
+/// the window's viewport, with the height delta — the host shifts its scroll
+/// container's offset by it so the content being read doesn't jump.
+pub type ScrollCompensatorFn = std::rc::Rc<dyn Fn(Pixels, &mut Window, &mut App)>;
+
 /// Content-derived structural scans — tables, ordered-list numbering,
 /// mermaid/math regions, property runs, foldable callouts, and per-line
 /// fence parity — cached per [`EditorState::content_gen`]. `shape_document`
@@ -8186,6 +8208,10 @@ impl Element for EditorElement {
                 AvailableSpace::Definite(w) => Some(w),
                 _ => known.width,
             };
+            // Scroll anchoring: set when an async height change lands above
+            // the viewport (see below); called after the borrow of `editor`
+            // ends, before returning.
+            let mut compensate: Option<(ScrollCompensatorFn, Pixels)> = None;
             let height = if editor.content.is_empty() {
                 // Placeholder rows at the base size.
                 let rows = shape_all(
@@ -8251,10 +8277,12 @@ impl Element for EditorElement {
                     (&shaped.0, &shaped.1, &shaped.3, &shaped.4);
                 let mut y = px(0.);
                 let mut needed = px(0.);
+                let mut new_tops: Vec<Pixels> = Vec::with_capacity(wrapped.len());
                 for (i, (line, h)) in wrapped.iter().zip(heights).enumerate() {
                     let tbl = tables.get(i).and_then(Option::as_ref);
                     let (top, bot) = line_pads(backgrounds[i], tbl);
                     y += top;
+                    new_tops.push(y);
                     let row_h = *h * (line.wrap_boundaries().len() + 1) as f32;
                     // A table's hover "+" add-row strip paints just below its
                     // last row (see `TableAdds`). Keep that space inside the
@@ -8271,6 +8299,34 @@ impl Element for EditorElement {
                     }
                     y += row_h + bot;
                 }
+                // Scroll anchoring (Cditor's anchor-restore): the SAME content
+                // generation as the last paint means no edit happened — so a
+                // height difference here is an ASYNC change (a math/mermaid/
+                // image raster arriving, collapsing raw lines to a rendered
+                // block). If the first changed row sits above the window's
+                // viewport, everything the user is reading would shift; hand
+                // the delta to the host NOW (this measure runs before the
+                // scroll container places its children) so its scroll offset
+                // absorbs it in the same frame.
+                let total = y.max(base_lh).max(needed);
+                if let (Some(f), Some(last)) = (&editor.scroll_compensator, editor.last_bounds)
+                    && editor.content_gen == editor.last_paint_gen
+                    && !editor.line_tops.is_empty()
+                    && wrap_width.is_none_or(|w| (w - last.size.width).abs() < px(1.))
+                {
+                    let delta = total - last.size.height;
+                    if delta.abs() > px(0.5) {
+                        let n = new_tops.len().min(editor.line_tops.len());
+                        let j = (0..n)
+                            .find(|&k| (new_tops[k] - editor.line_tops[k]).abs() > px(0.5))
+                            .unwrap_or(n);
+                        let changed_y =
+                            editor.line_tops.get(j).copied().unwrap_or(last.size.height);
+                        if last.origin.y + changed_y < px(0.) {
+                            compensate = Some((f.clone(), delta));
+                        }
+                    }
+                }
                 // Hand the shaping to this frame's prepaint (see ShapeMemo).
                 *editor.shape_memo.borrow_mut() = Some(ShapeMemo {
                     wrap_width,
@@ -8279,9 +8335,12 @@ impl Element for EditorElement {
                     font_size,
                     shaped,
                 });
-                y.max(base_lh).max(needed)
+                total
             };
             let width = wrap_width.or(known.width).unwrap_or(px(0.));
+            if let Some((f, delta)) = compensate {
+                f(delta, window, cx);
+            }
             size(width, height)
         });
         (id, ())
@@ -9816,6 +9875,7 @@ impl Element for EditorElement {
             editor.table_row_del = table_row_del;
             editor.table_col_del = table_col_del;
             editor.last_bounds = Some(bounds);
+            editor.last_paint_gen = editor.content_gen;
             editor.line_height = base_lh;
             editor.font_size = font_size;
         });

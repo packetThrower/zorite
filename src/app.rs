@@ -1061,6 +1061,18 @@ impl AppView {
             window,
             cx,
         );
+        // Scroll anchoring: an async block render (math/mermaid/image)
+        // finishing ABOVE the viewport would shift what's being read — the
+        // editor hands us the height delta and the feed scroll absorbs it.
+        {
+            let scroll = self.feed_scroll.clone();
+            state.update(cx, |e, _| {
+                e.set_scroll_compensator(move |delta, _, _| {
+                    let off = scroll.offset();
+                    scroll.set_offset(gpui::point(off.x, off.y - delta));
+                });
+            });
+        }
         self.ensure_content_images(&content, cx);
         self.ensure_content_mermaid(&content, cx);
         self.ensure_content_math(&content, cx);
@@ -2394,6 +2406,17 @@ impl AppView {
             window,
             cx,
         );
+        // Scroll anchoring, like the feed's (see load_feed): async renders
+        // above the viewport adjust the page scroll instead of jumping it.
+        {
+            let scroll = self.page_scroll.clone();
+            state.update(cx, |e, _| {
+                e.set_scroll_compensator(move |delta, _, _| {
+                    let off = scroll.offset();
+                    scroll.set_offset(gpui::point(off.x, off.y - delta));
+                });
+            });
+        }
         self.ensure_content_images(&page.content, cx);
         self.ensure_content_mermaid(&page.content, cx);
         self.ensure_content_math(&page.content, cx);

@@ -45,6 +45,8 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`EditorState::on_suggest`](#on_suggest) | method | `fn on_suggest(&mut self, provider: impl Fn(&str) -> Vec<String> + 'static)` | Lazy right-click suggestion provider |
 | [`EditorState::set_markdown_style`](#set_markdown_style) | method | `fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>)` | Turn on WYSIWYG styling |
 | [`EditorState::set_code_languages`](#set_code_languages) | method | `fn set_code_languages(&mut self, langs: Vec<SharedString>)` | Languages for the code card's picker |
+| [`EditorState::set_scroll_compensator`](#set_scroll_compensator) | method | `fn set_scroll_compensator(&mut self, f: impl Fn(Pixels, &mut Window, &mut App) + 'static)` | Scroll anchoring for async block renders |
+| [`ScrollCompensatorFn`](#set_scroll_compensator) | type alias | `Rc<dyn Fn(Pixels, &mut Window, &mut App)>` | The installed compensator's shape |
 | [`EditorState::clear_markdown_style`](#clear_markdown_style) | method | `fn clear_markdown_style(&mut self, cx: &mut Context<Self>)` | Back to plain text at runtime |
 | [`EditorState::set_block_image_provider`](#set_block_image_provider) | method | `fn set_block_image_provider(&mut self, impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)` | Standalone `![](src)` → decoded image |
 | [`EditorState::set_block_chip_provider`](#set_block_chip_provider) | method | `fn set_block_chip_provider(&mut self, impl Fn(&str) -> Option<SharedString> + 'static)` | Classify `![](src)` as a file chip + label |
@@ -515,6 +517,21 @@ selecting one rewrites the opening fence (` ```lang `) as one undo step.
 Supply the host highlighter's grammar set (a `"text"` entry maps to no
 language). Empty — the default — leaves the tag click-inert. The Copy button
 needs no setup: it writes the block's body through the clipboard writer.
+
+#### `set_scroll_compensator`
+
+```rust
+pub fn set_scroll_compensator(&mut self, f: impl Fn(Pixels, &mut Window, &mut App) + 'static)
+```
+
+Scroll anchoring: when an ASYNC height change — a math/mermaid/image raster
+arriving and collapsing raw source lines into a rendered block — lands above
+the window's viewport, the hook receives the height delta so the host can
+shift its scroll container's offset by it (`offset.y -= delta`) and the
+content being read stays put. Detected in the measure pass (same content
+generation as the last paint but different heights ⇒ no edit was involved),
+and called before the scroll container places its children, so the
+compensation applies in the same frame. Edits never trigger it.
 
 #### `clear_markdown_style`
 
