@@ -156,7 +156,7 @@ blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
 - [x] Scrolled-table content-left (`bounds.left + GUTTER - sx`) is hand-built
   at 6+ sites and paint re-implements the clamp inline — one shared
   `table_left`/`table_avail` helper. (S)
-- [ ] `ShapedLines` is a 9-tuple with 7 hand-replicated placeholder-push sites
+- [x] `ShapedLines` is a 9-tuple with 7 hand-replicated placeholder-push sites
   — a named struct + one `push_placeholder` helper. (M)
 - [x] Fence-block walk ×3 + quote-run walk ×3 (turn_into, drag_block_rows,
   snap_drop_boundary/block_kind_at) — `fence_block_rows` + `quote_run_rows`

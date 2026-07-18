@@ -6515,24 +6515,63 @@ impl LineMark {
 /// source line, its row height, an optional inline-image widget, an optional
 /// fenced-code-block background, an optional table-row grid, the display→source
 /// map, and an optional gutter decoration (blockquote / list / checkbox).
-type ShapedLines = (
-    Vec<WrappedLine>,
-    Vec<Pixels>,
-    Vec<Option<Block>>,
-    Vec<Option<CodeBg>>,
-    Vec<Option<TableRow>>,
-    // Per-line display→source byte map for lines with markers hidden (W6); `None`
-    // when the displayed text equals the source (revealed / code / widget lines).
-    Vec<Option<Vec<usize>>>,
-    Vec<Option<LineMark>>,
-    // Per-line inline `$…$` formulas painted over spacers in the shaped text (empty for
-    // lines without any).
-    Vec<Vec<InlineMath>>,
-    // Per-line wrap-row count. Geometry (line tops, total height) reads THIS,
-    // not `wrap_boundaries()` — a windowed-out line's `WrappedLine` is an empty
-    // placeholder, but its cached count keeps the layout exact.
-    Vec<usize>,
-);
+/// One shaped document: per-line parallel channels, all the same length —
+/// the per-line loop's normal push and [`ShapedDoc::push_placeholder`] are
+/// the only writers, so the lockstep invariant lives here.
+#[derive(Default)]
+struct ShapedDoc {
+    wrapped: Vec<WrappedLine>,
+    heights: Vec<Pixels>,
+    widgets: Vec<Option<Block>>,
+    backgrounds: Vec<Option<CodeBg>>,
+    tables: Vec<Option<TableRow>>,
+    /// Per-line display→source byte map for lines with markers hidden (W6);
+    /// `None` when the displayed text equals the source.
+    maps: Vec<Option<Vec<usize>>>,
+    marks: Vec<Option<LineMark>>,
+    /// Per-line inline `$…$` formulas painted over spacers (empty when none).
+    inline_maths: Vec<Vec<InlineMath>>,
+    /// Per-line wrap-row count. Geometry (line tops, total height) reads THIS,
+    /// not `wrap_boundaries()` — a windowed-out line's `WrappedLine` is an
+    /// empty placeholder, but its cached count keeps the layout exact.
+    wrap_rows: Vec<usize>,
+}
+
+impl ShapedDoc {
+    /// Push one line that renders as something other than shaped text — a
+    /// widget/collapsed/windowed-out line: an empty placeholder `WrappedLine`,
+    /// the given height/widget/mark, and `rows` wrap rows.
+    fn push_placeholder(
+        &mut self,
+        window: &mut Window,
+        base_font_size: Pixels,
+        wrap_width: Option<Pixels>,
+        h: Pixels,
+        widget: Option<Block>,
+        mark: Option<LineMark>,
+        rows: usize,
+    ) {
+        let wl = shape_runs(
+            window,
+            &SharedString::default(),
+            base_font_size,
+            &[],
+            wrap_width,
+        )
+        .into_iter()
+        .next()
+        .expect("a line always shapes to one wrapped line");
+        self.wrapped.push(wl);
+        self.heights.push(h);
+        self.widgets.push(widget);
+        self.backgrounds.push(None);
+        self.tables.push(None);
+        self.maps.push(None);
+        self.marks.push(mark);
+        self.inline_maths.push(Vec::new());
+        self.wrap_rows.push(rows);
+    }
+}
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
 /// cap to the content width (or an explicit `{width=N}`), preserving aspect.
@@ -6861,16 +6900,8 @@ fn shape_document(
     // Collapsed headings (trimmed source lines) — their section lines fold to
     // height 0 like a folded callout's body.
     folded_headings: &std::collections::HashSet<String>,
-) -> ShapedLines {
-    let mut wrapped: Vec<WrappedLine> = Vec::new();
-    let mut heights: Vec<Pixels> = Vec::new();
-    let mut wrap_rows: Vec<usize> = Vec::new();
-    let mut widgets = Vec::new();
-    let mut backgrounds: Vec<Option<CodeBg>> = Vec::new();
-    let mut tables: Vec<Option<TableRow>> = Vec::new();
-    let mut maps = Vec::new();
-    let mut marks: Vec<Option<LineMark>> = Vec::new();
-    let mut inline_maths: Vec<Vec<InlineMath>> = Vec::new();
+) -> ShapedDoc {
+    let mut out = ShapedDoc::default();
     let lines: Vec<&str> = content.split('\n').collect();
     // Ordered items paint their computed CommonMark position, not their
     // literal source digits (the reader renumbers the same way).
@@ -7155,8 +7186,8 @@ fn shape_document(
         // Running top of this line — mirrors the prepaint `line_tops` walk
         // (including `line_pads`) so the band test is exact.
         if idx > 0 {
-            let (tp, bp) = line_pads(backgrounds[idx - 1], tables[idx - 1].as_ref());
-            y_acc += tp + bp + heights[idx - 1] * wrap_rows[idx - 1] as f32;
+            let (tp, bp) = line_pads(out.backgrounds[idx - 1], out.tables[idx - 1].as_ref());
+            y_acc += tp + bp + out.heights[idx - 1] * out.wrap_rows[idx - 1] as f32;
         }
 
         // A ready mermaid block renders as its diagram (on the first line) with the
@@ -7171,25 +7202,7 @@ fn shape_document(
             } else {
                 (px(0.), None)
             };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
-            wrap_rows.push(1);
+            out.push_placeholder(window, base_font_size, wrap_width, h, widget, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -7201,25 +7214,7 @@ fn shape_document(
             && (start_row..=end_row).contains(&idx)
         {
             let h = if idx == start_row { gap_h } else { px(0.) };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(None);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
-            wrap_rows.push(1);
+            out.push_placeholder(window, base_font_size, wrap_width, h, None, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -7233,25 +7228,7 @@ fn shape_document(
             } else {
                 (px(0.), None)
             };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
-            wrap_rows.push(1);
+            out.push_placeholder(window, base_font_size, wrap_width, h, widget, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -7266,25 +7243,7 @@ fn shape_document(
             && let Some(inner) = gpui_markdown::syntax::embed_line(line)
             && let Some(h) = embed_view.and_then(|f| f(inner).map(|(_, h)| h))
         {
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(None);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
-            wrap_rows.push(1);
+            out.push_placeholder(window, base_font_size, wrap_width, h, None, None, 1);
             line_start = line_end + 1;
             continue;
         }
@@ -7296,25 +7255,7 @@ fn shape_document(
             .iter()
             .any(|r| r.contains(&idx) && idx != r.start)
         {
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(px(0.));
-            widgets.push(None);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
-            wrap_rows.push(1);
+            out.push_placeholder(window, base_font_size, wrap_width, px(0.), None, None, 1);
             line_start = line_end + 1;
             continue;
         }
@@ -7328,25 +7269,7 @@ fn shape_document(
             } else {
                 (px(0.), None)
             };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
-            wrap_rows.push(1);
+            out.push_placeholder(window, base_font_size, wrap_width, h, widget, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -7403,7 +7326,7 @@ fn shape_document(
             let bw = code_w + px(2. * CODE_INSET);
             let last = *code_block.last().unwrap();
             for &bi in &code_block {
-                if let Some(cb) = &mut backgrounds[bi] {
+                if let Some(cb) = &mut out.backgrounds[bi] {
                     cb.width = bw;
                     cb.bottom = bi == last;
                 }
@@ -7856,27 +7779,17 @@ fn shape_document(
                 if let Some((lh_c, wr_c)) = hit {
                     let total = lh_c * wr_c as f32;
                     if y_acc > hi || y_acc + total < lo {
-                        let wl = shape_runs(
-                            window,
-                            &SharedString::default(),
-                            base_font_size,
-                            &[],
-                            wrap_width,
-                        )
-                        .into_iter()
-                        .next()
-                        .expect("a line always shapes to one wrapped line");
-                        wrapped.push(wl);
-                        heights.push(lh_c);
-                        wrap_rows.push(wr_c);
-                        widgets.push(None);
-                        backgrounds.push(None);
-                        tables.push(None);
-                        maps.push(None);
                         // The REAL mark: paint's nesting-guide bookkeeping
                         // walks offscreen ancestors' marks.
-                        marks.push(mark);
-                        inline_maths.push(Vec::new());
+                        out.push_placeholder(
+                            window,
+                            base_font_size,
+                            wrap_width,
+                            lh_c,
+                            None,
+                            mark,
+                            wr_c,
+                        );
                         line_start = line_end + 1;
                         continue;
                     }
@@ -8062,19 +7975,19 @@ fn shape_document(
                     .borrow_mut()
                     .insert(hk, (h, wl.wrap_boundaries().len() + 1));
             }
-            wrap_rows.push(wl.wrap_boundaries().len() + 1);
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(bg);
-            tables.push(table);
-            maps.push(map);
-            marks.push(mark);
-            inline_maths.push(line_inline_math);
+            out.wrap_rows.push(wl.wrap_boundaries().len() + 1);
+            out.wrapped.push(wl);
+            out.heights.push(h);
+            out.widgets.push(widget);
+            out.backgrounds.push(bg);
+            out.tables.push(table);
+            out.maps.push(map);
+            out.marks.push(mark);
+            out.inline_maths.push(line_inline_math);
             // Track a (visible) code line + its width so the block's box can be
             // sized to its widest line and its last line marked.
             if is_code && !collapse_fence {
-                code_block.push(backgrounds.len() - 1);
+                code_block.push(out.backgrounds.len() - 1);
                 code_w = code_w.max(line_w);
             }
         }
@@ -8086,7 +7999,7 @@ fn shape_document(
         let bw = code_w + px(2. * CODE_INSET);
         let last = *code_block.last().unwrap();
         for &bi in &code_block {
-            if let Some(cb) = &mut backgrounds[bi] {
+            if let Some(cb) = &mut out.backgrounds[bi] {
                 cb.width = bw;
                 cb.bottom = bi == last;
             }
@@ -8110,17 +8023,7 @@ fn shape_document(
             lh.clear();
         }
     }
-    (
-        wrapped,
-        heights,
-        widgets,
-        backgrounds,
-        tables,
-        maps,
-        marks,
-        inline_maths,
-        wrap_rows,
-    )
+    out
 }
 
 /// Measure a property region's rows into a [`PropPanel`] with content-fit
@@ -9117,7 +9020,7 @@ struct ShapeMemo {
     caret_row: Option<usize>,
     selection: (usize, usize),
     font_size: Pixels,
-    shaped: ShapedLines,
+    shaped: ShapedDoc,
 }
 
 struct PrepaintState {
@@ -9311,8 +9214,12 @@ impl Element for EditorElement {
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
                 // or the element lays out shorter than it paints.
-                let (heights, backgrounds, tables, rows) =
-                    (&shaped.1, &shaped.3, &shaped.4, &shaped.8);
+                let (heights, backgrounds, tables, rows) = (
+                    &shaped.heights,
+                    &shaped.backgrounds,
+                    &shaped.tables,
+                    &shaped.wrap_rows,
+                );
                 let mut y = px(0.);
                 let mut needed = px(0.);
                 let mut new_tops: Vec<Pixels> = Vec::with_capacity(heights.len());
@@ -9454,9 +9361,9 @@ impl Element for EditorElement {
                 && m.selection == selection
                 && m.font_size == font_size
         });
-        let (
+        let ShapedDoc {
             wrapped,
-            line_heights,
+            heights: line_heights,
             widgets,
             backgrounds,
             tables,
@@ -9464,7 +9371,7 @@ impl Element for EditorElement {
             marks,
             inline_maths,
             wrap_rows,
-        ) = if let Some(m) = memo {
+        } = if let Some(m) = memo {
             m.shaped
         } else if editor.content.is_empty() {
             let w = shape_all(
@@ -9477,17 +9384,17 @@ impl Element for EditorElement {
             );
             let n = w.len();
             let rows: Vec<usize> = w.iter().map(|l| l.wrap_boundaries().len() + 1).collect();
-            (
-                w,
-                vec![base_lh; n],
-                vec![None; n],
-                vec![None; n],
-                vec![None; n],
-                vec![None; n],
-                vec![None; n],
-                vec![Vec::new(); n],
-                rows,
-            )
+            ShapedDoc {
+                wrapped: w,
+                heights: vec![base_lh; n],
+                widgets: vec![None; n],
+                backgrounds: vec![None; n],
+                tables: vec![None; n],
+                maps: vec![None; n],
+                marks: vec![None; n],
+                inline_maths: vec![Vec::new(); n],
+                wrap_rows: rows,
+            }
         } else {
             shape_document(
                 window,
