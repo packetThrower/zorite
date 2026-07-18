@@ -37,6 +37,7 @@ pub enum Trigger {
 }
 
 /// What a palette entry does when chosen.
+#[derive(Clone)]
 pub enum ItemKind {
     /// Open a submenu (rendered with a `›`).
     Category(SlashLevel),
@@ -51,6 +52,7 @@ pub enum ItemKind {
 }
 
 /// One entry in the open palette.
+#[derive(Clone)]
 pub struct PaletteItem {
     pub label: String,
     pub kind: ItemKind,

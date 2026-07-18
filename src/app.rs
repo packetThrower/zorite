@@ -491,6 +491,14 @@ pub struct AppView {
     /// of `Slash`, so the list doesn't snap back to the top as the user types or arrows.
     pub slash_scroll: ScrollHandle,
     pub slash_flyout_scroll: ScrollHandle,
+    /// Flyout rows cache — see [`Self::slash_flyout_items`].
+    slash_flyout_cache: std::cell::RefCell<
+        Option<(
+            slash::SlashLevel,
+            String,
+            std::rc::Rc<Vec<slash::PaletteItem>>,
+        )>,
+    >,
 
     /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
     /// native menu bar instead; this gives the other OSes visual parity.
@@ -902,6 +910,7 @@ impl AppView {
             feed_heights_width: std::cell::Cell::new(gpui::px(0.)),
             slash_scroll: ScrollHandle::new(),
             slash_flyout_scroll: ScrollHandle::new(),
+            slash_flyout_cache: std::cell::RefCell::new(None),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
@@ -2839,16 +2848,26 @@ impl AppView {
     }
 
     /// The open flyout's rows (unfiltered — categories only exist while the
-    /// query is empty). Empty unless the flyout is shown.
-    pub fn slash_flyout_items(&self) -> Vec<slash::PaletteItem> {
+    /// query is empty). Empty unless the flyout is shown. Cached per
+    /// (level, page title): the render loop and the arrow-key handlers all
+    /// read this every frame/keypress for a static list.
+    pub fn slash_flyout_items(&self) -> std::rc::Rc<Vec<slash::PaletteItem>> {
         let Some(level) = self.slash_flyout_level() else {
-            return Vec::new();
+            return std::rc::Rc::new(Vec::new());
         };
         let Some(target) = self.slash.as_ref().map(|s| s.target.clone()) else {
-            return Vec::new();
+            return std::rc::Rc::new(Vec::new());
         };
         let title = self.slash_title(&target);
-        slash::build_slash_items(level, "", &self.templates, &title)
+        if let Some((l, t, items)) = self.slash_flyout_cache.borrow().as_ref()
+            && *l == level
+            && *t == title
+        {
+            return items.clone();
+        }
+        let items = std::rc::Rc::new(slash::build_slash_items(level, "", &self.templates, &title));
+        *self.slash_flyout_cache.borrow_mut() = Some((level, title, items.clone()));
+        items
     }
 
     /// Keep the flyout's highlighted row inside its viewport (the main list's
@@ -2914,7 +2933,7 @@ impl AppView {
             .slash
             .as_ref()
             .and_then(|s| s.flyout)
-            .and_then(|fi| self.slash_flyout_items().into_iter().nth(fi));
+            .and_then(|fi| self.slash_flyout_items().get(fi).cloned());
         let act = {
             let Some(s) = self.slash.as_ref() else { return };
             let item = match &flyout_item {

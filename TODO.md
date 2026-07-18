@@ -137,19 +137,24 @@ blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
   collapse/caret logic. (M)
 
 *Per-frame / per-event efficiency (gpui-editor):*
-- [ ] Window-level MouseMove listener runs `editor.update` + a full line scan
+- [x] Window-level MouseMove listener runs `editor.update` + a full line scan
   in EVERY loaded editor per pointer move — gate on markdown_style + a y-range
   early-out (or register only for the hovered editor). (S)
-- [ ] Windowed skip path still hashes every offscreen line twice and makes an
+- [x] Windowed skip path still hashes every offscreen line twice and makes an
   empty `shape_runs` call per line per frame; lines containing `$`/`![` never
   window — key heights by (row, content_gen, epoch), make the placeholder
   cheap (`Option<WrappedLine>`), derive eligibility from scan output. (M/L)
-- [ ] `line_runs` cache HIT deep-clones (String + Vec<TextRun> + Vec<usize>)
+  DONE via a per-row content-key memo (hash 3 u64s/line steady-state, diags
+  invalidate explicitly). Deliberately NOT taken: (row, content_gen) height
+  keys (would invalidate ALL offscreen heights per keystroke) and the
+  `Option<WrappedLine>` placeholder (the empty shape_runs is a gpui cache
+  hit); the `$`/`![` eligibility gates stay (conservative, correct).
+- [x] `line_runs` cache HIT deep-clones (String + Vec<TextRun> + Vec<usize>)
   per visible line per frame — store the payload behind an `Rc`. (S)
-- [ ] `region_cols` cache rehashes all table text + clones the width vecs per
+- [x] `region_cols` cache rehashes all table text + clones the width vecs per
   frame even on a hit — key on content_gen instead, store `Rc`. (S)
-- [ ] `on_scroll_wheel` walks O(lines) before the `dx == 0` check — hoist. (S)
-- [ ] Slash flyout rebuilds its item Vec every frame while open (+ twice per
+- [x] `on_scroll_wheel` walks O(lines) before the `dx == 0` check — hoist. (S)
+- [x] Slash flyout rebuilds its item Vec every frame while open (+ twice per
   arrow key for nth/len) — cache on the Slash state per selected category. (S)
 
 *Dedup / structure:*

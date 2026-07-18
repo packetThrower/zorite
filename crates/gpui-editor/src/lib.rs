@@ -644,7 +644,7 @@ pub struct EditorState {
     widget_rows: Vec<bool>,
     /// Per-logical-line display→source byte map for rows with hidden markers
     /// (W6); `None` when the painted text equals the source. From the last paint.
-    offset_maps: Vec<Option<Vec<usize>>>,
+    offset_maps: Vec<Option<std::rc::Rc<Vec<usize>>>>,
     /// Per-logical-line horizontal text inset (and so the caret/selection/hit-test
     /// inset): non-zero for fenced code blocks and gutter marks (blockquotes,
     /// lists). From the last paint.
@@ -1025,6 +1025,9 @@ impl EditorState {
     /// (e.g. spell-check) and refreshes them as the text changes.
     pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
         self.diagnostics = diagnostics;
+        // Diagnostics feed the per-row run keys (they underline spans) — drop
+        // the memo so the next shape re-keys affected lines.
+        *self.shape_caches.row_keys.borrow_mut() = (None, Vec::new());
         cx.notify();
     }
 
@@ -6531,8 +6534,9 @@ struct ShapedDoc {
     backgrounds: Vec<Option<CodeBg>>,
     tables: Vec<Option<TableRow>>,
     /// Per-line display→source byte map for lines with markers hidden (W6);
-    /// `None` when the displayed text equals the source.
-    maps: Vec<Option<Vec<usize>>>,
+    /// `None` when the displayed text equals the source. Shared with the
+    /// line-run cache (a hit re-uses the same allocation across frames).
+    maps: Vec<Option<std::rc::Rc<Vec<usize>>>>,
     marks: Vec<Option<LineMark>>,
     /// Per-line inline `$…$` formulas painted over spacers (empty when none).
     inline_maths: Vec<Vec<InlineMath>>,
@@ -6640,7 +6644,7 @@ fn set_image_width(line: &str, width: u32) -> String {
 /// as full source). The prepaint cursor/selection pass this frame's fresh map
 /// (the committed `EditorState::offset_maps` lags a frame); event handlers go
 /// through [`EditorState::display_col`], which uses the committed map.
-fn display_col_in(map: Option<&Vec<usize>>, source_col: usize) -> usize {
+fn display_col_in(map: Option<&std::rc::Rc<Vec<usize>>>, source_col: usize) -> usize {
     match map {
         // The first display byte whose source ≥ `source_col` (a leftmost lower-bound). Unlike
         // `binary_search`, this is deterministic when several display bytes share one source
@@ -7068,6 +7072,20 @@ fn shape_document(
     let regions: &[markdown_syntax::TableRegion] = if md.is_some() { &scan.tables } else { &[] };
     // Shared component of the per-line run-cache key (see `CachedLineRuns`).
     let run_epoch = line_run_epoch(base_font, md);
+    // Per-row content-key memo, valid for this (scan generation, epoch).
+    let row_keys_epoch = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        scan.generation.hash(&mut h);
+        run_epoch.hash(&mut h);
+        Some(h.finish())
+    };
+    {
+        let mut rk = caches.row_keys.borrow_mut();
+        if rk.0 != row_keys_epoch || rk.1.len() != lines.len() {
+            *rk = (row_keys_epoch, vec![None; lines.len()]);
+        }
+    }
     // Measured column widths, cached across frames: rebuilt only when the
     // tables' source text, the wrap width, the font epoch, or a live column
     // drag changes — measuring shaped every cell of every table per call.
@@ -7657,10 +7675,20 @@ fn shape_document(
         let mut plain_hkey: Option<u64> = None;
         let (shaped_text, runs, bg, map) = if collapse_fence || collapse_marker {
             // Hidden ``` fence line or table-style marker: nothing, zero height.
-            (String::new(), Vec::new(), None, None)
+            (
+                SharedString::default(),
+                std::rc::Rc::new(Vec::new()),
+                None,
+                None,
+            )
         } else if is_rule {
             // Thematic break: the divider is painted from the mark; no body text.
-            (String::new(), Vec::new(), None, None)
+            (
+                SharedString::default(),
+                std::rc::Rc::new(Vec::new()),
+                None,
+                None,
+            )
         } else if let Some(st) = md.filter(|_| is_code) {
             // Monospace runs; ``` delimiters dimmed. A highlighted line (from
             // the host's code highlighter) splits into token-colored runs with
@@ -7707,8 +7735,8 @@ fn shape_document(
             // First visible code line of the block rounds the box's top corners.
             let top = code_block.is_empty();
             (
-                line.to_string(),
-                runs,
+                SharedString::from(line.to_string()),
+                std::rc::Rc::new(runs),
                 Some(CodeBg {
                     color: st.code_bg,
                     width: px(0.), // back-patched to the block's widest line
@@ -7724,23 +7752,43 @@ fn shape_document(
             // Cross-frame cache: most repaints (caret blink, hover, another
             // editor's edit) rebuild identical lines — reuse the built display
             // string + runs when the line and its reveal state are unchanged.
+            // CONTENT part of the key, memoized per row for the current
+            // (generation, epoch) — steady-state frames skip rehashing the
+            // line's bytes. The caret/reveal parts vary per frame and are
+            // cheap (a hash of four small values).
+            let ckey = {
+                let cached = caches.row_keys.borrow().1.get(idx).copied().flatten();
+                match cached {
+                    Some(k) => k,
+                    None => {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        line.hash(&mut h);
+                        line_base.a.to_bits().hash(&mut h);
+                        line_base.h.to_bits().hash(&mut h);
+                        line_base.s.to_bits().hash(&mut h);
+                        line_base.l.to_bits().hash(&mut h);
+                        for d in &line_diags {
+                            d.range.start.hash(&mut h);
+                            d.range.end.hash(&mut h);
+                        }
+                        run_epoch.hash(&mut h);
+                        let k = h.finish();
+                        if let Some(slot) = caches.row_keys.borrow_mut().1.get_mut(idx) {
+                            *slot = Some(k);
+                        }
+                        k
+                    }
+                }
+            };
             let key = {
                 use std::hash::{Hash, Hasher};
                 let mut h = std::collections::hash_map::DefaultHasher::new();
-                line.hash(&mut h);
-                line_base.a.to_bits().hash(&mut h);
-                line_base.h.to_bits().hash(&mut h);
-                line_base.s.to_bits().hash(&mut h);
-                line_base.l.to_bits().hash(&mut h);
+                ckey.hash(&mut h);
                 caret_col.hash(&mut h);
                 reveal_prefix.hash(&mut h);
                 hide_prefix.hash(&mut h);
                 reveal_inline.hash(&mut h);
-                for d in &line_diags {
-                    d.range.start.hash(&mut h);
-                    d.range.end.hash(&mut h);
-                }
-                run_epoch.hash(&mut h);
                 h.finish()
             };
             // Windowed shaping: an offscreen plain text line whose height is
@@ -7812,65 +7860,107 @@ fn shape_document(
                         reveal_inline,
                         st,
                     );
+                    let v = (
+                        SharedString::from(disp),
+                        std::rc::Rc::new(runs),
+                        std::rc::Rc::new(m),
+                    );
                     caches.line_runs.borrow_mut().insert(
                         key,
                         CachedLineRuns {
                             src: line.to_string(),
                             line_base,
-                            disp: disp.clone(),
-                            runs: runs.clone(),
-                            map: m.clone(),
+                            disp: v.0.clone(),
+                            runs: v.1.clone(),
+                            map: v.2.clone(),
                         },
                     );
-                    (disp, runs, m)
+                    v
                 }
             };
             // A checked task's body renders struck through + muted (the reader
             // does the same) — a whole-line restyle over the finished runs.
             let (disp, runs, m) = if matches!(mark, Some(LineMark::Check { checked: true, .. })) {
-                let runs = runs
-                    .into_iter()
-                    .map(|mut r| {
-                        r.strikethrough = Some(gpui::StrikethroughStyle {
-                            thickness: px(1.0),
-                            color: None,
-                        });
-                        r.color = st.quote;
-                        r
-                    })
-                    .collect();
+                let runs = std::rc::Rc::new(
+                    runs.iter()
+                        .cloned()
+                        .map(|mut r| {
+                            r.strikethrough = Some(gpui::StrikethroughStyle {
+                                thickness: px(1.0),
+                                color: None,
+                            });
+                            r.color = st.quote;
+                            r
+                        })
+                        .collect(),
+                );
                 (disp, runs, m)
             } else {
                 (disp, runs, m)
             };
             // Inline `$…$` math AND `![](src)` images: swap each ready one's
             // glyphs for a spacer to paint the raster over (shared machinery).
+            // Span checks gate the calls, so span-less lines (the common case)
+            // keep their shared payloads untouched.
             let (disp, runs, m) = match (block_math, block_math_em) {
-                (Some(mathf), Some(em)) => {
+                (Some(mathf), Some(em)) if !markdown_syntax::inline_math_spans(line).is_empty() => {
                     let (disp, runs, m, im) = shape_inline_math(
-                        window, line, line_start, disp, runs, m, caret_col, base_font, fs, mathf,
+                        window,
+                        line,
+                        line_start,
+                        disp.to_string(),
+                        runs.as_ref().clone(),
+                        m.as_ref().clone(),
+                        caret_col,
+                        base_font,
+                        fs,
+                        mathf,
                         em,
                     );
                     line_inline_math = im;
-                    (disp, runs, m)
+                    (
+                        SharedString::from(disp),
+                        std::rc::Rc::new(runs),
+                        std::rc::Rc::new(m),
+                    )
                 }
                 _ => (disp, runs, m),
             };
             match block_image {
-                Some(imgf) => {
+                Some(imgf) if !markdown_syntax::inline_image_spans(line).is_empty() => {
                     let (disp, runs, m, imgs) = shape_inline_images(
-                        window, line, line_start, disp, runs, m, caret_col, base_font, fs, imgf,
+                        window,
+                        line,
+                        line_start,
+                        disp.to_string(),
+                        runs.as_ref().clone(),
+                        m.as_ref().clone(),
+                        caret_col,
+                        base_font,
+                        fs,
+                        imgf,
                     );
                     line_inline_math.extend(imgs);
-                    (disp, runs, None, Some(m))
+                    (
+                        SharedString::from(disp),
+                        std::rc::Rc::new(runs),
+                        None,
+                        Some(std::rc::Rc::new(m)),
+                    )
                 }
-                None => (disp, runs, None, Some(m)),
+                _ => (disp, runs, None, Some(m)),
             }
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).
             (
-                line.to_string(),
-                markdown_syntax::styled_runs(line, base_font, line_base, &line_diags, md),
+                SharedString::from(line.to_string()),
+                std::rc::Rc::new(markdown_syntax::styled_runs(
+                    line,
+                    base_font,
+                    line_base,
+                    &line_diags,
+                    md,
+                )),
                 None,
                 None,
             )
@@ -7891,13 +7981,7 @@ fn shape_document(
         } else {
             wrap_width
         };
-        let shaped = shape_runs(
-            window,
-            &SharedString::from(shaped_text),
-            fs,
-            &runs,
-            line_wrap,
-        );
+        let shaped = shape_runs(window, &shaped_text, fs, &runs, line_wrap);
         if let Some(wl) = shaped.into_iter().next() {
             let h = if collapse_fence || collapse_marker {
                 px(0.)
@@ -8934,9 +9018,11 @@ struct TableAffordance {
 struct CachedLineRuns {
     src: String,
     line_base: Hsla,
-    disp: String,
-    runs: Vec<TextRun>,
-    map: Vec<usize>,
+    /// Shared payloads: a cache HIT is three refcount bumps, not three deep
+    /// clones (this runs per visible line per frame).
+    disp: SharedString,
+    runs: std::rc::Rc<Vec<TextRun>>,
+    map: std::rc::Rc<Vec<usize>>,
 }
 
 /// The editor-owned caches `shape_document` reads and writes (interior-
@@ -8955,6 +9041,11 @@ struct ShapeCaches {
     /// size ⊕ wrap width — the shaping window's exact heights for skipped
     /// offscreen lines.
     line_heights: std::cell::RefCell<std::collections::HashMap<u64, (Pixels, usize)>>,
+    /// Per-row CONTENT-part run keys (line bytes + line_base + diags + epoch),
+    /// valid for one (scan generation, epoch) pair — so a steady-state frame
+    /// hashes three u64s per line instead of every line's bytes. Diagnostics
+    /// changes invalidate explicitly (see `set_diagnostics`).
+    row_keys: std::cell::RefCell<(Option<u64>, Vec<Option<u64>>)>,
 }
 
 /// A hash of the inputs shared by every line's run build (font + palette) —
@@ -9040,7 +9131,7 @@ struct PrepaintState {
     /// `Some` for a line painted as a table-grid row instead of source.
     tables: Vec<Option<TableRow>>,
     /// Per-line display→source byte map for marker-hidden rows (W6).
-    maps: Vec<Option<Vec<usize>>>,
+    maps: Vec<Option<std::rc::Rc<Vec<usize>>>>,
     /// Per-line gutter decoration (blockquote / list / checkbox).
     marks: Vec<Option<LineMark>>,
     /// Per-line inline `$…$` formulas (image + display offset + source range), painted over
@@ -11204,11 +11295,11 @@ mod tests {
         // repeated across display 2..5). The caret at source 2 must land at the spacer's LEFT
         // edge (display 2), not an arbitrary spot inside it; source 5 (just past the formula)
         // lands at display 5.
-        let map = vec![0, 1, 2, 2, 2, 5, 6, 7];
+        let map = std::rc::Rc::new(vec![0, 1, 2, 2, 2, 5, 6, 7]);
         assert_eq!(display_col_in(Some(&map), 2), 2);
         assert_eq!(display_col_in(Some(&map), 5), 5);
         // A strictly-increasing map (hidden markers) is unaffected.
-        let plain = vec![0, 1, 2, 3];
+        let plain = std::rc::Rc::new(vec![0, 1, 2, 3]);
         assert_eq!(display_col_in(Some(&plain), 2), 2);
         assert_eq!(display_col_in(None, 4), 4);
     }
