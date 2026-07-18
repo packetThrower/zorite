@@ -97,7 +97,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [ ] **Table cells re-measured every frame** (`table_row_wrap_rows` +
   `paint_table_row` shape per cell per paint) — cache by (content version,
   column-width bucket). (M)
-- [ ] **Scroll anchoring** — an async math/mermaid/image render above the
+- [x] **Scroll anchoring** — an async math/mermaid/image render above the
   viewport jumps the content the user is reading; Cditor's
   `AnchorFrame::restore_once` (capture top-visible row before shaping, restore
   after height deltas) fixes it without windowing. (M)
