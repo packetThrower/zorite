@@ -83,7 +83,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [x] **Document shaped TWICE per frame** — `shape_document` runs in the measure
   closure AND prepaint with identical inputs; memoize one frame's result across
   the two passes. Halves editor cost, removes a divergence hazard. (S)
-- [ ] **Cross-frame shaped-line cache** — every blink/hover reshapes every
+- [x] **Cross-frame shaped-line cache** — every blink/hover reshapes every
   visible day's full text; adopt Cditor's `LayoutCacheKey` (content version +
   width bucket + font/theme/scale). gpui-markdown's `PARSE_CACHE` is the
   in-repo template. (M)
