@@ -91,7 +91,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
   caret's line start instead of byte 0; CJK composition latency currently grows
   with note size. Also: `bounds_for_range` anchors the candidate window at the
   composition START (zero-width) — return the marked range's real span. (S/M)
-- [ ] Whole-document scans in `shape_document` (`ordered_numbers`,
+- [x] Whole-document scans in `shape_document` (`ordered_numbers`,
   `mermaid_blocks`, `math_regions`, selection `row_of`) recomputed 2×/frame —
   memoize on the content version once the cache exists. (S)
 - [ ] **Table cells re-measured every frame** (`table_row_wrap_rows` +
@@ -101,7 +101,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
   viewport jumps the content the user is reading; Cditor's
   `AnchorFrame::restore_once` (capture top-visible row before shaping, restore
   after height deltas) fixes it without windowing. (M)
-- [ ] `apply_auto_replace` rescans all lines above for fence parity on every
+- [x] `apply_auto_replace` rescans all lines above for fence parity on every
   boundary keystroke — cache/bound it. (S)
 - [ ] **Windowed rendering + estimated heights** — Cditor's actual 100k-block
   machinery (render window + spacers, estimated↔measured convergence, budgeted
