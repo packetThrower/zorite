@@ -640,6 +640,18 @@ pub struct EditorState {
     table_col_resize_rects: Vec<(Bounds<Pixels>, usize, usize, f32)>,
     /// The band index the pointer is on (repaint-on-change for its accent line).
     table_resize_hover: Option<usize>,
+    /// See [`ShapeMemo`] — `RefCell` because the measure closure holds only a
+    /// read borrow of the editor.
+    shape_memo: std::cell::RefCell<Option<ShapeMemo>>,
+    /// Bumped on every content mutation — cheap staleness key for caches
+    /// (the UTF-16 conversion anchor below; a shape cache later).
+    content_gen: u64,
+    /// Resume point for UTF-8↔UTF-16 conversion: `(generation, utf8, utf16)`
+    /// of the last converted offset. IME composition fires conversions many
+    /// times per keystroke, clustered near the caret — resuming from the
+    /// anchor makes them O(distance) instead of O(document) (CJK latency
+    /// grew with note size; found auditing against Cditor's per-block IME).
+    utf16_anchor: std::cell::Cell<(u64, usize, usize)>,
     /// A `$$…$$` block being edited in-line: its byte range + the host-supplied view (the
     /// structural editor) painted in a reserved gap at the block's spot. `None` = none.
     editing_block: Option<EditingBlock>,
@@ -762,6 +774,9 @@ impl EditorState {
             table_col_resize: None,
             table_col_resize_rects: Vec::new(),
             table_resize_hover: None,
+            shape_memo: std::cell::RefCell::new(None),
+            content_gen: 0,
+            utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
             inline_math_rects: Vec::new(),
             editing_inline: None,
@@ -824,6 +839,7 @@ impl EditorState {
 
     /// Replace the whole document; resets the caret to the start.
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.content_gen += 1;
         self.content = text.into();
         self.selected_range = 0..0;
         self.selection_reversed = false;
@@ -2148,6 +2164,7 @@ impl EditorState {
     }
 
     fn restore(&mut self, s: Snapshot) {
+        self.content_gen += 1;
         self.content = s.content;
         let caret = s.caret.min(self.content.len());
         self.selected_range = caret..caret;
@@ -2159,6 +2176,7 @@ impl EditorState {
     /// inserts (or a run of deletes) into one undo step so typing isn't undone
     /// one character at a time.
     fn record_edit(&mut self, range: &Range<usize>, new_text: &str) {
+        self.content_gen += 1;
         let kind = if new_text.is_empty() {
             EditKind::Delete
         } else if range.start == range.end
@@ -4328,29 +4346,44 @@ impl EditorState {
     // --- UTF-16 + grapheme boundaries (IME / cursor movement) ----------------
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8 = 0;
-        let mut utf16 = 0;
-        for ch in self.content.chars() {
+        let (mut utf8, mut utf16) = self.utf16_resume(offset, false);
+        for ch in self.content[utf8..].chars() {
             if utf16 >= offset {
                 break;
             }
             utf16 += ch.len_utf16();
             utf8 += ch.len_utf8();
         }
+        self.utf16_anchor.set((self.content_gen, utf8, utf16));
         utf8
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16 = 0;
-        let mut utf8 = 0;
-        for ch in self.content.chars() {
+        let (mut utf8, mut utf16) = self.utf16_resume(offset, true);
+        for ch in self.content[utf8..].chars() {
             if utf8 >= offset {
                 break;
             }
             utf8 += ch.len_utf8();
             utf16 += ch.len_utf16();
         }
+        self.utf16_anchor.set((self.content_gen, utf8, utf16));
         utf16
+    }
+
+    /// Where a conversion can start: the saved anchor when it's from the
+    /// current content generation and at/before the target (`by_utf8` picks
+    /// which unit the target is in), else the document start. IME composition
+    /// converts monotonically-close offsets many times per keystroke, so this
+    /// turns O(document) scans into O(distance-from-anchor).
+    fn utf16_resume(&self, target: usize, by_utf8: bool) -> (usize, usize) {
+        let (generation, utf8, utf16) = self.utf16_anchor.get();
+        let anchor_pos = if by_utf8 { utf8 } else { utf16 };
+        if generation == self.content_gen && anchor_pos <= target && utf8 <= self.content.len() {
+            (utf8, utf16)
+        } else {
+            (0, 0)
+        }
     }
 
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
@@ -4565,6 +4598,7 @@ impl EntityInputHandler for EditorState {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        self.content_gen += 1;
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
         self.marked_range =
@@ -4596,7 +4630,23 @@ impl EntityInputHandler for EditorState {
         let p = line.position_for_index(self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
         let x = bounds.left() + p.x + self.line_inset(row);
-        Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
+        // Span the whole range when it stays on one wrap row (the common IME
+        // composition), so the candidate window anchors under the marked TEXT
+        // rather than a zero-width bar at its start. Multi-row ranges keep the
+        // start-anchored bar.
+        let (erow, ecol) = self.row_col(range.end);
+        let x2 = if erow == row && range.end > range.start {
+            line.position_for_index(self.display_col(row, ecol), lh)
+                .filter(|e| e.y == p.y)
+                .map(|e| bounds.left() + e.x + self.line_inset(row))
+                .unwrap_or(x)
+        } else {
+            x
+        };
+        Some(Bounds::from_corners(
+            point(x, top),
+            point(x2.max(x), top + lh),
+        ))
     }
 
     fn character_index_for_point(
@@ -7942,6 +7992,20 @@ struct TableAffordance {
     accent: Hsla,
 }
 
+/// One frame's shaping, memoized between the measure pass and prepaint —
+/// both shape the IDENTICAL inputs, so the measure's result is handed to
+/// prepaint instead of shaping the whole document twice per frame. Consumed
+/// (taken) by prepaint, so it can never go stale across frames; a key
+/// mismatch (e.g. the resolved width differs from the available width)
+/// falls back to shaping.
+struct ShapeMemo {
+    wrap_width: Option<Pixels>,
+    caret_row: Option<usize>,
+    selection: (usize, usize),
+    font_size: Pixels,
+    shaped: ShapedLines,
+}
+
 struct PrepaintState {
     wrapped: Vec<WrappedLine>,
     /// Top offset of each logical line relative to the editor's top.
@@ -8087,7 +8151,7 @@ impl Element for EditorElement {
                     (usize::MAX, usize::MAX)
                 };
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, backgrounds, tables, _, _, _) = shape_document(
+                let shaped = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -8120,9 +8184,11 @@ impl Element for EditorElement {
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
                 // or the element lays out shorter than it paints.
+                let (wrapped, heights, backgrounds, tables) =
+                    (&shaped.0, &shaped.1, &shaped.3, &shaped.4);
                 let mut y = px(0.);
                 let mut needed = px(0.);
-                for (i, (line, h)) in wrapped.iter().zip(&heights).enumerate() {
+                for (i, (line, h)) in wrapped.iter().zip(heights).enumerate() {
                     let tbl = tables.get(i).and_then(Option::as_ref);
                     let (top, bot) = line_pads(backgrounds[i], tbl);
                     y += top;
@@ -8142,6 +8208,14 @@ impl Element for EditorElement {
                     }
                     y += row_h + bot;
                 }
+                // Hand the shaping to this frame's prepaint (see ShapeMemo).
+                *editor.shape_memo.borrow_mut() = Some(ShapeMemo {
+                    wrap_width,
+                    caret_row,
+                    selection,
+                    font_size,
+                    shaped,
+                });
                 y.max(base_lh).max(needed)
             };
             let width = wrap_width.or(known.width).unwrap_or(px(0.));
@@ -8184,8 +8258,18 @@ impl Element for EditorElement {
             (usize::MAX, usize::MAX)
         };
         let sf = window.scale_factor();
+        // The measure pass already shaped these exact inputs this frame — use
+        // its result instead of shaping the whole document a second time.
+        let memo = editor.shape_memo.borrow_mut().take().filter(|m| {
+            m.wrap_width == wrap_width
+                && m.caret_row == caret_row
+                && m.selection == selection
+                && m.font_size == font_size
+        });
         let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks, inline_maths) =
-            if editor.content.is_empty() {
+            if let Some(m) = memo {
+                m.shaped
+            } else if editor.content.is_empty() {
                 let w = shape_all(
                     window,
                     &editor.placeholder,
