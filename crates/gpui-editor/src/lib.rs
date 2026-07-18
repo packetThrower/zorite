@@ -83,6 +83,8 @@ actions!(
         Outdent,
         Bold,
         Italic,
+        Underline,
+        Strike,
         Code,
         Dismiss,
     ]
@@ -132,6 +134,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-i", Italic, ctx),
         KeyBinding::new("cmd-e", Code, ctx),
         KeyBinding::new("ctrl-e", Code, ctx),
+        KeyBinding::new("cmd-shift-x", Strike, ctx),
+        KeyBinding::new("ctrl-shift-x", Strike, ctx),
+        KeyBinding::new("cmd-u", Underline, ctx),
+        KeyBinding::new("ctrl-u", Underline, ctx),
         KeyBinding::new("escape", Dismiss, ctx),
     ]);
 }
@@ -249,6 +255,121 @@ struct DiagMenu {
     suggestions: Vec<SharedString>,
     /// Scroll state of the (capped-height) list, so a thumb can track it.
     scroll: ScrollHandle,
+    /// Whether the "Turn into" flyout is open (hover-opened; dies with the menu).
+    turn_into: bool,
+}
+
+/// A block kind the right-click "Turn into" menu converts between —
+/// flat-markdown natural: each conversion is a line-prefix rewrite (fenced
+/// kinds wrap/unwrap the block's lines).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnKind {
+    Text,
+    H1,
+    H2,
+    H3,
+    Bullet,
+    Numbered,
+    Todo,
+    Quote,
+    Callout,
+    Code,
+    Math,
+}
+
+impl TurnKind {
+    const ALL: [TurnKind; 11] = [
+        TurnKind::Text,
+        TurnKind::H1,
+        TurnKind::H2,
+        TurnKind::H3,
+        TurnKind::Bullet,
+        TurnKind::Numbered,
+        TurnKind::Todo,
+        TurnKind::Quote,
+        TurnKind::Callout,
+        TurnKind::Code,
+        TurnKind::Math,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            TurnKind::Text => "Text",
+            TurnKind::H1 => "Heading 1",
+            TurnKind::H2 => "Heading 2",
+            TurnKind::H3 => "Heading 3",
+            TurnKind::Bullet => "Bulleted list",
+            TurnKind::Numbered => "Numbered list",
+            TurnKind::Todo => "To-do",
+            TurnKind::Quote => "Quote",
+            TurnKind::Callout => "Callout",
+            TurnKind::Code => "Code block",
+            TurnKind::Math => "Math block",
+        }
+    }
+}
+
+/// If `offset` sits on a collapsed marker line (a table style marker or a
+/// math align marker), the offset of the nearest line that reveals nothing
+/// when the caret rests there: the table's header, or the line after the
+/// math block. Otherwise `offset` unchanged.
+fn caret_off_marker_line(content: &str, offset: usize) -> usize {
+    let row = content[..offset.min(content.len())].matches('\n').count();
+    let line_start = |r: usize| {
+        let mut off = 0;
+        for (i, l) in content.split('\n').enumerate() {
+            if i == r {
+                return off;
+            }
+            off += l.len() + 1;
+        }
+        content.len()
+    };
+    if let Some(t) = markdown_syntax::table_regions(content)
+        .iter()
+        .find(|t| t.marker_line == Some(row))
+    {
+        return line_start(t.lines.start);
+    }
+    if let Some(m) = markdown_syntax::math_regions(content)
+        .iter()
+        .find(|m| m.marker_line == Some(row))
+    {
+        // Anywhere inside a math region reveals it whole — land after it.
+        return line_start(m.range.end);
+    }
+    offset
+}
+
+/// Strip a line's block dressing (heading hashes, list/todo bullet, ordered
+/// number, quote `>`), leaving the text a "Turn into" conversion re-prefixes.
+fn strip_block_prefix(line: &str) -> &str {
+    // Composes the renderer's own recognizers so the strip grammar can't
+    // drift from what WYSIWYG classifies (task/list/heading/quote).
+    if let Some((p, ..)) = markdown_syntax::task_prefix(line) {
+        return &line[p..];
+    }
+    if let Some((p, ..)) = markdown_syntax::list_prefix(line) {
+        return &line[p..];
+    }
+    if let Some(n) = markdown_syntax::heading_level(line) {
+        let after = &line[n as usize..];
+        return after.strip_prefix(' ').unwrap_or(after);
+    }
+    if let Some(p) = markdown_syntax::blockquote_prefix(line) {
+        return &line[p..];
+    }
+    line.trim_start()
+}
+
+/// Join `body` lines each carrying the prefix `p(index)` produces — the
+/// assembly half of a "Turn into" conversion.
+fn prefix_lines(body: &[String], p: impl Fn(usize) -> String) -> String {
+    body.iter()
+        .enumerate()
+        .map(|(i, l)| format!("{}{l}", p(i)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// A column edit applied to every row of a table (insert/delete a cell at index).
@@ -263,6 +384,7 @@ enum ColEdit {
 enum TableMenuAction {
     InsertRowAbove,
     InsertRowBelow,
+    DuplicateRow,
     InsertColLeft,
     InsertColRight,
     DeleteRow,
@@ -270,27 +392,19 @@ enum TableMenuAction {
     AlignLeft,
     AlignCenter,
     AlignRight,
+    /// Rewrite the table's `<!-- table:STYLE -->` marker (`None` = the
+    /// default Grid, which has no marker).
+    SetStyle(Option<&'static str>),
+    CopyTable,
     DeleteTable,
 }
 
 impl TableMenuAction {
-    const ITEMS: &'static [(&'static str, TableMenuAction)] = &[
-        ("Insert row above", TableMenuAction::InsertRowAbove),
-        ("Insert row below", TableMenuAction::InsertRowBelow),
-        ("Insert column left", TableMenuAction::InsertColLeft),
-        ("Insert column right", TableMenuAction::InsertColRight),
-        ("Delete row", TableMenuAction::DeleteRow),
-        ("Delete column", TableMenuAction::DeleteColumn),
-        ("Align left", TableMenuAction::AlignLeft),
-        ("Align center", TableMenuAction::AlignCenter),
-        ("Align right", TableMenuAction::AlignRight),
-        ("Delete table", TableMenuAction::DeleteTable),
-    ];
-
     fn apply(self, editor: &mut EditorState, cx: &mut Context<EditorState>) {
         match self {
             TableMenuAction::InsertRowAbove => editor.insert_table_row(false, cx),
             TableMenuAction::InsertRowBelow => editor.insert_table_row(true, cx),
+            TableMenuAction::DuplicateRow => editor.duplicate_table_row(cx),
             TableMenuAction::InsertColLeft => editor.insert_table_column(false, cx),
             TableMenuAction::InsertColRight => editor.insert_table_column(true, cx),
             TableMenuAction::DeleteRow => editor.delete_table_row(cx),
@@ -298,6 +412,8 @@ impl TableMenuAction {
             TableMenuAction::AlignLeft => editor.set_caret_table_align(CellAlign::Left, cx),
             TableMenuAction::AlignCenter => editor.set_caret_table_align(CellAlign::Center, cx),
             TableMenuAction::AlignRight => editor.set_caret_table_align(CellAlign::Right, cx),
+            TableMenuAction::SetStyle(name) => editor.set_table_style(name, cx),
+            TableMenuAction::CopyTable => editor.copy_table(cx),
             TableMenuAction::DeleteTable => editor.delete_table(cx),
         }
     }
@@ -491,6 +607,10 @@ pub struct EditorState {
     /// cursor/IME positioning.
     wrapped: Vec<WrappedLine>,
     line_tops: Vec<Pixels>,
+    /// Per-logical-line wrap-row count (from the last paint). Geometry reads
+    /// this, not `wrapped[i].wrap_boundaries()` — a windowed-out line's entry
+    /// in `wrapped` is an empty placeholder.
+    wrap_rows: Vec<usize>,
     /// Per-logical-line wrap-row height. Variable so a heading (bigger font) gets
     /// a taller row (W2); `line_height` is the base/fallback for the empty doc
     /// and any row without a recorded height.
@@ -503,7 +623,7 @@ pub struct EditorState {
     /// the last paint, committed only while the table is hovered; hit-tested on
     /// mouse-down.
     table_row_add_rects: Vec<(Bounds<Pixels>, usize)>,
-    table_col_add_rects: Vec<(Bounds<Pixels>, usize)>,
+    table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)>,
     /// Each table's hover zone (grid + a thin margin), committed every paint so
     /// `on_mouse_move` can repaint when the pointer's table-affordance region
     /// changes (the editor otherwise only repaints on the caret blink).
@@ -524,7 +644,7 @@ pub struct EditorState {
     widget_rows: Vec<bool>,
     /// Per-logical-line display→source byte map for rows with hidden markers
     /// (W6); `None` when the painted text equals the source. From the last paint.
-    offset_maps: Vec<Option<Vec<usize>>>,
+    offset_maps: Vec<Option<std::rc::Rc<Vec<usize>>>>,
     /// Per-logical-line horizontal text inset (and so the caret/selection/hit-test
     /// inset): non-zero for fenced code blocks and gutter marks (blockquotes,
     /// lists). From the last paint.
@@ -610,12 +730,82 @@ pub struct EditorState {
     /// Window-space bounds of each painted task checkbox, with its logical line —
     /// so a click on the box toggles `[ ]`↔`[x]` instead of placing the caret.
     checkbox_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// Painted code-card chrome bounds from the last frame (lang tag + Copy per
+    /// code block, keyed by the opening-fence row) — clicks route here before
+    /// caret placement.
+    code_chip_rects: Vec<CodeChipHit>,
+    /// Full card bounds of each code block from the last paint (`(first body
+    /// line, rect)`), for hover tracking — the chrome is hover-revealed.
+    code_card_rects: Vec<(usize, Bounds<Pixels>)>,
+    /// The hovered code block's first body line, if any (chrome shows there).
+    code_chip_hover: Option<usize>,
+    /// Open language picker for a code block: `(opening fence row, anchor)`.
+    code_lang_menu: Option<(usize, Point<Pixels>)>,
+    code_lang_scroll: ScrollHandle,
+    /// Languages the host's highlighter supports, offered in the code block's
+    /// language picker. Empty (the default) disables the picker.
+    code_langs: Vec<SharedString>,
     /// Painted chevron bounds of foldable callouts (`(line, rect)`, from the
     /// last paint) — a click flips the marker's `-`/`+` fold char.
     alert_fold_rects: Vec<(usize, Bounds<Pixels>)>,
     /// The in-progress corner-grip drag, if any (see [`ImageResize`]). While set,
     /// that image paints at the live width and other mouse handling is suppressed.
     image_resize: Option<ImageResize>,
+    /// An in-progress table column-border drag (drag-to-resize, issue #16):
+    /// the column resizes live; release persists `cols=` into the table's
+    /// marker line. `None` = no drag.
+    table_col_resize: Option<TableColResize>,
+    /// Last-paint column-resize grip bands: `(band, header row, column, width)`.
+    table_col_resize_rects: Vec<(Bounds<Pixels>, usize, usize, f32)>,
+    /// The band index the pointer is on (repaint-on-change for its accent line).
+    table_resize_hover: Option<usize>,
+    /// See [`ShapeMemo`] — `RefCell` because the measure closure holds only a
+    /// read borrow of the editor.
+    shape_memo: std::cell::RefCell<Option<ShapeMemo>>,
+    /// See [`ScanData`].
+    scan_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<ScanData>)>>,
+    /// See [`ScrollCompensatorFn`].
+    scroll_compensator: Option<ScrollCompensatorFn>,
+    /// Cross-frame shaping caches — line runs, table column widths, and table
+    /// wrap rows (see [`ShapeCaches`]). Capacity-capped in `shape_document`.
+    shape_caches: ShapeCaches,
+    /// The shaping window (element-local y, quantized), set after each
+    /// prepaint from the painted bounds — one frame stale by design, so the
+    /// measure pass and prepaint always shape with the SAME band and the
+    /// measure→prepaint memo keeps hitting.
+    shape_band: std::cell::Cell<Option<(f32, f32)>>,
+    /// Latch: the scroll compensator fired since the last paint. Measure can
+    /// run several times before a paint commits fresh `line_tops`; without
+    /// this, one async height change compensates once per measure call.
+    compensated: std::cell::Cell<bool>,
+    /// An active gutter block drag (Notion/Cditor-style reorder): the grabbed
+    /// block's first + last rows and the current drop boundary (a row index;
+    /// `== rows` drops at the document end).
+    line_drag: Option<(usize, usize, usize)>,
+    /// The row whose gutter grip the pointer hovers (mirrors prepaint's
+    /// computation) — tracked so hover changes repaint the grip.
+    grip_hover_row: Option<usize>,
+    /// Horizontal scroll of each wide table, keyed by its header row — wide
+    /// tables keep natural column widths and scroll in place. Keys drift on
+    /// edits above a table; entries are clamped at use, so a stale one is a
+    /// harmless partial offset. (ponytail: no eviction, the map stays tiny)
+    table_scroll_x: std::collections::HashMap<usize, f32>,
+    /// Extra left offset for the drag grip — the host sets its line-number
+    /// gutter's width here so the grip sits beside the numbers, not on them.
+    grip_inset: Pixels,
+    /// `content_gen` as of the last paint — a measure with the SAME generation
+    /// but different heights means an async (non-edit) height change, the
+    /// scroll-anchoring trigger.
+    last_paint_gen: u64,
+    /// Bumped on every content mutation — cheap staleness key for caches
+    /// (the UTF-16 conversion anchor below; a shape cache later).
+    content_gen: u64,
+    /// Resume point for UTF-8↔UTF-16 conversion: `(generation, utf8, utf16)`
+    /// of the last converted offset. IME composition fires conversions many
+    /// times per keystroke, clustered near the caret — resuming from the
+    /// anchor makes them O(distance) instead of O(document) (CJK latency
+    /// grew with note size; found auditing against Cditor's per-block IME).
+    utf16_anchor: std::cell::Cell<(u64, usize, usize)>,
     /// A `$$…$$` block being edited in-line: its byte range + the host-supplied view (the
     /// structural editor) painted in a reserved gap at the block's spot. `None` = none.
     editing_block: Option<EditingBlock>,
@@ -686,6 +876,7 @@ impl EditorState {
             wrapped: Vec::new(),
             line_tops: Vec::new(),
             line_heights: Vec::new(),
+            wrap_rows: Vec::new(),
             widget_rows: Vec::new(),
             offset_maps: Vec::new(),
             line_insets: Vec::new(),
@@ -727,8 +918,30 @@ impl EditorState {
             chip_rows: Vec::new(),
             image_rects: Vec::new(),
             checkbox_rects: Vec::new(),
+            code_chip_rects: Vec::new(),
+            code_card_rects: Vec::new(),
+            code_chip_hover: None,
+            code_lang_menu: None,
+            code_lang_scroll: ScrollHandle::new(),
+            code_langs: Vec::new(),
             alert_fold_rects: Vec::new(),
             image_resize: None,
+            table_col_resize: None,
+            table_col_resize_rects: Vec::new(),
+            table_resize_hover: None,
+            shape_memo: std::cell::RefCell::new(None),
+            scan_cache: std::cell::RefCell::new(None),
+            scroll_compensator: None,
+            last_paint_gen: 0,
+            shape_caches: ShapeCaches::default(),
+            shape_band: std::cell::Cell::new(None),
+            compensated: std::cell::Cell::new(false),
+            line_drag: None,
+            grip_hover_row: None,
+            table_scroll_x: std::collections::HashMap::new(),
+            grip_inset: px(0.),
+            content_gen: 0,
+            utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
             inline_math_rects: Vec::new(),
             editing_inline: None,
@@ -791,8 +1004,14 @@ impl EditorState {
 
     /// Replace the whole document; resets the caret to the start.
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
+        self.content_gen += 1;
         self.content = text.into();
-        self.selected_range = 0..0;
+        // Never park the loaded caret on a collapsed marker line (`<!-- table/
+        // math:… -->`): the first focus would reveal it raw mid-interaction.
+        // This is the ONE passive parking path — every other caret write is a
+        // deliberate placement (which SHOULD reveal markers for editing).
+        let caret = caret_off_marker_line(&self.content, 0);
+        self.selected_range = caret..caret;
         self.selection_reversed = false;
         self.marked_range = None;
         // A programmatic load isn't undoable to the prior document.
@@ -806,6 +1025,9 @@ impl EditorState {
     /// (e.g. spell-check) and refreshes them as the text changes.
     pub fn set_diagnostics(&mut self, diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
         self.diagnostics = diagnostics;
+        // Diagnostics feed the per-row run keys (they underline spans) — drop
+        // the memo so the next shape re-keys affected lines.
+        *self.shape_caches.row_keys.borrow_mut() = (None, Vec::new());
         cx.notify();
     }
 
@@ -814,6 +1036,21 @@ impl EditorState {
     /// tag formatting then renders as you type — markers stay in the text,
     /// dimmed. Without it the editor is the raw view: plain text, spell-check
     /// underlines only.
+    /// Languages offered in a code block's language picker (the host's
+    /// highlighter set, e.g. its compiled tree-sitter grammars). Empty — the
+    /// default — leaves the tag click-inert.
+    pub fn set_code_languages(&mut self, langs: Vec<SharedString>) {
+        self.code_langs = langs;
+    }
+
+    /// Install the scroll-anchoring hook (see [`ScrollCompensatorFn`]): when
+    /// an async block render (math/mermaid/image) changes heights above the
+    /// window viewport, the host receives the delta and shifts its scroll
+    /// offset so the visible content stays put (Cditor's anchor-restore).
+    pub fn set_scroll_compensator(&mut self, f: impl Fn(Pixels, &mut Window, &mut App) + 'static) {
+        self.scroll_compensator = Some(std::rc::Rc::new(f));
+    }
+
     pub fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>) {
         self.markdown_style = Some(style);
         cx.notify();
@@ -967,13 +1204,13 @@ impl EditorState {
         if line.is_empty() {
             return;
         }
-        // Inside a fenced code block (odd count of ``` fences above), the
-        // text is verbatim — never rewrite it.
-        let fences = self.content[..line_start]
-            .lines()
-            .filter(|l| l.trim_start().starts_with("```"))
-            .count();
-        if fences % 2 == 1 || line.trim_start().starts_with("```") {
+        // Inside a fenced code block, the text is verbatim — never rewrite it.
+        // Fence parity comes from the cached scan (this runs on every boundary
+        // keystroke; the per-line rescan grew with the document).
+        let (row, _) = self.row_col(boundary);
+        if *self.scan_data().fence_odd.get(row).unwrap_or(&false)
+            || line.trim_start().starts_with("```")
+        {
             return;
         }
         let Some((r, replacement)) = f(line) else {
@@ -1277,6 +1514,42 @@ impl EditorState {
             .collect()
     }
 
+    /// The cached [`ScanData`] for the current content, rebuilding on a
+    /// generation mismatch.
+    fn scan_data(&self) -> std::rc::Rc<ScanData> {
+        if let Some((generation, data)) = self.scan_cache.borrow().as_ref()
+            && *generation == self.content_gen
+        {
+            return data.clone();
+        }
+        let lines: Vec<&str> = self.content.split('\n').collect();
+        let mut fence_odd = Vec::with_capacity(lines.len());
+        let mut odd = false;
+        for l in &lines {
+            fence_odd.push(odd);
+            if l.trim_start().starts_with("```") {
+                odd = !odd;
+            }
+        }
+        let data = std::rc::Rc::new(ScanData {
+            generation: self.content_gen,
+            ordered: markdown_syntax::ordered_numbers(&lines),
+            tables: markdown_syntax::table_regions(&self.content),
+            mermaid: markdown_syntax::mermaid_blocks(&self.content),
+            math: markdown_syntax::math_regions(&self.content),
+            props: markdown_syntax::property_regions(&self.content),
+            alert_folds: markdown_syntax::alert_fold_regions(&self.content),
+            fence_odd,
+        });
+        *self.scan_cache.borrow_mut() = Some((self.content_gen, data.clone()));
+        data
+    }
+
+    /// The wrap-row count of logical line `row` (1 when unrecorded).
+    fn row_span(&self, row: usize) -> usize {
+        self.wrap_rows.get(row).copied().unwrap_or(1).max(1)
+    }
+
     /// The wrap-row height of logical line `row` (a heading is taller). Falls
     /// back to the base `line_height` for unrecorded rows / the empty document.
     fn line_h(&self, row: usize) -> Pixels {
@@ -1354,7 +1627,7 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        let off = self.previous_boundary(self.cursor_offset());
+        let off = self.prev_visible_boundary(self.cursor_offset());
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1397,7 +1670,7 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        let off = self.next_boundary(self.cursor_offset());
+        let off = self.next_visible_boundary(self.cursor_offset());
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1519,12 +1792,12 @@ impl EditorState {
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.previous_boundary(self.cursor_offset()), cx);
+        self.select_to(self.prev_visible_boundary(self.cursor_offset()), cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.next_boundary(self.cursor_offset()), cx);
+        self.select_to(self.next_visible_boundary(self.cursor_offset()), cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -1632,6 +1905,14 @@ impl EditorState {
                 && row > 0
                 && self.property_block_at(row).is_none()
                 && self.property_block_at(row - 1).is_some();
+            // Cditor-style around hidden formatting markers: delete the
+            // previous VISIBLE character (never a marker byte), and take an
+            // emptied construct's marker pair with it.
+            if let Some(range) = self.fmt_delete_range(off, true) {
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
             let prev = self.previous_boundary(off);
             if off == prev {
                 return;
@@ -1686,6 +1967,12 @@ impl EditorState {
             let join_into_props = off == self.line_end(row)
                 && self.property_block_at(row).is_none()
                 && self.property_block_at(row + 1).is_some();
+            // Cditor-style around hidden formatting markers (see backspace).
+            if let Some(range) = self.fmt_delete_range(off, false) {
+                self.replace_range(range, "", cx);
+                cx.emit(EditorEvent::Changed);
+                return;
+            }
             let next = self.next_boundary(off);
             if off == next {
                 return;
@@ -1785,40 +2072,45 @@ impl EditorState {
     }
 
     /// Toggle an inline wrapping marker (`**` bold, `*` italic, `` ` `` code)
+    /// around the selection — the symmetric case of [`Self::toggle_wrap_pair`].
+    fn toggle_wrap(&mut self, marker: &str, cx: &mut Context<Self>) {
+        self.toggle_wrap_pair(marker, marker, cx);
+    }
+
+    /// Toggle an open/close marker pair (`<u>`/`</u>`, or a symmetric `**`)
     /// around the selection. No-op on an empty selection. Unwraps when the
     /// selection is already wrapped (markers just inside or just outside it),
     /// otherwise wraps — keeping the same text selected so presses toggle.
-    fn toggle_wrap(&mut self, marker: &str, cx: &mut Context<Self>) {
+    fn toggle_wrap_pair(&mut self, open: &str, close: &str, cx: &mut Context<Self>) {
         let sel = self.selected_range.clone();
         if sel.start >= sel.end {
             return;
         }
-        let ml = marker.len();
+        let (ol, cl) = (open.len(), close.len());
         let sel_text = &self.content[sel.clone()];
-        let (range, new, new_sel) = if sel_text.len() >= 2 * ml
-            && sel_text.starts_with(marker)
-            && sel_text.ends_with(marker)
-        {
-            // `**foo**` selected → strip the markers inside the selection.
-            let inner = self.content[sel.start + ml..sel.end - ml].to_string();
-            (sel.clone(), inner, sel.start..sel.end - 2 * ml)
-        } else if self.content[..sel.start].ends_with(marker)
-            && self.content[sel.end..].starts_with(marker)
-        {
-            // `foo` selected with the markers just outside → strip them.
-            (
-                sel.start - ml..sel.end + ml,
-                sel_text.to_string(),
-                sel.start - ml..sel.end - ml,
-            )
-        } else {
-            // Plain → wrap.
-            (
-                sel.clone(),
-                format!("{marker}{sel_text}{marker}"),
-                sel.start + ml..sel.end + ml,
-            )
-        };
+        let (range, new, new_sel) =
+            if sel_text.len() >= ol + cl && sel_text.starts_with(open) && sel_text.ends_with(close)
+            {
+                // `**foo**` selected → strip the markers inside the selection.
+                let inner = self.content[sel.start + ol..sel.end - cl].to_string();
+                (sel.clone(), inner, sel.start..sel.end - ol - cl)
+            } else if self.content[..sel.start].ends_with(open)
+                && self.content[sel.end..].starts_with(close)
+            {
+                // `foo` selected with the markers just outside → strip them.
+                (
+                    sel.start - ol..sel.end + cl,
+                    sel_text.to_string(),
+                    sel.start - ol..sel.end - ol,
+                )
+            } else {
+                // Plain → wrap.
+                (
+                    sel.clone(),
+                    format!("{open}{sel_text}{close}"),
+                    sel.start + ol..sel.end + ol,
+                )
+            };
         self.record_edit(&range, &new);
         self.content.replace_range(range.clone(), &new);
         self.selected_range = new_sel;
@@ -1839,6 +2131,15 @@ impl EditorState {
 
     fn code(&mut self, _: &Code, _: &mut Window, cx: &mut Context<Self>) {
         self.toggle_wrap("`", cx);
+    }
+
+    fn strike(&mut self, _: &Strike, _: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_wrap("~~", cx);
+    }
+
+    fn underline(&mut self, _: &Underline, _: &mut Window, cx: &mut Context<Self>) {
+        // Markdown has no underline — the `<u>` tag, which both views honor.
+        self.toggle_wrap_pair("<u>", "</u>", cx);
     }
 
     /// Tab: on a list/quote item, indent the whole item one level (`tab_indent`
@@ -1938,7 +2239,31 @@ impl EditorState {
                 .any(|e| matches!(e, gpui::ClipboardEntry::ExternalPaths(_)))
         });
         match item.and_then(|i| i.text()).filter(|_| !has_files) {
-            Some(text) => self.replace_text_in_range(None, &text, window, cx),
+            Some(text) => {
+                // Normalize foreign line endings — a Windows/browser copy
+                // carries \r\n (or bare \r), and a literal \r in the buffer
+                // garbles rendering + desyncs the \n-based column math.
+                let mut text = if text.contains('\r') {
+                    text.replace("\r\n", "\n").replace('\r', "\n")
+                } else {
+                    text
+                };
+                // Inside a table cell, a raw paste of newlines/pipes would
+                // break the `| … |` row markup (Enter is guarded the same
+                // way): flatten newlines and escape pipes so the paste stays
+                // one cell's content.
+                if self.caret_in_table() && text.contains(['\n', '|']) {
+                    // Unescape-then-escape so text already carrying `\|`
+                    // doesn't double up into `\\|` (an escaped backslash
+                    // followed by a live separator).
+                    text = text
+                        .trim_end_matches('\n')
+                        .replace('\n', " ")
+                        .replace("\\|", "|")
+                        .replace('|', "\\|");
+                }
+                self.replace_text_in_range(None, &text, window, cx);
+            }
             None => cx.propagate(),
         }
     }
@@ -2056,6 +2381,7 @@ impl EditorState {
     }
 
     fn restore(&mut self, s: Snapshot) {
+        self.content_gen += 1;
         self.content = s.content;
         let caret = s.caret.min(self.content.len());
         self.selected_range = caret..caret;
@@ -2067,6 +2393,7 @@ impl EditorState {
     /// inserts (or a run of deletes) into one undo step so typing isn't undone
     /// one character at a time.
     fn record_edit(&mut self, range: &Range<usize>, new_text: &str) {
+        self.content_gen += 1;
         let kind = if new_text.is_empty() {
             EditKind::Delete
         } else if range.start == range.end
@@ -2284,6 +2611,20 @@ impl EditorState {
             }
             return;
         }
+        // A press on a code card's chrome: Copy writes the block's body to the
+        // clipboard; the language tag opens the picker — neither places the caret.
+        if let Some((on_copy, fence_row)) = self.code_chip_at(event.position) {
+            if on_copy {
+                if let Some((_, body)) = self.code_block_at(fence_row) {
+                    let text = self.content[body].to_string();
+                    self.write_clipboard(text, cx);
+                }
+            } else if !self.code_langs.is_empty() {
+                self.code_lang_menu = Some((fence_row, event.position));
+                cx.notify();
+            }
+            return;
+        }
         // A press on a foldable callout's chevron flips its `-`/`+` fold char
         // (folding/unfolding the body) instead of placing the caret — the same
         // toggle-in-source model as the task checkbox.
@@ -2442,9 +2783,9 @@ impl EditorState {
             }
             return;
         }
-        if let Some(row) = self.table_add_col_at(event.position) {
+        if let Some((row, col)) = self.table_add_col_at(event.position) {
             let keep = self.caret_table_cell_pos();
-            if let Some(off) = self.last_cell_start_offset(row) {
+            if let Some(off) = self.cell_start_offset(row, col) {
                 self.selected_range = off..off;
                 self.insert_table_column(true, cx);
             }
@@ -2475,6 +2816,24 @@ impl EditorState {
             }
             return;
         }
+        // A press on a column border's resize band starts a drag — the column
+        // resizes live; release persists the width (issue #16).
+        if let Some(&(_, header_row, col, width)) = self
+            .table_col_resize_rects
+            .iter()
+            .find(|(band, ..)| band.contains(&event.position))
+        {
+            self.table_col_resize = Some(TableColResize {
+                header_row,
+                col,
+                start_x: event.position.x,
+                orig: width,
+                width,
+            });
+            self.is_selecting = false;
+            cx.notify();
+            return;
+        }
         // A click on a table cell drops the caret inside the cell, not in the raw
         // `| … |` source.
         let offset = self
@@ -2484,6 +2843,7 @@ impl EditorState {
         self.table_menu = None;
         self.image_menu = None;
         self.prop_menu = None;
+        self.code_lang_menu = None;
         self.goal_x = None;
         self.last_edit = EditKind::Other;
         match event.click_count {
@@ -2551,12 +2911,25 @@ impl EditorState {
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // End a gutter block drag: splice the block at the drop boundary.
+        if let Some((bs, be, t)) = self.line_drag.take() {
+            self.apply_line_drag(bs, be, t, cx);
+            cx.notify();
+            return;
+        }
         // End an image-resize drag by persisting the rounded width as `{width=N}`
         // in that image's source line (through the normal mutation path, so it
         // joins the undo history + emits Changed); the next paint shows the saved
         // size and the live override clears.
         if let Some(resize) = self.image_resize.take() {
             self.commit_image_resize(resize, cx);
+            cx.notify();
+            return;
+        }
+        // End a column-border drag by persisting every column's width into the
+        // table marker's `cols=` list (one undo step, emits Changed).
+        if let Some(resize) = self.table_col_resize.take() {
+            self.commit_table_col_widths(resize, cx);
             cx.notify();
             return;
         }
@@ -2575,6 +2948,28 @@ impl EditorState {
         // matches `block_img`, no snap-back on release, and it can't run off the
         // page). The paint reads this live width for the dragged image (aspect
         // preserved).
+        // While dragging a block by its gutter grip, track the drop boundary
+        // (snapped out of rendered regions); paint draws the indicator there.
+        if let Some((bs, be, t)) = self.line_drag {
+            let b = self.snap_drop_boundary(self.drop_boundary_at(event.position));
+            if b != t {
+                self.line_drag = Some((bs, be, b));
+                cx.notify();
+            }
+            return;
+        }
+        // While dragging a table column's border, track the pointer: the new
+        // width is the grab width plus the travel, floored so the column can't
+        // vanish. Shaping applies it live (see `table_column_widths`).
+        if let Some(resize) = self.table_col_resize {
+            let dx = f32::from(event.position.x - resize.start_x);
+            let width = (resize.orig + dx).max(24.);
+            if let Some(r) = self.table_col_resize.as_mut() {
+                r.width = width;
+            }
+            cx.notify();
+            return;
+        }
         if let Some(resize) = self.image_resize {
             let avail = self
                 .last_bounds
@@ -2611,6 +3006,16 @@ impl EditorState {
             self.table_hover_cell = cell;
             cx.notify();
         }
+        // Repaint the column-resize border accent as the pointer crosses a band
+        // (the cursor comes from the hitbox; the painted line needs a frame).
+        let on_band = self
+            .table_col_resize_rects
+            .iter()
+            .position(|(b, ..)| b.contains(&event.position));
+        if on_band != self.table_resize_hover {
+            self.table_resize_hover = on_band;
+            cx.notify();
+        }
         // Repaint the property-panel hover border when the pointer moves between
         // rows (the border itself reads the live pointer during paint).
         let prow = self
@@ -2629,6 +3034,16 @@ impl EditorState {
             .find_map(|(row, b)| b.contains(&event.position).then_some(*row));
         if hrow != self.heading_hover_row {
             self.heading_hover_row = hrow;
+            cx.notify();
+        }
+        // Repaint the code card's chrome (lang tag + Copy) when the pointer
+        // enters/leaves a card — it's hover-revealed.
+        let ccard = self
+            .code_card_rects
+            .iter()
+            .find_map(|(row, b)| b.contains(&event.position).then_some(*row));
+        if ccard != self.code_chip_hover {
+            self.code_chip_hover = ccard;
             cx.notify();
         }
     }
@@ -2812,6 +3227,7 @@ impl EditorState {
             range,
             suggestions: suggestions.into_iter().map(SharedString::from).collect(),
             scroll: ScrollHandle::new(),
+            turn_into: false,
         });
         cx.notify();
     }
@@ -2829,6 +3245,7 @@ impl EditorState {
             || self.table_menu.take().is_some()
             || self.image_menu.take().is_some()
             || self.prop_menu.take().is_some()
+            || self.code_lang_menu.take().is_some()
         {
             cx.notify();
         }
@@ -2846,6 +3263,356 @@ impl EditorState {
         self.selected_range = range;
         self.selection_reversed = false;
         self.replace_text_in_range(None, text, window, cx);
+    }
+
+    /// The fenced code block containing `row`: its opening fence row plus the
+    /// closing fence row (`None` when the block runs unclosed to the end).
+    /// The single source for turn-into, block drag, and drop snapping.
+    fn fence_block_rows(&self, row: usize) -> (usize, Option<usize>) {
+        let scan = self.scan_data();
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let open = (0..=row)
+            .rev()
+            .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
+            .unwrap_or(0);
+        let close = ((open + 1)..=last_row).find(|&r| {
+            self.content[starts[r]..self.line_end(r)]
+                .trim_start()
+                .starts_with("```")
+        });
+        (open, close)
+    }
+
+    /// The contiguous blockquote run containing `row` (first row..=last row),
+    /// by the renderer's `blockquote_prefix` test.
+    fn quote_run_rows(&self, row: usize) -> (usize, usize) {
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let is_q = |r: usize| {
+            markdown_syntax::blockquote_prefix(&self.content[starts[r]..self.line_end(r)]).is_some()
+        };
+        let mut first = row;
+        while first > 0 && is_q(first - 1) {
+            first -= 1;
+        }
+        let mut last = row;
+        while last < last_row && is_q(last + 1) {
+            last += 1;
+        }
+        (first, last)
+    }
+
+    /// The "Turn into" kind of the block containing `row` — what the flyout
+    /// shows checked.
+    fn block_kind_at(&self, row: usize) -> TurnKind {
+        let scan = self.scan_data();
+        if scan.math.iter().any(|m| m.range.contains(&row)) {
+            return TurnKind::Math;
+        }
+        let starts = self.line_starts();
+        let Some(&start) = starts.get(row) else {
+            return TurnKind::Text;
+        };
+        // The renderer's own recognizers (task/list/heading/quote/alert), so
+        // the checked kind always agrees with what WYSIWYG actually renders.
+        let line = &self.content[start..self.line_end(row)];
+        if scan.fence_odd.get(row).copied().unwrap_or(false) || line.trim_start().starts_with("```")
+        {
+            return TurnKind::Code;
+        }
+        if markdown_syntax::task_prefix(line).is_some() {
+            return TurnKind::Todo;
+        }
+        match markdown_syntax::heading_level(line) {
+            Some(1) => return TurnKind::H1,
+            Some(2) => return TurnKind::H2,
+            Some(3) => return TurnKind::H3,
+            _ => {}
+        }
+        if let Some((_, _, ordered, _)) = markdown_syntax::list_prefix(line) {
+            return if ordered {
+                TurnKind::Numbered
+            } else {
+                TurnKind::Bullet
+            };
+        }
+        if markdown_syntax::blockquote_prefix(line).is_some() {
+            // Callout if the caret's contiguous `>`-run carries a VALID
+            // `[!KIND]` marker anywhere (marker line or body line).
+            let (first, last) = self.quote_run_rows(row);
+            for (r, &start) in starts.iter().enumerate().take(last + 1).skip(first) {
+                let l = &self.content[start..self.line_end(r)];
+                let p = markdown_syntax::blockquote_prefix(l).unwrap_or(0);
+                if markdown_syntax::alert_kind(&l[p..]).is_some() {
+                    return TurnKind::Callout;
+                }
+            }
+            return TurnKind::Quote;
+        }
+        TurnKind::Text
+    }
+
+    /// Convert the caret's block to `kind` — the "Turn into" menu action.
+    /// One undoable edit rewriting the block's lines; fenced kinds (code,
+    /// math) and quote runs convert as whole blocks.
+    fn turn_into(&mut self, kind: TurnKind, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.row_col(self.selected_range.start).0;
+        let cur = self.block_kind_at(row);
+        if cur == kind {
+            return;
+        }
+        let scan = self.scan_data();
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let line_at = |r: usize| self.content[starts[r]..self.line_end(r)].to_string();
+        // The block's line span + its content with the current dressing removed.
+        let (first, last, mut body): (usize, usize, Vec<String>) = match cur {
+            TurnKind::Code => {
+                let (open, close) = self.fence_block_rows(row);
+                let last = close.unwrap_or(last_row);
+                let body_end = close.map(|c| c.saturating_sub(1)).unwrap_or(last_row);
+                let body = ((open + 1)..=body_end).map(line_at).collect();
+                (open, last, body)
+            }
+            TurnKind::Math => {
+                let Some(reg) = scan.math.iter().find(|m| m.range.contains(&row)) else {
+                    return;
+                };
+                let first = reg.range.start;
+                let last = reg.range.end.saturating_sub(1).max(first);
+                let body = ((first + 1)..last).map(line_at).collect();
+                (first, last, body)
+            }
+            TurnKind::Quote | TurnKind::Callout => {
+                let (first, last) = self.quote_run_rows(row);
+                let body = (first..=last)
+                    .filter_map(|r| {
+                        let line = line_at(r);
+                        let stripped = strip_block_prefix(&line);
+                        // Drop the `[!KIND]` marker token; keep any title text
+                        // after it (and skip the line if that leaves nothing).
+                        if let Some(rest) = stripped.trim_start().strip_prefix("[!") {
+                            let after = rest.split_once(']').map(|(_, a)| a).unwrap_or("");
+                            let after = after.trim_start_matches(['-', '+']).trim();
+                            return (!after.is_empty()).then(|| after.to_string());
+                        }
+                        Some(stripped.to_string())
+                    })
+                    .collect();
+                (first, last, body)
+            }
+            _ => (
+                row,
+                row,
+                vec![strip_block_prefix(&line_at(row)).to_string()],
+            ),
+        };
+        if body.is_empty() {
+            body.push(String::new());
+        }
+        let text = match kind {
+            TurnKind::Text => body.join("\n"),
+            TurnKind::H1 => prefix_lines(&body, |_| "# ".into()),
+            TurnKind::H2 => prefix_lines(&body, |_| "## ".into()),
+            TurnKind::H3 => prefix_lines(&body, |_| "### ".into()),
+            TurnKind::Bullet => prefix_lines(&body, |_| "- ".into()),
+            TurnKind::Numbered => prefix_lines(&body, |i| format!("{}. ", i + 1)),
+            TurnKind::Todo => prefix_lines(&body, |_| "- [ ] ".into()),
+            TurnKind::Quote => prefix_lines(&body, |_| "> ".into()),
+            TurnKind::Callout => format!("> [!NOTE]\n{}", prefix_lines(&body, |_| "> ".into())),
+            TurnKind::Code => format!("```\n{}\n```", body.join("\n")),
+            TurnKind::Math => format!("$$\n{}\n$$", body.join("\n")),
+        };
+        let range = starts[first]..self.line_end(last);
+        let range_start = range.start;
+        self.selected_range = range;
+        self.selection_reversed = false;
+        self.replace_text_in_range(None, &text, window, cx);
+        // Fenced kinds: the caret parks after the closing fence, revealing the
+        // raw markers (reveal-on-caret) — seat it on the body's first line
+        // instead, like `set_code_lang`.
+        if matches!(kind, TurnKind::Code | TurnKind::Math) {
+            let caret =
+                (range_start + text.find('\n').map_or(0, |i| i + 1)).min(self.content.len());
+            self.selected_range = caret..caret;
+        }
+    }
+
+    /// Extra left offset for the gutter drag grip (e.g. the host's
+    /// line-number gutter width), so the grip clears other gutter chrome.
+    pub fn set_grip_inset(&mut self, inset: Pixels) {
+        self.grip_inset = inset;
+    }
+
+    /// The line span the gutter grip drags as one unit: whole fenced/rendered
+    /// regions (code, math, mermaid, tables incl. their style marker,
+    /// property panels), a quote/callout run, a list item with its
+    /// deeper-indented children — otherwise the single line.
+    fn drag_block_rows(&self, row: usize) -> (usize, usize) {
+        let scan = self.scan_data();
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let line_at = |r: usize| &self.content[starts[r]..self.line_end(r)];
+        if let Some(m) = scan
+            .math
+            .iter()
+            .find(|m| m.range.contains(&row) || m.marker_line == Some(row))
+        {
+            let first = m.marker_line.unwrap_or(m.range.start).min(m.range.start);
+            return (first, m.range.end.saturating_sub(1).max(m.range.start));
+        }
+        if let Some((r, _)) = scan.mermaid.iter().find(|(r, _)| r.contains(&row)) {
+            return (r.start, r.end.saturating_sub(1).max(r.start));
+        }
+        if let Some(t) = scan
+            .tables
+            .iter()
+            .find(|t| t.lines.contains(&row) || t.marker_line == Some(row))
+        {
+            let first = t.marker_line.unwrap_or(t.lines.start).min(t.lines.start);
+            return (first, t.lines.end.saturating_sub(1).max(t.lines.start));
+        }
+        if let Some(p) = scan.props.iter().find(|r| r.contains(&row)) {
+            return (p.start, p.end.saturating_sub(1).max(p.start));
+        }
+        if scan.fence_odd.get(row).copied().unwrap_or(false)
+            || line_at(row).trim_start().starts_with("```")
+        {
+            let (open, close) = self.fence_block_rows(row);
+            return (open, close.unwrap_or(last_row));
+        }
+        if markdown_syntax::blockquote_prefix(line_at(row)).is_some() {
+            return self.quote_run_rows(row);
+        }
+        if markdown_syntax::list_prefix(line_at(row)).is_some() {
+            let indent = |r: usize| {
+                let l = line_at(r);
+                l.len() - l.trim_start().len()
+            };
+            let base = indent(row);
+            let mut last = row;
+            while last < last_row && !line_at(last + 1).trim().is_empty() && indent(last + 1) > base
+            {
+                last += 1;
+            }
+            return (row, last);
+        }
+        (row, row)
+    }
+
+    /// The row whose gutter grip the pointer would hover (the event-time
+    /// mirror of prepaint's grip computation, for repaint change-detection).
+    fn grip_hover_row_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let bounds = self.last_bounds?;
+        if self.markdown_style.is_none()
+            || self.line_drag.is_some()
+            || position.x < grip_left(bounds.origin.x, self.grip_inset) - px(4.)
+            || position.x > bounds.origin.x + bounds.size.width
+            || position.y < bounds.origin.y
+            || position.y > bounds.origin.y + bounds.size.height
+        {
+            return None;
+        }
+        let y = position.y - bounds.origin.y;
+        (0..self.line_tops.len()).find(|&i| {
+            let h = self.line_h(i) * self.row_span(i) as f32;
+            h > px(0.5) && y >= self.line_tops[i] && y < self.line_tops[i] + h
+        })
+    }
+
+    /// The drop boundary (a between-rows index) nearest the pointer, from the
+    /// last paint's committed geometry.
+    fn drop_boundary_at(&self, position: Point<Pixels>) -> usize {
+        let Some(bounds) = self.last_bounds else {
+            return 0;
+        };
+        let y = position.y - bounds.origin.y;
+        for i in 0..self.line_tops.len() {
+            let mid = self.line_tops[i] + self.line_h(i) * self.row_span(i) as f32 / 2.;
+            if y < mid {
+                return i;
+            }
+        }
+        self.line_tops.len()
+    }
+
+    /// Clamp a drop boundary out of the interior of any rendered region — a
+    /// block can't land inside a table, fence, math block, or property panel.
+    fn snap_drop_boundary(&self, mut b: usize) -> usize {
+        let scan = self.scan_data();
+        let snap = |b: usize, s: usize, e: usize| {
+            if b > s && b < e {
+                if b - s <= e - b { s } else { e }
+            } else {
+                b
+            }
+        };
+        for m in scan.math.iter() {
+            let s = m.marker_line.unwrap_or(m.range.start).min(m.range.start);
+            b = snap(b, s, m.range.end);
+        }
+        for (r, _) in scan.mermaid.iter() {
+            b = snap(b, r.start, r.end);
+        }
+        for t in scan.tables.iter() {
+            let s = t.marker_line.unwrap_or(t.lines.start).min(t.lines.start);
+            b = snap(b, s, t.lines.end);
+        }
+        for p in scan.props.iter() {
+            b = snap(b, p.start, p.end);
+        }
+        // Inside a code fence: snap to the opening fence or past the close.
+        if scan.fence_odd.get(b).copied().unwrap_or(false) {
+            let (open, close) = self.fence_block_rows(b);
+            let close = close.map(|c| c + 1).unwrap_or(self.line_starts().len());
+            b = if b - open <= close - b { open } else { close };
+        }
+        b
+    }
+
+    /// Land the grabbed block at boundary `t` — one undoable splice of the
+    /// span between the block and the target, caret seated on the block.
+    fn apply_line_drag(&mut self, bs: usize, be: usize, t: usize, cx: &mut Context<Self>) {
+        let starts = self.line_starts();
+        let n = starts.len();
+        if bs >= n || be >= n || (t >= bs && t <= be + 1) {
+            return; // dropped onto itself (or stale rows) — no-op
+        }
+        let block_start = starts[bs];
+        let block_end = self.line_end(be);
+        let block_text = self.content[block_start..block_end].to_string();
+        if t > be {
+            // Down: [block \n between...] → [between... block (\n)]
+            let target_off = if t >= n {
+                self.content.len()
+            } else {
+                starts[t]
+            };
+            let after_block = (block_end + 1).min(self.content.len());
+            let mut new = self.content[after_block..target_off].to_string();
+            if !new.is_empty() && !new.ends_with('\n') {
+                new.push('\n');
+            }
+            let rest_len = new.len();
+            new.push_str(&block_text);
+            if t < n {
+                new.push('\n');
+            }
+            self.replace_range(block_start..target_off, &new, cx);
+            let caret = block_start + rest_len;
+            self.selected_range = caret..caret;
+        } else {
+            // Up: [between... block] → [block \n between...]
+            let target_off = starts[t];
+            let between = &self.content[target_off..block_start];
+            let mut new = block_text.clone();
+            new.push('\n');
+            new.push_str(&between[..between.len().saturating_sub(1)]);
+            self.replace_range(target_off..block_end, &new, cx);
+            self.selected_range = target_off..target_off;
+        }
+        cx.emit(EditorEvent::Changed);
     }
 
     // --- Selection helpers ---------------------------------------------------
@@ -3027,14 +3794,24 @@ impl EditorState {
             return 0;
         }
         let last = self.wrapped.len() - 1;
-        let total = self.line_tops[last]
-            + self.line_h(last) * (self.wrapped[last].wrap_boundaries().len() + 1) as f32;
+        let total = self.line_tops[last] + self.line_h(last) * self.row_span(last) as f32;
         if target_y >= total {
-            return self.content.len();
+            // Landing at the very end would park the caret on a trailing
+            // collapsed row (a hidden closing ``` fence) and reveal it — clamp
+            // to the end of the last VISIBLE row instead.
+            let mut r = last;
+            while r > 0 && self.line_h(r) <= px(0.) {
+                r -= 1;
+            }
+            return if r == last {
+                self.content.len()
+            } else {
+                self.line_end(r)
+            };
         }
         let mut trow = last;
         for i in 0..self.wrapped.len() {
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             if target_y < self.line_tops[i] + h {
                 trow = i;
                 break;
@@ -3063,6 +3840,30 @@ impl EditorState {
             };
             if skip < self.wrapped.len() {
                 trow = skip;
+            }
+        }
+        // A collapsed row (a hidden ``` fence, a folded body line) has no visual
+        // height — landing there reveals it. Keep stepping in the direction of
+        // travel so the caret skips over it; if the document runs out that way,
+        // stay put.
+        if self.line_h(trow) <= px(0.) {
+            let step = |r: usize| {
+                if dir >= 0 {
+                    (r + 1 < self.wrapped.len()).then_some(r + 1)
+                } else {
+                    r.checked_sub(1)
+                }
+            };
+            let mut r = trow;
+            loop {
+                match step(r) {
+                    Some(n) if self.line_h(n) <= px(0.) => r = n,
+                    Some(n) => {
+                        trow = n;
+                        break;
+                    }
+                    None => return self.cursor_offset(),
+                }
             }
         }
         let rel = point(goal, (target_y - self.line_tops[trow]).max(px(0.)));
@@ -3141,7 +3942,7 @@ impl EditorState {
         let rel_y = position.y - bounds.top();
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             if rel_y < self.line_tops[i] + h {
                 row = i;
                 break;
@@ -3202,6 +4003,66 @@ impl EditorState {
     /// If `position` lands on a task checkbox painted last frame, the logical line
     /// of that task — so a click can toggle it. The hit area is the box padded a
     /// little, to stay easy to tap without swallowing the body text beside it.
+    /// The code block whose opening fence is `fence_row`: its language token
+    /// (empty for none) and the byte range of the body between the fences.
+    fn code_block_at(&self, fence_row: usize) -> Option<(String, Range<usize>)> {
+        let starts = self.line_starts();
+        let &start = starts.get(fence_row)?;
+        let fence_line = &self.content[start..self.line_end(fence_row)];
+        let trimmed = fence_line.trim_start();
+        let lang = trimmed.strip_prefix("```")?.trim().to_string();
+        let body_start = (self.line_end(fence_row) + 1).min(self.content.len());
+        let mut body_end = self.content.len();
+        for (row, &row_start) in starts.iter().enumerate().skip(fence_row + 1) {
+            if self.content[row_start..self.line_end(row)]
+                .trim_start()
+                .starts_with("```")
+            {
+                body_end = row_start.saturating_sub(1).max(body_start);
+                break;
+            }
+        }
+        Some((lang, body_start..body_end))
+    }
+
+    /// If `position` lands on a code card's chrome painted last frame:
+    /// `(on_copy, fence_row)` — `true` = the Copy button, `false` = the
+    /// language tag.
+    fn code_chip_at(&self, position: Point<Pixels>) -> Option<(bool, usize)> {
+        self.code_chip_rects.iter().find_map(|c| {
+            if c.copy.contains(&position) {
+                Some((true, c.fence_row))
+            } else if c.lang.contains(&position) {
+                Some((false, c.fence_row))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Rewrite the block's opening fence to carry `lang` (one undo step).
+    fn set_code_lang(&mut self, fence_row: usize, lang: &str, cx: &mut Context<Self>) {
+        let starts = self.line_starts();
+        let Some(&start) = starts.get(fence_row) else {
+            return;
+        };
+        let end = self.line_end(fence_row);
+        let line = &self.content[start..end];
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("```") {
+            return;
+        }
+        let indent = &line[..line.len() - trimmed.len()];
+        let new_line = format!("{indent}```{}", if lang == "text" { "" } else { lang });
+        self.replace_range(start..end, &new_line, cx);
+        // replace_range parks the caret at the fence line's end, which reveals
+        // the raw ``` marker (reveal-on-caret). Step onto the body's first
+        // line instead so the fence stays hidden.
+        let caret = (start + new_line.len() + 1).min(self.content.len());
+        self.selected_range = caret..caret;
+        cx.emit(EditorEvent::Changed);
+    }
+
     fn checkbox_at(&self, position: Point<Pixels>) -> Option<usize> {
         let pad = px(4.);
         self.checkbox_rects.iter().find_map(|&(line, rect)| {
@@ -3261,7 +4122,7 @@ impl EditorState {
         } else if self
             .table_col_add_rects
             .iter()
-            .any(|(b, _)| b.contains(&pos))
+            .any(|(b, _, _)| b.contains(&pos))
         {
             2
         } else {
@@ -3271,6 +4132,75 @@ impl EditorState {
     }
 
     /// The table cell `(row, col)` the pointer is over, or `None` off any table —
+    /// The table's content LEFT edge in window space, horizontal scroll
+    /// applied — THE single source for every x mapping on a table (paint,
+    /// hit-tests, caret, selection, affordances).
+    fn table_left(&self, t: &TableRow, row: usize, bounds: &Bounds<Pixels>) -> Pixels {
+        let total: Pixels = t.col_widths.iter().copied().sum();
+        bounds.origin.x + px(TABLE_GUTTER)
+            - self.table_sx(
+                table_header_row(t, row),
+                total,
+                bounds.size.width - px(TABLE_GUTTER),
+            )
+    }
+
+    /// The clamped horizontal scroll of the table headed at `header_row`.
+    fn table_sx(&self, header_row: usize, total: Pixels, avail: Pixels) -> Pixels {
+        let max = f32::from((total - avail).max(px(0.)));
+        px(self
+            .table_scroll_x
+            .get(&header_row)
+            .copied()
+            .unwrap_or(0.)
+            .clamp(0., max))
+    }
+
+    /// Horizontal wheel/trackpad over a wide table scrolls IT, not the page —
+    /// vertical deltas fall through to the outer scroll container untouched.
+    fn on_scroll_wheel(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Vertical scrolling is the overwhelmingly common case — bail before
+        // the O(lines) row walk when there's no horizontal delta.
+        let dx = f32::from(event.delta.pixel_delta(px(20.)).x);
+        if dx == 0. {
+            return;
+        }
+        let Some(bounds) = self.last_bounds else {
+            return;
+        };
+        let rel_y = event.position.y - bounds.top();
+        let Some(row) = (0..self.line_tops.len()).find(|&i| {
+            let h = self.line_h(i) * self.row_span(i) as f32;
+            h > px(0.5) && rel_y >= self.line_tops[i] && rel_y < self.line_tops[i] + h
+        }) else {
+            return;
+        };
+        let Some(t) = self.table_rows.get(row).and_then(Option::as_ref) else {
+            return;
+        };
+        if t.col_widths.is_empty() {
+            return;
+        }
+        let total: Pixels = t.col_widths.iter().copied().sum();
+        let avail = bounds.size.width - px(TABLE_GUTTER);
+        if total <= avail {
+            return;
+        }
+        let header = table_header_row(t, row);
+        let max = f32::from(total - avail);
+        let cur = self.table_scroll_x.get(&header).copied().unwrap_or(0.);
+        let new = (cur - dx).clamp(0., max);
+        if new != cur {
+            self.table_scroll_x.insert(header, new);
+            cx.notify();
+        }
+    }
+
     /// drives the delete-handle repaint + reveal.
     fn hovered_table_cell(&self, pos: Point<Pixels>) -> Option<(usize, usize)> {
         let bounds = self.last_bounds.as_ref()?;
@@ -3289,7 +4219,7 @@ impl EditorState {
             if t.is_separator {
                 return false;
             }
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             let lo = if t.is_header {
                 self.line_tops[i] - g
             } else {
@@ -3301,7 +4231,7 @@ impl EditorState {
         if t.col_widths.is_empty() {
             return None;
         }
-        let table_left = gutter_left + g;
+        let table_left = self.table_left(t, row, bounds);
         let table_w: Pixels = t.col_widths.iter().copied().sum();
         if pos.x >= table_left + table_w {
             return None;
@@ -3317,32 +4247,25 @@ impl EditorState {
         Some((row, t.col_widths.len() - 1))
     }
 
-    /// Hit-test the table add-row "+" strips → the row a new row lands after.
+    /// Hit-test the hovered row's border "+" → the row a new row lands after.
     fn table_add_row_at(&self, position: Point<Pixels>) -> Option<usize> {
         self.table_row_add_rects
             .iter()
             .find_map(|&(rect, row)| rect.contains(&position).then_some(row))
     }
 
-    /// Hit-test the table add-column "+" strips → a row of that table (to seat the
-    /// caret in its last cell).
-    fn table_add_col_at(&self, position: Point<Pixels>) -> Option<usize> {
+    /// Hit-test the hovered column's border "+" → `(header row, column)` — a new
+    /// column lands right of it.
+    fn table_add_col_at(&self, position: Point<Pixels>) -> Option<(usize, usize)> {
         self.table_col_add_rects
             .iter()
-            .find_map(|&(rect, row)| rect.contains(&position).then_some(row))
+            .find_map(|&(rect, row, col)| rect.contains(&position).then_some((row, col)))
     }
 
     /// Source offset at the start of `cell`'s content in table `row` (last paint).
     fn cell_start_offset(&self, row: usize, cell: usize) -> Option<usize> {
         let t = self.table_rows.get(row).and_then(Option::as_ref)?;
         Some(self.line_starts()[row] + t.cell_ranges.get(cell)?.start)
-    }
-
-    /// Source offset at the start of the last cell's content in table `row`.
-    fn last_cell_start_offset(&self, row: usize) -> Option<usize> {
-        let t = self.table_rows.get(row).and_then(Option::as_ref)?;
-        let last = t.cell_ranges.len().checked_sub(1)?;
-        Some(self.line_starts()[row] + t.cell_ranges.get(last)?.start)
     }
 
     /// If `position` lands on a table grid row (not the separator), the source
@@ -3360,7 +4283,7 @@ impl EditorState {
         );
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             if rel.y < self.line_tops[i] + h {
                 row = i;
                 break;
@@ -3370,6 +4293,8 @@ impl EditorState {
         if t.is_separator || t.col_widths.is_empty() {
             return None;
         }
+        // A scrolled wide table: the pointer maps to content shifted left.
+        let rel = point(position.x - self.table_left(t, row, bounds), rel.y);
         // Measure at the last paint's size — the style stack is unwound during
         // event dispatch, so `text_style()` here reports the root size.
         let style = window.text_style();
@@ -3387,18 +4312,31 @@ impl EditorState {
             }
             cx += cw;
         }
+        // A click in a spanned trailing column lands in the short row's last cell.
+        let cell = cell.min(t.cells.len().saturating_sub(1));
         let content = t.cells.get(cell)?;
-        let cw = t.col_widths[cell];
+        let cw = cell_span_width(&t.col_widths, t.cells.len(), cell);
         let cf = cell_font(&font, t.is_header);
         let full_w = measure_width(window, content, &cf, font_size);
-        let avail = (cw - pad * 2.).max(px(0.));
-        let align_off = match t.aligns.get(cell) {
-            Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
-            Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
-            _ => px(0.),
+        let avail = (cw - pad * 2.).max(px(8.));
+        // Alignment shifts only unwrapped content (a wrapped cell fills its width).
+        let align_off = if full_w > avail {
+            px(0.)
+        } else {
+            match t.aligns.get(cell) {
+                Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
+                Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
+                _ => px(0.),
+            }
         };
-        let target = (rel.x - cx - pad - align_off).max(px(0.));
-        let in_cell = cell_offset_for_x(content, target, &cf, font_size, window);
+        // In-cell y: from the row's top, minus the cell's constant 6px top pad
+        // (`table_row_h` = line height + 12, text centered → 6 above).
+        let pad_y = px(6.);
+        let target = point(
+            (rel.x - cx - pad - align_off).max(px(0.)),
+            rel.y - self.line_tops[row] - pad_y,
+        );
+        let in_cell = cell_offset_for_point(content, target, avail, &cf, font_size, window);
         Some(self.line_starts()[row] + t.cell_ranges.get(cell)?.start + in_cell)
     }
 
@@ -3570,8 +4508,8 @@ impl EditorState {
             return None;
         }
         let cell = table_cell_at(t, col);
-        let regions = markdown_syntax::table_regions(&self.content);
-        let region = regions.iter().find(|r| r.lines.contains(&row))?;
+        let scan = self.scan_data();
+        let region = scan.tables.iter().find(|r| r.lines.contains(&row))?;
         Some(match region.aligns.get(cell) {
             Some(markdown_syntax::Align::Center) => CellAlign::Center,
             Some(markdown_syntax::Align::Right) => CellAlign::Right,
@@ -3592,8 +4530,8 @@ impl EditorState {
         let cell = table_cell_at(t, col);
         // Read the table's columns from the current content (fresh), so repeated
         // clicks build on the latest alignment, not a stale painted snapshot.
-        let regions = markdown_syntax::table_regions(&self.content);
-        let Some(region) = regions.iter().find(|r| r.lines.contains(&row)) else {
+        let scan = self.scan_data();
+        let Some(region) = scan.tables.iter().find(|r| r.lines.contains(&row)) else {
             return;
         };
         let mut aligns = region.aligns.clone();
@@ -3639,9 +4577,8 @@ impl EditorState {
     /// columns)`, or `None` outside a table.
     fn caret_table_block(&self) -> Option<(usize, usize, usize, usize)> {
         let (row, _) = self.row_col(self.cursor_offset());
-        let region = markdown_syntax::table_regions(&self.content)
-            .into_iter()
-            .find(|r| r.lines.contains(&row))?;
+        let scan = self.scan_data();
+        let region = scan.tables.iter().find(|r| r.lines.contains(&row))?;
         Some((
             region.lines.start,
             region.lines.start + 1,
@@ -3754,6 +4691,166 @@ impl EditorState {
         self.table_menu = None;
         cx.emit(EditorEvent::Changed);
         cx.notify();
+    }
+
+    /// The caret row's table region, when inside one.
+    fn caret_table_region(&self) -> Option<markdown_syntax::TableRegion> {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.scan_data()
+            .tables
+            .iter()
+            .find(|r| r.lines.contains(&row))
+            .cloned()
+    }
+
+    /// Duplicate the caret's row below itself (the header duplicates as the
+    /// first body row). The caret lands in the copy, same cell + offset.
+    pub fn duplicate_table_row(&mut self, cx: &mut Context<Self>) {
+        let Some((row, cell, in_cell)) = self.caret_table_cell_pos() else {
+            return;
+        };
+        let Some((_header, sep, _end, _cols)) = self.caret_table_block() else {
+            return;
+        };
+        if row == sep {
+            return;
+        }
+        let starts = self.line_starts();
+        let line = self.content[starts[row]..self.line_end(row)].to_string();
+        // A duplicated header lands below the separator (as a body row).
+        let after = if row + 1 == sep { sep } else { row };
+        let insert = format!("\n{line}");
+        let pos = self.line_end(after);
+        let range = pos..pos;
+        self.record_edit(&range, &insert);
+        self.content = self.content[..pos].to_owned() + &insert + &self.content[pos..];
+        self.remap_diagnostics(&range, insert.len());
+        let caret = self.caret_pos_for_cell(after + 1, cell, in_cell);
+        self.selected_range = caret..caret;
+        self.table_menu = None;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    /// Copy the caret's table — its grid source plus any `<!-- table:STYLE -->`
+    /// marker — to the clipboard (markdown, pasteable anywhere).
+    pub fn copy_table(&mut self, cx: &mut Context<Self>) {
+        let Some(region) = self.caret_table_region() else {
+            return;
+        };
+        let starts = self.line_starts();
+        let first = region.marker_line.unwrap_or(region.lines.start);
+        let Some(&start) = starts.get(first) else {
+            return;
+        };
+        let end = self.line_end(region.lines.end - 1);
+        let text = self.content[start..end].to_string();
+        self.table_menu = None;
+        self.write_clipboard(text, cx);
+        cx.notify();
+    }
+
+    /// Set the caret table's visual style by rewriting its
+    /// `<!-- table:STYLE -->` marker line: `Some(name)` writes/replaces the
+    /// marker, `None` (Grid, the default) removes it. One undo step.
+    /// Rewrite (or insert/remove) the marker line above `region` to say
+    /// `marker` (`None` = no marker needed). The caret keeps its cell. One
+    /// undo step; shared by the style menu and drag-to-resize.
+    fn rewrite_table_marker(
+        &mut self,
+        region: &markdown_syntax::TableRegion,
+        marker: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let starts = self.line_starts();
+        let (range, new) = match (region.marker_line, marker) {
+            // Marker present → replace its line, or remove it (with the newline).
+            (Some(m), Some(text)) => (starts[m]..self.line_end(m), text),
+            (Some(m), None) => (starts[m]..self.line_end(m) + 1, String::new()),
+            // No marker → insert one above the header.
+            (None, Some(text)) => (
+                starts[region.lines.start]..starts[region.lines.start],
+                format!("{text}\n"),
+            ),
+            (None, None) => return,
+        };
+        let cell_pos = self.caret_table_cell_pos();
+        let old_caret = self.selected_range.start;
+        // The marker edit adds/removes one line ABOVE the table (or replaces in
+        // place) — shift the caret's row index to keep it in its cell.
+        let row_shift: isize = match (region.marker_line, new.is_empty()) {
+            (Some(_), true) => -1,
+            (None, false) => 1,
+            _ => 0,
+        };
+        self.record_edit(&range, &new);
+        self.content.replace_range(range.clone(), &new);
+        self.remap_diagnostics(&range, new.len());
+        let caret = match cell_pos {
+            Some((row, cell, in_cell)) => {
+                let same_row = (row as isize + row_shift).max(0) as usize;
+                self.caret_pos_for_cell(same_row, cell, in_cell)
+            }
+            // Caret wasn't in this table (e.g. a border drag from elsewhere):
+            // keep it where it was, shifted by the edit's byte delta — seating
+            // it "in a cell" would land it on the marker line and reveal it.
+            None => {
+                let delta = new.len() as isize - (range.end - range.start) as isize;
+                if old_caret >= range.end {
+                    (old_caret as isize + delta).max(0) as usize
+                } else if old_caret > range.start {
+                    range.start + new.len()
+                } else {
+                    old_caret
+                }
+            }
+        };
+        let caret = caret.min(self.content.len());
+        self.selected_range = caret..caret;
+        self.table_menu = None;
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    /// Set the caret table's visual style (`None` = Grid, the default),
+    /// preserving any drag-resized `cols=` widths in the marker.
+    pub fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>) {
+        let Some(region) = self.caret_table_region() else {
+            return;
+        };
+        let style = gpui_markdown::syntax::TableStyle::from_name(name.unwrap_or("grid"))
+            .unwrap_or_default();
+        let marker =
+            gpui_markdown::syntax::table_marker_text(style, region.col_widths_attr.as_deref());
+        self.rewrite_table_marker(&region, marker, cx);
+    }
+
+    /// Persist a finished column-border drag: every column's current display
+    /// width goes into the marker's `cols=` list (style preserved).
+    fn commit_table_col_widths(&mut self, resize: TableColResize, cx: &mut Context<Self>) {
+        let Some(region) = self
+            .scan_data()
+            .tables
+            .iter()
+            .find(|r| r.lines.start == resize.header_row)
+            .cloned()
+        else {
+            return;
+        };
+        // The header row's committed display widths already carry the live drag.
+        let Some(t) = self
+            .table_rows
+            .get(resize.header_row)
+            .and_then(Option::as_ref)
+        else {
+            return;
+        };
+        let mut widths: Vec<f32> = t.col_widths.iter().map(|w| f32::from(*w)).collect();
+        if let Some(w) = widths.get_mut(resize.col) {
+            *w = resize.width.max(24.);
+        }
+        let marker = gpui_markdown::syntax::table_marker_text(region.style, Some(&widths));
+        self.rewrite_table_marker(&region, marker, cx);
     }
 
     /// The caret's table position as `(row, cell_index, offset_within_cell)`, or
@@ -3885,7 +4982,7 @@ impl EditorState {
         // Which logical line, by the vertical band each occupies (variable height).
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
-            let height = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let height = self.line_h(i) * self.row_span(i) as f32;
             if rel.y < self.line_tops[i] + height {
                 row = i;
                 break;
@@ -3928,29 +5025,44 @@ impl EditorState {
     // --- UTF-16 + grapheme boundaries (IME / cursor movement) ----------------
 
     fn offset_from_utf16(&self, offset: usize) -> usize {
-        let mut utf8 = 0;
-        let mut utf16 = 0;
-        for ch in self.content.chars() {
+        let (mut utf8, mut utf16) = self.utf16_resume(offset, false);
+        for ch in self.content[utf8..].chars() {
             if utf16 >= offset {
                 break;
             }
             utf16 += ch.len_utf16();
             utf8 += ch.len_utf8();
         }
+        self.utf16_anchor.set((self.content_gen, utf8, utf16));
         utf8
     }
 
     fn offset_to_utf16(&self, offset: usize) -> usize {
-        let mut utf16 = 0;
-        let mut utf8 = 0;
-        for ch in self.content.chars() {
+        let (mut utf8, mut utf16) = self.utf16_resume(offset, true);
+        for ch in self.content[utf8..].chars() {
             if utf8 >= offset {
                 break;
             }
             utf8 += ch.len_utf8();
             utf16 += ch.len_utf16();
         }
+        self.utf16_anchor.set((self.content_gen, utf8, utf16));
         utf16
+    }
+
+    /// Where a conversion can start: the saved anchor when it's from the
+    /// current content generation and at/before the target (`by_utf8` picks
+    /// which unit the target is in), else the document start. IME composition
+    /// converts monotonically-close offsets many times per keystroke, so this
+    /// turns O(document) scans into O(distance-from-anchor).
+    fn utf16_resume(&self, target: usize, by_utf8: bool) -> (usize, usize) {
+        let (generation, utf8, utf16) = self.utf16_anchor.get();
+        let anchor_pos = if by_utf8 { utf8 } else { utf16 };
+        if generation == self.content_gen && anchor_pos <= target && utf8 <= self.content.len() {
+            (utf8, utf16)
+        } else {
+            (0, 0)
+        }
     }
 
     fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
@@ -3959,6 +5071,112 @@ impl EditorState {
 
     fn range_from_utf16(&self, range: &Range<usize>) -> Range<usize> {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
+    }
+
+    /// One VISIBLE position left of `offset`: a grapheme step, extended while
+    /// the display column doesn't change — always-hidden formatting markers
+    /// (`**`, `~~`, …) are zero-width on screen, so crossing one must not cost
+    /// extra keypresses. Rows without a display map (raw/code) step plainly.
+    fn prev_visible_boundary(&self, offset: usize) -> usize {
+        let (row0, col0) = self.row_col(offset);
+        let d0 = self.display_col(row0, col0);
+        let mut off = self.previous_boundary(offset);
+        loop {
+            if off == 0 {
+                return off;
+            }
+            let (row, col) = self.row_col(off);
+            if row != row0
+                || self.offset_maps.get(row).and_then(Option::as_ref).is_none()
+                || self.display_col(row, col) != d0
+            {
+                return off;
+            }
+            off = self.previous_boundary(off);
+        }
+    }
+
+    /// One VISIBLE position right of `offset` — see [`Self::prev_visible_boundary`].
+    fn next_visible_boundary(&self, offset: usize) -> usize {
+        let (row0, col0) = self.row_col(offset);
+        let d0 = self.display_col(row0, col0);
+        let mut off = self.next_boundary(offset);
+        loop {
+            if off >= self.content.len() {
+                return self.content.len();
+            }
+            let (row, col) = self.row_col(off);
+            if row != row0
+                || self.offset_maps.get(row).and_then(Option::as_ref).is_none()
+                || self.display_col(row, col) != d0
+            {
+                return off;
+            }
+            off = self.next_boundary(off);
+        }
+    }
+
+    /// Cditor-style deletion planning around hidden formatting markers: the
+    /// range a backspace (`back`) / forward delete should remove at `off`.
+    /// Skips the invisible marker bytes to the adjacent VISIBLE character —
+    /// and when removing it would empty its construct, the now-empty marker
+    /// pair goes too (deleting bold's last char deletes the bold). `None` =
+    /// no hidden markers involved (the plain grapheme deletion applies).
+    fn fmt_delete_range(&self, off: usize, back: bool) -> Option<Range<usize>> {
+        let st = self.markdown_style.as_ref()?;
+        let (row, col) = self.row_col(off);
+        let line_start = self.line_starts()[row];
+        let line_end = self.line_end(row);
+        let line = &self.content[line_start..line_end];
+        // Inside a fenced code block the text is verbatim — no markers there.
+        if *self.scan_data().fence_odd.get(row).unwrap_or(&false)
+            || line.trim_start().starts_with("```")
+        {
+            return None;
+        }
+        let pairs = markdown_syntax::fmt_marker_pairs(line, st);
+        if pairs.is_empty() {
+            return None;
+        }
+        let markers: Vec<&Range<usize>> = pairs.iter().flat_map(|(o, c)| [o, c]).collect();
+        // Skip marker bytes in the deletion direction to the visible char.
+        let mut edge = col;
+        if back {
+            while let Some(sp) = markers.iter().find(|sp| sp.end == edge) {
+                edge = sp.start;
+            }
+        } else {
+            while let Some(sp) = markers.iter().find(|sp| sp.start == edge) {
+                edge = sp.end;
+            }
+        }
+        // The visible grapheme adjacent to the (possibly skipped-to) edge —
+        // staying on this line; a line join takes the default path.
+        let (del_start, del_end) = if back {
+            if edge == 0 {
+                return None;
+            }
+            let p = self.previous_boundary(line_start + edge) - line_start;
+            (p, edge)
+        } else {
+            if edge >= line.len() {
+                return None;
+            }
+            let n = self.next_boundary(line_start + edge).min(line_end) - line_start;
+            (edge, n)
+        };
+        // Would this empty a construct? Only a real PAIR collapses: ITS opener
+        // ending at the deletion's start and ITS closer starting at the end
+        // (adjacent different constructs must not fuse).
+        let emptied = pairs
+            .iter()
+            .find(|(o, c)| o.end == del_start && c.start == del_end);
+        let range = match emptied {
+            Some((o, c)) => o.start..c.end,
+            None if edge == col => return None, // no markers were involved
+            None => del_start..del_end,
+        };
+        Some(line_start + range.start..line_start + range.end)
     }
 
     fn previous_boundary(&self, offset: usize) -> usize {
@@ -4057,6 +5275,7 @@ impl EntityInputHandler for EditorState {
             .map(|r| self.range_from_utf16(r))
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
+        self.content_gen += 1;
         self.content =
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
         self.marked_range =
@@ -4088,7 +5307,23 @@ impl EntityInputHandler for EditorState {
         let p = line.position_for_index(self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
         let x = bounds.left() + p.x + self.line_inset(row);
-        Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
+        // Span the whole range when it stays on one wrap row (the common IME
+        // composition), so the candidate window anchors under the marked TEXT
+        // rather than a zero-width bar at its start. Multi-row ranges keep the
+        // start-anchored bar.
+        let (erow, ecol) = self.row_col(range.end);
+        let x2 = if erow == row && range.end > range.start {
+            line.position_for_index(self.display_col(row, ecol), lh)
+                .filter(|e| e.y == p.y)
+                .map(|e| bounds.left() + e.x + self.line_inset(row))
+                .unwrap_or(x)
+        } else {
+            x
+        };
+        Some(Bounds::from_corners(
+            point(x, top),
+            point(x2.max(x), top + lh),
+        ))
     }
 
     fn character_index_for_point(
@@ -4146,6 +5381,8 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::bold))
             .on_action(cx.listener(Self::italic))
+            .on_action(cx.listener(Self::underline))
+            .on_action(cx.listener(Self::strike))
             .on_action(cx.listener(Self::code))
             .on_action(cx.listener(Self::indent))
             .on_action(cx.listener(Self::outdent))
@@ -4161,6 +5398,7 @@ impl Render for EditorState {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .child(EditorElement {
                 editor: cx.entity(),
             })
@@ -4176,6 +5414,7 @@ impl Render for EditorState {
                     range,
                     suggestions,
                     scroll,
+                    turn_into: menu_turn_into,
                 } = menu;
                 let count = suggestions.len();
                 // Menu chrome from the host's theme (fallbacks match the former
@@ -4300,46 +5539,232 @@ impl Render for EditorState {
                     }),
                 ));
 
+                // Inline-format bar (Cditor-style): with a selection, a strip of
+                // B / I / S / <> buttons across the menu's top — each toggles its
+                // markdown wrap on the selection and closes the menu.
+                let fmt_btn = |id: &'static str| {
+                    div()
+                        .id(id)
+                        .w(px(28.))
+                        .h(px(24.))
+                        .rounded(px(4.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .hover(move |s| s.bg(hover))
+                };
+                let format_bar = has_sel.then(|| {
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(2.))
+                        .px(px(6.))
+                        .py(px(4.))
+                        .child(
+                            fmt_btn("menu-fmt-bold")
+                                .font_weight(FontWeight::BOLD)
+                                .child("B")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.bold(&Bold, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-italic")
+                                .italic()
+                                .child("I")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.italic(&Italic, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-underline")
+                                .underline()
+                                .child("U")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.underline(&Underline, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-strike")
+                                .line_through()
+                                .child("S")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.strike(&Strike, window, cx);
+                                    }),
+                                ),
+                        )
+                        .child(
+                            fmt_btn("menu-fmt-code")
+                                .font_family(
+                                    self.markdown_style
+                                        .as_ref()
+                                        .map(|s| s.mono.family.clone())
+                                        .unwrap_or_else(|| "monospace".into()),
+                                )
+                                .text_size(px(12.))
+                                .child("<>")
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.code(&Code, window, cx);
+                                    }),
+                                ),
+                        )
+                });
+
+                // "Turn into" block conversion (Cditor-style): a row whose
+                // hover opens a kind-list flyout beside the menu, the caret
+                // block's current kind checked.
+                let cur_kind = self.block_kind_at(self.row_col(self.selected_range.start).0);
+                let turn_row = div()
+                    .id("menu-turn-into")
+                    .flex_shrink_0()
+                    .px(px(10.))
+                    .py(px(3.))
+                    .hover(move |s| s.bg(hover))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(16.))
+                    .child("Turn into")
+                    .child(div().text_size(px(10.)).child("\u{25b8}"))
+                    .on_hover(cx.listener(|editor, hovered: &bool, _, cx| {
+                        if *hovered
+                            && let Some(m) = editor.menu.as_mut()
+                            && !m.turn_into
+                        {
+                            m.turn_into = true;
+                            cx.notify();
+                        }
+                    }));
+                let turn_flyout = menu_turn_into.then(|| {
+                    let rows: Vec<_> = TurnKind::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &k)| {
+                            let checked = k == cur_kind;
+                            div()
+                                .id(("turn-kind", i))
+                                .flex_shrink_0()
+                                .px(px(10.))
+                                .py(px(3.))
+                                .hover(move |s| s.bg(hover))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(div().w(px(12.)).flex_shrink_0().child(if checked {
+                                    "\u{2713}"
+                                } else {
+                                    ""
+                                }))
+                                .child(k.label())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.turn_into(k, window, cx);
+                                    }),
+                                )
+                        })
+                        .collect();
+                    // An absolute sibling of the (overflow-clipped) menu box —
+                    // out of flow, so it can't inflate the anchored bounds and
+                    // re-trigger the window snap (the slash-flyout lesson).
+                    div()
+                        .absolute()
+                        .left(gpui::relative(1.))
+                        .bottom(px(0.))
+                        .ml(px(2.))
+                        .occlude()
+                        .min_w(px(140.))
+                        .cursor(CursorStyle::Arrow)
+                        .bg(menu_bg)
+                        .border_1()
+                        .border_color(menu_border)
+                        .rounded(px(6.))
+                        .shadow_md()
+                        .text_color(menu_fg)
+                        .text_size(px(13.))
+                        .flex()
+                        .flex_col()
+                        .py(px(4.))
+                        .children(rows)
+                });
+
                 // Deferred + anchored to a window-space top layer with `.occlude()`,
                 // so it renders above the page chrome and captures the wheel — else a
                 // scroll over the popup scrolls the page behind it.
                 gpui::deferred(
                     gpui::anchored().position(anchor).snap_to_window().child(
-                        div()
-                            .relative()
-                            .occlude()
-                            .min_w(px(150.))
-                            // Override the editor's I-beam — the menu is a normal
-                            // pointer surface (children inherit this hitbox's cursor).
-                            .cursor(CursorStyle::Arrow)
-                            .bg(menu_bg)
-                            .border_1()
-                            .border_color(menu_border)
-                            .rounded(px(6.))
-                            // Clip rows + thumb to the rounded box.
-                            .overflow_hidden()
-                            .text_color(menu_fg)
-                            .text_size(px(13.))
-                            // A click anywhere outside the menu dismisses it.
-                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
-                                editor.menu = None;
-                                cx.notify();
-                            }))
-                            .children((count > 0).then(|| {
-                                // The scroll viewport: shows ~6 rows, the rest scroll.
-                                div()
-                                    .id("suggestion-menu")
-                                    .max_h(px(MAX_H))
-                                    .overflow_y_scroll()
-                                    .track_scroll(&scroll)
-                                    .flex()
-                                    .flex_col()
-                                    .py(px(PAD))
-                                    .children(rows)
-                            }))
-                            .children((count > 0).then(|| div().h(px(1.)).bg(menu_border)))
-                            .child(clipboard)
-                            .children(thumb),
+                        div().relative().children(turn_flyout).child(
+                            div()
+                                .relative()
+                                .occlude()
+                                .min_w(px(150.))
+                                // Override the editor's I-beam — the menu is a normal
+                                // pointer surface (children inherit this hitbox's cursor).
+                                .cursor(CursorStyle::Arrow)
+                                .bg(menu_bg)
+                                .border_1()
+                                .border_color(menu_border)
+                                .rounded(px(6.))
+                                .shadow_md()
+                                // Clip rows + thumb to the rounded box.
+                                .overflow_hidden()
+                                .text_color(menu_fg)
+                                .text_size(px(13.))
+                                // A click anywhere outside the menu dismisses it.
+                                .on_mouse_down_out(cx.listener(
+                                    |editor, _: &MouseDownEvent, _, cx| {
+                                        editor.menu = None;
+                                        cx.notify();
+                                    },
+                                ))
+                                .children(format_bar)
+                                .children(has_sel.then(|| div().h(px(1.)).bg(menu_border)))
+                                .children((count > 0).then(|| {
+                                    // The scroll viewport: shows ~6 rows, the rest scroll.
+                                    div()
+                                        .id("suggestion-menu")
+                                        .max_h(px(MAX_H))
+                                        .overflow_y_scroll()
+                                        .track_scroll(&scroll)
+                                        .flex()
+                                        .flex_col()
+                                        .py(px(PAD))
+                                        .children(rows)
+                                }))
+                                .children((count > 0).then(|| div().h(px(1.)).bg(menu_border)))
+                                .child(clipboard)
+                                .child(div().h(px(1.)).bg(menu_border))
+                                .child(div().flex().flex_col().py(px(4.)).child(turn_row))
+                                .children(thumb),
+                        ),
                     ),
                 )
             }))
@@ -4359,13 +5784,125 @@ impl Render for EditorState {
                 const ROW_H: f32 = 24.0;
                 const DIV_H: f32 = 9.0;
                 const PAD: f32 = 4.0;
-                const MAX_H: f32 = 240.0;
-                // Rows in three groups (insert / delete / align) with a divider before
-                // the delete group (index 4) and the align group (index 6).
+                const MAX_H: f32 = 480.0;
+                // Cditor-style grouped rows: a glyph column, a checkmark on the
+                // current align/style, and the destructive group in red.
+                let danger = st.map_or(rgb(0xE5484D).into(), |s| s.popover_danger);
+                let cur_align = self.caret_table_align();
+                let cur_style = self
+                    .caret_table_region()
+                    .map(|r| r.style)
+                    .unwrap_or_default();
+                use markdown_syntax::TableStyle as TS;
+                enum Row {
+                    Div,
+                    Item {
+                        glyph: &'static str,
+                        label: &'static str,
+                        action: TableMenuAction,
+                        red: bool,
+                        checked: bool,
+                    },
+                }
+                let item = |glyph, label, action| Row::Item {
+                    glyph,
+                    label,
+                    action,
+                    red: false,
+                    checked: false,
+                };
+                let specs = [
+                    item("↑", "Insert row above", TableMenuAction::InsertRowAbove),
+                    item("↓", "Insert row below", TableMenuAction::InsertRowBelow),
+                    item("⧉", "Duplicate row", TableMenuAction::DuplicateRow),
+                    Row::Div,
+                    item("←", "Insert column left", TableMenuAction::InsertColLeft),
+                    item("→", "Insert column right", TableMenuAction::InsertColRight),
+                    Row::Div,
+                    Row::Item {
+                        glyph: "",
+                        label: "Align left",
+                        action: TableMenuAction::AlignLeft,
+                        red: false,
+                        checked: cur_align == Some(CellAlign::Left),
+                    },
+                    Row::Item {
+                        glyph: "",
+                        label: "Align center",
+                        action: TableMenuAction::AlignCenter,
+                        red: false,
+                        checked: cur_align == Some(CellAlign::Center),
+                    },
+                    Row::Item {
+                        glyph: "",
+                        label: "Align right",
+                        action: TableMenuAction::AlignRight,
+                        red: false,
+                        checked: cur_align == Some(CellAlign::Right),
+                    },
+                    Row::Div,
+                    Row::Item {
+                        glyph: "▦",
+                        label: "Grid style",
+                        action: TableMenuAction::SetStyle(None),
+                        red: false,
+                        checked: cur_style == TS::Grid,
+                    },
+                    Row::Item {
+                        glyph: "▤",
+                        label: "Striped style",
+                        action: TableMenuAction::SetStyle(Some("striped")),
+                        red: false,
+                        checked: cur_style == TS::Striped,
+                    },
+                    Row::Item {
+                        glyph: "▥",
+                        label: "Header style",
+                        action: TableMenuAction::SetStyle(Some("header")),
+                        red: false,
+                        checked: cur_style == TS::Header,
+                    },
+                    Row::Item {
+                        glyph: "─",
+                        label: "Minimal style",
+                        action: TableMenuAction::SetStyle(Some("minimal")),
+                        red: false,
+                        checked: cur_style == TS::Minimal,
+                    },
+                    Row::Div,
+                    item("⊞", "Copy as Markdown", TableMenuAction::CopyTable),
+                    Row::Div,
+                    Row::Item {
+                        glyph: "✕",
+                        label: "Delete row",
+                        action: TableMenuAction::DeleteRow,
+                        red: true,
+                        checked: false,
+                    },
+                    Row::Item {
+                        glyph: "✕",
+                        label: "Delete column",
+                        action: TableMenuAction::DeleteColumn,
+                        red: true,
+                        checked: false,
+                    },
+                    Row::Item {
+                        glyph: "✕",
+                        label: "Delete table",
+                        action: TableMenuAction::DeleteTable,
+                        red: true,
+                        checked: false,
+                    },
+                ];
+                let n_items = specs
+                    .iter()
+                    .filter(|r| matches!(r, Row::Item { .. }))
+                    .count();
+                let n_divs = specs.len() - n_items;
                 let mut rows: Vec<gpui::AnyElement> = Vec::new();
-                for (i, &(label, action)) in TableMenuAction::ITEMS.iter().enumerate() {
-                    if i == 4 || i == 6 || i == 9 {
-                        rows.push(
+                for (i, spec) in specs.into_iter().enumerate() {
+                    match spec {
+                        Row::Div => rows.push(
                             div()
                                 .flex_shrink_0()
                                 .h(px(1.))
@@ -4373,29 +5910,53 @@ impl Render for EditorState {
                                 .mx(px(8.))
                                 .bg(divider)
                                 .into_any_element(),
-                        );
+                        ),
+                        Row::Item {
+                            glyph,
+                            label,
+                            action,
+                            red,
+                            checked,
+                        } => {
+                            let fg = if red { danger } else { menu_fg };
+                            let mut glyph_c = fg;
+                            glyph_c.a *= 0.7;
+                            rows.push(
+                                div()
+                                    .id(("table-menu-row", i))
+                                    .flex_shrink_0()
+                                    .px(px(10.))
+                                    .py(px(3.))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.))
+                                    .text_color(fg)
+                                    .hover(move |s| s.bg(hover))
+                                    .child(
+                                        div()
+                                            .w(px(16.))
+                                            .flex_none()
+                                            .text_color(glyph_c)
+                                            .child(glyph),
+                                    )
+                                    .child(div().flex_1().child(SharedString::from(label)))
+                                    .children(checked.then(|| div().text_color(glyph_c).child("✓")))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            action.apply(editor, cx);
+                                        }),
+                                    )
+                                    .into_any_element(),
+                            );
+                        }
                     }
-                    rows.push(
-                        div()
-                            .id(("table-menu-row", i))
-                            .flex_shrink_0()
-                            .px(px(10.))
-                            .py(px(3.))
-                            .hover(move |s| s.bg(hover))
-                            .child(SharedString::from(label))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    action.apply(editor, cx);
-                                }),
-                            )
-                            .into_any_element(),
-                    );
                 }
                 // Scrollbar thumb, shown when the items overflow the cap — sized from
                 // the content height + positioned from the live scroll offset.
-                let rows_h = TableMenuAction::ITEMS.len() as f32 * ROW_H + 3.0 * DIV_H;
+                let rows_h = n_items as f32 * ROW_H + n_divs as f32 * DIV_H;
                 let view_h = MAX_H - 2.0 * PAD;
                 let thumb = (rows_h > view_h).then(|| {
                     let scrolled =
@@ -4416,12 +5977,13 @@ impl Render for EditorState {
                         div()
                             .relative()
                             .occlude()
-                            .min_w(px(170.))
+                            .min_w(px(190.))
                             .cursor(CursorStyle::Arrow)
                             .bg(menu_bg)
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(menu_fg)
                             .text_size(px(13.))
@@ -4474,6 +6036,7 @@ impl Render for EditorState {
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(menu_fg)
                             .text_size(px(13.))
@@ -4525,6 +6088,7 @@ impl Render for EditorState {
                             .border_1()
                             .border_color(menu_border)
                             .rounded(px(6.))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(menu_fg)
                             .text_size(px(13.))
@@ -4549,6 +6113,97 @@ impl Render for EditorState {
                                         }),
                                     ),
                             ),
+                    ),
+                )
+            }))
+            .children(self.code_lang_menu.map(|(row, anchor)| {
+                // The code block's language picker (Cditor-inspired): the host's
+                // highlighter languages, scrollable past the cap, current one
+                // checked. Selecting rewrites the opening fence (one undo step).
+                let st = self.markdown_style.as_ref();
+                let menu_bg = st.map_or(rgb(0x26262b).into(), |s| s.popover_bg);
+                let menu_border = st.map_or(rgb(0x45454c).into(), |s| s.popover_border);
+                let menu_fg = st.map_or(rgb(0xe6e6e6).into(), |s| s.popover_fg);
+                let hover = st.map_or(rgba(0x2f6fd628).into(), |s| s.popover_hover);
+                let mut thumb_c = st.map_or(rgba(0xffffff66).into(), |s| s.marker);
+                thumb_c.a = 0.5;
+                let current = self.code_block_at(row).map(|(l, _)| l).unwrap_or_default();
+                const ROW_H: f32 = 22.0;
+                const MAX_H: f32 = 260.0;
+                const PAD: f32 = 4.0;
+                let langs = self.code_langs.clone();
+                let rows_h = langs.len() as f32 * ROW_H;
+                let view_h = MAX_H - 2.0 * PAD;
+                let thumb = (rows_h > view_h).then(|| {
+                    let scrolled =
+                        (-f32::from(self.code_lang_scroll.offset().y)).clamp(0.0, rows_h - view_h);
+                    let thumb_h = (view_h * view_h / rows_h).max(24.0);
+                    let thumb_top = PAD + scrolled / (rows_h - view_h) * (view_h - thumb_h);
+                    div()
+                        .absolute()
+                        .top(px(thumb_top))
+                        .right(px(2.))
+                        .w(px(6.))
+                        .h(px(thumb_h))
+                        .rounded(px(3.))
+                        .bg(thumb_c)
+                });
+                gpui::deferred(
+                    gpui::anchored().position(anchor).snap_to_window().child(
+                        div()
+                            .relative()
+                            .occlude()
+                            .min_w(px(140.))
+                            .cursor(CursorStyle::Arrow)
+                            .bg(menu_bg)
+                            .border_1()
+                            .border_color(menu_border)
+                            .rounded(px(6.))
+                            .shadow_md()
+                            .overflow_hidden()
+                            .text_color(menu_fg)
+                            .text_size(px(13.))
+                            .py(px(PAD))
+                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
+                                editor.code_lang_menu = None;
+                                cx.notify();
+                            }))
+                            .child(
+                                div()
+                                    .id("code-lang-list")
+                                    .max_h(px(MAX_H - 2.0 * PAD))
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.code_lang_scroll)
+                                    .children(langs.into_iter().enumerate().map(|(i, lang)| {
+                                        let is_current = *lang == current
+                                            || (current.is_empty() && *lang == *"text");
+                                        let label: SharedString = if is_current {
+                                            format!("{lang} ✓").into()
+                                        } else {
+                                            lang.clone()
+                                        };
+                                        div()
+                                            .id(("code-lang-row", i))
+                                            .flex_shrink_0()
+                                            .h(px(ROW_H))
+                                            .px(px(10.))
+                                            .py(px(2.))
+                                            .hover(move |s| s.bg(hover))
+                                            .child(label)
+                                            .on_mouse_down(
+                                                MouseButton::Left,
+                                                cx.listener(
+                                                    move |editor, _: &MouseDownEvent, _, cx| {
+                                                        cx.stop_propagation();
+                                                        editor.code_lang_menu = None;
+                                                        editor.set_code_lang(row, &lang, cx);
+                                                    },
+                                                ),
+                                            )
+                                            .into_any_element()
+                                    })),
+                            )
+                            .children(thumb),
                     ),
                 )
             }))
@@ -4736,6 +6391,30 @@ impl Block {
 /// full editor width). Each line carries the block color, the shared box width
 /// (back-patched once the block's extent is known), and whether it's the
 /// first/last visible line (to round the box's top/bottom corners).
+/// Last-frame hit rects for one code card's chrome (see `code_chip_rects`).
+#[derive(Clone)]
+struct CodeChipHit {
+    lang: Bounds<Pixels>,
+    copy: Bounds<Pixels>,
+    fence_row: usize,
+}
+
+/// A code card's top-right chrome, laid out in prepaint: the language tag and
+/// Copy button (Cditor-inspired, issue #16). Geometry is window-space; paint
+/// draws at these bounds and the hitboxes flip the cursor.
+struct CodeChip {
+    lang_text: SharedString,
+    lang_bounds: Bounds<Pixels>,
+    copy_bounds: Bounds<Pixels>,
+    fence_row: usize,
+    /// Card background — the labels sit on an opaque pill of it so they stay
+    /// readable over a long first line.
+    bg: Hsla,
+    fg: Hsla,
+    lang_hb: Hitbox,
+    copy_hb: Hitbox,
+}
+
 #[derive(Clone, Copy)]
 struct CodeBg {
     color: Hsla,
@@ -4772,6 +6451,10 @@ struct TableRow {
 
 /// A per-line "gutter" decoration: a left-margin treatment that hides its source
 /// marker and renders something in its place, with the body text inset to make
+/// Task checkbox edge, as a fraction of the line's font size — shared by the
+/// shaping (body inset), the pointer hitbox, and the paint so they agree.
+const CHECKBOX_SCALE: f32 = 0.9;
+
 /// room. Covers blockquotes now; list bullets + task checkboxes reuse it.
 #[derive(Clone, Copy)]
 enum LineMark {
@@ -4816,6 +6499,8 @@ enum LineMark {
         text_inset: Pixels,
         checked: bool,
         color: Hsla,
+        /// Fill for a done box (the host's link/accent color; white check on top).
+        accent: Hsla,
     },
     /// Thematic break (`---`): a full-width muted divider painted in place of the
     /// source; the line has no body text (reveal-on-caret shows the raw `---`).
@@ -4838,20 +6523,65 @@ impl LineMark {
 /// source line, its row height, an optional inline-image widget, an optional
 /// fenced-code-block background, an optional table-row grid, the display→source
 /// map, and an optional gutter decoration (blockquote / list / checkbox).
-type ShapedLines = (
-    Vec<WrappedLine>,
-    Vec<Pixels>,
-    Vec<Option<Block>>,
-    Vec<Option<CodeBg>>,
-    Vec<Option<TableRow>>,
-    // Per-line display→source byte map for lines with markers hidden (W6); `None`
-    // when the displayed text equals the source (revealed / code / widget lines).
-    Vec<Option<Vec<usize>>>,
-    Vec<Option<LineMark>>,
-    // Per-line inline `$…$` formulas painted over spacers in the shaped text (empty for
-    // lines without any).
-    Vec<Vec<InlineMath>>,
-);
+/// One shaped document: per-line parallel channels, all the same length —
+/// the per-line loop's normal push and [`ShapedDoc::push_placeholder`] are
+/// the only writers, so the lockstep invariant lives here.
+#[derive(Default)]
+struct ShapedDoc {
+    wrapped: Vec<WrappedLine>,
+    heights: Vec<Pixels>,
+    widgets: Vec<Option<Block>>,
+    backgrounds: Vec<Option<CodeBg>>,
+    tables: Vec<Option<TableRow>>,
+    /// Per-line display→source byte map for lines with markers hidden (W6);
+    /// `None` when the displayed text equals the source. Shared with the
+    /// line-run cache (a hit re-uses the same allocation across frames).
+    maps: Vec<Option<std::rc::Rc<Vec<usize>>>>,
+    marks: Vec<Option<LineMark>>,
+    /// Per-line inline `$…$` formulas painted over spacers (empty when none).
+    inline_maths: Vec<Vec<InlineMath>>,
+    /// Per-line wrap-row count. Geometry (line tops, total height) reads THIS,
+    /// not `wrap_boundaries()` — a windowed-out line's `WrappedLine` is an
+    /// empty placeholder, but its cached count keeps the layout exact.
+    wrap_rows: Vec<usize>,
+}
+
+impl ShapedDoc {
+    /// Push one line that renders as something other than shaped text — a
+    /// widget/collapsed/windowed-out line: an empty placeholder `WrappedLine`,
+    /// the given height/widget/mark, and `rows` wrap rows.
+    #[allow(clippy::too_many_arguments)]
+    fn push_placeholder(
+        &mut self,
+        window: &mut Window,
+        base_font_size: Pixels,
+        wrap_width: Option<Pixels>,
+        h: Pixels,
+        widget: Option<Block>,
+        mark: Option<LineMark>,
+        rows: usize,
+    ) {
+        let wl = shape_runs(
+            window,
+            &SharedString::default(),
+            base_font_size,
+            &[],
+            wrap_width,
+        )
+        .into_iter()
+        .next()
+        .expect("a line always shapes to one wrapped line");
+        self.wrapped.push(wl);
+        self.heights.push(h);
+        self.widgets.push(widget);
+        self.backgrounds.push(None);
+        self.tables.push(None);
+        self.maps.push(None);
+        self.marks.push(mark);
+        self.inline_maths.push(Vec::new());
+        self.wrap_rows.push(rows);
+    }
+}
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
 /// cap to the content width (or an explicit `{width=N}`), preserving aspect.
@@ -4914,7 +6644,7 @@ fn set_image_width(line: &str, width: u32) -> String {
 /// as full source). The prepaint cursor/selection pass this frame's fresh map
 /// (the committed `EditorState::offset_maps` lags a frame); event handlers go
 /// through [`EditorState::display_col`], which uses the committed map.
-fn display_col_in(map: Option<&Vec<usize>>, source_col: usize) -> usize {
+fn display_col_in(map: Option<&std::rc::Rc<Vec<usize>>>, source_col: usize) -> usize {
     match map {
         // The first display byte whose source ≥ `source_col` (a leftmost lower-bound). Unlike
         // `binary_search`, this is deterministic when several display bytes share one source
@@ -5167,27 +6897,25 @@ fn shape_document(
     // here (driving its row height) so the layout reflows live, rather than the
     // image painting over a stale, saved-size row.
     resize: Option<ImageResize>,
+    // An in-progress column-border drag: that column takes the live width.
+    col_resize: Option<TableColResize>,
+    // The content's cached structural scans (see [`ScanData`]).
+    scan: &ScanData,
+    // Cross-frame shaping caches (see [`ShapeCaches`]).
+    caches: &ShapeCaches,
+    // The shaping window, in element-local y (quantized, one frame stale):
+    // plain lines wholly outside it may skip shaping when their height is
+    // cached. `None` = shape everything (first frame, raw view).
+    band: Option<(Pixels, Pixels)>,
     // Collapsed headings (trimmed source lines) — their section lines fold to
     // height 0 like a folded callout's body.
     folded_headings: &std::collections::HashSet<String>,
-) -> ShapedLines {
-    let mut wrapped = Vec::new();
-    let mut heights = Vec::new();
-    let mut widgets = Vec::new();
-    let mut backgrounds: Vec<Option<CodeBg>> = Vec::new();
-    let mut tables = Vec::new();
-    let mut maps = Vec::new();
-    let mut marks: Vec<Option<LineMark>> = Vec::new();
-    let mut inline_maths: Vec<Vec<InlineMath>> = Vec::new();
+) -> ShapedDoc {
+    let mut out = ShapedDoc::default();
     let lines: Vec<&str> = content.split('\n').collect();
     // Ordered items paint their computed CommonMark position, not their
     // literal source digits (the reader renumbers the same way).
-    let ordered_nums = markdown_syntax::ordered_numbers(&lines);
-    // Fenced-code-block regions; a block's ``` fence lines collapse (W6) unless
-    // the caret is inside that block (then they show, so they stay editable).
-    let code_regions = md
-        .map(|_| markdown_syntax::code_regions(content))
-        .unwrap_or_default();
+    let ordered_nums = &scan.ordered;
     // Rows a (non-empty) selection touches. A selected block reveals its raw
     // source just like the caret's block does, so what's highlighted is what a
     // copy carries — the per-line pass below already reveals inline markers on
@@ -5210,11 +6938,13 @@ fn shape_document(
     // block and the host has a rendered bitmap. The diagram paints on the block's
     // first line; the rest collapse. Caret inside / still rendering → raw code.
     let mermaid: Vec<(Range<usize>, BlockImg)> = match block_mermaid.filter(|_| md.is_some()) {
-        Some(f) => markdown_syntax::mermaid_blocks(content)
-            .into_iter()
+        Some(f) => scan
+            .mermaid
+            .iter()
             .filter(|(range, _)| {
                 caret_row.is_none_or(|cr| !range.contains(&cr)) && !sel_hits(range)
             })
+            .cloned()
             .filter_map(|(range, source)| {
                 // Sized by the provider's logical dimensions, like math below —
                 // never texture pixels ÷ window scale factor.
@@ -5242,9 +6972,11 @@ fn shape_document(
     // $$…$$ math blocks ready to render: caret outside + a typeset bitmap ready. Like
     // mermaid, the equation paints on the block's first line, the rest collapse.
     let math: Vec<(Range<usize>, BlockImg)> = match block_math.filter(|_| md.is_some()) {
-        Some(f) => markdown_syntax::math_regions(content)
-            .into_iter()
+        Some(f) => scan
+            .math
+            .iter()
             .filter(|r| caret_row.is_none_or(|cr| !r.range.contains(&cr)) && !sel_hits(&r.range))
+            .cloned()
             .filter_map(|r| {
                 // Sized by the provider's logical dimensions — NOT texture pixels
                 // ÷ window scale factor (see [`BlockMathFn`]: the raster's density
@@ -5276,9 +7008,11 @@ fn shape_document(
     // its lines collapse; the caret entering the region is filtered out here so
     // the raw source shows for editing.
     let props: Vec<(Range<usize>, PropPanel)> = match md {
-        Some(st) => markdown_syntax::property_regions(content)
-            .into_iter()
+        Some(st) => scan
+            .props
+            .iter()
             .filter(|r| caret_row.is_none_or(|cr| !r.contains(&cr)) && !sel_hits(r))
+            .cloned()
             .map(|r| {
                 let panel = build_prop_panel(
                     &lines,
@@ -5300,13 +7034,15 @@ fn shape_document(
     // Folded callouts (`> [!NOTE]-`): each region's BODY lines collapse (the
     // marker line stays, painting the label + chevron) unless the caret is
     // inside the region — reveal-on-caret, so arrowing in unfolds for editing.
-    let mut alert_folds: Vec<Range<usize>> = md
-        .map(|_| markdown_syntax::alert_fold_regions(content))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(r, folded)| *folded && caret_row.is_none_or(|cr| !r.contains(&cr)))
-        .map(|(r, _)| r)
-        .collect();
+    let mut alert_folds: Vec<Range<usize>> = if md.is_some() {
+        scan.alert_folds
+            .iter()
+            .filter(|(r, folded)| *folded && caret_row.is_none_or(|cr| !r.contains(&cr)))
+            .map(|(r, _)| r.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Collapsed heading sections fold the same way: the heading line stays
     // (its chevron paints there), the section's lines go to height 0, and the
     // caret STRICTLY INSIDE THE BODY reveals — the fold state itself is
@@ -5333,21 +7069,72 @@ fn shape_document(
         Vec::new()
     };
     // Table regions (W4c); content-fit column widths shared by each region's rows.
-    let regions = md
-        .map(|_| markdown_syntax::table_regions(content))
-        .unwrap_or_default();
-    let mut region_cols: Vec<Vec<Pixels>> = Vec::with_capacity(regions.len());
-    for r in &regions {
-        region_cols.push(table_column_widths(
-            &lines,
-            r,
-            window,
-            base_font,
-            base_font_size,
-            base_color,
-            wrap_width,
-        ));
+    let regions: &[markdown_syntax::TableRegion] = if md.is_some() { &scan.tables } else { &[] };
+    // Shared component of the per-line run-cache key (see `CachedLineRuns`).
+    let run_epoch = line_run_epoch(base_font, md);
+    // Per-row content-key memo, valid for this (scan generation, epoch).
+    let row_keys_epoch = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        scan.generation.hash(&mut h);
+        run_epoch.hash(&mut h);
+        Some(h.finish())
+    };
+    {
+        let mut rk = caches.row_keys.borrow_mut();
+        if rk.0 != row_keys_epoch || rk.1.len() != lines.len() {
+            *rk = (row_keys_epoch, vec![None; lines.len()]);
+        }
     }
+    // Measured column widths, cached across frames: rebuilt only when the
+    // tables' source text, the wrap width, the font epoch, or a live column
+    // drag changes — measuring shaped every cell of every table per call.
+    let region_cols: std::rc::Rc<Vec<Vec<Pixels>>> = {
+        let cols_key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            // The scan generation covers every table byte and the `cols=`
+            // attr — no need to rehash the table text per frame.
+            scan.generation.hash(&mut h);
+            f32::from(base_font_size).to_bits().hash(&mut h);
+            run_epoch.hash(&mut h);
+            if let Some(r) = col_resize {
+                r.header_row.hash(&mut h);
+                r.col.hash(&mut h);
+                r.width.to_bits().hash(&mut h);
+            }
+            h.finish()
+        };
+        let hit = caches
+            .region_cols
+            .borrow()
+            .as_ref()
+            .filter(|(k, cols)| *k == cols_key && cols.len() == regions.len())
+            .map(|(_, cols)| cols.clone());
+        match hit {
+            Some(cols) => cols,
+            None => {
+                let cols: std::rc::Rc<Vec<Vec<Pixels>>> = std::rc::Rc::new(
+                    regions
+                        .iter()
+                        .map(|r| {
+                            table_column_widths(
+                                &lines,
+                                r,
+                                window,
+                                base_font,
+                                base_font_size,
+                                base_color,
+                                col_resize,
+                            )
+                        })
+                        .collect(),
+                );
+                *caches.region_cols.borrow_mut() = Some((cols_key, cols.clone()));
+                cols
+            }
+        }
+    };
     let table_row_h = base_font_size * LINE_HEIGHT_RATIO + px(12.);
     // Fenced-code-block tracking: collect a block's line indices (so its box can
     // be sized to its widest line + the first/last line marked for rounding) and
@@ -5383,7 +7170,10 @@ fn shape_document(
                                 .iter()
                                 .filter_map(|(r, style)| {
                                     let (a, b) = (r.start.max(start), r.end.min(end));
-                                    (a < b).then_some((a - start..b - start, *style))
+                                    // `then` (lazy), not `then_some`: the arg is
+                                    // evaluated eagerly, and `b - start` underflows
+                                    // for a token wholly before this line.
+                                    (a < b).then(|| (a - start..b - start, *style))
                                 })
                                 .collect();
                             if !in_line.is_empty() {
@@ -5404,8 +7194,15 @@ fn shape_document(
     // while blockquote lines continue, cleared by anything else — so every
     // line of the alert gets the kind's bar color.
     let mut alert_run: Option<Hsla> = None;
+    let mut y_acc = px(0.);
     for (idx, &line) in lines.iter().enumerate() {
         let line_end = line_start + line.len();
+        // Running top of this line — mirrors the prepaint `line_tops` walk
+        // (including `line_pads`) so the band test is exact.
+        if idx > 0 {
+            let (tp, bp) = line_pads(out.backgrounds[idx - 1], out.tables[idx - 1].as_ref());
+            y_acc += tp + bp + out.heights[idx - 1] * out.wrap_rows[idx - 1] as f32;
+        }
 
         // A ready mermaid block renders as its diagram (on the first line) with the
         // rest of the block collapsed — bypassing the normal per-line handling. Its
@@ -5419,24 +7216,7 @@ fn shape_document(
             } else {
                 (px(0.), None)
             };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
+            out.push_placeholder(window, base_font_size, wrap_width, h, widget, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -5448,24 +7228,7 @@ fn shape_document(
             && (start_row..=end_row).contains(&idx)
         {
             let h = if idx == start_row { gap_h } else { px(0.) };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(None);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
+            out.push_placeholder(window, base_font_size, wrap_width, h, None, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -5479,24 +7242,7 @@ fn shape_document(
             } else {
                 (px(0.), None)
             };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
+            out.push_placeholder(window, base_font_size, wrap_width, h, widget, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -5511,24 +7257,7 @@ fn shape_document(
             && let Some(inner) = gpui_markdown::syntax::embed_line(line)
             && let Some(h) = embed_view.and_then(|f| f(inner).map(|(_, h)| h))
         {
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(None);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
+            out.push_placeholder(window, base_font_size, wrap_width, h, None, None, 1);
             line_start = line_end + 1;
             continue;
         }
@@ -5540,24 +7269,7 @@ fn shape_document(
             .iter()
             .any(|r| r.contains(&idx) && idx != r.start)
         {
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(px(0.));
-            widgets.push(None);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
+            out.push_placeholder(window, base_font_size, wrap_width, px(0.), None, None, 1);
             line_start = line_end + 1;
             continue;
         }
@@ -5571,24 +7283,7 @@ fn shape_document(
             } else {
                 (px(0.), None)
             };
-            let wl = shape_runs(
-                window,
-                &SharedString::default(),
-                base_font_size,
-                &[],
-                wrap_width,
-            )
-            .into_iter()
-            .next()
-            .expect("a line always shapes to one wrapped line");
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(None);
-            tables.push(None);
-            maps.push(None);
-            marks.push(None);
-            inline_maths.push(Vec::new());
+            out.push_placeholder(window, base_font_size, wrap_width, h, widget, None, 1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -5627,10 +7322,10 @@ fn shape_document(
         // A ``` fence line collapses (height 0, no text) unless the caret is in
         // its block — so a code block reads as just its boxed body (W6), with the
         // fences re-appearing while you edit inside it.
-        let collapse_fence = is_fence
-            && !code_regions.iter().any(|r| {
-                r.contains(&idx) && (caret_row.is_some_and(|cr| r.contains(&cr)) || sel_hits(r))
-            });
+        // A fence stays hidden even while editing inside the block (the card's
+        // language tag shows/edits the language) — it reveals only with the
+        // caret or a selection on the fence line itself.
+        let collapse_fence = is_fence && caret_row != Some(idx) && !sel_hits(&(idx..idx + 1));
         // A `<!-- table:STYLE -->` or `<!-- math:ALIGN -->` marker line collapses (hidden)
         // too, unless the caret lands on it — so the marker stays out of the way but editable.
         let collapse_marker = caret_row != Some(idx)
@@ -5645,7 +7340,7 @@ fn shape_document(
             let bw = code_w + px(2. * CODE_INSET);
             let last = *code_block.last().unwrap();
             for &bi in &code_block {
-                if let Some(cb) = &mut backgrounds[bi] {
+                if let Some(cb) = &mut out.backgrounds[bi] {
                     cb.width = bw;
                     cb.bottom = bi == last;
                 }
@@ -5782,7 +7477,10 @@ fn shape_document(
         let chip_line =
             md.is_some() && img_row.is_some() && !matches!(widget, Some(Block::Image(_)));
         let sel_touches = !sel_empty && selection.0 <= line_end && selection.1 >= line_start;
-        let full_source = sel_touches || (caret_col.is_some() && chip_line);
+        // A selection no longer reveals raw source (Cditor-style: formatting
+        // markers are hidden everywhere) — selected lines keep the hidden view;
+        // structural markers still come back via `reveal_inline`.
+        let full_source = caret_col.is_some() && chip_line;
         // This line's diagnostics, clipped + shifted to line-local byte offsets —
         // used as spell-check squiggles whether the line shows source or hides its
         // markers.
@@ -5859,7 +7557,7 @@ fn shape_document(
                 // Reader-style geometry: each nesting level advances by
                 // marker + gap + (spaces × 4.5), not the raw spaces' width.
                 let depth = indent as f32 / tab_indent.max(1) as f32;
-                let box_w = base_font_size * 0.78;
+                let box_w = base_font_size * CHECKBOX_SCALE;
                 let level =
                     box_w + px(LIST_TEXT_GAP) + px(LIST_LEVEL_PER_SPACE) * tab_indent as f32;
                 let bullet_x = level * depth;
@@ -5871,6 +7569,7 @@ fn shape_document(
                         text_inset,
                         checked,
                         color: st.quote,
+                        accent: st.link,
                     },
                 ))
             } else if let Some((plen, indent, ordered, _)) = markdown_syntax::list_prefix(line) {
@@ -5940,7 +7639,7 @@ fn shape_document(
         // indent mid-select. The BODY still reveals its inline markers (see
         // `reveal_inline` below) so what's highlighted is what's copied.
         let full_source = full_source && gutter.is_none();
-        let reveal_inline = sel_touches && gutter.is_some();
+        let reveal_inline = sel_touches;
         let mark = if is_rule {
             md.map(|st| LineMark::Rule(st.rule))
         } else {
@@ -5970,12 +7669,26 @@ fn shape_document(
         };
         // Inline `$…$` formulas spliced into this line (populated by the hidden-markers branch).
         let mut line_inline_math: Vec<InlineMath> = Vec::new();
+        // Set (in the markdown branch below) when this line is eligible for the
+        // per-line height cache — its (row height, wrap rows) get recorded at
+        // push time so a later frame can window it out without shaping.
+        let mut plain_hkey: Option<u64> = None;
         let (shaped_text, runs, bg, map) = if collapse_fence || collapse_marker {
             // Hidden ``` fence line or table-style marker: nothing, zero height.
-            (String::new(), Vec::new(), None, None)
+            (
+                SharedString::default(),
+                std::rc::Rc::new(Vec::new()),
+                None,
+                None,
+            )
         } else if is_rule {
             // Thematic break: the divider is painted from the mark; no body text.
-            (String::new(), Vec::new(), None, None)
+            (
+                SharedString::default(),
+                std::rc::Rc::new(Vec::new()),
+                None,
+                None,
+            )
         } else if let Some(st) = md.filter(|_| is_code) {
             // Monospace runs; ``` delimiters dimmed. A highlighted line (from
             // the host's code highlighter) splits into token-colored runs with
@@ -6022,8 +7735,8 @@ fn shape_document(
             // First visible code line of the block rounds the box's top corners.
             let top = code_block.is_empty();
             (
-                line.to_string(),
-                runs,
+                SharedString::from(line.to_string()),
+                std::rc::Rc::new(runs),
                 Some(CodeBg {
                     color: st.code_bg,
                     width: px(0.), // back-patched to the block's widest line
@@ -6036,66 +7749,239 @@ fn shape_document(
         {
             // Markers hidden (except the caret's construct): shape the display
             // string + keep a map back to source.
-            let (disp, runs, m) = markdown_syntax::hidden_runs(
-                line,
-                base_font,
-                line_base,
-                &line_diags,
-                caret_col,
-                reveal_prefix,
-                hide_prefix,
-                reveal_inline,
-                st,
-            );
+            // Cross-frame cache: most repaints (caret blink, hover, another
+            // editor's edit) rebuild identical lines — reuse the built display
+            // string + runs when the line and its reveal state are unchanged.
+            // CONTENT part of the key, memoized per row for the current
+            // (generation, epoch) — steady-state frames skip rehashing the
+            // line's bytes. The caret/reveal parts vary per frame and are
+            // cheap (a hash of four small values).
+            let ckey = {
+                let cached = caches.row_keys.borrow().1.get(idx).copied().flatten();
+                match cached {
+                    Some(k) => k,
+                    None => {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        line.hash(&mut h);
+                        line_base.a.to_bits().hash(&mut h);
+                        line_base.h.to_bits().hash(&mut h);
+                        line_base.s.to_bits().hash(&mut h);
+                        line_base.l.to_bits().hash(&mut h);
+                        for d in &line_diags {
+                            d.range.start.hash(&mut h);
+                            d.range.end.hash(&mut h);
+                        }
+                        run_epoch.hash(&mut h);
+                        let k = h.finish();
+                        if let Some(slot) = caches.row_keys.borrow_mut().1.get_mut(idx) {
+                            *slot = Some(k);
+                        }
+                        k
+                    }
+                }
+            };
+            let key = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                ckey.hash(&mut h);
+                caret_col.hash(&mut h);
+                reveal_prefix.hash(&mut h);
+                hide_prefix.hash(&mut h);
+                reveal_inline.hash(&mut h);
+                h.finish()
+            };
+            // Windowed shaping: an offscreen plain text line whose height is
+            // already cached skips run-building and shaping entirely — the
+            // cached (row height, wrap rows) keep the layout exact, and its
+            // placeholder WrappedLine is never painted (paint culls the same
+            // band). Never skipped: lines with inline math/images (height
+            // depends on async raster providers, not just the text) and
+            // collapsed lines (fold state isn't in the key).
+            let line_wrap_plain = match mark {
+                Some(m) => wrap_width.map(|w| (w - m.inset()).max(px(0.))),
+                None => wrap_width,
+            };
+            let skip_key = (!line.contains('$')
+                && !line.contains("![")
+                && !collapse_fence
+                && !collapse_marker)
+                .then(|| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    key.hash(&mut h);
+                    f32::from(fs).to_bits().hash(&mut h);
+                    line_wrap_plain
+                        .map(f32::from)
+                        .unwrap_or(-1.)
+                        .to_bits()
+                        .hash(&mut h);
+                    h.finish()
+                });
+            if let (Some((lo, hi)), Some(hk)) = (band, skip_key) {
+                let hit = caches.line_heights.borrow().get(&hk).copied();
+                if let Some((lh_c, wr_c)) = hit {
+                    let total = lh_c * wr_c as f32;
+                    if y_acc > hi || y_acc + total < lo {
+                        // The REAL mark: paint's nesting-guide bookkeeping
+                        // walks offscreen ancestors' marks.
+                        out.push_placeholder(
+                            window,
+                            base_font_size,
+                            wrap_width,
+                            lh_c,
+                            None,
+                            mark,
+                            wr_c,
+                        );
+                        line_start = line_end + 1;
+                        continue;
+                    }
+                }
+            }
+            plain_hkey = skip_key;
+            let cached = caches
+                .line_runs
+                .borrow()
+                .get(&key)
+                .filter(|c| c.src == line && c.line_base == line_base)
+                .map(|c| (c.disp.clone(), c.runs.clone(), c.map.clone()));
+            let (disp, runs, m) = match cached {
+                Some(v) => v,
+                None => {
+                    let (disp, runs, m) = markdown_syntax::hidden_runs(
+                        line,
+                        base_font,
+                        line_base,
+                        &line_diags,
+                        caret_col,
+                        reveal_prefix,
+                        hide_prefix,
+                        reveal_inline,
+                        st,
+                    );
+                    let v = (
+                        SharedString::from(disp),
+                        std::rc::Rc::new(runs),
+                        std::rc::Rc::new(m),
+                    );
+                    caches.line_runs.borrow_mut().insert(
+                        key,
+                        CachedLineRuns {
+                            src: line.to_string(),
+                            line_base,
+                            disp: v.0.clone(),
+                            runs: v.1.clone(),
+                            map: v.2.clone(),
+                        },
+                    );
+                    v
+                }
+            };
+            // A checked task's body renders struck through + muted (the reader
+            // does the same) — a whole-line restyle over the finished runs.
+            let (disp, runs, m) = if matches!(mark, Some(LineMark::Check { checked: true, .. })) {
+                let runs = std::rc::Rc::new(
+                    runs.iter()
+                        .cloned()
+                        .map(|mut r| {
+                            r.strikethrough = Some(gpui::StrikethroughStyle {
+                                thickness: px(1.0),
+                                color: None,
+                            });
+                            r.color = st.quote;
+                            r
+                        })
+                        .collect(),
+                );
+                (disp, runs, m)
+            } else {
+                (disp, runs, m)
+            };
             // Inline `$…$` math AND `![](src)` images: swap each ready one's
             // glyphs for a spacer to paint the raster over (shared machinery).
+            // Span checks gate the calls, so span-less lines (the common case)
+            // keep their shared payloads untouched.
             let (disp, runs, m) = match (block_math, block_math_em) {
-                (Some(mathf), Some(em)) => {
+                (Some(mathf), Some(em)) if !markdown_syntax::inline_math_spans(line).is_empty() => {
                     let (disp, runs, m, im) = shape_inline_math(
-                        window, line, line_start, disp, runs, m, caret_col, base_font, fs, mathf,
+                        window,
+                        line,
+                        line_start,
+                        disp.to_string(),
+                        runs.as_ref().clone(),
+                        m.as_ref().clone(),
+                        caret_col,
+                        base_font,
+                        fs,
+                        mathf,
                         em,
                     );
                     line_inline_math = im;
-                    (disp, runs, m)
+                    (
+                        SharedString::from(disp),
+                        std::rc::Rc::new(runs),
+                        std::rc::Rc::new(m),
+                    )
                 }
                 _ => (disp, runs, m),
             };
             match block_image {
-                Some(imgf) => {
+                Some(imgf) if !markdown_syntax::inline_image_spans(line).is_empty() => {
                     let (disp, runs, m, imgs) = shape_inline_images(
-                        window, line, line_start, disp, runs, m, caret_col, base_font, fs, imgf,
+                        window,
+                        line,
+                        line_start,
+                        disp.to_string(),
+                        runs.as_ref().clone(),
+                        m.as_ref().clone(),
+                        caret_col,
+                        base_font,
+                        fs,
+                        imgf,
                     );
                     line_inline_math.extend(imgs);
-                    (disp, runs, None, Some(m))
+                    (
+                        SharedString::from(disp),
+                        std::rc::Rc::new(runs),
+                        None,
+                        Some(std::rc::Rc::new(m)),
+                    )
                 }
-                None => (disp, runs, None, Some(m)),
+                _ => (disp, runs, None, Some(m)),
             }
         } else {
             // Full source with diagnostics (the caret/selected line, or md off).
             (
-                line.to_string(),
-                markdown_syntax::styled_runs(line, base_font, line_base, &line_diags, md),
+                SharedString::from(line.to_string()),
+                std::rc::Rc::new(markdown_syntax::styled_runs(
+                    line,
+                    base_font,
+                    line_base,
+                    &line_diags,
+                    md,
+                )),
                 None,
                 None,
             )
         };
 
         // Code lines are inset by CODE_INSET on each side; a gutter mark insets the
-        // left only. Either wraps at a correspondingly narrower width.
-        let line_wrap = if is_code {
+        // left only. Either wraps at a correspondingly narrower width. A table
+        // row or widget line (image, chip) never wraps its raw source — a
+        // grid row / the widget renders instead, and a wrapped hidden source
+        // would multiply the row's advance by its wrap count. (Revealed-on-
+        // caret lines have `table`/`widget` = None here and wrap normally.)
+        let line_wrap = if table.is_some() || widget.is_some() {
+            None
+        } else if is_code {
             wrap_width.map(|w| (w - px(2. * CODE_INSET)).max(px(0.)))
         } else if let Some(m) = mark {
             wrap_width.map(|w| (w - m.inset()).max(px(0.)))
         } else {
             wrap_width
         };
-        let shaped = shape_runs(
-            window,
-            &SharedString::from(shaped_text),
-            fs,
-            &runs,
-            line_wrap,
-        );
+        let shaped = shape_runs(window, &shaped_text, fs, &runs, line_wrap);
         if let Some(wl) = shaped.into_iter().next() {
             let h = if collapse_fence || collapse_marker {
                 px(0.)
@@ -6105,7 +7991,39 @@ fn shape_document(
                     // renderer doesn't show it; the first body row's top divider
                     // becomes the header/body border.
                     Some(t) if t.is_separator => px(0.),
-                    Some(_) => table_row_h,
+                    // A drag-narrowed column wraps its cells — the row grows to
+                    // the tallest cell's wrap rows (memoized: this shaped every
+                    // cell per row per frame).
+                    Some(t) => {
+                        let row_key = {
+                            use std::hash::{Hash, Hasher};
+                            let mut h = std::collections::hash_map::DefaultHasher::new();
+                            line.hash(&mut h);
+                            for w in &t.col_widths {
+                                f32::from(*w).to_bits().hash(&mut h);
+                            }
+                            t.is_header.hash(&mut h);
+                            run_epoch.hash(&mut h);
+                            h.finish()
+                        };
+                        let hit = caches.cell_rows.borrow().get(&row_key).copied();
+                        let rows = match hit {
+                            Some(r) => r,
+                            None => {
+                                let r = table_row_wrap_rows(
+                                    window,
+                                    &t.cells,
+                                    &t.col_widths,
+                                    t.is_header,
+                                    base_font,
+                                    base_font_size,
+                                );
+                                caches.cell_rows.borrow_mut().insert(row_key, r);
+                                r
+                            }
+                        };
+                        table_row_h + base_font_size * LINE_HEIGHT_RATIO * (rows - 1) as f32
+                    }
                     None => match widget.as_ref() {
                         // Reserve a little space around an inline image so a list
                         // of photos doesn't stack edge-to-edge.
@@ -6131,18 +8049,25 @@ fn shape_document(
                 }
             };
             let line_w = wl.width();
-            wrapped.push(wl);
-            heights.push(h);
-            widgets.push(widget);
-            backgrounds.push(bg);
-            tables.push(table);
-            maps.push(map);
-            marks.push(mark);
-            inline_maths.push(line_inline_math);
+            if let Some(hk) = plain_hkey {
+                caches
+                    .line_heights
+                    .borrow_mut()
+                    .insert(hk, (h, wl.wrap_boundaries().len() + 1));
+            }
+            out.wrap_rows.push(wl.wrap_boundaries().len() + 1);
+            out.wrapped.push(wl);
+            out.heights.push(h);
+            out.widgets.push(widget);
+            out.backgrounds.push(bg);
+            out.tables.push(table);
+            out.maps.push(map);
+            out.marks.push(mark);
+            out.inline_maths.push(line_inline_math);
             // Track a (visible) code line + its width so the block's box can be
             // sized to its widest line and its last line marked.
             if is_code && !collapse_fence {
-                code_block.push(backgrounds.len() - 1);
+                code_block.push(out.backgrounds.len() - 1);
                 code_w = code_w.max(line_w);
             }
         }
@@ -6154,22 +8079,31 @@ fn shape_document(
         let bw = code_w + px(2. * CODE_INSET);
         let last = *code_block.last().unwrap();
         for &bi in &code_block {
-            if let Some(cb) = &mut backgrounds[bi] {
+            if let Some(cb) = &mut out.backgrounds[bi] {
                 cb.width = bw;
                 cb.bottom = bi == last;
             }
         }
     }
-    (
-        wrapped,
-        heights,
-        widgets,
-        backgrounds,
-        tables,
-        maps,
-        marks,
-        inline_maths,
-    )
+    // Cap the run cache: edits retire entries (each changed line re-keys), so
+    // without a bound it grows one dead entry per keystroke. Clearing wholesale
+    // is fine — the next frame rebuilds only what's visible… which is
+    // everything today, but each rebuild re-primes the cache.
+    {
+        let mut cache = caches.line_runs.borrow_mut();
+        if cache.len() > lines.len() * 2 + 64 {
+            cache.clear();
+        }
+        let mut rows = caches.cell_rows.borrow_mut();
+        if rows.len() > lines.len() * 2 + 64 {
+            rows.clear();
+        }
+        let mut lh = caches.line_heights.borrow_mut();
+        if lh.len() > lines.len() * 2 + 64 {
+            lh.clear();
+        }
+    }
+    out
 }
 
 /// Measure a property region's rows into a [`PropPanel`] with content-fit
@@ -6572,8 +8506,8 @@ pub fn paint_doc_icon(
 }
 
 /// Content-fit column widths for a table region (W4c): each column sized to its
-/// widest cell (header measured bold) + padding, with a minimum, and the whole
-/// table scaled down proportionally to fit `wrap_width` if it would overflow.
+/// widest cell (header measured bold) + padding, with a minimum. A table wider
+/// than the viewport is NOT scaled down — it scrolls horizontally in place.
 #[allow(clippy::too_many_arguments)]
 fn table_column_widths(
     lines: &[&str],
@@ -6582,9 +8516,20 @@ fn table_column_widths(
     base_font: &Font,
     font_size: Pixels,
     color: Hsla,
-    wrap_width: Option<Pixels>,
+    col_resize: Option<TableColResize>,
 ) -> Vec<Pixels> {
-    let cols = region.aligns.len().max(1);
+    // Reader parity: a row with MORE cells than the header widens the grid —
+    // extra columns render (the short rows' last cells span the remainder)
+    // instead of hiding the excess.
+    let cols = region
+        .lines
+        .clone()
+        .filter(|&li| li != region.lines.start + 1)
+        .map(|li| markdown_syntax::table_cells(lines[li]).len())
+        .max()
+        .unwrap_or(0)
+        .max(region.aligns.len())
+        .max(1);
     let pad = px(TABLE_CELL_PAD);
     let mut widths = vec![px(0.); cols];
     for li in region.lines.clone() {
@@ -6627,15 +8572,22 @@ fn table_column_widths(
     for w in &mut widths {
         *w = (*w).max(px(48.));
     }
-    if let Some(avail) = wrap_width {
-        let total = widths.iter().sum::<Pixels>();
-        if total > avail && total > px(0.) {
-            let scale = f32::from(avail) / f32::from(total);
-            for w in &mut widths {
-                *w *= scale;
-            }
+    // Explicit widths — the marker's `cols=` list (drag-to-resize persisted),
+    // then the live drag — override the measurement (floored so a column can't
+    // vanish). Content-measured columns keep the 48px floor above.
+    if let Some(attr) = &region.col_widths_attr {
+        for (c, w) in attr.iter().enumerate().take(cols) {
+            widths[c] = px(w.max(24.));
         }
     }
+    if let Some(r) = col_resize.filter(|r| r.header_row == region.lines.start)
+        && r.col < cols
+    {
+        widths[r.col] = px(r.width.max(24.));
+    }
+    // No scale-to-fit: a table wider than the viewport keeps its natural
+    // columns and scrolls horizontally in place (Cditor-style) — see
+    // `EditorState::table_scroll_x`.
     widths
 }
 
@@ -6662,11 +8614,13 @@ fn shape_cell(
     content: &str,
     font: &Font,
     font_size: Pixels,
+    wrap: Option<Pixels>,
+    color: Hsla,
 ) -> Option<WrappedLine> {
     let run = TextRun {
         len: content.len(),
         font: font.clone(),
-        color: Hsla::default(),
+        color,
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -6682,12 +8636,69 @@ fn shape_cell(
             SharedString::from(content.to_string()),
             font_size,
             runs,
-            None,
+            wrap,
             None,
         )
         .ok()?
         .into_iter()
         .next()
+}
+
+/// How many wrap rows table row `cells` need at `col_widths` — 1 for content
+/// that fits; more once a drag-narrowed column forces its text to wrap.
+/// The gutter grip's left edge for an editor whose content starts at
+/// `bounds_left` — THE grip x formula, shared by prepaint (fresh geometry)
+/// and the event-time hover mirror so the two can't drift.
+fn grip_left(bounds_left: Pixels, inset: Pixels) -> Pixels {
+    bounds_left - px(22.) - inset
+}
+
+/// The header row of the table that `t` (the grid row at line `row`) belongs
+/// to — the key of its horizontal-scroll entry.
+fn table_header_row(t: &TableRow, row: usize) -> usize {
+    match t.body_index {
+        Some(b) => row.saturating_sub(b + 2),
+        None if t.is_separator => row.saturating_sub(1),
+        None => row,
+    }
+}
+
+/// The width available to cell `c` of a row with `cells_len` cells: a short
+/// row's LAST cell spans the remaining columns (reader parity — e.g. a
+/// two-cell header over a wider body), otherwise its own column.
+fn cell_span_width(col_widths: &[Pixels], cells_len: usize, c: usize) -> Pixels {
+    if c + 1 == cells_len && cells_len < col_widths.len() {
+        col_widths[c..].iter().copied().sum()
+    } else {
+        col_widths.get(c).copied().unwrap_or(px(0.))
+    }
+}
+
+fn table_row_wrap_rows(
+    window: &mut Window,
+    cells: &[SharedString],
+    col_widths: &[Pixels],
+    is_header: bool,
+    font: &Font,
+    font_size: Pixels,
+) -> usize {
+    let pad = px(TABLE_CELL_PAD);
+    let cf = cell_font(font, is_header);
+    let mut rows = 1;
+    for (c, cell) in cells.iter().enumerate() {
+        if cell.is_empty() {
+            continue;
+        }
+        let cw = cell_span_width(col_widths, cells.len(), c);
+        if cw == px(0.) {
+            continue;
+        }
+        let avail = (cw - pad * 2.).max(px(8.));
+        if let Some(wl) = shape_cell(window, cell, &cf, font_size, Some(avail), Hsla::default()) {
+            rows = rows.max(wl.wrap_boundaries().len() + 1);
+        }
+    }
+    rows
 }
 
 /// The cell a source column `col` (line-local) falls in for a table row — clamped
@@ -6709,7 +8720,7 @@ fn table_caret_pos(
     font: &Font,
     font_size: Pixels,
     window: &mut Window,
-) -> Option<(Pixels, usize, usize)> {
+) -> Option<(Pixels, Pixels, usize, usize)> {
     if t.cell_ranges.is_empty() {
         return None;
     }
@@ -6718,41 +8729,70 @@ fn table_caret_pos(
     let range = t.cell_ranges.get(cell)?;
     let content = t.cells.get(cell)?;
     let in_cell = col.saturating_sub(range.start).min(content.len());
-    let cell_x = left + t.col_widths[..cell].iter().sum::<Pixels>();
-    let cw = t.col_widths.get(cell).copied().unwrap_or(px(0.));
+    let cell_x = left
+        + t.col_widths[..cell.min(t.col_widths.len())]
+            .iter()
+            .sum::<Pixels>();
+    let cw = cell_span_width(&t.col_widths, t.cell_ranges.len(), cell);
     // The header is bold, so shape with the bold font or the caret lands left of
-    // the (wider) bold glyphs; position_for_index gives the exact kerned x.
+    // the (wider) bold glyphs; position_for_index gives the exact kerned x — and,
+    // shaped at the cell's width, the wrap row's y for drag-narrowed columns.
     let cf = cell_font(font, t.is_header);
     let line_h = font_size * LINE_HEIGHT_RATIO;
-    let wl = shape_cell(window, content, &cf, font_size)?;
-    let prefix_w = wl
-        .position_for_index(in_cell, line_h)
-        .map_or(px(0.), |p| p.x);
+    let avail = (cw - pad * 2.).max(px(8.));
+    let wl = shape_cell(
+        window,
+        content,
+        &cf,
+        font_size,
+        Some(avail),
+        Hsla::default(),
+    )?;
+    let pos = wl.position_for_index(in_cell, line_h).unwrap_or_default();
+    let wrapped = !wl.wrap_boundaries().is_empty();
     let full_w = wl.width();
-    let avail = (cw - pad * 2.).max(px(0.));
-    let align_off = match t.aligns.get(cell) {
-        Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
-        Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
-        _ => px(0.),
+    // Alignment shifts only unwrapped content (a wrapped cell fills its width).
+    let align_off = if wrapped {
+        px(0.)
+    } else {
+        match t.aligns.get(cell) {
+            Some(markdown_syntax::Align::Center) => (avail - full_w).max(px(0.)) / 2.,
+            Some(markdown_syntax::Align::Right) => (avail - full_w).max(px(0.)),
+            _ => px(0.),
+        }
     };
-    Some((cell_x + pad + align_off + prefix_w, cell, in_cell))
+    Some((cell_x + pad + align_off + pos.x, pos.y, cell, in_cell))
 }
 
 /// The byte offset within `content` whose rendered x (from the text's left edge)
 /// is closest to `target` — hit-tests a click inside a table cell, using the
 /// shaped line so it matches the kerned glyphs.
-fn cell_offset_for_x(
+fn cell_offset_for_point(
     content: &str,
-    target: Pixels,
+    target: Point<Pixels>,
+    wrap: Pixels,
     font: &Font,
     font_size: Pixels,
     window: &mut Window,
 ) -> usize {
     let line_h = font_size * LINE_HEIGHT_RATIO;
-    let Some(wl) = shape_cell(window, content, font, font_size) else {
+    let Some(wl) = shape_cell(
+        window,
+        content,
+        font,
+        font_size,
+        Some(wrap),
+        Hsla::default(),
+    ) else {
         return 0;
     };
-    match wl.closest_index_for_position(point(target, line_h / 2.), line_h) {
+    match wl.closest_index_for_position(
+        point(
+            target.x,
+            target.y.max(px(0.)).min(wl.size(line_h).height - px(1.)),
+        ),
+        line_h,
+    ) {
         Ok(i) | Err(i) => i,
     }
 }
@@ -6814,38 +8854,41 @@ fn paint_table_row(
     let mut x = origin.x;
     for (c, &cw) in t.col_widths.iter().enumerate() {
         // Inner cell separator at the left of every cell except the first (Grid
-        // only; the other styles drop vertical lines).
-        if vlines && c > 0 {
+        // only; the other styles drop vertical lines). A short row draws no
+        // dividers past its last cell — that cell spans the remaining columns.
+        if vlines && c > 0 && c < t.cells.len() {
             window.paint_quad(fill(
                 Bounds::new(point(x, origin.y), size(thick, row_h)),
                 t.border,
             ));
         }
         if let Some(cell) = t.cells.get(c).filter(|s| !s.is_empty()) {
-            let run = TextRun {
-                len: cell.len(),
-                font: cell_font.clone(),
-                color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            };
-            let shaped = window
-                .text_system()
-                .shape_line(cell.clone(), font_size, &[run], None);
-            let align = match t.aligns.get(c) {
-                Some(markdown_syntax::Align::Center) => gpui::TextAlign::Center,
-                Some(markdown_syntax::Align::Right) => gpui::TextAlign::Right,
-                _ => gpui::TextAlign::Left,
-            };
-            let _ = shaped.paint(
-                point(x + pad, origin.y + (row_h - line_h) / 2.),
-                line_h,
-                align,
-                Some(cw - pad * 2.),
-                window,
-                cx,
-            );
+            // Shaped at the cell's width so a drag-narrowed column word-wraps
+            // (the row height already reserves the wrap rows). Top-anchored at
+            // the single-line pad, not centered — wraps grow downward. A short
+            // row's last cell spans the remaining columns.
+            let cw = cell_span_width(&t.col_widths, t.cells.len(), c);
+            let avail = (cw - pad * 2.).max(px(8.));
+            if let Some(shaped) =
+                shape_cell(window, cell, &cell_font, font_size, Some(avail), color)
+            {
+                let align = match t.aligns.get(c) {
+                    Some(markdown_syntax::Align::Center) => gpui::TextAlign::Center,
+                    Some(markdown_syntax::Align::Right) => gpui::TextAlign::Right,
+                    _ => gpui::TextAlign::Left,
+                };
+                let _ = shaped.paint(
+                    point(x + pad, origin.y + px(6.)),
+                    line_h,
+                    align,
+                    Some(Bounds::new(
+                        point(x + pad, origin.y + px(6.)),
+                        size(avail, (row_h - px(12.)).max(line_h)),
+                    )),
+                    window,
+                    cx,
+                );
+            }
         }
         x += cw;
     }
@@ -6855,42 +8898,66 @@ fn paint_table_row(
 /// "+". Subtle by default; on hover a faint fill + a brighter glyph.
 /// Paint a row/column delete handle: a small rounded button with a "−". Filled on
 /// hover, a muted glyph otherwise.
-fn paint_del_handle(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
-    let mut bg = border;
-    bg.a = if hot { 0.22 } else { 0.10 };
-    window.paint_quad(fill(bounds, bg).corner_radii(Corners::all(px(4.))));
-    let mut glyph = border;
-    glyph.a = if hot { 0.95 } else { 0.6 };
-    let cx = bounds.origin.x + bounds.size.width / 2.;
-    let cy = bounds.origin.y + bounds.size.height / 2.;
-    let arm = px(5.);
-    let th = px(1.5);
-    window.paint_quad(fill(
-        Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
-        glyph,
-    ));
+/// An accent border (no fill) around a hovered row/column or the caret's cell
+/// (issue #16, Cditor-style).
+fn paint_table_outline(bounds: Bounds<Pixels>, accent: Hsla, window: &mut Window) {
+    window.paint_quad(PaintQuad {
+        bounds,
+        corner_radii: Corners::all(px(2.)),
+        background: hsla(0., 0., 0., 0.).into(),
+        border_widths: Edges::all(px(1.5)),
+        border_color: accent,
+        border_style: BorderStyle::Solid,
+    });
 }
 
-fn paint_add_strip(bounds: Bounds<Pixels>, border: Hsla, hot: bool, window: &mut Window) {
-    // A rounded box matching the delete handles — filled faintly, brighter on hover
-    // — with a centered "+".
-    let mut bg = border;
-    bg.a = if hot { 0.22 } else { 0.10 };
-    window.paint_quad(fill(bounds, bg).corner_radii(Corners::all(px(4.))));
-    let mut glyph = border;
-    glyph.a = if hot { 0.95 } else { 0.6 };
-    let cx = bounds.origin.x + bounds.size.width / 2.;
-    let cy = bounds.origin.y + bounds.size.height / 2.;
-    let arm = px(5.);
+/// The hovered row/column's border pill: an accent-filled capsule holding "+"
+/// and "−" halves (white glyphs; the hovered half full-strength). `sep_h` =
+/// true when the two halves sit side-by-side (a column's top-border pill).
+fn paint_table_pill(a: &TableAffordance, sep_h: bool, mouse: Point<Pixels>, window: &mut Window) {
+    let pill = a.plus.union(&a.minus);
+    window.paint_quad(fill(pill, a.accent).corner_radii(Corners::all(px(6.))));
+    let white = hsla(0., 0., 1., 1.);
+    let arm = px(4.);
     let th = px(1.5);
-    window.paint_quad(fill(
-        Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
-        glyph,
-    ));
-    window.paint_quad(fill(
-        Bounds::new(point(cx - th / 2., cy - arm), size(th, arm * 2.)),
-        glyph,
-    ));
+    let glyph = |b: &Bounds<Pixels>, plus: bool, window: &mut Window| {
+        let mut c = white;
+        c.a = if b.contains(&mouse) { 1.0 } else { 0.75 };
+        let cx = b.origin.x + b.size.width / 2.;
+        let cy = b.origin.y + b.size.height / 2.;
+        window.paint_quad(fill(
+            Bounds::new(point(cx - arm, cy - th / 2.), size(arm * 2., th)),
+            c,
+        ));
+        if plus {
+            window.paint_quad(fill(
+                Bounds::new(point(cx - th / 2., cy - arm), size(th, arm * 2.)),
+                c,
+            ));
+        }
+    };
+    glyph(&a.plus, true, window);
+    glyph(&a.minus, false, window);
+    // A hairline between the halves so the two targets read separately.
+    let mut div_c = white;
+    div_c.a = 0.35;
+    if sep_h {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(a.minus.origin.x, pill.origin.y + px(3.)),
+                size(px(1.), pill.size.height - px(6.)),
+            ),
+            div_c,
+        ));
+    } else {
+        window.paint_quad(fill(
+            Bounds::new(
+                point(pill.origin.x + px(3.), a.minus.origin.y),
+                size(pill.size.width - px(6.), px(1.)),
+            ),
+            div_c,
+        ));
+    }
 }
 
 /// The custom element that lays out + paints the editor's wrapped lines, cursor,
@@ -6900,37 +8967,165 @@ struct EditorElement {
     editor: Entity<EditorState>,
 }
 
-/// Per-table hover-revealed "+" affordances (issue #16): a hover zone (the table
-/// plus a thin margin) that gates visibility, plus the below/right "+" strips with
-/// their own hitboxes (hover cursor) and the table row to seat the caret in.
-struct TableAdds {
-    zone: Bounds<Pixels>,
-    below: Bounds<Pixels>,
-    below_hit: Hitbox,
-    below_row: usize,
-    right: Bounds<Pixels>,
-    right_hit: Hitbox,
-    right_row: usize,
-    border: Hsla,
+/// An in-progress table column-border drag (issue #16): identifies the column
+/// by its table's header line + index, and carries the live width the shaping
+/// applies each frame; release writes it into the marker's `cols=` list.
+#[derive(Clone, Copy)]
+struct TableColResize {
+    header_row: usize,
+    col: usize,
+    start_x: Pixels,
+    orig: f32,
+    width: f32,
 }
 
-/// A per-row or per-column delete handle for the hovered table cell (issue #16):
-/// where to paint the "−", its hover-cursor hitbox, and the row/column to remove.
-struct DelHandle {
-    bounds: Bounds<Pixels>,
-    /// The whole row's / column's cell rect, tinted on hover so the delete target
-    /// is obvious.
-    highlight: Bounds<Pixels>,
+/// A column-resize grip: a slim band over one column's right border in the
+/// hovered table (issue #16). Dragging it resizes that column live.
+struct ColResizeGrip {
+    band: Bounds<Pixels>,
     hit: Hitbox,
+    header_row: usize,
+    col: usize,
+    width: f32,
+    /// The border's x + the table's vertical extent, for painting the accent
+    /// line while hovered/dragged.
+    x: Pixels,
+    top: Pixels,
+    bottom: Pixels,
+    accent: Hsla,
+}
+
+/// The hovered row's / column's affordance (issue #16, Cditor-style): an accent
+/// OUTLINE around it (no fill) and a small pill sitting ON the table border —
+/// "+" (insert after) and "−" (delete) — instead of outside strips/handles.
+struct TableAffordance {
+    /// The whole row's / column's rect, outlined in the accent color.
+    outline: Bounds<Pixels>,
+    plus: Bounds<Pixels>,
+    minus: Bounds<Pixels>,
+    plus_hit: Hitbox,
+    minus_hit: Hitbox,
+    /// The hovered body row (rows) / the table's header line (columns) — where
+    /// the caret seats to run the caret-driven insert/delete APIs.
     row: usize,
     col: usize,
-    border: Hsla,
-    /// Paint the row/column tint (kept for borderless tables to show the grid).
-    show_highlight: bool,
+    accent: Hsla,
+}
+
+/// One markdown line's built display + runs, cached across frames (see
+/// `EditorState::line_run_cache`). `src` and `line_base` verify a hash hit —
+/// the rest of the inputs are folded into the key's hash.
+struct CachedLineRuns {
+    src: String,
+    line_base: Hsla,
+    /// Shared payloads: a cache HIT is three refcount bumps, not three deep
+    /// clones (this runs per visible line per frame).
+    disp: SharedString,
+    runs: std::rc::Rc<Vec<TextRun>>,
+    map: std::rc::Rc<Vec<usize>>,
+}
+
+/// The validity marker + per-row content keys of the run-key memo.
+type RowKeys = (Option<u64>, Vec<Option<u64>>);
+
+/// The measured table column widths cache: one keyed entry for the doc.
+type RegionCols = Option<(u64, std::rc::Rc<Vec<Vec<Pixels>>>)>;
+
+/// The editor-owned caches `shape_document` reads and writes (interior-
+/// mutable — shaping runs under a read borrow of the editor):
+/// - `line_runs`: each markdown line's built display + runs (cross-frame).
+/// - `region_cols`: the measured table column widths for the WHOLE document,
+///   one keyed entry — rebuilt when the tables' source, the wrap width, the
+///   font epoch, or a live column drag changes.
+/// - `cell_rows`: per table row, how many wrap rows its tallest cell needs.
+#[derive(Default)]
+struct ShapeCaches {
+    line_runs: std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
+    region_cols: std::cell::RefCell<RegionCols>,
+    cell_rows: std::cell::RefCell<std::collections::HashMap<u64, usize>>,
+    /// Per-line (row height, wrap rows), keyed by the line-run key ⊕ font
+    /// size ⊕ wrap width — the shaping window's exact heights for skipped
+    /// offscreen lines.
+    line_heights: std::cell::RefCell<std::collections::HashMap<u64, (Pixels, usize)>>,
+    /// Per-row CONTENT-part run keys (line bytes + line_base + diags + epoch),
+    /// valid for one (scan generation, epoch) pair — so a steady-state frame
+    /// hashes three u64s per line instead of every line's bytes. Diagnostics
+    /// changes invalidate explicitly (see `set_diagnostics`).
+    row_keys: std::cell::RefCell<RowKeys>,
+}
+
+/// A hash of the inputs shared by every line's run build (font + palette) —
+/// part of the per-line cache key, so a theme or font change misses cleanly.
+fn line_run_epoch(font: &Font, st: Option<&SyntaxStyle>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    font.family.hash(&mut h);
+    font.weight.0.to_bits().hash(&mut h);
+    let hash_hsla = |c: Hsla, h: &mut std::collections::hash_map::DefaultHasher| {
+        c.h.to_bits().hash(h);
+        c.s.to_bits().hash(h);
+        c.l.to_bits().hash(h);
+        c.a.to_bits().hash(h);
+    };
+    if let Some(st) = st {
+        for c in [
+            st.marker, st.code, st.code_bg, st.link, st.tag, st.quote, st.mark_bg,
+        ] {
+            hash_hsla(c, &mut h);
+        }
+        st.mono.family.hash(&mut h);
+    }
+    h.finish()
+}
+
+/// Host hook for scroll anchoring: called from the measure pass when an
+/// ASYNC height change (a math/mermaid/image raster arriving) lands ABOVE
+/// the window's viewport, with the height delta — the host shifts its scroll
+/// container's offset by it so the content being read doesn't jump.
+pub type ScrollCompensatorFn = std::rc::Rc<dyn Fn(Pixels, &mut Window, &mut App)>;
+
+/// Content-derived structural scans — tables, ordered-list numbering,
+/// mermaid/math regions, property runs, foldable callouts, and per-line
+/// fence parity — cached per [`EditorState::content_gen`]. `shape_document`
+/// recomputed all of these on every call (twice a frame before the shape
+/// memo); now they rebuild only when the content actually changes, and the
+/// caret-driven table ops + auto-replace reuse the same scan.
+pub(crate) struct ScanData {
+    /// The `content_gen` this scan was built for — cache keys use this
+    /// instead of rehashing content.
+    generation: u64,
+    ordered: Vec<(u32, usize)>,
+    tables: Vec<markdown_syntax::TableRegion>,
+    mermaid: Vec<(Range<usize>, String)>,
+    math: Vec<markdown_syntax::MathRegion>,
+    props: Vec<Range<usize>>,
+    alert_folds: Vec<(Range<usize>, bool)>,
+    /// Whether each line STARTS inside a fenced code block (odd count of ```
+    /// fences above it).
+    fence_odd: Vec<bool>,
+}
+
+/// One frame's shaping, memoized between the measure pass and prepaint —
+/// both shape the IDENTICAL inputs, so the measure's result is handed to
+/// prepaint instead of shaping the whole document twice per frame. Consumed
+/// (taken) by prepaint, so it can never go stale across frames; a key
+/// mismatch (e.g. the resolved width differs from the available width)
+/// falls back to shaping.
+struct ShapeMemo {
+    wrap_width: Option<Pixels>,
+    caret_row: Option<usize>,
+    selection: (usize, usize),
+    font_size: Pixels,
+    shaped: ShapedDoc,
 }
 
 struct PrepaintState {
     wrapped: Vec<WrappedLine>,
+    /// Per-line wrap-row count (see [`EditorState::wrap_rows`]).
+    wrap_rows: Vec<usize>,
+    /// The hovered line's gutter drag grip (line, rect) + its cursor hitbox.
+    grip: Option<(usize, Bounds<Pixels>)>,
+    grip_hb: Option<Hitbox>,
     /// Top offset of each logical line relative to the editor's top.
     line_tops: Vec<Pixels>,
     /// Per-logical-line wrap-row height (variable for headings + images).
@@ -6942,7 +9137,7 @@ struct PrepaintState {
     /// `Some` for a line painted as a table-grid row instead of source.
     tables: Vec<Option<TableRow>>,
     /// Per-line display→source byte map for marker-hidden rows (W6).
-    maps: Vec<Option<Vec<usize>>>,
+    maps: Vec<Option<std::rc::Rc<Vec<usize>>>>,
     /// Per-line gutter decoration (blockquote / list / checkbox).
     marks: Vec<Option<LineMark>>,
     /// Per-line inline `$…$` formulas (image + display offset + source range), painted over
@@ -6956,6 +9151,12 @@ struct PrepaintState {
     /// and file chips, so the cursor flips to a hand over them (like the image
     /// grips' resize cursor). Set in paint via `set_cursor_style`.
     checkbox_grips: Vec<(usize, Hitbox)>,
+    /// Per-code-block chrome (lang tag + Copy), laid out here so paint and the
+    /// click rects agree. Hover-revealed: only the hovered card's chips.
+    code_chips: Vec<CodeChip>,
+    /// Every code card's full bounds (`(first body line, rect)`), committed for
+    /// the hover tracking in `on_mouse_move`.
+    code_card_rects: Vec<(usize, Bounds<Pixels>)>,
     chip_grips: Vec<(usize, Hitbox)>,
     /// Pointer-cursor hitboxes over foldable-callout chevrons, keyed by line.
     alert_fold_grips: Vec<(usize, Hitbox)>,
@@ -6979,11 +9180,17 @@ struct PrepaintState {
     /// Icon asset paths for alert marker lines, cloned from the style so the
     /// paint can draw them next to the labels.
     alert_icons: Option<markdown_syntax::AlertIcons>,
-    /// Per-table hover-revealed add-row/add-column "+" affordances (issue #16).
-    table_adds: Vec<TableAdds>,
-    /// Hovered-cell delete handles (issue #16): the "−" for the hovered row + column.
-    row_del: Option<DelHandle>,
-    col_del: Option<DelHandle>,
+    /// Per-table hover zones (the grid plus pill reach) — repaint gating.
+    table_zones: Vec<Bounds<Pixels>>,
+    /// Hovered-row / hovered-column border pills + outlines (issue #16).
+    row_aff: Option<TableAffordance>,
+    col_aff: Option<TableAffordance>,
+    /// The caret's cell, outlined in the accent color (Cditor-style).
+    caret_cell: Option<(Bounds<Pixels>, Hsla)>,
+    /// Column-resize grip bands over the hovered table's vertical borders:
+    /// `(band, hitbox, header row, column, current width, border x, table top,
+    /// table bottom, accent)`.
+    col_resize_grips: Vec<ColResizeGrip>,
     cursor: Option<PaintQuad>,
     selections: Vec<PaintQuad>,
     /// Find-match highlight quads, painted beneath the selection.
@@ -7036,6 +9243,10 @@ impl Element for EditorElement {
                 AvailableSpace::Definite(w) => Some(w),
                 _ => known.width,
             };
+            // Scroll anchoring: set when an async height change lands above
+            // the viewport (see below); called after the borrow of `editor`
+            // ends, before returning.
+            let mut compensate: Option<(ScrollCompensatorFn, Pixels)> = None;
             let height = if editor.content.is_empty() {
                 // Placeholder rows at the base size.
                 let rows = shape_all(
@@ -7062,7 +9273,8 @@ impl Element for EditorElement {
                     (usize::MAX, usize::MAX)
                 };
                 let sf = window.scale_factor();
-                let (wrapped, heights, _, backgrounds, tables, _, _, _) = shape_document(
+                let scan = editor.scan_data();
+                let shaped = shape_document(
                     window,
                     &editor.content,
                     &text_style.font(),
@@ -7090,17 +9302,29 @@ impl Element for EditorElement {
                     sf,
                     selection,
                     editor.image_resize,
+                    editor.table_col_resize,
+                    &scan,
+                    &editor.shape_caches,
+                    editor.shape_band.get().map(|(a, b)| (px(a), px(b))),
                     &editor.folded_headings,
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
                 // or the element lays out shorter than it paints.
+                let (heights, backgrounds, tables, rows) = (
+                    &shaped.heights,
+                    &shaped.backgrounds,
+                    &shaped.tables,
+                    &shaped.wrap_rows,
+                );
                 let mut y = px(0.);
                 let mut needed = px(0.);
-                for (i, (line, h)) in wrapped.iter().zip(&heights).enumerate() {
+                let mut new_tops: Vec<Pixels> = Vec::with_capacity(heights.len());
+                for (i, h) in heights.iter().enumerate() {
                     let tbl = tables.get(i).and_then(Option::as_ref);
                     let (top, bot) = line_pads(backgrounds[i], tbl);
                     y += top;
-                    let row_h = *h * (line.wrap_boundaries().len() + 1) as f32;
+                    new_tops.push(y);
+                    let row_h = *h * rows[i] as f32;
                     // A table's hover "+" add-row strip paints just below its
                     // last row (see `TableAdds`). Keep that space inside the
                     // element for a table near the document's end — outside
@@ -7116,9 +9340,76 @@ impl Element for EditorElement {
                     }
                     y += row_h + bot;
                 }
-                y.max(base_lh).max(needed)
+                // Scroll anchoring (Cditor's anchor-restore): the SAME content
+                // generation as the last paint means no edit happened — so a
+                // height difference here is an ASYNC change (a math/mermaid/
+                // image raster arriving, collapsing raw lines to a rendered
+                // block). If the first changed row sits above the window's
+                // viewport, everything the user is reading would shift; hand
+                // the delta to the host NOW (this measure runs before the
+                // scroll container places its children) so its scroll offset
+                // absorbs it in the same frame.
+                let total = y.max(base_lh).max(needed);
+                // ONLY at the real, final width: taffy also measures at
+                // intrinsic (None / min-content) widths, whose unwrapped
+                // heights diverge wildly from the wrapped layout at a narrow
+                // window — a compensation from one of those yanks the scroll
+                // offset by thousands of px and fights the user's scrolling.
+                if let (Some(f), Some(last)) = (&editor.scroll_compensator, editor.last_bounds)
+                    && editor.content_gen == editor.last_paint_gen
+                    && !editor.line_tops.is_empty()
+                    && wrap_width.is_some_and(|w| (w - last.size.width).abs() < px(1.))
+                {
+                    let delta = total - last.size.height;
+                    if delta.abs() > px(0.5) {
+                        let n = new_tops.len().min(editor.line_tops.len());
+                        let j = (0..n)
+                            .find(|&k| (new_tops[k] - editor.line_tops[k]).abs() > px(0.5))
+                            .unwrap_or(n);
+                        // Debug tap (ZORITE_WINDOW_DEBUG=1): a height change
+                        // with NO edit and NO width change means a cache
+                        // mismatch or an async raster — log which line moved.
+                        if std::env::var_os("ZORITE_WINDOW_DEBUG").is_some() {
+                            let line_txt = editor
+                                .content
+                                .split('\n')
+                                .nth(j)
+                                .unwrap_or("")
+                                .chars()
+                                .take(60)
+                                .collect::<String>();
+                            eprintln!(
+                                "[wdbg] gen={} delta={:?} first_changed_row={} old_top={:?} new_top={:?} line={:?}",
+                                editor.content_gen,
+                                delta,
+                                j,
+                                editor.line_tops.get(j),
+                                new_tops.get(j),
+                                line_txt
+                            );
+                        }
+                        let changed_y =
+                            editor.line_tops.get(j).copied().unwrap_or(last.size.height);
+                        if last.origin.y + changed_y < px(0.) && !editor.compensated.get() {
+                            editor.compensated.set(true);
+                            compensate = Some((f.clone(), delta));
+                        }
+                    }
+                }
+                // Hand the shaping to this frame's prepaint (see ShapeMemo).
+                *editor.shape_memo.borrow_mut() = Some(ShapeMemo {
+                    wrap_width,
+                    caret_row,
+                    selection,
+                    font_size,
+                    shaped,
+                });
+                total
             };
             let width = wrap_width.or(known.width).unwrap_or(px(0.));
+            if let Some((f, delta)) = compensate {
+                f(delta, window, cx);
+            }
             size(width, height)
         });
         (id, ())
@@ -7158,78 +9449,115 @@ impl Element for EditorElement {
             (usize::MAX, usize::MAX)
         };
         let sf = window.scale_factor();
-        let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks, inline_maths) =
-            if editor.content.is_empty() {
-                let w = shape_all(
-                    window,
-                    &editor.placeholder,
-                    font_size,
-                    font.clone(),
-                    hsla(0., 0., 0.5, 0.5),
-                    wrap_width,
-                );
-                let n = w.len();
-                (
-                    w,
-                    vec![base_lh; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![Vec::new(); n],
-                )
-            } else {
-                shape_document(
-                    window,
-                    &editor.content,
-                    &font,
-                    text_color,
-                    font_size,
-                    &editor.diagnostics,
-                    editor.markdown_style.as_ref(),
-                    wrap_width,
-                    caret_row,
-                    editor.block_image.as_ref(),
-                    editor.block_chip.as_ref(),
-                    editor.embed_view.as_ref(),
-                    editor.block_mermaid.as_ref(),
-                    editor.block_math.as_ref(),
-                    editor.code_highlight.as_ref(),
-                    editor.tab_indent,
-                    editor.block_math_em,
-                    editor.editing_block.as_ref().map(|eb| {
-                        let sr = editor.row_col(eb.range.start).0;
-                        let er = editor
-                            .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
-                            .0;
-                        (sr, er, eb.height)
-                    }),
-                    sf,
-                    selection,
-                    editor.image_resize,
-                    &editor.folded_headings,
-                )
-            };
+        // The measure pass already shaped these exact inputs this frame — use
+        // its result instead of shaping the whole document a second time.
+        let memo = editor.shape_memo.borrow_mut().take().filter(|m| {
+            m.wrap_width == wrap_width
+                && m.caret_row == caret_row
+                && m.selection == selection
+                && m.font_size == font_size
+        });
+        let ShapedDoc {
+            wrapped,
+            heights: line_heights,
+            widgets,
+            backgrounds,
+            tables,
+            maps,
+            marks,
+            inline_maths,
+            wrap_rows,
+        } = if let Some(m) = memo {
+            m.shaped
+        } else if editor.content.is_empty() {
+            let w = shape_all(
+                window,
+                &editor.placeholder,
+                font_size,
+                font.clone(),
+                hsla(0., 0., 0.5, 0.5),
+                wrap_width,
+            );
+            let n = w.len();
+            let rows: Vec<usize> = w.iter().map(|l| l.wrap_boundaries().len() + 1).collect();
+            ShapedDoc {
+                wrapped: w,
+                heights: vec![base_lh; n],
+                widgets: vec![None; n],
+                backgrounds: vec![None; n],
+                tables: vec![None; n],
+                maps: vec![None; n],
+                marks: vec![None; n],
+                inline_maths: vec![Vec::new(); n],
+                wrap_rows: rows,
+            }
+        } else {
+            shape_document(
+                window,
+                &editor.content,
+                &font,
+                text_color,
+                font_size,
+                &editor.diagnostics,
+                editor.markdown_style.as_ref(),
+                wrap_width,
+                caret_row,
+                editor.block_image.as_ref(),
+                editor.block_chip.as_ref(),
+                editor.embed_view.as_ref(),
+                editor.block_mermaid.as_ref(),
+                editor.block_math.as_ref(),
+                editor.code_highlight.as_ref(),
+                editor.tab_indent,
+                editor.block_math_em,
+                editor.editing_block.as_ref().map(|eb| {
+                    let sr = editor.row_col(eb.range.start).0;
+                    let er = editor
+                        .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
+                        .0;
+                    (sr, er, eb.height)
+                }),
+                sf,
+                selection,
+                editor.image_resize,
+                editor.table_col_resize,
+                &editor.scan_data(),
+                &editor.shape_caches,
+                editor.shape_band.get().map(|(a, b)| (px(a), px(b))),
+                &editor.folded_headings,
+            )
+        };
+
+        // Publish NEXT frame's shaping window: the viewport band in
+        // element-local y with a viewport of margin each side, quantized so
+        // the band (and with it the measure→prepaint memo) stays stable
+        // across small scrolls. Read back one frame stale — both passes of a
+        // frame always shape with the same band.
+        {
+            let vh = f32::from(window.viewport_size().height).max(1.);
+            let top = -f32::from(bounds.origin.y);
+            let q = 512.0;
+            let lo = (((top - vh) / q).floor() * q).max(0.);
+            let hi = ((top + 2. * vh) / q).ceil() * q;
+            editor.shape_band.set(Some((lo, hi)));
+        }
 
         // Top offset of each logical line (running sum of variable wrap heights),
         // reserving a gap above/below each code block so its padded box has its
         // own space (no overlap with the adjacent line, no blank line required).
         let mut line_tops = Vec::with_capacity(wrapped.len());
         let mut y = px(0.);
-        for (idx, ((line, lh), bg)) in wrapped
-            .iter()
-            .zip(line_heights.iter())
-            .zip(backgrounds.iter())
-            .enumerate()
-        {
+        for (idx, lh) in line_heights.iter().enumerate() {
             // Code-box pads plus the table gutter rows (see `line_pads`) — baked
             // into line_tops so the caret / click / paint all shift with them,
             // and neither table affordance overlaps the adjacent line.
-            let (top_pad, bot_pad) = line_pads(*bg, tables.get(idx).and_then(Option::as_ref));
+            let (top_pad, bot_pad) = line_pads(
+                backgrounds.get(idx).copied().flatten(),
+                tables.get(idx).and_then(Option::as_ref),
+            );
             y += top_pad;
             line_tops.push(y);
-            y += *lh * (line.wrap_boundaries().len() + 1) as f32 + bot_pad;
+            y += *lh * wrap_rows[idx] as f32 + bot_pad;
         }
 
         // Corner-grip hitboxes for each inline image, in `widgets` order (matching
@@ -7268,7 +9596,7 @@ impl Element for EditorElement {
         let mut alert_fold_grips = Vec::new();
         for (i, lh) in line_heights.iter().enumerate() {
             if let Some(LineMark::Check { bullet_x, .. }) = marks.get(i).copied().flatten() {
-                let sz = font_size * 0.78;
+                let sz = font_size * CHECKBOX_SCALE;
                 let pad = px(4.);
                 let bx = bounds.origin.x + bullet_x;
                 let by = bounds.origin.y + line_tops[i] + (*lh - sz) / 2.;
@@ -7304,6 +9632,110 @@ impl Element for EditorElement {
                     size(bounds.size.width, *lh),
                 );
                 chip_grips.push((i, window.insert_hitbox(hit, HitboxBehavior::Normal)));
+            }
+        }
+
+        // Code-card chrome (Cditor-inspired, issue #16): a language tag + Copy
+        // button at each code block's top-right, inside the padded box. Laid
+        // out here (paint draws at these bounds; hitboxes flip the cursor).
+        let mut code_chips = Vec::new();
+        let mut code_card_rects = Vec::new();
+        if let Some(st) = editor
+            .markdown_style
+            .as_ref()
+            .filter(|_| !editor.content.is_empty())
+        {
+            let starts = editor.line_starts();
+            let chip_fs = px(13.);
+            let chip_h = px(20.);
+            let shape = |window: &mut Window, text: &SharedString, color: Hsla| {
+                let run = TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                window
+                    .text_system()
+                    .shape_line(text.clone(), chip_fs, &[run], None)
+                    .width()
+            };
+            for (i, bg) in backgrounds.iter().enumerate() {
+                let Some(cb) = bg.as_ref().filter(|cb| cb.top) else {
+                    continue;
+                };
+                // The card's full bounds (for hover tracking): first body line's
+                // padded top through the last block line's padded bottom.
+                let mut last = i;
+                while last + 1 < backgrounds.len() && backgrounds[last + 1].is_some() {
+                    last += 1;
+                    if backgrounds[last].as_ref().is_some_and(|b| b.bottom) {
+                        break;
+                    }
+                }
+                let (top_pad, _) = code_pads(Some(*cb));
+                let (_, last_bot_pad) = code_pads(backgrounds[last]);
+                let card_top = bounds.origin.y + line_tops[i] - top_pad;
+                let card_bottom = bounds.origin.y
+                    + line_tops[last]
+                    + line_heights[last] * wrap_rows[last] as f32
+                    + last_bot_pad;
+                let card = Bounds::new(
+                    point(bounds.origin.x, card_top),
+                    size(cb.width, card_bottom - card_top),
+                );
+                code_card_rects.push((i, card));
+                // The chrome itself is hover-revealed: only the hovered card
+                // lays out (and hit-tests) its chips.
+                if editor.code_chip_hover != Some(i) {
+                    continue;
+                }
+                // The opening fence row: this row if the fence is revealed, else
+                // the nearest ``` row above (hidden fences collapse to height 0).
+                let Some(fence_row) = (0..=i).rev().find(|&r| {
+                    starts.get(r).is_some_and(|&s| {
+                        editor.content[s..editor.line_end(r)]
+                            .trim_start()
+                            .starts_with("```")
+                    })
+                }) else {
+                    continue;
+                };
+                let lang = editor
+                    .code_block_at(fence_row)
+                    .map(|(l, _)| l)
+                    .unwrap_or_default();
+                let lang_text: SharedString = if lang.is_empty() {
+                    "text ▾".into()
+                } else {
+                    format!("{lang} ▾").into()
+                };
+                let copy_text: SharedString = "Copy".into();
+                let lang_w = shape(window, &lang_text, st.quote) + px(12.);
+                let copy_w = shape(window, &copy_text, st.quote) + px(12.);
+                let right = bounds.origin.x + cb.width - px(6.);
+                let y = bounds.origin.y + line_tops[i] - top_pad + px(3.);
+                let copy_bounds = Bounds::new(point(right - copy_w, y), size(copy_w, chip_h));
+                let lang_bounds = Bounds::new(
+                    point(right - copy_w - px(4.) - lang_w, y),
+                    size(lang_w, chip_h),
+                );
+                let lang_hb = window.insert_hitbox(lang_bounds, HitboxBehavior::Normal);
+                let copy_hb = window.insert_hitbox(copy_bounds, HitboxBehavior::Normal);
+                code_chips.push(CodeChip {
+                    lang_text,
+                    lang_bounds,
+                    copy_bounds,
+                    fence_row,
+                    // The popover surface (opaque) — the card tint is
+                    // translucent, and the labels must cover the code text.
+                    bg: st.popover_bg,
+                    fg: st.quote,
+                    lang_hb,
+                    copy_hb,
+                });
             }
         }
 
@@ -7445,17 +9877,62 @@ impl Element for EditorElement {
             }
         }
 
-        // Per-table add-row / add-column "+" affordances (issue #16), revealed on
-        // hover. Each table contributes a hover zone (the grid + a thin margin) plus
-        // a "+" strip below (adds a row) and to the right (adds a column); bounds
-        // follow the painted rows. Paint shows/cursors them only while the zone is
-        // hovered; on_mouse_down hit-tests the committed strip rects.
+        // Gutter drag grip (Cditor/Notion-style block reorder): hovering a
+        // line reveals a six-dot handle in the left margin; pressing it grabs
+        // the line's block (see `drag_block_rows`). Skipped while a drag is
+        // live — the grip would chase the pointer.
         let mouse = window.mouse_position();
-        let mut table_adds: Vec<TableAdds> = Vec::new();
-        let mut row_del: Option<DelHandle> = None;
-        let mut col_del: Option<DelHandle> = None;
+        let mut grip: Option<(usize, Bounds<Pixels>)> = None;
+        let mut grip_hb: Option<Hitbox> = None;
+        // While a drag is live, a viewport-sized hitbox (inserted after the
+        // editor's own, so it sits on top) keeps the closed-hand cursor
+        // everywhere — otherwise the text I-beam takes over mid-drag.
+        if editor.line_drag.is_some() {
+            let all = Bounds::new(gpui::Point::default(), window.viewport_size());
+            grip_hb = Some(window.insert_hitbox(all, HitboxBehavior::Normal));
+        }
+        let gl = grip_left(bounds.origin.x, editor.grip_inset);
+        if editor.markdown_style.is_some()
+            && editor.line_drag.is_none()
+            && mouse.x >= gl - px(4.)
+            && mouse.x <= bounds.origin.x + bounds.size.width
+        {
+            let y = mouse.y - bounds.origin.y;
+            let row = (0..line_tops.len()).find(|&i| {
+                let h = line_heights[i] * wrap_rows[i] as f32;
+                h > px(0.5) && y >= line_tops[i] && y < line_tops[i] + h
+            });
+            if let Some(row) = row {
+                let sz = px(14.);
+                let rect = Bounds::new(
+                    point(
+                        gl,
+                        bounds.origin.y + line_tops[row] + (line_heights[row] - sz) / 2.,
+                    ),
+                    size(sz, sz),
+                );
+                grip_hb = Some(window.insert_hitbox(rect, HitboxBehavior::Normal));
+                grip = Some((row, rect));
+            }
+        }
+
+        // Table interaction (issue #16, Cditor-style): the hovered row/column
+        // gets an ACCENT OUTLINE (no fill) plus a small pill ON the table border
+        // — "+" inserts after it, "−" deletes it. The caret's cell is outlined
+        // too. Paint shows/cursors them only while hovered; on_mouse_down
+        // hit-tests the committed pill rects.
+        let mut table_zones: Vec<Bounds<Pixels>> = Vec::new();
+        let mut row_aff: Option<TableAffordance> = None;
+        let mut col_aff: Option<TableAffordance> = None;
+        let mut col_resize_grips: Vec<ColResizeGrip> = Vec::new();
+        let dragging_col = editor.table_col_resize;
+        let mut caret_cell: Option<(Bounds<Pixels>, Hsla)> = None;
+        let caret_pos = editor.caret_table_cell_pos();
         let mut tbl_top: Option<Pixels> = None;
         let mut tbl_header = 0usize;
+        // Pill geometry: thickness across the border, length along it.
+        const PILL_ACROSS: f32 = 16.;
+        const PILL_ALONG: f32 = 36.;
         for (i, slot) in tables.iter().enumerate() {
             let Some(t) = slot else { continue };
             if t.is_header {
@@ -7465,37 +9942,60 @@ impl Element for EditorElement {
             if t.is_last && !t.col_widths.is_empty() {
                 let top = tbl_top.unwrap_or(bounds.origin.y + line_tops[i]);
                 let bottom = bounds.origin.y + line_tops[i] + line_heights[i];
-                let left = bounds.origin.x + px(TABLE_GUTTER);
                 let width: Pixels = t.col_widths.iter().copied().sum();
-                // Full-edge "+" tabs: a strip along the bottom (adds a row) and the
-                // right (adds a column), each the table's full extent like the box.
-                // paint rounds the two outer corners so the edge bulging away from
-                // the table reads as a half-moon.
-                let r = (line_heights[i] * 0.75).max(px(12.));
-                let below = Bounds::new(point(left, bottom), size(width, r));
-                let right = Bounds::new(point(left + width, top), size(r, bottom - top));
-                let zone = Bounds::new(point(left, top), size(width + r, (bottom - top) + r));
-                table_adds.push(TableAdds {
-                    zone,
-                    below,
-                    below_hit: window.insert_hitbox(below, HitboxBehavior::Normal),
-                    below_row: i,
-                    right,
-                    right_hit: window.insert_hitbox(right, HitboxBehavior::Normal),
-                    right_row: tbl_header,
-                    border: t.border,
-                });
+                // A scrolled wide table shifts every affordance with its content.
+                let left = editor.table_left(t, i, &bounds);
+                let accent = editor.markdown_style.as_ref().map_or(t.border, |s| s.link);
+                let g = px(PILL_ACROSS);
+                let zone = Bounds::new(
+                    point(left - g, top - g),
+                    size(width + g * 2., (bottom - top) + g * 2.),
+                );
+                table_zones.push(zone);
 
-                // Per-row + per-column delete "−" handles (issue #16): full-height in
-                // the left gutter, full-width in the top gutter. Hover bands reach
-                // into the gutters so moving onto a handle keeps it shown.
-                let g = px(TABLE_GUTTER);
-                // Always available on hover (people delete rows/columns while editing,
-                // too). The highlight stays for borderless (lineless) tables so the
-                // otherwise-invisible grid still shows.
-                let has_lines = matches!(t.style, markdown_syntax::TableStyle::Grid);
-                let show_highlight = !has_lines;
-                if mouse.x >= bounds.origin.x && mouse.x < left + width {
+                // The caret's cell (this table only), outlined like Cditor's.
+                if let Some((crow, ccell, _)) = caret_pos
+                    && crow >= tbl_header
+                    && crow <= i
+                    && let Some(rt) = tables.get(crow).and_then(Option::as_ref)
+                    && !rt.col_widths.is_empty()
+                {
+                    let cc = ccell.min(rt.col_widths.len() - 1);
+                    let x: Pixels = left + rt.col_widths[..cc].iter().copied().sum::<Pixels>();
+                    let rect = Bounds::new(
+                        point(x, bounds.origin.y + line_tops[crow]),
+                        size(
+                            cell_span_width(&rt.col_widths, rt.cells.len(), cc),
+                            line_heights[crow],
+                        ),
+                    );
+                    caret_cell = Some((rect, accent));
+                }
+
+                // Column-resize grips: a slim band on each column's right
+                // border (hover-gated; kept while a drag on this table is live).
+                if zone.contains(&mouse) || dragging_col.is_some_and(|r| r.header_row == tbl_header)
+                {
+                    let mut xacc = left;
+                    for (col, &cw) in t.col_widths.iter().enumerate() {
+                        xacc += cw;
+                        let band =
+                            Bounds::new(point(xacc - px(3.), top), size(px(6.), bottom - top));
+                        col_resize_grips.push(ColResizeGrip {
+                            band,
+                            hit: window.insert_hitbox(band, HitboxBehavior::Normal),
+                            header_row: tbl_header,
+                            col,
+                            width: f32::from(cw),
+                            x: xacc,
+                            top,
+                            bottom,
+                            accent,
+                        });
+                    }
+                }
+                if zone.contains(&mouse) {
+                    // Hovered BODY row → outline + a vertical pill on its left border.
                     for line in tbl_header..=i {
                         let Some(rt) = tables.get(line).and_then(Option::as_ref) else {
                             continue;
@@ -7506,51 +10006,67 @@ impl Element for EditorElement {
                         let rtop = bounds.origin.y + line_tops[line];
                         let rh = line_heights[line];
                         if mouse.y >= rtop && mouse.y < rtop + rh {
-                            let rb = Bounds::new(
-                                point(bounds.origin.x + px(2.), rtop + px(1.)),
-                                size((g - px(5.)).max(px(12.)), (rh - px(2.)).max(px(8.))),
-                            );
-                            row_del = Some(DelHandle {
-                                bounds: rb,
-                                highlight: Bounds::new(point(left, rtop), size(width, rh)),
-                                hit: window.insert_hitbox(rb, HitboxBehavior::Normal),
+                            let ph = px(PILL_ALONG).min(rh - px(2.));
+                            let py0 = rtop + (rh - ph) / 2.;
+                            let pill = Bounds::new(point(left - g / 2., py0), size(g, ph));
+                            let plus = Bounds::new(pill.origin, size(g, ph / 2.));
+                            let minus =
+                                Bounds::new(point(pill.origin.x, py0 + ph / 2.), size(g, ph / 2.));
+                            row_aff = Some(TableAffordance {
+                                outline: Bounds::new(point(left, rtop), size(width, rh)),
+                                plus,
+                                minus,
+                                plus_hit: window.insert_hitbox(plus, HitboxBehavior::Normal),
+                                minus_hit: window.insert_hitbox(minus, HitboxBehavior::Normal),
                                 row: line,
                                 col: 0,
-                                border: rt.border,
-                                show_highlight,
+                                accent,
                             });
                             break;
                         }
                     }
-                }
-                if mouse.y >= top - g
-                    && mouse.y < bottom
-                    && mouse.x >= left
-                    && mouse.x < left + width
-                {
-                    let mut colx = left;
-                    for (col, &cw) in t.col_widths.iter().enumerate() {
-                        if mouse.x < colx + cw || col + 1 == t.col_widths.len() {
-                            let cb = Bounds::new(
-                                point(colx + px(2.), top - g + px(2.)),
-                                size((cw - px(4.)).max(px(12.)), (g - px(4.)).max(px(8.))),
-                            );
-                            col_del = Some(DelHandle {
-                                bounds: cb,
-                                highlight: Bounds::new(point(colx, top), size(cw, bottom - top)),
-                                hit: window.insert_hitbox(cb, HitboxBehavior::Normal),
-                                row: tbl_header,
-                                col,
-                                border: t.border,
-                                show_highlight,
-                            });
-                            break;
+                    // Hovered column → outline + a horizontal pill on the top border.
+                    // Not while the pointer is ON the row's pill — the column
+                    // highlight under it is noise when you're about to click.
+                    let on_row_pill = row_aff
+                        .as_ref()
+                        .is_some_and(|a| a.plus.contains(&mouse) || a.minus.contains(&mouse));
+                    if !on_row_pill && mouse.x >= left && mouse.x < left + width {
+                        let mut colx = left;
+                        for (col, &cw) in t.col_widths.iter().enumerate() {
+                            if mouse.x < colx + cw || col + 1 == t.col_widths.len() {
+                                let pw = px(PILL_ALONG).min(cw - px(2.));
+                                let px0 = colx + (cw - pw) / 2.;
+                                let pill = Bounds::new(point(px0, top - g / 2.), size(pw, g));
+                                let plus = Bounds::new(pill.origin, size(pw / 2., g));
+                                let minus = Bounds::new(
+                                    point(px0 + pw / 2., pill.origin.y),
+                                    size(pw / 2., g),
+                                );
+                                col_aff = Some(TableAffordance {
+                                    outline: Bounds::new(point(colx, top), size(cw, bottom - top)),
+                                    plus,
+                                    minus,
+                                    plus_hit: window.insert_hitbox(plus, HitboxBehavior::Normal),
+                                    minus_hit: window.insert_hitbox(minus, HitboxBehavior::Normal),
+                                    row: tbl_header,
+                                    col,
+                                    accent,
+                                });
+                                break;
+                            }
+                            colx += cw;
                         }
-                        colx += cw;
                     }
                 }
                 tbl_top = None;
             }
+        }
+        // A border drag (or the pointer on a resize band) owns the interaction —
+        // the row/column outlines + pills would just flicker under it.
+        if dragging_col.is_some() || col_resize_grips.iter().any(|gr| gr.band.contains(&mouse)) {
+            row_aff = None;
+            col_aff = None;
         }
 
         // Map a (line-relative) point to a screen point. Captures `bounds` (Copy)
@@ -7586,6 +10102,12 @@ impl Element for EditorElement {
                         continue;
                     };
                     let lh = line_heights.get(row).copied().unwrap_or(base_lh);
+                    // A collapsed row (hidden marker/fence line, the table's
+                    // `|---|` separator, a folded body) has no visible text —
+                    // painting its quad would smear a band over its neighbors.
+                    if lh <= px(0.5) {
+                        continue;
+                    }
                     let top = line_tops[row];
                     let line_start = starts[row];
                     let a = s.max(line_start) - line_start;
@@ -7593,33 +10115,80 @@ impl Element for EditorElement {
                     // Table row: highlight between the cell positions of the selection
                     // ends (not raw-source geometry).
                     if let Some(t) = tables.get(row).and_then(Option::as_ref) {
-                        if let (Some((xa, ..)), Some((xb, ..))) = (
-                            table_caret_pos(
-                                t,
-                                a,
-                                bounds.left() + px(TABLE_GUTTER),
-                                &font,
-                                font_size,
-                                window,
-                            ),
-                            table_caret_pos(
-                                t,
-                                b,
-                                bounds.left() + px(TABLE_GUTTER),
-                                &font,
-                                font_size,
-                                window,
-                            ),
-                        ) {
-                            let (lo, hi) = (xa.min(xb), xa.max(xb));
-                            let cy = bounds.top() + top + (lh - base_lh) / 2.;
-                            sels.push(fill(
-                                Bounds::from_corners(
-                                    point(lo, cy),
-                                    point(hi.max(lo + px(2.)), cy + base_lh),
-                                ),
-                                color,
-                            ));
+                        let table_w: Pixels = t.col_widths.iter().copied().sum();
+                        let tleft = editor.table_left(t, row, &bounds);
+                        // Endpoint x's: inside a cell, the exact caret x; at
+                        // or past the row's cell span — or in an empty cell
+                        // the shaper can't position — the table's edge, so
+                        // vacant trailing cells highlight too.
+                        let first_start = t.cell_ranges.first().map_or(0, |r| r.start);
+                        let last_end = t.cell_ranges.last().map_or(0, |r| r.end);
+                        // Clamp to the table's visible band — a wide
+                        // (scrolling) table's cells extend past the
+                        // viewport, but its highlight must not.
+                        let vis_l = bounds.left() + px(TABLE_GUTTER);
+                        let vis_r = bounds.left() + bounds.size.width;
+                        let mut band = |lo: Pixels, hi: Pixels, y: Pixels, h: Pixels| {
+                            let (lo, hi) = (lo.max(vis_l), hi.min(vis_r));
+                            if hi > lo {
+                                sels.push(fill(
+                                    Bounds::from_corners(point(lo, y), point(hi, y + h)),
+                                    color,
+                                ));
+                            }
+                        };
+                        let pa = (a > first_start && a < last_end)
+                            .then(|| table_caret_pos(t, a, tleft, &font, font_size, window))
+                            .flatten();
+                        let pb = (b > first_start && b < last_end)
+                            .then(|| table_caret_pos(t, b, tleft, &font, font_size, window))
+                            .flatten();
+                        match (pa, pb) {
+                            // Both ends inside the SAME (possibly wrapped)
+                            // cell: per-wrap-row bands within that cell —
+                            // one full-height band would smear the whole row.
+                            (Some((xa, ya, ca, _)), Some((xb, yb, cb, _))) if ca == cb => {
+                                let pad = px(TABLE_CELL_PAD);
+                                let cell_x = tleft
+                                    + t.col_widths[..ca.min(t.col_widths.len())]
+                                        .iter()
+                                        .copied()
+                                        .sum::<Pixels>();
+                                let cw = cell_span_width(&t.col_widths, t.cells.len(), ca);
+                                let (cl, cr) = (cell_x + pad, cell_x + cw - pad);
+                                let y0 = bounds.top() + top + px(6.);
+                                if ya == yb {
+                                    band(
+                                        xa.min(xb),
+                                        xa.max(xb).max(xa.min(xb) + px(2.)),
+                                        y0 + ya,
+                                        base_lh,
+                                    );
+                                } else {
+                                    band(xa, cr, y0 + ya, base_lh);
+                                    let mut y = ya + base_lh;
+                                    while y < yb {
+                                        band(cl, cr, y0 + y, base_lh);
+                                        y += base_lh;
+                                    }
+                                    band(cl, xb, y0 + yb, base_lh);
+                                }
+                            }
+                            // Anything else: one full-height band between the
+                            // endpoint x's (row edges for out-of-span ends).
+                            _ => {
+                                let xa = if a <= first_start {
+                                    tleft
+                                } else {
+                                    pa.map_or(tleft, |(x, ..)| x)
+                                };
+                                let xb = if b >= last_end {
+                                    tleft + table_w
+                                } else {
+                                    pb.map_or(tleft + table_w, |(x, ..)| x)
+                                };
+                                band(xa.min(xb), xa.max(xb), bounds.top() + top, lh);
+                            }
                         }
                         continue;
                     }
@@ -7719,16 +10288,17 @@ impl Element for EditorElement {
                 );
                 (Some(c), Vec::new())
             } else if let Some(t) = tables.get(row).and_then(Option::as_ref)
-                && let Some((x, _, _)) = table_caret_pos(
+                && let Some((x, y_off, _, _)) = table_caret_pos(
                     t,
                     col,
-                    bounds.left() + px(TABLE_GUTTER),
+                    editor.table_left(t, row, &bounds),
                     &font,
                     font_size,
                     window,
                 )
             {
-                let y = bounds.top() + top + (lh - base_lh) / 2.;
+                // Top pad + the wrap row's y (0 for unwrapped cells).
+                let y = bounds.top() + top + px(6.) + y_off;
                 let c = fill(
                     Bounds::new(point(x, y), size(px(CARET_WIDTH), base_lh)),
                     text_color,
@@ -7783,6 +10353,9 @@ impl Element for EditorElement {
 
         PrepaintState {
             wrapped,
+            wrap_rows,
+            grip,
+            grip_hb,
             line_tops,
             line_heights,
             widgets,
@@ -7793,6 +10366,8 @@ impl Element for EditorElement {
             inline_maths,
             image_grips,
             checkbox_grips,
+            code_chips,
+            code_card_rects,
             chip_grips,
             alert_fold_grips,
             heading_chevrons,
@@ -7805,9 +10380,11 @@ impl Element for EditorElement {
                 .markdown_style
                 .as_ref()
                 .and_then(|st| st.alert_icons.clone()),
-            table_adds,
-            row_del,
-            col_del,
+            table_zones,
+            row_aff,
+            col_aff,
+            caret_cell,
+            col_resize_grips,
             cursor,
             selections,
             search,
@@ -7881,6 +10458,7 @@ impl Element for EditorElement {
         // active ancestor level, so a faint vertical line can drop from each down
         // through its descendants. Popped on dedent, reset off the list.
         let mut outline: Vec<Pixels> = Vec::new();
+        let viewport_h = window.viewport_size().height;
         for (i, ((line, top), lh)) in prepaint
             .wrapped
             .iter()
@@ -7915,6 +10493,14 @@ impl Element for EditorElement {
                     outline.push(bullet_x);
                 }
                 _ => outline.clear(),
+            }
+            // Windowed paint: a line fully outside the window's viewport paints
+            // nothing. The guide bookkeeping above still runs — a visible list
+            // row's ancestor guides can start above the viewport. The slack
+            // covers code-box pads and table affordances that overhang the row.
+            let advance = *lh * prepaint.wrap_rows.get(i).copied().unwrap_or(1) as f32;
+            if origin.y + advance + px(64.) < px(0.) || origin.y - px(64.) > viewport_h {
+                continue;
             }
             // Fenced code block: one rounded, content-fit box (sized to the
             // widest line, like a table). The first line rounds + pads the top, the
@@ -8120,10 +10706,11 @@ impl Element for EditorElement {
                 bullet_x,
                 checked,
                 color,
+                accent,
                 ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
-                let sz = font_size * 0.78; // ~cap height
+                let sz = font_size * CHECKBOX_SCALE;
                 let bx = origin.x + bullet_x;
                 let by = origin.y + (*lh - sz) / 2.; // vertically centered on the line
                 let box_bounds = Bounds::new(point(bx, by), size(sz, sz));
@@ -8135,12 +10722,18 @@ impl Element for EditorElement {
                 {
                     window.set_cursor_style(CursorStyle::PointingHand, hb);
                 }
+                // Done: a solid accent fill with a white check (Notion-style).
+                // Open: an empty outline.
                 window.paint_quad(PaintQuad {
                     bounds: box_bounds,
                     corner_radii: Corners::all(px(3.)),
-                    background: hsla(0., 0., 0., 0.).into(),
+                    background: if checked {
+                        accent.into()
+                    } else {
+                        hsla(0., 0., 0., 0.).into()
+                    },
                     border_widths: Edges::all(px(1.5)),
-                    border_color: color,
+                    border_color: if checked { accent } else { color },
                     border_style: BorderStyle::Solid,
                 });
                 if checked {
@@ -8150,15 +10743,27 @@ impl Element for EditorElement {
                     pb.line_to(point(bx + px(s * 0.42), by + px(s * 0.70)));
                     pb.line_to(point(bx + px(s * 0.76), by + px(s * 0.28)));
                     if let Ok(path) = pb.build() {
-                        window.paint_path(path, color);
+                        window.paint_path(path, gpui::white());
                     }
                 }
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
+                // A wide table keeps natural columns, scrolled by sx and
+                // clipped to the viewport — rows paint shifted under a mask.
+                let table_w: Pixels = t.col_widths.iter().copied().sum();
+                let avail = bounds.size.width - px(TABLE_GUTTER);
+                let tleft = origin.x + px(TABLE_GUTTER);
+                let content_left = self.editor.read(cx).table_left(t, i, &bounds);
+                let sx = tleft - content_left;
+                let g = px(TABLE_GUTTER);
+                let mask = gpui::ContentMask {
+                    bounds: Bounds::new(point(tleft, origin.y - g), size(avail, *lh + g * 2.)),
+                };
                 // The header row paints the whole table's rounded outer border
-                // (one box around all its rows, matching the reading view) — for the
-                // Grid style only; the others are box-less. Each row then paints its
-                // shading, dividers, + cell text.
+                // (one box around all its rows, matching the reading view) — for
+                // the Grid style only; the others are box-less. It spans the
+                // WHOLE table's height, so it gets its own full-height mask
+                // (the per-row mask below would clip it to the header band).
                 if t.is_header && matches!(t.style, markdown_syntax::TableStyle::Grid) {
                     let mut total_h = px(0.);
                     for j in i..prepaint.tables.len() {
@@ -8172,30 +10777,55 @@ impl Element for EditorElement {
                             None => break,
                         }
                     }
-                    let table_w = t.col_widths.iter().sum();
-                    window.paint_quad(PaintQuad {
+                    let border_mask = gpui::ContentMask {
                         bounds: Bounds::new(
-                            point(origin.x + px(TABLE_GUTTER), origin.y),
-                            size(table_w, total_h),
+                            point(tleft, origin.y - g),
+                            size(avail, total_h + g * 2.),
                         ),
-                        corner_radii: Corners::all(px(6.)),
-                        background: hsla(0., 0., 0., 0.).into(),
-                        border_widths: Edges::all(px(1.)),
-                        border_color: t.border,
-                        border_style: BorderStyle::Solid,
+                    };
+                    window.with_content_mask(Some(border_mask), |window| {
+                        window.paint_quad(PaintQuad {
+                            bounds: Bounds::new(
+                                point(content_left, origin.y),
+                                size(table_w, total_h),
+                            ),
+                            corner_radii: Corners::all(px(6.)),
+                            background: hsla(0., 0., 0., 0.).into(),
+                            border_widths: Edges::all(px(1.)),
+                            border_color: t.border,
+                            border_style: BorderStyle::Solid,
+                        });
                     });
                 }
-                paint_table_row(
-                    t,
-                    point(origin.x + px(TABLE_GUTTER), origin.y),
-                    *lh,
-                    &font,
-                    font_size,
-                    base_lh,
-                    text_color,
-                    window,
-                    cx,
-                );
+                window.with_content_mask(Some(mask), |window| {
+                    paint_table_row(
+                        t,
+                        point(content_left, origin.y),
+                        *lh,
+                        &font,
+                        font_size,
+                        base_lh,
+                        text_color,
+                        window,
+                        cx,
+                    );
+                });
+                // A slim track thumb under the last row shows there's more
+                // table to the side (and how far along you are).
+                if t.is_last && table_w > avail {
+                    let th_w = (avail / f32::from(table_w) * f32::from(avail)).max(px(24.));
+                    let range = f32::from(table_w - avail);
+                    let th_x = tleft + (avail - th_w) * (f32::from(sx) / range);
+                    let mut th_c = t.border;
+                    th_c.a = (th_c.a * 1.5).min(0.8);
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(point(th_x, origin.y + *lh - px(4.)), size(th_w, px(3.))),
+                            th_c,
+                        )
+                        .corner_radii(Corners::all(px(1.5))),
+                    );
+                }
             } else if let Some(Block::Image(w)) = prepaint.widgets.get(i).and_then(Option::as_ref) {
                 // Inline image (W4a): paint the decoded image instead of source,
                 // inset to the row's gutter so a list-item image sits past its
@@ -8321,47 +10951,179 @@ impl Element for EditorElement {
         // otherwise only repaints on the caret blink). Zones are committed every
         // frame so on_mouse_move knows where the tables are.
         let mouse = window.mouse_position();
-        let mut table_hover_zones: Vec<Bounds<Pixels>> = Vec::new();
+        let table_hover_zones: Vec<Bounds<Pixels>> = prepaint.table_zones.clone();
         let mut table_row_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
-        let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
-        for ta in &prepaint.table_adds {
-            table_hover_zones.push(ta.zone);
-            // Commit the strip rects EVERY frame — a click can land before any
-            // hovered paint ran (a fast flick-click), and on_mouse_down checks
-            // these rects. Only the visuals below stay hover-gated.
-            table_row_add_rects.push((ta.below, ta.below_row));
-            table_col_add_rects.push((ta.right, ta.right_row));
-            if !ta.zone.contains(&mouse) {
-                continue;
+        let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)> = Vec::new();
+        let mut table_row_del = None;
+        let mut table_col_del = None;
+        // The caret's cell: a quiet accent outline (under the hover outlines).
+        if let Some((rect, accent)) = prepaint.caret_cell {
+            let mut c = accent;
+            c.a *= 0.55;
+            paint_table_outline(rect, c, window);
+        }
+        // Hovered row/column: accent outline + a border pill with "+" / "−"
+        // (Cditor-style — no fill highlight). Rects are committed for
+        // on_mouse_down's hit-tests.
+        if let Some(a) = &prepaint.row_aff {
+            paint_table_outline(a.outline, a.accent, window);
+            paint_table_pill(a, false, mouse, window);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.plus_hit);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.minus_hit);
+            table_row_add_rects.push((a.plus, a.row));
+            table_row_del = Some((a.minus, a.row));
+        }
+        if let Some(a) = &prepaint.col_aff {
+            paint_table_outline(a.outline, a.accent, window);
+            paint_table_pill(a, true, mouse, window);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.plus_hit);
+            window.set_cursor_style(CursorStyle::PointingHand, &a.minus_hit);
+            table_col_add_rects.push((a.plus, a.row, a.col));
+            table_col_del = Some((a.minus, a.row, a.col));
+        }
+        // Column-resize grips: a resize cursor over each border band; the
+        // hovered/dragged border draws in the accent color.
+        let mut table_col_resize_rects: Vec<(Bounds<Pixels>, usize, usize, f32)> = Vec::new();
+        let dragging = self.editor.read(cx).table_col_resize;
+        for gr in &prepaint.col_resize_grips {
+            window.set_cursor_style(CursorStyle::ResizeLeftRight, &gr.hit);
+            table_col_resize_rects.push((gr.band, gr.header_row, gr.col, gr.width));
+            let active = dragging.is_some_and(|d| d.header_row == gr.header_row && d.col == gr.col)
+                || (dragging.is_none() && gr.band.contains(&mouse));
+            if active {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(gr.x - px(1.), gr.top),
+                        size(px(2.), gr.bottom - gr.top),
+                    ),
+                    gr.accent,
+                ));
             }
-            paint_add_strip(ta.below, ta.border, ta.below.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &ta.below_hit);
-            paint_add_strip(ta.right, ta.border, ta.right.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &ta.right_hit);
         }
 
-        // Per-row / per-column delete "−" handles for the hovered cell (issue #16).
-        let mut table_row_del = None;
-        if let Some(d) = &prepaint.row_del {
-            if d.show_highlight {
-                let mut hi = d.border;
-                hi.a = 0.10;
-                window.paint_quad(fill(d.highlight, hi));
+        // Gutter drag grip: six muted dots on the hovered line; while a drag
+        // is live, a full-width accent bar marks the drop boundary instead.
+        {
+            let ed = self.editor.read(cx);
+            let accent = ed.markdown_style.as_ref().map_or(text_color, |s| s.link);
+            let mut dot_c = ed.markdown_style.as_ref().map_or(text_color, |s| s.marker);
+            dot_c.a = (dot_c.a * 1.6).min(0.9);
+            if let Some((bs, be, t)) = ed.line_drag {
+                let y = prepaint.line_tops.get(t).copied().unwrap_or_else(|| {
+                    let i = prepaint.line_tops.len().saturating_sub(1);
+                    prepaint.line_tops.last().copied().unwrap_or(px(0.))
+                        + prepaint.line_heights.get(i).copied().unwrap_or(px(0.))
+                            * prepaint.wrap_rows.get(i).copied().unwrap_or(1) as f32
+                });
+                // No bar when the boundary is a no-op (inside the block).
+                if !(t >= bs && t <= be + 1) {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(bounds.origin.x, bounds.origin.y + y - px(1.)),
+                            size(bounds.size.width, px(2.)),
+                        ),
+                        accent,
+                    ));
+                }
+                if let Some(hb) = &prepaint.grip_hb {
+                    window.set_cursor_style(CursorStyle::ClosedHand, hb);
+                }
+            } else if let Some((_, rect)) = prepaint.grip {
+                let d = px(2.5);
+                let gap = px(4.5);
+                for col in 0..2 {
+                    for dr in 0..3 {
+                        let dot = Bounds::new(
+                            point(
+                                rect.origin.x + px(2.) + gap * col as f32,
+                                rect.origin.y + px(1.) + gap * dr as f32,
+                            ),
+                            size(d, d),
+                        );
+                        window.paint_quad(fill(dot, dot_c).corner_radii(Corners::all(px(1.25))));
+                    }
+                }
+                if let Some(hb) = &prepaint.grip_hb {
+                    window.set_cursor_style(CursorStyle::OpenHand, hb);
+                }
             }
-            paint_del_handle(d.bounds, d.border, d.bounds.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &d.hit);
-            table_row_del = Some((d.bounds, d.row));
         }
-        let mut table_col_del = None;
-        if let Some(d) = &prepaint.col_del {
-            if d.show_highlight {
-                let mut hi = d.border;
-                hi.a = 0.10;
-                window.paint_quad(fill(d.highlight, hi));
-            }
-            paint_del_handle(d.bounds, d.border, d.bounds.contains(&mouse), window);
-            window.set_cursor_style(CursorStyle::PointingHand, &d.hit);
-            table_col_del = Some((d.bounds, d.row, d.col));
+        // The grip sits OUTSIDE the editor div's bounds, so the div's own
+        // mouse listeners never see a press on it — start the drag from a
+        // window-level listener instead, gated on the grip's HITBOX (not the
+        // bare rect): is_hovered respects occlusion, so a dialog/menu/popover
+        // covering the gutter blocks the drag from starting through it.
+        if let (Some((row, _)), Some(hb)) = (prepaint.grip, prepaint.grip_hb.clone()) {
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
+                if phase == gpui::DispatchPhase::Bubble
+                    && e.button == MouseButton::Left
+                    && hb.is_hovered(window)
+                {
+                    editor.update(cx, |ed, cx| {
+                        let (bs, be) = ed.drag_block_rows(row);
+                        ed.line_drag = Some((bs, be, bs));
+                        ed.is_selecting = false;
+                        ed.menu = None;
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                }
+            });
+        }
+        // Track the hovered grip row from a window-level listener — the
+        // gutter sits outside the div, so its own on_mouse_move never fires
+        // there. Every editor's listener sees every pointer move, so the
+        // common miss (pointer nowhere near this editor) must stay cheap: a
+        // read-only check first (grip_hover_row_at bails on the x band and
+        // y range in O(1)), entity update only on an actual change — and no
+        // listener at all for raw-view editors.
+        if self.editor.read(cx).markdown_style.is_some() {
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, _w, cx| {
+                if phase == gpui::DispatchPhase::Bubble {
+                    let ed = editor.read(cx);
+                    let gr = ed.grip_hover_row_at(e.position);
+                    if gr != ed.grip_hover_row {
+                        editor.update(cx, |ed, cx| {
+                            ed.grip_hover_row = gr;
+                            cx.notify();
+                        });
+                    }
+                }
+            });
+        }
+        // While a drag is live the pointer usually travels down the GUTTER —
+        // still outside the div, where its on_mouse_move / on_mouse_up never
+        // fire — so track the boundary and land the drop from window-level
+        // listeners too (the div's own handlers cover in-bounds travel; both
+        // paths take/compare the same state, so double delivery is a no-op).
+        if self.editor.read(cx).line_drag.is_some() {
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, _w, cx| {
+                if phase == gpui::DispatchPhase::Bubble {
+                    editor.update(cx, |ed, cx| {
+                        if let Some((bs, be, t)) = ed.line_drag {
+                            let b = ed.snap_drop_boundary(ed.drop_boundary_at(e.position));
+                            if b != t {
+                                ed.line_drag = Some((bs, be, b));
+                                cx.notify();
+                            }
+                        }
+                    });
+                }
+            });
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseUpEvent, phase, _w, cx| {
+                if phase == gpui::DispatchPhase::Bubble && e.button == MouseButton::Left {
+                    editor.update(cx, |ed, cx| {
+                        if let Some((bs, be, t)) = ed.line_drag.take() {
+                            ed.apply_line_drag(bs, be, t, cx);
+                            cx.notify();
+                        }
+                    });
+                }
+            });
         }
 
         let wrapped = std::mem::take(&mut prepaint.wrapped);
@@ -8389,6 +11151,56 @@ impl Element for EditorElement {
                 _ => None,
             })
             .collect();
+        // Code-card chrome: the language tag + Copy button laid out in prepaint.
+        // Each label sits on an opaque pill of the card color so it stays
+        // readable over a long first line; hover brightens it.
+        let mut code_chip_rects = Vec::new();
+        for chip in &prepaint.code_chips {
+            for (bounds_, text, hb) in [
+                (chip.lang_bounds, &chip.lang_text, &chip.lang_hb),
+                (chip.copy_bounds, &SharedString::from("Copy"), &chip.copy_hb),
+            ] {
+                let hovered = hb.is_hovered(window);
+                window.paint_quad(PaintQuad {
+                    bounds: bounds_,
+                    corner_radii: Corners::all(px(4.)),
+                    background: chip.bg.into(),
+                    border_widths: Edges::all(px(0.)),
+                    border_color: chip.fg,
+                    border_style: BorderStyle::Solid,
+                });
+                let color = if hovered { text_color } else { chip.fg };
+                let run = TextRun {
+                    len: text.len(),
+                    font: font.clone(),
+                    color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window
+                    .text_system()
+                    .shape_line(text.clone(), px(13.), &[run], None);
+                let _ = shaped.paint(
+                    point(
+                        bounds_.origin.x + (bounds_.size.width - shaped.width()) / 2.,
+                        bounds_.origin.y + px(1.),
+                    ),
+                    bounds_.size.height - px(2.),
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+                window.set_cursor_style(CursorStyle::PointingHand, hb);
+            }
+            code_chip_rects.push(CodeChipHit {
+                lang: chip.lang_bounds,
+                copy: chip.copy_bounds,
+                fence_row: chip.fence_row,
+            });
+        }
+
         // Hovering an inline link shows a hand, like the reading view (the
         // hitboxes come from prepaint; cursor styles must be set during paint).
         for hb in &prepaint.link_grips {
@@ -8404,6 +11216,7 @@ impl Element for EditorElement {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
             editor.line_heights = line_heights;
+            editor.wrap_rows = std::mem::take(&mut prepaint.wrap_rows);
             editor.widget_rows = widget_rows;
             editor.offset_maps = offset_maps;
             editor.chip_rows = chip_rows;
@@ -8414,6 +11227,9 @@ impl Element for EditorElement {
             editor.prop_pill_rects = prop_pill_rects;
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
+            editor.code_chip_rects = code_chip_rects;
+            editor.table_col_resize_rects = table_col_resize_rects;
+            editor.code_card_rects = std::mem::take(&mut prepaint.code_card_rects);
             editor.alert_fold_rects = alert_fold_rects;
             editor.heading_fold_rects = heading_fold_rects;
             editor.heading_row_rects = std::mem::take(&mut prepaint.heading_row_rects);
@@ -8423,6 +11239,8 @@ impl Element for EditorElement {
             editor.table_row_del = table_row_del;
             editor.table_col_del = table_col_del;
             editor.last_bounds = Some(bounds);
+            editor.compensated.set(false);
+            editor.last_paint_gen = editor.content_gen;
             editor.line_height = base_lh;
             editor.font_size = font_size;
         });
@@ -8445,6 +11263,42 @@ fn word_boundary_input(new_text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn caret_off_marker_line_cases() {
+        use super::caret_off_marker_line;
+        // Table marker at the top: the caret steps to the header line.
+        let doc = "<!-- table:grid cols=40,40 -->\n| a | b |\n| --- | --- |\n| 1 | 2 |";
+        assert_eq!(caret_off_marker_line(doc, 0), 31);
+        // Math align marker: the caret lands after the block.
+        let doc = "<!-- math:center -->\n$$\nx^2\n$$\nafter";
+        assert_eq!(caret_off_marker_line(doc, 0), 31);
+        assert_eq!(&doc[31..], "after");
+        // Plain lines pass through untouched.
+        assert_eq!(caret_off_marker_line("hello\nworld", 0), 0);
+        assert_eq!(caret_off_marker_line("", 0), 0);
+    }
+
+    #[test]
+    fn strip_block_prefix_cases() {
+        use super::strip_block_prefix;
+        assert_eq!(strip_block_prefix("# Title"), "Title");
+        assert_eq!(strip_block_prefix("### Deep"), "Deep");
+        assert_eq!(strip_block_prefix("- [x] done"), "done");
+        assert_eq!(strip_block_prefix("- item"), "item");
+        assert_eq!(strip_block_prefix("12. nth"), "nth");
+        assert_eq!(strip_block_prefix("> quoted"), "quoted");
+        assert_eq!(strip_block_prefix(">bare"), "bare");
+        assert_eq!(strip_block_prefix("plain"), "plain");
+        // Renderer-grammar forms the old hand-rolled version missed.
+        assert_eq!(strip_block_prefix("* [ ] star task"), "star task");
+        assert_eq!(strip_block_prefix("+ [x] plus task"), "plus task");
+        assert_eq!(strip_block_prefix("3) paren"), "paren");
+        assert_eq!(strip_block_prefix("#### H4"), "H4");
+        // Not block prefixes: mid-word hash runs, `#tag`, a lone dash.
+        assert_eq!(strip_block_prefix("#tag"), "#tag");
+        assert_eq!(strip_block_prefix("-dash"), "-dash");
+    }
+
     #[test]
     fn find_in_source_cases() {
         use super::find_in_source;
@@ -8486,11 +11340,11 @@ mod tests {
         // repeated across display 2..5). The caret at source 2 must land at the spacer's LEFT
         // edge (display 2), not an arbitrary spot inside it; source 5 (just past the formula)
         // lands at display 5.
-        let map = vec![0, 1, 2, 2, 2, 5, 6, 7];
+        let map = std::rc::Rc::new(vec![0, 1, 2, 2, 2, 5, 6, 7]);
         assert_eq!(display_col_in(Some(&map), 2), 2);
         assert_eq!(display_col_in(Some(&map), 5), 5);
         // A strictly-increasing map (hidden markers) is unaffected.
-        let plain = vec![0, 1, 2, 3];
+        let plain = std::rc::Rc::new(vec![0, 1, 2, 3]);
         assert_eq!(display_col_in(Some(&plain), 2), 2);
         assert_eq!(display_col_in(None, 4), 4);
     }

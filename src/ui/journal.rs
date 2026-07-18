@@ -9,6 +9,7 @@ use gpui::{
 };
 use gpui_component::Sizable;
 use gpui_component::input::Input;
+use gpui_component::scroll::Scrollbar;
 use gpui_component::{Icon, IconName};
 use gpui_editor::EditorState;
 
@@ -17,13 +18,58 @@ use crate::slash::SlashTarget;
 use crate::theme;
 
 pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl IntoElement {
-    let mut sections = Vec::new();
-    for i in 0..app.loaded_days {
-        let date = app::date_for_offset(i);
-        if let Some(day) = app.day_editors.get(&date) {
-            sections.push(day_section(app, i, &date, &day.state, day_min, cx).into_any_element());
+    // Reader-day windowing: a MarkdownView rebuilds its whole element tree
+    // every frame, so days far outside the viewport render as fixed-height
+    // spacers instead (their bounds come from `feed_items`, tracked last
+    // frame — spacers keep occupying the same geometry, so the bounds stay
+    // fresh). WYSIWYG days are one cached editor element each and stay cheap;
+    // the feed find needs every day's blocks painted — both render fully.
+    let viewport = app.feed_scroll.bounds();
+    if app.feed_heights_width.get() != viewport.size.width {
+        app.feed_day_heights.borrow_mut().clear();
+        app.feed_heights_width.set(viewport.size.width);
+    }
+    // The rendered days, in feed order — `pos` (index here) is the tracked
+    // child index `bounds_for_item` answers for, distinct from the day offset
+    // `i` when a date is missing from `day_editors`.
+    let days: Vec<(usize, String)> = (0..app.loaded_days)
+        .map(|i| (i, app::date_for_offset(i)))
+        .filter(|(_, date)| app.day_editors.contains_key(date))
+        .collect();
+    // Refresh the recorded height of every day that was fully rendered last
+    // frame (a spacer's bounds echo the recorded height — never re-measured).
+    {
+        let spacers = app.feed_spacers.borrow();
+        let mut heights = app.feed_day_heights.borrow_mut();
+        for pos in 0..days.len() {
+            if !spacers.contains(&pos)
+                && let Some(b) = app.feed_items.bounds_for_item(pos)
+            {
+                heights.insert(pos, b.size.height);
+            }
         }
     }
+    let margin = viewport.size.height.max(px(400.));
+    let windowable = !app.wysiwyg() && app.feed_find.is_none() && viewport.size.height > px(0.);
+    let mut spacers = std::collections::HashSet::new();
+    let mut sections = Vec::new();
+    for (pos, (i, date)) in days.iter().enumerate() {
+        let day = &app.day_editors[date];
+        let offscreen = app.feed_items.bounds_for_item(pos).is_some_and(|b| {
+            b.origin.y > viewport.bottom_right().y + margin
+                || b.origin.y + b.size.height < viewport.origin.y - margin
+        });
+        let spacer_h = (windowable && offscreen && !app.is_editing_day(date))
+            .then(|| app.feed_day_heights.borrow().get(&pos).copied())
+            .flatten();
+        if let Some(h) = spacer_h {
+            spacers.insert(pos);
+            sections.push(div().h(h).w_full().into_any_element());
+        } else {
+            sections.push(day_section(app, *i, date, &day.state, day_min, cx).into_any_element());
+        }
+    }
+    *app.feed_spacers.borrow_mut() = spacers;
 
     // Floating back-to-top, once the feed is meaningfully scrolled (like the
     // PDF viewer's nav) — offset.y goes negative as you scroll down.
@@ -130,14 +176,29 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                                 })
                                 .max()
                                 .unwrap_or(px(28.0));
-                            d.pl(w.max(px(28.0)))
+                            // +24 leaves room for the drag grip left of the rail.
+                            d.pl(w.max(px(28.0)) + px(24.0))
                         })
                         .flex()
                         .flex_col()
                         .gap(px(40.0))
+                        // Records each day section's bounds (this div does not
+                        // scroll — its offset stays zero) for the windowing above.
+                        .id("feed-days")
+                        .track_scroll(&app.feed_items)
                         .children(sections)
                         .child(load_older(cx)),
                 ),
+        )
+        // A visible scrollbar over the feed's right edge (Cditor-inspired).
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .bottom_0()
+                .child(Scrollbar::vertical(&app.feed_scroll).id("feed-scrollbar")),
         )
         .children(find_bar)
         .when(scrolled, |this| {
@@ -202,6 +263,7 @@ fn day_section(
         if app.line_numbers() {
             let w =
                 super::page_view::gutter_width(state.read(cx).value().as_ref(), app.text_size());
+            state.update(cx, |s, _| s.set_grip_inset(w));
             editor
                 .child(super::page_view::line_gutter(
                     state.clone(),
@@ -210,6 +272,7 @@ fn day_section(
                 ))
                 .into_any_element()
         } else {
+            state.update(cx, |s, _| s.set_grip_inset(gpui::px(0.)));
             editor.into_any_element()
         }
     } else {

@@ -698,7 +698,8 @@ mod tests {
     #[test]
     fn boards_export_as_json_canvas() {
         use gpui_whiteboard::{
-            BoxGeom, Element, ElementKind, EmbedGeom, ImageGeom, Scene, SegGeom, Stroke, TextGeom,
+            BoxGeom, Element, ElementKind, EmbedGeom, ImageGeom, Scene, SegGeom, SegmentStyle,
+            Stroke, TextGeom,
         };
         let el = |id: u64, kind: ElementKind| Element {
             id,
@@ -708,6 +709,17 @@ mod tests {
             label: None,
             label_color: None,
             styles: Vec::new(),
+            mindmap: None,
+        };
+        let seg = |x1, y1, x2, y2| SegGeom {
+            x1,
+            y1,
+            x2,
+            y2,
+            width: 2.0,
+            style: SegmentStyle::Solid,
+            start_anchor: None,
+            end_anchor: None,
         };
         let mut labeled = el(
             1,
@@ -748,27 +760,9 @@ mod tests {
                     }),
                 ),
                 // Arrow from the box's right edge to the card's left edge.
-                el(
-                    4,
-                    ElementKind::Arrow(SegGeom {
-                        x1: 205.0,
-                        y1: 50.0,
-                        x2: 395.0,
-                        y2: 50.0,
-                        width: 2.0,
-                    }),
-                ),
+                el(4, ElementKind::Arrow(seg(205.0, 50.0, 395.0, 50.0))),
                 // A line into empty space: unanchored, skipped + counted.
-                el(
-                    5,
-                    ElementKind::Line(SegGeom {
-                        x1: 1000.0,
-                        y1: 1000.0,
-                        x2: 1200.0,
-                        y2: 1000.0,
-                        width: 2.0,
-                    }),
-                ),
+                el(5, ElementKind::Line(seg(1000.0, 1000.0, 1200.0, 1000.0))),
                 // Freehand: no canvas equivalent.
                 el(
                     6,

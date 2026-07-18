@@ -16,11 +16,23 @@ world-space `f32` (see [`Camera`](#camera)).
 | [`Scene`](#scene) | struct | `{ camera, elements }` | The board document — everything persisted |
 | [`Scene::from_json`](#scenefrom_json) | assoc fn | `fn from_json(s: &str) -> Self` | Parse stored JSON; empty board on bad input |
 | [`Scene::to_json`](#sceneto_json) | method | `fn to_json(&self) -> String` | Serialize for persistence |
-| [`Element`](#element) | struct | `{ id, kind, stroke, fill, label, label_color, styles }` | One board element |
+| [`Element`](#element) | struct | `{ id, kind, stroke, fill, label, label_color, styles, mindmap }` | One board element |
 | [`ElementKind`](#elementkind) | enum | 13 variants | What an element is (pen stroke, shape, text, …) |
 | [`Stroke`](#stroke) | struct | `{ points, width }` | Freehand pen geometry |
 | [`BoxGeom`](#boxgeom) | struct | `{ x, y, w, h, width, rotation }` | Box-shape geometry (rect/ellipse/…) |
-| [`SegGeom`](#seggeom) | struct | `{ x1, y1, x2, y2, width }` | Line / arrow geometry |
+| [`SegGeom`](#seggeom) | struct | `{ x1, y1, x2, y2, width, style, start_anchor, end_anchor }` | Line / arrow geometry |
+| [`SegmentStyle`](#segmentstyle) | enum | `Solid \| Dashed` | A line/arrow's stroke style |
+| [`SegmentAnchor`](#segmentanchor) | struct | `{ element_id, connector }` | A segment endpoint bound to a shape |
+| [`MindMapNodeMeta`](#mindmapnodemeta) | struct | `{ parent, side, order, root_direction, connector_style }` | Mind-map metadata on an element |
+| [`MindMapSide`](#mindmap-enums) | enum | `Left \| Right` | Which side of the root a branch hangs |
+| [`MindMapRootDirection`](#mindmap-enums) | enum | `Both \| Left \| Right` | Root's growth direction |
+| [`MindMapConnectorStyle`](#mindmap-enums) | enum | `Straight \| Bezier \| Orthogonal` | Mind-map connector rendering |
+| [`LocalThumbnailMode`](#local-thumbnails) | enum | thumbnail framing modes | How a snapshot frames the scene |
+| [`LocalThumbnailSpec`](#local-thumbnails) | struct | framing + size | A thumbnail's render parameters |
+| [`LocalThumbnailSnapshot`](#local-thumbnails) | struct | `{ scene, camera, spec, … }` | A frozen scene + framing for a thumbnail |
+| [`BoardEmbedView`](#boardembedview) | struct | entity | A read-only embedded board + Edit button |
+| [`BoardThumbnailView`](#boardthumbnailview) | struct | entity | A static thumbnail rendering of a snapshot |
+| [`ExpandEmbedFn`](#boardembedview) | type alias | `Rc<dyn Fn(&mut Window, &mut App)>` | Embed's Edit button clicked |
 | [`TextGeom`](#textgeom) | struct | `{ x, y, content, size, rotation, … }` | Free-text geometry |
 | [`EmbedGeom`](#embedgeom) | struct | `{ page_id, title, x, y, w, h }` | Page-card geometry |
 | [`ImageGeom`](#imagegeom) | struct | `{ src, x, y, w, h, rotation }` | Image geometry (host-managed `src`) |
@@ -305,11 +317,15 @@ pub struct SegGeom {
     pub x2: f32,
     pub y2: f32,
     pub width: f32,
+    pub style: SegmentStyle,               // serde default: Solid
+    pub start_anchor: Option<SegmentAnchor>, // serde default: None
+    pub end_anchor: Option<SegmentAnchor>,   // serde default: None
 }
 ```
 
 A directed segment (line / arrow), world-space. An arrow's head sits at
-`(x2, y2)`.
+`(x2, y2)`. All three newer fields are serde-defaulted, so boards saved before
+they existed keep loading.
 
 **Fields**
 
@@ -318,6 +334,132 @@ A directed segment (line / arrow), world-space. An arrow's head sits at
 | `x1`, `y1` | `f32` | Start point, world space. |
 | `x2`, `y2` | `f32` | End point, world space. |
 | `width` | `f32` | Stroke width, world units. |
+| `style` | [`SegmentStyle`](#segmentstyle) | Solid (default) or dashed stroke. |
+| `start_anchor`, `end_anchor` | `Option<SegmentAnchor>` | When set, the endpoint is BOUND to a shape's connector point and follows it as the shape moves/resizes/rotates; moving the segment itself detaches. Endpoints snap to hovered connector points while drawing. |
+
+---
+
+## `SegmentStyle`
+
+```rust
+pub enum SegmentStyle { Solid, Dashed }
+```
+
+A line/arrow's stroke rendering. Serde-defaults to `Solid` in older boards.
+
+---
+
+## `SegmentAnchor`
+
+```rust
+pub struct SegmentAnchor {
+    pub element_id: u64,
+    pub connector: usize,
+}
+```
+
+A segment endpoint's binding: the target element's `id` and the index of one
+of its connector points (edge midpoints; see the on-canvas connector dots that
+appear when hovering a shape with the line/arrow tool). Dangling ids (element
+deleted) detach harmlessly.
+
+---
+
+## `MindMapNodeMeta`
+
+```rust
+pub struct MindMapNodeMeta {
+    pub parent: Option<u64>,
+    pub side: MindMapSide,
+    pub order: usize,
+    pub root_direction: MindMapRootDirection,
+    pub connector_style: MindMapConnectorStyle,
+}
+```
+
+Mind-map bookkeeping carried by [`Element::mindmap`](#element) (`None` for
+ordinary elements; serde-skipped when absent). A `parent` of `None` marks the
+tree's ROOT node — `root_direction` and `connector_style` are read from the
+root and apply to its whole tree. Child nodes hang on `side` at `order` among
+their siblings. The view maintains the parent links, auto-layout, and the
+"+" add-node buttons; the tree's connector segments re-sync whenever nodes
+move or the tree changes.
+
+---
+
+## Mind-map enums
+
+```rust
+pub enum MindMapSide { Left, Right }
+pub enum MindMapRootDirection { Both, Left, Right }   // Default: Both
+pub enum MindMapConnectorStyle { Straight, Bezier, Orthogonal } // Default: Bezier
+```
+
+Selecting a root offers Direction and Connector pickers in the context UI;
+`Both` alternates new branches left/right.
+
+---
+
+## Local thumbnails
+
+```rust
+pub enum LocalThumbnailMode { /* framing modes */ }
+pub struct LocalThumbnailSpec { /* framing + pixel size */ }
+pub struct LocalThumbnailSnapshot {
+    pub scene: Scene,
+    pub camera: Camera,
+    pub spec: LocalThumbnailSpec,
+}
+
+impl LocalThumbnailSnapshot {
+    pub fn for_scene_all_content(scene: Scene, width_px: f32, height_px: f32) -> Self
+}
+```
+
+A frozen scene plus the framing needed to paint it small. Build one with
+`for_scene_all_content` (frames the whole board's content into
+`width_px × height_px`) and hand it to a
+[`BoardThumbnailView`](#boardthumbnailview). Pure data — cheap to clone/store;
+re-snapshot when the scene changes.
+
+---
+
+## `BoardEmbedView`
+
+```rust
+pub struct BoardEmbedView { /* entity */ }
+pub type ExpandEmbedFn = Rc<dyn Fn(&mut Window, &mut App)>;
+
+impl BoardEmbedView {
+    pub fn new(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Self
+    pub fn board(&self) -> Entity<WhiteboardView>
+    pub fn set_on_expand(&mut self, f: ExpandEmbedFn)
+}
+```
+
+A read-only board embedded inside another surface (a document, a preview
+pane): renders the scene with pan/zoom wheel input suppressed and an "Edit"
+button overlaid; `set_on_expand` receives the click so the HOST runs its own
+maximize / open-editor transition. `board()` exposes the inner
+[`WhiteboardView`](#whiteboardview) (e.g. to `set_scene` on refresh).
+
+---
+
+## `BoardThumbnailView`
+
+```rust
+pub struct BoardThumbnailView { /* entity */ }
+
+impl BoardThumbnailView {
+    pub fn new(snapshot: LocalThumbnailSnapshot, style: WhiteboardStyleFn) -> Self
+    pub fn snapshot(&self) -> &LocalThumbnailSnapshot
+    pub fn set_snapshot(&mut self, snapshot: LocalThumbnailSnapshot)
+}
+```
+
+A static, non-interactive rendering of a
+[`LocalThumbnailSnapshot`](#local-thumbnails) — for board lists, cards, and
+document blocks. No input handling at all; swap the snapshot to refresh.
 
 ---
 
@@ -934,6 +1076,36 @@ pub fn new(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Se
 ```
 
 Build a view over `scene`. Call inside `cx.new(|cx| WhiteboardView::new(..))`.
+
+### Read-only mode
+
+```rust
+pub fn new_read_only(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Self
+pub fn set_read_only(&mut self, read_only: bool, cx: &mut Context<Self>)
+pub fn read_only(&self) -> bool
+```
+
+A read-only board renders without the toolbar or any editing affordances and
+ignores editing input (wheel pan/zoom too — it sits quietly inside another
+scroll surface). Used by [`BoardEmbedView`](#boardembedview); also togglable
+live on any view.
+
+### Mind-map & flowchart seeds
+
+```rust
+pub fn add_mindmap_seed(&mut self, center_x: f32, center_y: f32, cx: &mut Context<Self>)
+pub fn add_mindmap_seed_at_viewport_center(&mut self, cx: &mut Context<Self>)
+pub fn add_flowchart_seed(&mut self, center_x: f32, center_y: f32, cx: &mut Context<Self>)
+pub fn add_flowchart_seed_at_viewport_center(&mut self, cx: &mut Context<Self>)
+```
+
+Insert a starter mind-map (a root + four labeled branches, with
+[`MindMapNodeMeta`](#mindmapnodemeta) wired and bound connectors) or a starter
+flowchart (Start → Process → Decision with Yes/No branches → End) centered at
+the given world point / the current viewport center. Both are also on the
+toolbar's shapes flyout; one undo step each. Mind-map trees keep their layout
+and connectors in sync as nodes are added (the selection's "+" buttons),
+moved, or deleted; a selected root offers Direction and Connector pickers.
 
 **Parameters**
 

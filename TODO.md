@@ -8,6 +8,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [Notes & navigation](#notes--navigation)
 - [Notebooks (multiple data folders)](#notebooks-multiple-data-folders)
 - [Performance](#performance)
+- [Cditor audit (2026-07-17)](#cditor-audit-2026-07-17)
 - [App & polish](#app--polish)
 - [Import & export](#import--export)
 - [Crates](#crates)
@@ -46,6 +47,131 @@ per-notebook settings sync.
 
 ## Performance
 - [ ] Move SQLite writes off the UI thread (background executor) — **fsync stall handled** for now via WAL + `synchronous = NORMAL` in `Db::open` (per-keystroke autosave no longer fsyncs on the UI thread; measured worst case ~1.2 ms at a 50k-char page, well within a frame). The full off-thread refactor is now a lower-priority fast-follow (pathological pages / slow or contended disks)
+
+## Cditor audit (2026-07-17)
+
+Findings from a full sweep of JYChen-8866's Cditor codebase against zorite
+(four parallel reviews: input/IME, rendering perf, features, markdown engines).
+His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
+
+**Bugs (fix first — 1–6 make a good single batch):**
+- [x] **Table column insert/delete corrupts `\|` cells** — `rewrite_table_columns`
+  splits raw + rejoins without re-escaping; a cell containing a pipe becomes two
+  cells / shifts columns (data loss). Lift Cditor's `escape_table_cell`
+  unescape-on-split / re-escape-on-join. (S)
+- [x] **Editor splits table cells on escaped `\|`** — `table_cells` is a blind
+  `split('|')`; the reader (GFM) treats `\|` as a literal pipe → grid, caret,
+  and click hit-tests disagree with the rendered table. (S/M)
+- [x] **CRLF paste** — no `\r\n` normalization anywhere in gpui-editor; Windows/
+  browser pastes inject literal `\r` (garbled render + column-math desync).
+  Normalize in `paste` + IME `replace_text_in_range`. (S)
+- [x] **Paste into a table cell breaks the row** — paste inserts `\n`/`|`
+  verbatim even though Enter is carefully guarded (`caret_in_table`); sanitize
+  (newline→space, escape pipes) or route like Cditor's cell paste. (M)
+- [x] **Double-backtick code spans** — `` ``a`b`` `` closes at the wrong
+  backtick (only single-` matched); detect the backtick-run length first. (S)
+- [x] **Backslash escapes ignored for `*` `` ` `` `~` `[`** — only `_` checks;
+  `\*text\*` styles in WYSIWYG but shows literal in the reader. Shared
+  `is_escaped` helper (one exists for math). (S/M)
+- [x] **Nested inline inside emphasis dropped** — `**bold *italic* bold**` /
+  `` **bold `code`** ``: scan_line consumes the outer construct wholesale, inner
+  marks render literal; reader nests correctly. Needs body re-scan. (M/L)
+- [x] Table well-formedness: body rows with a different cell count than the
+  header render ragged (Cditor rejects); validate in `table_regions`. (S)
+
+**Performance (gpui-editor):**
+- [x] **Document shaped TWICE per frame** — `shape_document` runs in the measure
+  closure AND prepaint with identical inputs; memoize one frame's result across
+  the two passes. Halves editor cost, removes a divergence hazard. (S)
+- [x] **Cross-frame shaped-line cache** — every blink/hover reshapes every
+  visible day's full text; adopt Cditor's `LayoutCacheKey` (content version +
+  width bucket + font/theme/scale). gpui-markdown's `PARSE_CACHE` is the
+  in-repo template. (M)
+- [x] **IME UTF-16↔UTF-8 mapping is O(document) per call** — scan from the
+  caret's line start instead of byte 0; CJK composition latency currently grows
+  with note size. Also: `bounds_for_range` anchors the candidate window at the
+  composition START (zero-width) — return the marked range's real span. (S/M)
+- [x] Whole-document scans in `shape_document` (`ordered_numbers`,
+  `mermaid_blocks`, `math_regions`, selection `row_of`) recomputed 2×/frame —
+  memoize on the content version once the cache exists. (S)
+- [x] **Table cells re-measured every frame** (`table_row_wrap_rows` +
+  `paint_table_row` shape per cell per paint) — cache by (content version,
+  column-width bucket). (M)
+- [x] **Scroll anchoring** — an async math/mermaid/image render above the
+  viewport jumps the content the user is reading; Cditor's
+  `AnchorFrame::restore_once` (capture top-visible row before shaping, restore
+  after height deltas) fixes it without windowing. (M)
+- [x] `apply_auto_replace` rescans all lines above for fence parity on every
+  boundary keystroke — cache/bound it. (S)
+- [x] **Windowed rendering + estimated heights** — Cditor's actual 100k-block
+  machinery (render window + spacers, estimated↔measured convergence, budgeted
+  layout); the editor's only L-sized perf item, defer until someone has a huge
+  note. (L)
+
+**Features (natural markdown fits, from his UI):**
+- [x] **"Turn into" block conversion menu** — right-click/handle menu converting
+  a block between text/H1–3/lists/todo/quote/callout/code/math, with the
+  current kind checked; flat-markdown natural (rewrite the prefix). (M)
+- [x] **Block drag-reorder** — gutter grip drag to move a block/line (his
+  gutter_drag + move-subtree pipeline; ours = reorder markdown lines). (M/L)
+- [ ] **Type-to-filter search in the table menu** — the menu is 18 rows now;
+  his cell menu filters by label + keywords as you type. (S/M)
+- [ ] **Clear contents** verb (cell/row/column) in the table menu. (S)
+- [ ] **⌘D duplicate** keybinding + shortcut hints rendered in menu rows. (S)
+- [x] Wide-table **horizontal scroll** instead of scaling columns down — UX
+  decision; his tables scroll in-place with their own scrollbar. (M)
+- Skipped (no markdown representation): text/background color marks, cell
+  merge/split, per-cell backgrounds, header *columns*, toggle-list containers.
+
+**Ultrareview of PR #52 (2026-07-18)** — non-blocking findings (the two
+blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
+
+*Correctness-adjacent:*
+- [ ] Feed-window day heights are keyed by child POSITION and invalidated only
+  on width change — key by date + invalidate on content change so a day-set or
+  offscreen-content change can't leave stale spacer heights. (S)
+- [x] Caret-parked-on-marker is patched at two entry points (resize-band press,
+  `rewrite_table_marker`); other focus-without-caret-move affordances (pills,
+  delete handles, code Copy, fold chevrons, image grips) can still flash raw
+  markers — enforce "caret never rests on a collapsed marker line" once in the
+  collapse/caret logic. (M)
+
+*Per-frame / per-event efficiency (gpui-editor):*
+- [x] Window-level MouseMove listener runs `editor.update` + a full line scan
+  in EVERY loaded editor per pointer move — gate on markdown_style + a y-range
+  early-out (or register only for the hovered editor). (S)
+- [x] Windowed skip path still hashes every offscreen line twice and makes an
+  empty `shape_runs` call per line per frame; lines containing `$`/`![` never
+  window — key heights by (row, content_gen, epoch), make the placeholder
+  cheap (`Option<WrappedLine>`), derive eligibility from scan output. (M/L)
+  DONE via a per-row content-key memo (hash 3 u64s/line steady-state, diags
+  invalidate explicitly). Deliberately NOT taken: (row, content_gen) height
+  keys (would invalidate ALL offscreen heights per keystroke) and the
+  `Option<WrappedLine>` placeholder (the empty shape_runs is a gpui cache
+  hit); the `$`/`![` eligibility gates stay (conservative, correct).
+- [x] `line_runs` cache HIT deep-clones (String + Vec<TextRun> + Vec<usize>)
+  per visible line per frame — store the payload behind an `Rc`. (S)
+- [x] `region_cols` cache rehashes all table text + clones the width vecs per
+  frame even on a hit — key on content_gen instead, store `Rc`. (S)
+- [x] `on_scroll_wheel` walks O(lines) before the `dx == 0` check — hoist. (S)
+- [x] Slash flyout rebuilds its item Vec every frame while open (+ twice per
+  arrow key for nth/len) — cache on the Slash state per selected category. (S)
+
+*Dedup / structure:*
+- [x] Scrolled-table content-left (`bounds.left + GUTTER - sx`) is hand-built
+  at 6+ sites and paint re-implements the clamp inline — one shared
+  `table_left`/`table_avail` helper. (S)
+- [x] `ShapedLines` is a 9-tuple with 7 hand-replicated placeholder-push sites
+  — a named struct + one `push_placeholder` helper. (M)
+- [x] Fence-block walk ×3 + quote-run walk ×3 (turn_into, drag_block_rows,
+  snap_drop_boundary/block_kind_at) — `fence_block_rows` + `quote_run_rows`
+  helpers. (S)
+- [x] `is_backslash_escaped` duplicates `is_escaped` in markdown_syntax.rs —
+  delete one. (S)
+- [x] `grip_hover_row_at` hand-mirrors the prepaint grip geometry (26 vs
+  grip_left−4 constants) — extract one shared row/band computation. (S)
+- [x] `menu_turn_into` belongs inside `DiagMenu` (dies with the menu; today
+  it's sticky once hovered and reset at only one open site). (S)
 
 ## App & polish
 - [ ] **Graph-node context menu** — nodes hit-test inside one

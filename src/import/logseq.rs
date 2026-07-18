@@ -30,7 +30,9 @@ use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
 
-use gpui_whiteboard::{BoxGeom, Element, ElementKind, ImageGeom, Scene, SegGeom, Stroke, TextGeom};
+use gpui_whiteboard::{
+    BoxGeom, Element, ElementKind, ImageGeom, Scene, SegGeom, SegmentStyle, Stroke, TextGeom,
+};
 
 use super::edn::{self, Edn};
 use super::{AssetBytes, AssetCopy, ImportBundle, ImportDay, ImportPage, ImportWhiteboard};
@@ -346,6 +348,7 @@ fn image_element(
         label: None,
         label_color: None,
         styles: Vec::new(),
+        mindmap: None,
     }]
 }
 
@@ -434,6 +437,7 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
         label: None,
         label_color: None,
         styles: Vec::new(),
+        mindmap: None,
     }];
     // A box/ellipse keeps its text in `:label` → the shape's native label, which
     // the renderer centers and auto-shrinks to fit inside the outline.
@@ -489,6 +493,9 @@ fn line_or_arrow(shape: &Edn, x1: f32, y1: f32, x2: f32, y2: f32, width: f32) ->
         x2,
         y2,
         width,
+        style: SegmentStyle::Solid,
+        start_anchor: None,
+        end_anchor: None,
     };
     if arrow_at("end") {
         ElementKind::Arrow(seg(x1, y1, x2, y2))

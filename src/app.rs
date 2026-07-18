@@ -414,6 +414,13 @@ struct PdfFieldEdit {
     _sub: gpui::Subscription,
 }
 
+/// (level, page title, rows) — the slash flyout's cached item list.
+type FlyoutCache = (
+    slash::SlashLevel,
+    String,
+    std::rc::Rc<Vec<slash::PaletteItem>>,
+);
+
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -474,9 +481,25 @@ pub struct AppView {
     pub loaded_days: usize,
     pub day_editors: HashMap<String, DayEditor>,
     pub feed_scroll: ScrollHandle,
+    /// Tracks the feed column's children (one bounds per day section) WITHOUT
+    /// scrolling it — feeds the reader-day windowing: offscreen days render as
+    /// fixed-height spacers instead of full markdown trees.
+    pub feed_items: ScrollHandle,
+    /// Last-known full height of each day section (by day index), so a
+    /// windowed-out day's spacer preserves the scroll geometry.
+    pub feed_day_heights: std::cell::RefCell<HashMap<usize, Pixels>>,
+    /// Day indices rendered as spacers last frame — their (spacer) bounds must
+    /// not overwrite the real heights.
+    pub feed_spacers: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// Feed viewport width the heights were measured at; a resize reflows
+    /// every day, so the cache clears when it changes.
+    pub feed_heights_width: std::cell::Cell<Pixels>,
     /// Scroll offset of the open completion menu — persists across the per-keystroke rebuild
     /// of `Slash`, so the list doesn't snap back to the top as the user types or arrows.
     pub slash_scroll: ScrollHandle,
+    pub slash_flyout_scroll: ScrollHandle,
+    /// Flyout rows cache — see [`Self::slash_flyout_items`].
+    slash_flyout_cache: std::cell::RefCell<Option<FlyoutCache>>,
 
     /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
     /// native menu bar instead; this gives the other OSes visual parity.
@@ -831,7 +854,7 @@ impl AppView {
             active: 0,
             searching: false,
             tab_scroll: ScrollHandle::new(),
-            mode: theme::Mode::Dark,
+            mode: theme::Mode::Auto,
             system_dark: true,
             settings_window: None,
             skins: skins::builtin_skins(),
@@ -882,7 +905,13 @@ impl AppView {
             last_tabs_saved: String::new(),
             whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
+            feed_items: ScrollHandle::new(),
+            feed_day_heights: std::cell::RefCell::new(HashMap::new()),
+            feed_spacers: std::cell::RefCell::new(std::collections::HashSet::new()),
+            feed_heights_width: std::cell::Cell::new(gpui::px(0.)),
             slash_scroll: ScrollHandle::new(),
+            slash_flyout_scroll: ScrollHandle::new(),
+            slash_flyout_cache: std::cell::RefCell::new(None),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
@@ -1059,6 +1088,18 @@ impl AppView {
             window,
             cx,
         );
+        // Scroll anchoring: an async block render (math/mermaid/image)
+        // finishing ABOVE the viewport would shift what's being read — the
+        // editor hands us the height delta and the feed scroll absorbs it.
+        {
+            let scroll = self.feed_scroll.clone();
+            state.update(cx, |e, _| {
+                e.set_scroll_compensator(move |delta, _, _| {
+                    let off = scroll.offset();
+                    scroll.set_offset(gpui::point(off.x, off.y - delta));
+                });
+            });
+        }
         self.ensure_content_images(&content, cx);
         self.ensure_content_mermaid(&content, cx);
         self.ensure_content_math(&content, cx);
@@ -2392,6 +2433,17 @@ impl AppView {
             window,
             cx,
         );
+        // Scroll anchoring, like the feed's (see load_feed): async renders
+        // above the viewport adjust the page scroll instead of jumping it.
+        {
+            let scroll = self.page_scroll.clone();
+            state.update(cx, |e, _| {
+                e.set_scroll_compensator(move |delta, _, _| {
+                    let off = scroll.offset();
+                    scroll.set_offset(gpui::point(off.x, off.y - delta));
+                });
+            });
+        }
         self.ensure_content_images(&page.content, cx);
         self.ensure_content_mermaid(&page.content, cx);
         self.ensure_content_math(&page.content, cx);
@@ -2748,12 +2800,13 @@ impl AppView {
         self.slash = Some(Slash {
             target,
             trigger,
-            query,
             start,
             caret,
             selected,
             level,
             items,
+            flyout_shown: false,
+            flyout: None,
         });
         // Keep the highlighted row visible as the list is filtered/rebuilt.
         self.scroll_slash_into_view();
@@ -2767,17 +2820,77 @@ impl AppView {
         let Some(s) = self.slash.as_ref() else {
             return;
         };
-        let top = s.selected as f32 * ui::slash_menu::ITEM_H;
-        let bot = top + ui::slash_menu::ITEM_H;
+        let item_h = ui::slash_menu::item_h(s.trigger);
+        let view_h = ui::slash_menu::view_h(s.trigger);
+        let top = s.selected as f32 * item_h;
+        let bot = top + item_h;
         let cur = -f32::from(self.slash_scroll.offset().y);
         let new = if top < cur {
             top
-        } else if bot > cur + ui::slash_menu::VIEW_H {
-            bot - ui::slash_menu::VIEW_H
+        } else if bot > cur + view_h {
+            bot - view_h
         } else {
             return;
         };
         self.slash_scroll.set_offset(gpui::point(px(0.0), px(-new)));
+    }
+
+    /// The category level the open flyout shows: the selected main-list row,
+    /// when it's a category AND the flyout has been opened (`flyout_shown`).
+    fn slash_flyout_level(&self) -> Option<SlashLevel> {
+        let s = self.slash.as_ref()?;
+        if !s.flyout_shown {
+            return None;
+        }
+        match s.items.get(s.selected)?.kind {
+            ItemKind::Category(level) => Some(level),
+            _ => None,
+        }
+    }
+
+    /// The open flyout's rows (unfiltered — categories only exist while the
+    /// query is empty). Empty unless the flyout is shown. Cached per
+    /// (level, page title): the render loop and the arrow-key handlers all
+    /// read this every frame/keypress for a static list.
+    pub fn slash_flyout_items(&self) -> std::rc::Rc<Vec<slash::PaletteItem>> {
+        let Some(level) = self.slash_flyout_level() else {
+            return std::rc::Rc::new(Vec::new());
+        };
+        let Some(target) = self.slash.as_ref().map(|s| s.target.clone()) else {
+            return std::rc::Rc::new(Vec::new());
+        };
+        let title = self.slash_title(&target);
+        if let Some((l, t, items)) = self.slash_flyout_cache.borrow().as_ref()
+            && *l == level
+            && *t == title
+        {
+            return items.clone();
+        }
+        let items = std::rc::Rc::new(slash::build_slash_items(level, "", &self.templates, &title));
+        *self.slash_flyout_cache.borrow_mut() = Some((level, title, items.clone()));
+        items
+    }
+
+    /// Keep the flyout's highlighted row inside its viewport (the main list's
+    /// scroll-into-view, against the flyout's own handle).
+    fn scroll_flyout_into_view(&self) {
+        let Some(fi) = self.slash.as_ref().and_then(|s| s.flyout) else {
+            return;
+        };
+        let item_h = ui::slash_menu::item_h(Trigger::Slash);
+        let view_h = ui::slash_menu::view_h(Trigger::Slash);
+        let top = fi as f32 * item_h;
+        let bot = top + item_h;
+        let cur = -f32::from(self.slash_flyout_scroll.offset().y);
+        let new = if top < cur {
+            top
+        } else if bot > cur + view_h {
+            bot - view_h
+        } else {
+            return;
+        };
+        self.slash_flyout_scroll
+            .set_offset(gpui::point(px(0.0), px(-new)));
     }
 
     /// Debounced spell-check for a body editor: re-run after a short idle so we
@@ -2810,20 +2923,32 @@ impl AppView {
     /// Confirm the selected entry: open a category submenu, or insert.
     fn confirm_slash(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         enum Act {
-            Enter(SlashLevel),
+            Enter,
             Insert(String, usize),
             OpenPicker(SlashTarget, usize, gpui::Bounds<gpui::Pixels>),
             Property(SlashTarget),
             Game,
         }
+        // With the flyout focused, Enter accepts ITS highlighted row.
+        let flyout_item = self
+            .slash
+            .as_ref()
+            .and_then(|s| s.flyout)
+            .and_then(|fi| self.slash_flyout_items().get(fi).cloned());
         let act = {
             let Some(s) = self.slash.as_ref() else { return };
-            let Some(item) = s.items.get(s.selected) else {
-                cx.notify();
-                return;
+            let item = match &flyout_item {
+                Some(it) => it,
+                None => match s.items.get(s.selected) {
+                    Some(it) => it,
+                    None => {
+                        cx.notify();
+                        return;
+                    }
+                },
             };
             match &item.kind {
-                ItemKind::Category(level) => Act::Enter(*level),
+                ItemKind::Category(_) => Act::Enter,
                 ItemKind::Insert { snippet, caret } => Act::Insert(snippet.clone(), *caret),
                 ItemKind::TablePicker => Act::OpenPicker(s.target.clone(), s.start, s.caret),
                 ItemKind::Property => Act::Property(s.target.clone()),
@@ -2831,7 +2956,18 @@ impl AppView {
             }
         };
         match act {
-            Act::Enter(level) => self.enter_slash_category(level, cx),
+            // A category doesn't switch the list — its flyout opens beside it
+            // (Cditor-style); Enter shows it (if not already) and moves the
+            // keyboard focus into it.
+            Act::Enter => {
+                if let Some(s) = self.slash.as_mut() {
+                    s.flyout_shown = true;
+                    s.flyout = Some(0);
+                    self.slash_flyout_scroll
+                        .set_offset(gpui::point(px(0.0), px(0.0)));
+                    cx.notify();
+                }
+            }
             Act::Game => {
                 // Remove the typed `/play`, then slip into the game.
                 self.insert_slash(String::new(), 0, window, cx);
@@ -2863,16 +2999,86 @@ impl AppView {
         }
     }
 
+    /// Arrow-step the open menu: within the flyout when it has focus, else the
+    /// main list. Propagates with no menu open (normal caret movement).
+    fn slash_step(&mut self, dir: i32, cx: &mut Context<Self>) {
+        let flyout_len = self
+            .slash
+            .as_ref()
+            .and_then(|s| s.flyout)
+            .map(|_| self.slash_flyout_items().len());
+        let Some(s) = self.slash.as_mut() else {
+            cx.propagate();
+            return;
+        };
+        match (s.flyout, flyout_len) {
+            (Some(fi), Some(n)) if n > 0 => {
+                let n = n as i32;
+                s.flyout = Some(((fi as i32 + dir).rem_euclid(n)) as usize);
+                self.scroll_flyout_into_view();
+            }
+            _ => {
+                let n = s.items.len().max(1) as i32;
+                s.selected = ((s.selected as i32 + dir).rem_euclid(n)) as usize;
+                // Arrowing onto a category previews its flyout beside the list.
+                s.flyout_shown = matches!(
+                    s.items.get(s.selected).map(|it| &it.kind),
+                    Some(ItemKind::Category(_))
+                );
+                s.flyout = None;
+                self.scroll_slash_into_view();
+            }
+        }
+        cx.notify();
+    }
+
     /// Hovering a slash-menu item moves the selection to it, so the highlighted
-    /// row is the one both a click and Enter accept.
+    /// row is the one both a click and Enter accept. Hovering a category shows
+    /// its flyout; hovering anything else hides it.
     pub fn slash_hover(&mut self, i: usize, cx: &mut Context<Self>) {
         if let Some(s) = self.slash.as_mut()
             && i < s.items.len()
-            && s.selected != i
         {
+            let is_category = matches!(
+                s.items.get(i).map(|it| &it.kind),
+                Some(ItemKind::Category(_))
+            );
+            if s.selected == i && s.flyout.is_none() && s.flyout_shown == is_category {
+                return;
+            }
             s.selected = i;
+            s.flyout_shown = is_category;
+            s.flyout = None;
+            self.slash_flyout_scroll
+                .set_offset(gpui::point(px(0.0), px(0.0)));
             cx.notify();
         }
+    }
+
+    /// Close the slash menu (a click outside it, from the overlay).
+    pub fn close_slash_menu(&mut self, cx: &mut Context<Self>) {
+        if self.slash.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Hovering a flyout row highlights it (the row a click / Enter accepts).
+    pub fn slash_flyout_hover(&mut self, i: usize, cx: &mut Context<Self>) {
+        if let Some(s) = self.slash.as_mut()
+            && s.flyout != Some(i)
+        {
+            s.flyout = Some(i);
+            cx.notify();
+        }
+    }
+
+    /// Click a flyout row: highlight it, then accept like Enter.
+    pub fn click_slash_flyout(&mut self, i: usize, window: &mut Window, cx: &mut Context<Self>) {
+        match self.slash.as_mut() {
+            Some(s) => s.flyout = Some(i),
+            None => return,
+        }
+        self.confirm_slash(window, cx);
     }
 
     /// Click a slash-menu item: select it, then accept like Enter. Driven from the
@@ -2884,30 +3090,6 @@ impl AppView {
             _ => return,
         }
         self.confirm_slash(window, cx);
-    }
-
-    /// Switch the open menu to a level (root or a submenu) and rebuild it.
-    fn enter_slash_category(&mut self, level: SlashLevel, cx: &mut Context<Self>) {
-        let Some((query, target, start, caret)) = self
-            .slash
-            .as_ref()
-            .map(|s| (s.query.clone(), s.target.clone(), s.start, s.caret))
-        else {
-            return;
-        };
-        let title = self.slash_title(&target);
-        let items = slash::build_slash_items(level, &query, &self.templates, &title);
-        self.slash = Some(Slash {
-            target,
-            trigger: Trigger::Slash,
-            query,
-            start,
-            caret,
-            selected: 0,
-            level,
-            items,
-        });
-        cx.notify();
     }
 
     /// `InsertTab` handler: insert two spaces at the cursor of the focused
@@ -8516,12 +8698,61 @@ impl Render for AppView {
         }
 
         let slash_scroll = self.slash_scroll.clone();
+        let flyout_scroll = self.slash_flyout_scroll.clone();
+        let flyout_items = self.slash_flyout_items();
+        let win_h = f32::from(window.viewport_size().height);
+        let inset = window.client_inset().map_or(0.0, f32::from);
         let overlay = self.slash.as_ref().map(|s| {
+            // A transparent full-area backdrop under the menu catches clicks
+            // outside it (→ close). The menu paints on top and swallows its own
+            // clicks. The anchored element is only the main panel (the flyout
+            // floats beside it as an absolute child, so it doesn't change this
+            // size) — stable height, so `snap_to_window` places it cleanly below
+            // the caret without jumping when the flyout shows/hides.
+            //
+            // The flyout is an absolute child pinned to the main panel's top, so
+            // it can run off the window bottom. Replicate where `snap_to_window`
+            // lands the main panel, then shift the flyout up by whatever it would
+            // overflow (clamped so its top stays on-screen).
+            let caret_bottom = f32::from(s.caret.origin.y) + f32::from(s.caret.size.height);
+            let main_h = ui::slash_menu::panel_height(s.trigger, s.items.len());
+            let main_top = if caret_bottom + main_h > win_h - inset {
+                (win_h - inset - main_h).max(inset)
+            } else {
+                caret_bottom
+            };
+            let flyout_top_offset = if flyout_items.is_empty() {
+                0.0
+            } else {
+                let fly_h = ui::slash_menu::panel_height(Trigger::Slash, flyout_items.len());
+                if main_top + fly_h <= win_h - inset {
+                    0.0
+                } else {
+                    ((win_h - inset - fly_h) - main_top).max(inset - main_top)
+                }
+            };
             gpui::deferred(
-                gpui::anchored()
-                    .position(s.caret.bottom_left())
-                    .snap_to_window()
-                    .child(ui::slash_menu::render(s, &slash_scroll, cx)),
+                div()
+                    .absolute()
+                    .inset_0()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this: &mut AppView, _: &MouseDownEvent, _, cx| {
+                            this.close_slash_menu(cx);
+                        }),
+                    )
+                    .child(
+                        gpui::anchored()
+                            .position(s.caret.bottom_left())
+                            .snap_to_window()
+                            .child(ui::slash_menu::render(
+                                s,
+                                &slash_scroll,
+                                (&flyout_items, &flyout_scroll),
+                                flyout_top_offset,
+                                cx,
+                            )),
+                    ),
             )
             .into_any_element()
         });
@@ -8845,24 +9076,37 @@ impl Render for AppView {
         let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
             // Action ids: 0..=2 formula copy/export, 3 day/page Edit, 4..=6 align L/C/R (only
             // while editing the formula, where the in-line editor can re-justify it live).
-            let items: Vec<(&str, usize)> = match &menu.kind {
+            // `(label, icon face, action id)` — icons match the popup menus'.
+            let items: Vec<(&str, &str, usize)> = match &menu.kind {
                 CtxKind::Formula { alignable, .. } => {
-                    let mut v = vec![("Copy LaTeX", 0), ("Export PNG…", 1), ("Export SVG…", 2)];
+                    let mut v = vec![
+                        ("Copy LaTeX", "copy", 0),
+                        ("Export PNG…", "file-down", 1),
+                        ("Export SVG…", "file-down", 2),
+                    ];
                     if *alignable {
-                        v.extend([("Align left", 4), ("Align center", 5), ("Align right", 6)]);
+                        v.extend([
+                            ("Align left", "align-left", 4),
+                            ("Align center", "align-center", 5),
+                            ("Align right", "align-right", 6),
+                        ]);
                     }
                     v
                 }
-                CtxKind::Edit(_) => vec![("Edit", 3)],
+                CtxKind::Edit(_) => vec![("Edit", "pencil", 3)],
             };
             let mut rows = div().flex().flex_col().py(px(4.0));
-            for (label, action_id) in items {
+            for (label, face, action_id) in items {
                 rows = rows.child(
                     div()
                         .id(("ctx-menu-row", action_id))
                         .px(px(10.0))
                         .py(px(3.0))
                         .text_size(px(13.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap_2()
                         .cursor_pointer()
                         .hover(|s| s.bg(theme::accent_tint()))
                         .on_mouse_down(
@@ -8880,6 +9124,11 @@ impl Render for AppView {
                                 }
                             }),
                         )
+                        .child(
+                            ui::menu_icon(face)
+                                .size_4()
+                                .text_color(theme::text_secondary()),
+                        )
                         .child(label),
                 );
             }
@@ -8890,11 +9139,12 @@ impl Render for AppView {
                     .child(
                         div()
                             .occlude()
-                            .min_w(px(140.0))
+                            .min_w(px(150.0))
                             .bg(theme::bg_sidebar())
                             .border_1()
                             .border_color(theme::border_subtle())
                             .rounded(px(8.0))
+                            .shadow_md()
                             .overflow_hidden()
                             .text_color(theme::text_primary())
                             .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _, cx| {
@@ -8950,34 +9200,10 @@ impl Render for AppView {
             // Slash-menu keys (gated: act only while the menu is open, else
             // let the editor handle the key normally).
             .on_action(cx.listener(|this: &mut AppView, _: &SlashUp, _, cx| {
-                let moved = if let Some(s) = this.slash.as_mut() {
-                    let n = s.items.len().max(1);
-                    s.selected = (s.selected + n - 1) % n;
-                    true
-                } else {
-                    false
-                };
-                if moved {
-                    this.scroll_slash_into_view();
-                    cx.notify();
-                } else {
-                    cx.propagate();
-                }
+                this.slash_step(-1, cx);
             }))
             .on_action(cx.listener(|this: &mut AppView, _: &SlashDown, _, cx| {
-                let moved = if let Some(s) = this.slash.as_mut() {
-                    let n = s.items.len().max(1);
-                    s.selected = (s.selected + 1) % n;
-                    true
-                } else {
-                    false
-                };
-                if moved {
-                    this.scroll_slash_into_view();
-                    cx.notify();
-                } else {
-                    cx.propagate();
-                }
+                this.slash_step(1, cx);
             }))
             .on_action(
                 cx.listener(|this: &mut AppView, _: &SlashConfirm, window, cx| {
@@ -8995,12 +9221,16 @@ impl Render for AppView {
                     // the focused editor swaps the page/day back to its rendered view via
                     // the editor's Blur handler (same path as clicking away). Otherwise it
                     // propagates (so dialogs etc. still get Esc).
-                    match this.slash.as_ref().map(|s| s.level) {
-                        Some(SlashLevel::Root) => {
+                    match this.slash.as_mut() {
+                        // The flyout takes the first Esc (back to the main list).
+                        Some(s) if s.flyout.is_some() => {
+                            s.flyout = None;
+                            cx.notify();
+                        }
+                        Some(_) => {
                             this.slash = None;
                             cx.notify();
                         }
-                        Some(_) => this.enter_slash_category(SlashLevel::Root, cx),
                         // A seated PDF form field drops without writing.
                         None if this.pdf_field_edit.is_some() => this.cancel_pdf_field_edit(cx),
                         // An open find bar takes Esc first (closes it).
@@ -9510,6 +9740,13 @@ fn make_editor(
         editor.set_block_math_em(crate::math::FONT_SIZE);
         // Tab / Shift+Tab indent by the configured number of spaces per level.
         editor.set_tab_indent(list_indent);
+        // The code card's language picker offers the compiled grammar set.
+        editor.set_code_languages(
+            crate::highlight::LANGUAGES
+                .iter()
+                .map(|l| gpui::SharedString::from(*l))
+                .collect(),
+        );
         editor
     });
     // Live-preview markdown styling when WYSIWYG is on — mirrors the rendered

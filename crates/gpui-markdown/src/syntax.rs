@@ -160,12 +160,62 @@ impl TableStyle {
 /// value) into its [`TableStyle`]. `None` for anything unrecognized, so an
 /// unknown marker stays a plain HTML comment.
 pub fn table_style_marker(text: &str) -> Option<TableStyle> {
+    let body = table_marker_body(text)?;
+    // The style name is the first token; later tokens are attributes
+    // (`cols=…` column widths).
+    TableStyle::from_name(body.split_whitespace().next().unwrap_or(""))
+}
+
+/// The inner body of a `<!-- table:… -->` marker (style name + attributes),
+/// or `None` for any other text.
+fn table_marker_body(text: &str) -> Option<&str> {
     let inner = text
         .trim()
         .strip_prefix("<!--")?
         .strip_suffix("-->")?
         .trim();
-    TableStyle::from_name(inner.strip_prefix("table:")?.trim())
+    Some(inner.strip_prefix("table:")?.trim())
+}
+
+/// Explicit column widths (logical px) from a table marker's `cols=` attribute
+/// — `<!-- table:grid cols=120,80,200 -->` — written by the editor's
+/// drag-to-resize. `None` when absent or malformed (the table stays
+/// content-measured).
+pub fn table_col_widths(text: &str) -> Option<Vec<f32>> {
+    let body = table_marker_body(text)?;
+    let attr = body
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("cols="))?;
+    let widths: Vec<f32> = attr
+        .split(',')
+        .map(|w| w.trim().parse::<f32>())
+        .collect::<Result<_, _>>()
+        .ok()?;
+    (!widths.is_empty() && widths.iter().all(|w| w.is_finite() && *w > 0.)).then_some(widths)
+}
+
+/// A table marker line for `style` (+ optional explicit column widths) — the
+/// inverse of the parsers above. `None` when the marker would say nothing
+/// (Grid, no widths): the default needs no marker.
+pub fn table_marker_text(style: TableStyle, widths: Option<&[f32]>) -> Option<String> {
+    let name = match style {
+        TableStyle::Grid => "grid",
+        TableStyle::Striped => "striped",
+        TableStyle::Header => "header",
+        TableStyle::Minimal => "minimal",
+    };
+    match widths {
+        Some(w) if !w.is_empty() => {
+            let list = w
+                .iter()
+                .map(|w| (w.round() as i64).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            Some(format!("<!-- table:{name} cols={list} -->"))
+        }
+        _ if style != TableStyle::Grid => Some(format!("<!-- table:{name} -->")),
+        _ => None,
+    }
 }
 
 /// Font-size multiplier for a heading of the given depth (h1 largest, h6 =

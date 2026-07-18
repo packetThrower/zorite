@@ -11,15 +11,17 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, Bounds, Corners, ElementId, FontStyle, FontWeight, HighlightStyle, Hsla,
-    InteractiveElement, InteractiveText, IntoElement, MouseButton, MouseDownEvent, ParentElement,
-    Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString, StatefulInteractiveElement,
-    StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas, div, point,
-    prelude::FluentBuilder, px, relative, rgb, rgba, size, svg,
+    AnyElement, App, Bounds, ClipboardItem, Corners, ElementId, FontStyle, FontWeight,
+    HighlightStyle, Hsla, InteractiveElement, InteractiveText, IntoElement, MouseButton,
+    MouseDownEvent, ParentElement, Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString,
+    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas,
+    div, point, prelude::FluentBuilder, px, relative, rgb, rgba, size, svg,
 };
 use markdown::mdast;
 
-use crate::syntax::{AlertKind, TableStyle, alert_marker, heading_scale, table_style_marker};
+use crate::syntax::{
+    AlertKind, TableStyle, alert_marker, heading_scale, table_col_widths, table_style_marker,
+};
 
 /// Visual configuration for the renderer. The host fills this from its
 /// own theme; defaults are a neutral dark palette.
@@ -332,6 +334,11 @@ pub const SNIPPETS: &[Snippet] = &[
         label: "Highlight",
         snippet: "<mark></mark>",
         caret: 6,
+    },
+    Snippet {
+        label: "Underline",
+        snippet: "<u></u>",
+        caret: 3,
     },
     Snippet {
         label: "Link",
@@ -736,6 +743,7 @@ impl RenderOnce for MarkdownView {
             folded_headings: self.folded_headings,
             on_heading_toggle: self.on_heading_toggle,
             suppress_heading_top: false,
+            strike_done: false,
             embed_depth: 0,
         };
 
@@ -774,16 +782,12 @@ impl RenderOnce for MarkdownView {
                     if let mdast::Node::Html(h) = node
                         && let Some(style) = table_style_marker(&h.value)
                     {
-                        pending_style = Some(style);
+                        pending_style = Some((style, table_col_widths(&h.value)));
                         continue;
                     }
                     if let mdast::Node::Table(t) = node {
-                        col = col.child(render_table(
-                            t,
-                            &mut ctx,
-                            pending_style.take().unwrap_or_default(),
-                            window,
-                        ));
+                        let (style, widths) = pending_style.take().unwrap_or_default();
+                        col = col.child(render_table(t, &mut ctx, style, widths, window));
                         continue;
                     }
                     pending_style = None;
@@ -847,6 +851,9 @@ struct Ctx {
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
     suppress_heading_top: bool,
+    /// Set while rendering a checked task item's content: inline text renders
+    /// struck through + muted (Notion-style done state).
+    strike_done: bool,
     /// Transclusion nesting level — embeds inside embeds stop at a small cap,
     /// which also breaks A-embeds-B-embeds-A cycles.
     embed_depth: usize,
@@ -1009,6 +1016,51 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                         .width()
                 })
                 .fold(px(0.0), Pixels::max);
+            // Hover chrome at the card's top-right (Cditor-inspired): the
+            // language tag and a Copy button (writes the raw code to the
+            // clipboard). The WYSIWYG editor paints the same chip.
+            ctx.counter += 1;
+            let group: SharedString = format!("{}-code-{}", ctx.id_base, ctx.counter).into();
+            let code_text: SharedString = c.value.clone().into();
+            let mut chip_fg = ctx.style.muted_color;
+            chip_fg.a *= 0.9;
+            let chrome = div()
+                .absolute()
+                .top(px(4.0))
+                .right(px(6.0))
+                .invisible()
+                .group_hover(group.clone(), |s| s.visible())
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .text_size(px(13.0))
+                .text_color(chip_fg)
+                .children(
+                    c.lang
+                        .clone()
+                        .filter(|l| !l.is_empty())
+                        .map(|l| div().child(SharedString::from(l))),
+                )
+                .child(
+                    div()
+                        .id(ElementId::Name(format!("{group}-copy").into()))
+                        .px(px(6.0))
+                        .py(px(1.0))
+                        .rounded(px(4.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(ctx.style.mark_bg))
+                        .on_mouse_down(MouseButton::Left, {
+                            let code_text = code_text.clone();
+                            move |_: &MouseDownEvent, _window, app| {
+                                app.stop_propagation();
+                                app.write_to_clipboard(ClipboardItem::new_string(
+                                    code_text.to_string(),
+                                ));
+                            }
+                        })
+                        .child("Copy"),
+                );
             Some(
                 div()
                     .w(widest + px(26.0))
@@ -1019,7 +1071,10 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     .py(px(8.0))
                     .font_family(ctx.style.mono_font.clone())
                     .text_color(color)
+                    .relative()
+                    .group(group)
                     .child(text)
+                    .child(chrome)
                     .into_any_element(),
             )
         }
@@ -1154,7 +1209,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
         ),
         // Top-level tables get their style from a preceding marker (see the root
         // loop); a nested/standalone table here renders as the default Grid.
-        mdast::Node::Table(t) => Some(render_table(t, ctx, TableStyle::default(), window)),
+        mdast::Node::Table(t) => Some(render_table(t, ctx, TableStyle::default(), None, window)),
         // A footnote definition: `[label] <content>`, rendered muted/smaller
         // where it sits (authors put these at the bottom).
         mdast::Node::FootnoteDefinition(f) => {
@@ -1350,10 +1405,10 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
         let mdast::Node::ListItem(li) = item else {
             continue;
         };
-        // GFM task items (`- [ ]` / `- [x]`) carry `checked`; render a box
-        // instead of a bullet/number.
-        let marker = if let Some(done) = li.checked {
-            (if done { "☑" } else { "☐" }).to_string()
+        // GFM task items (`- [ ]` / `- [x]`) carry `checked`; a drawn box
+        // renders instead of a bullet/number (see below).
+        let marker = if li.checked.is_some() {
+            String::new()
         } else if list.ordered {
             // Word-style depth markers, counted from 1 — the WYSIWYG editor
             // numbers the same way, and source digits are display-irrelevant.
@@ -1372,11 +1427,14 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
                     // Drop a leading heading's top margin so the bullet lines up
                     // with the heading; later blocks in the item keep theirs.
                     let prev = ctx.suppress_heading_top;
+                    let prev_strike = ctx.strike_done;
                     ctx.suppress_heading_top = ci == 0;
+                    ctx.strike_done = li.checked == Some(true);
                     if let Some(el) = render_block(other, ctx, window) {
                         content = content.child(el);
                     }
                     ctx.suppress_heading_top = prev;
+                    ctx.strike_done = prev_strike;
                 }
             }
         }
@@ -1391,13 +1449,46 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
         };
         let marker_top = px(f32::from(ctx.style.text_size) * (lead_scale - 1.0) * 1.618_034 / 2.0);
 
-        // The marker is a plain glyph, except a task's ☐/☑ is clickable: a click
-        // calls back with the item's source offset so the host can flip + persist.
-        let mut marker_el = div()
-            .flex_shrink_0()
-            .pt(marker_top)
-            .text_color(ctx.style.muted_color)
-            .child(marker);
+        // The marker is a plain glyph, except a task's box, which is drawn (a
+        // rounded square, accent-filled with a white check when done — the
+        // editor paints the same) and clickable: a click calls back with the
+        // item's source offset so the host can flip + persist.
+        let mut marker_el = if let Some(done) = li.checked {
+            let sz = px(f32::from(ctx.style.text_size) * 0.9);
+            let line_h = px(f32::from(ctx.style.text_size) * ctx.style.line_height);
+            let bx = if done {
+                div()
+                    .size(sz)
+                    .rounded(px(3.0))
+                    .bg(ctx.style.link_color)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(gpui::white())
+                    .text_size(sz * 0.72)
+                    .child("✓")
+            } else {
+                div()
+                    .size(sz)
+                    .rounded(px(3.0))
+                    .border_1()
+                    .border_color(ctx.style.muted_color)
+            };
+            // Center the box on the item's first text line.
+            div()
+                .flex_shrink_0()
+                .pt(marker_top)
+                .h(line_h)
+                .flex()
+                .items_center()
+                .child(bx)
+        } else {
+            div()
+                .flex_shrink_0()
+                .pt(marker_top)
+                .text_color(ctx.style.muted_color)
+                .child(marker)
+        };
         if li.checked.is_some()
             && let (Some(off), Some(toggle)) = (
                 li.position.as_ref().map(|p| p.start.offset),
@@ -1484,9 +1575,18 @@ impl Inline {
 
 fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     let mut inl = Inline::default();
+    // A checked task's text renders struck through + muted (Notion-style).
+    let mut base = HighlightStyle::default();
+    if ctx.strike_done {
+        base.strikethrough = Some(StrikethroughStyle {
+            thickness: px(1.0),
+            color: None,
+        });
+        base.color = Some(ctx.style.muted_color);
+    }
     build_inline(
         nodes,
-        HighlightStyle::default(),
+        base,
         &ctx.style,
         &ctx.definitions,
         ctx.on_inline_math.as_ref(),
@@ -1775,14 +1875,23 @@ fn build_inline(
                         .push((start..end, LinkTarget::Url(url.clone().into())));
                 }
             }
-            // Inline raw HTML stays literal (never executed) — except `<mark>`, a
-            // safe highlight tag: toggle a background on the runs it wraps.
+            // Inline raw HTML stays literal (never executed) — except `<mark>`
+            // (a safe highlight tag) and `<u>` (underline — markdown has none
+            // natively): each toggles its style on the runs it wraps.
             mdast::Node::Html(h) => {
                 let tag = h.value.trim().to_ascii_lowercase();
                 if tag == "<mark>" || tag.starts_with("<mark ") {
                     cur.background_color = Some(style.mark_bg);
                 } else if tag == "</mark>" {
                     cur.background_color = None;
+                } else if tag == "<u>" {
+                    cur.underline = Some(gpui::UnderlineStyle {
+                        thickness: px(1.0),
+                        color: None,
+                        wavy: false,
+                    });
+                } else if tag == "</u>" {
+                    cur.underline = None;
                 } else {
                     push_run(&h.value, cur, out);
                 }
@@ -2035,16 +2144,12 @@ fn render_embed(
             if let mdast::Node::Html(h) = node
                 && let Some(style) = table_style_marker(&h.value)
             {
-                pending_style = Some(style);
+                pending_style = Some((style, table_col_widths(&h.value)));
                 continue;
             }
             if let mdast::Node::Table(t) = node {
-                body = body.child(render_table(
-                    t,
-                    ctx,
-                    pending_style.take().unwrap_or_default(),
-                    window,
-                ));
+                let (style, widths) = pending_style.take().unwrap_or_default();
+                body = body.child(render_table(t, ctx, style, widths, window));
                 continue;
             }
             pending_style = None;
@@ -2235,6 +2340,7 @@ fn render_table(
     table: &mdast::Table,
     ctx: &mut Ctx,
     style: TableStyle,
+    explicit_widths: Option<Vec<f32>>,
     window: &mut Window,
 ) -> AnyElement {
     let border = ctx.style.muted_color;
@@ -2291,6 +2397,13 @@ fn render_table(
     }
     for w in &mut widths {
         *w = (*w).max(px(48.0));
+    }
+    // The marker's `cols=` widths (the editor's drag-to-resize) override the
+    // measurement, floored so a column can't vanish.
+    if let Some(explicit) = &explicit_widths {
+        for (ci, w) in explicit.iter().enumerate().take(ncols) {
+            widths[ci] = px(w.max(24.0));
+        }
     }
     // The grid must be sized explicitly: gpui's default stretch alignment
     // would otherwise fill the parent's full width, leaving a void after the
@@ -2632,6 +2745,31 @@ mod search_tests {
         );
         assert_eq!(table_style_marker("<!-- table:nope -->"), None);
         assert_eq!(table_style_marker("<!-- ordinary -->"), None);
+        // Width attributes ride along without breaking the style parse.
+        assert_eq!(
+            table_style_marker("<!-- table:striped cols=120,80 -->"),
+            Some(TableStyle::Striped)
+        );
+        assert_eq!(
+            table_col_widths("<!-- table:grid cols=120,80.5 -->"),
+            Some(vec![120.0, 80.5])
+        );
+        assert_eq!(table_col_widths("<!-- table:grid -->"), None);
+        assert_eq!(table_col_widths("<!-- table:grid cols=x,1 -->"), None);
+        assert_eq!(table_col_widths("<!-- table:grid cols=0,1 -->"), None);
+        // The writer round-trips: Grid + no widths needs no marker at all.
+        assert_eq!(
+            crate::syntax::table_marker_text(TableStyle::Grid, None),
+            None
+        );
+        assert_eq!(
+            crate::syntax::table_marker_text(TableStyle::Grid, Some(&[100.4, 50.0])),
+            Some("<!-- table:grid cols=100,50 -->".to_string())
+        );
+        assert_eq!(
+            crate::syntax::table_marker_text(TableStyle::Minimal, None),
+            Some("<!-- table:minimal -->".to_string())
+        );
     }
 
     #[test]

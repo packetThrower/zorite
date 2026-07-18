@@ -69,6 +69,14 @@ const LAYOUT_LIST: &[u8] = include_bytes!("../assets/icons/layout-list.svg");
 const WAYPOINTS: &[u8] = include_bytes!("../assets/icons/waypoints.svg");
 // Notebook-switcher row buttons (rename).
 const PENCIL: &[u8] = include_bytes!("../assets/icons/pencil.svg");
+// Context-menu row icons (the shared page menu + tab menu, Cditor-style).
+const TRASH: &[u8] = include_bytes!("../assets/icons/trash-2.svg");
+const APP_WINDOW: &[u8] = include_bytes!("../assets/icons/app-window.svg");
+const FILE_TEXT: &[u8] = include_bytes!("../assets/icons/file-text.svg");
+const FILE_DOWN: &[u8] = include_bytes!("../assets/icons/file-down.svg");
+// Formula context-menu alignment rows (align-left ships as a property icon).
+const ALIGN_CENTER: &[u8] = include_bytes!("../assets/icons/align-center.svg");
+const ALIGN_RIGHT: &[u8] = include_bytes!("../assets/icons/align-right.svg");
 // Property-key icons: ONE list drives both the picker's choices and the
 // embedded bytes, so a face offered on the Properties page can never be
 // missing from a release build (the on-disk lucide set is dev-only — a
@@ -190,6 +198,12 @@ impl AssetSource for Assets {
             "icons/layout-list.svg" => Some(LAYOUT_LIST),
             "icons/waypoints.svg" => Some(WAYPOINTS),
             "icons/pencil.svg" => Some(PENCIL),
+            "icons/trash-2.svg" => Some(TRASH),
+            "icons/app-window.svg" => Some(APP_WINDOW),
+            "icons/file-text.svg" => Some(FILE_TEXT),
+            "icons/file-down.svg" => Some(FILE_DOWN),
+            "icons/align-center.svg" => Some(ALIGN_CENTER),
+            "icons/align-right.svg" => Some(ALIGN_RIGHT),
             _ => property_icon_bytes(path),
         };
         if let Some(bytes) = custom {

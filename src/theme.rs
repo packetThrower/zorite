@@ -352,18 +352,22 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
         popover_fg: p.text_primary,
         popover_hover: p.accent_tint,
         popover_divider: p.divider,
+        // Destructive menu rows (Delete row/column/table). A Radix-red that
+        // reads on both light and dark surfaces.
+        popover_danger: gpui::rgb(0xE5484D).into(),
         mono: gpui::font(mono_font()),
     }
 }
 
 // --- Theme mode + application ---
 
-/// Light / Dark / Auto (follow the OS appearance).
+/// Light / Dark / Auto (follow the OS appearance). Auto is the default —
+/// a persisted "dark"/"light" choice always wins over it.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
     Light,
-    #[default]
     Dark,
+    #[default]
     Auto,
 }
 
@@ -380,8 +384,8 @@ impl Mode {
     pub fn from_str(s: &str) -> Self {
         match s {
             "light" => Mode::Light,
-            "auto" => Mode::Auto,
-            _ => Mode::Dark,
+            "dark" => Mode::Dark,
+            _ => Mode::Auto,
         }
     }
 
