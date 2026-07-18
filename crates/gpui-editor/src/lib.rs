@@ -255,6 +255,8 @@ struct DiagMenu {
     suggestions: Vec<SharedString>,
     /// Scroll state of the (capped-height) list, so a thumb can track it.
     scroll: ScrollHandle,
+    /// Whether the "Turn into" flyout is open (hover-opened; dies with the menu).
+    turn_into: bool,
 }
 
 /// A block kind the right-click "Turn into" menu converts between —
@@ -677,9 +679,6 @@ pub struct EditorState {
     markdown_style: Option<SyntaxStyle>,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
-    /// Whether the menu's "Turn into" flyout is open (hover-opened, lives
-    /// until the menu closes).
-    menu_turn_into: bool,
     /// The open table right-click menu's anchor (window space), if any. Its actions
     /// operate on the caret's table cell.
     table_menu: Option<Point<Pixels>>,
@@ -902,7 +901,6 @@ impl EditorState {
             diagnostics: Vec::new(),
             markdown_style: None,
             menu: None,
-            menu_turn_into: false,
             table_menu: None,
             table_menu_scroll: ScrollHandle::new(),
             image_menu: None,
@@ -3220,12 +3218,12 @@ impl EditorState {
             }
             None => (offset..offset, Vec::new()),
         };
-        self.menu_turn_into = false;
         self.menu = Some(DiagMenu {
             anchor,
             range,
             suggestions: suggestions.into_iter().map(SharedString::from).collect(),
             scroll: ScrollHandle::new(),
+            turn_into: false,
         });
         cx.notify();
     }
@@ -3261,6 +3259,44 @@ impl EditorState {
         self.selected_range = range;
         self.selection_reversed = false;
         self.replace_text_in_range(None, text, window, cx);
+    }
+
+    /// The fenced code block containing `row`: its opening fence row plus the
+    /// closing fence row (`None` when the block runs unclosed to the end).
+    /// The single source for turn-into, block drag, and drop snapping.
+    fn fence_block_rows(&self, row: usize) -> (usize, Option<usize>) {
+        let scan = self.scan_data();
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let open = (0..=row)
+            .rev()
+            .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
+            .unwrap_or(0);
+        let close = ((open + 1)..=last_row).find(|&r| {
+            self.content[starts[r]..self.line_end(r)]
+                .trim_start()
+                .starts_with("```")
+        });
+        (open, close)
+    }
+
+    /// The contiguous blockquote run containing `row` (first row..=last row),
+    /// by the renderer's `blockquote_prefix` test.
+    fn quote_run_rows(&self, row: usize) -> (usize, usize) {
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let is_q = |r: usize| {
+            markdown_syntax::blockquote_prefix(&self.content[starts[r]..self.line_end(r)]).is_some()
+        };
+        let mut first = row;
+        while first > 0 && is_q(first - 1) {
+            first -= 1;
+        }
+        let mut last = row;
+        while last < last_row && is_q(last + 1) {
+            last += 1;
+        }
+        (first, last)
     }
 
     /// The "Turn into" kind of the block containing `row` — what the flyout
@@ -3300,20 +3336,13 @@ impl EditorState {
         if markdown_syntax::blockquote_prefix(line).is_some() {
             // Callout if the caret's contiguous `>`-run carries a VALID
             // `[!KIND]` marker anywhere (marker line or body line).
-            let line_at = |r: usize| &self.content[starts[r]..self.line_end(r)];
-            let is_q = |r: usize| markdown_syntax::blockquote_prefix(line_at(r)).is_some();
-            let mut first = row;
-            while first > 0 && is_q(first - 1) {
-                first -= 1;
-            }
-            let mut r = first;
-            while r < starts.len() && is_q(r) {
-                let l = line_at(r);
+            let (first, last) = self.quote_run_rows(row);
+            for r in first..=last {
+                let l = &self.content[starts[r]..self.line_end(r)];
                 let p = markdown_syntax::blockquote_prefix(l).unwrap_or(0);
                 if markdown_syntax::alert_kind(&l[p..]).is_some() {
                     return TurnKind::Callout;
                 }
-                r += 1;
             }
             return TurnKind::Quote;
         }
@@ -3336,14 +3365,9 @@ impl EditorState {
         // The block's line span + its content with the current dressing removed.
         let (first, last, mut body): (usize, usize, Vec<String>) = match cur {
             TurnKind::Code => {
-                let open = (0..=row)
-                    .rev()
-                    .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
-                    .unwrap_or(0);
-                let close =
-                    ((open + 1)..=last_row).find(|&r| line_at(r).trim_start().starts_with("```"));
+                let (open, close) = self.fence_block_rows(row);
                 let last = close.unwrap_or(last_row);
-                let body_end = close.map(|c| c - 1).unwrap_or(last_row);
+                let body_end = close.map(|c| c.saturating_sub(1)).unwrap_or(last_row);
                 let body = ((open + 1)..=body_end).map(line_at).collect();
                 (open, last, body)
             }
@@ -3357,15 +3381,7 @@ impl EditorState {
                 (first, last, body)
             }
             TurnKind::Quote | TurnKind::Callout => {
-                let is_q = |r: usize| markdown_syntax::blockquote_prefix(&line_at(r)).is_some();
-                let mut first = row;
-                while first > 0 && is_q(first - 1) {
-                    first -= 1;
-                }
-                let mut last = row;
-                while last < last_row && is_q(last + 1) {
-                    last += 1;
-                }
+                let (first, last) = self.quote_run_rows(row);
                 let body = (first..=last)
                     .filter_map(|r| {
                         let line = line_at(r);
@@ -3459,26 +3475,11 @@ impl EditorState {
         if scan.fence_odd.get(row).copied().unwrap_or(false)
             || line_at(row).trim_start().starts_with("```")
         {
-            let open = (0..=row)
-                .rev()
-                .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
-                .unwrap_or(0);
-            let close = ((open + 1)..=last_row)
-                .find(|&r| line_at(r).trim_start().starts_with("```"))
-                .unwrap_or(last_row);
-            return (open, close);
+            let (open, close) = self.fence_block_rows(row);
+            return (open, close.unwrap_or(last_row));
         }
         if markdown_syntax::blockquote_prefix(line_at(row)).is_some() {
-            let is_q = |r: usize| markdown_syntax::blockquote_prefix(line_at(r)).is_some();
-            let mut first = row;
-            while first > 0 && is_q(first - 1) {
-                first -= 1;
-            }
-            let mut last = row;
-            while last < last_row && is_q(last + 1) {
-                last += 1;
-            }
-            return (first, last);
+            return self.quote_run_rows(row);
         }
         if markdown_syntax::list_prefix(line_at(row)).is_some() {
             let indent = |r: usize| {
@@ -3502,7 +3503,7 @@ impl EditorState {
         let bounds = self.last_bounds?;
         if self.markdown_style.is_none()
             || self.line_drag.is_some()
-            || position.x < bounds.origin.x - px(26.) - self.grip_inset
+            || position.x < grip_left(bounds.origin.x, self.grip_inset) - px(4.)
             || position.x > bounds.origin.x + bounds.size.width
         {
             return None;
@@ -3557,16 +3558,8 @@ impl EditorState {
         }
         // Inside a code fence: snap to the opening fence or past the close.
         if scan.fence_odd.get(b).copied().unwrap_or(false) {
-            let starts = self.line_starts();
-            let line_at = |r: usize| &self.content[starts[r]..self.line_end(r)];
-            let open = (0..b)
-                .rev()
-                .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
-                .unwrap_or(0);
-            let close = (b..starts.len())
-                .find(|&r| line_at(r).trim_start().starts_with("```"))
-                .map(|c| c + 1)
-                .unwrap_or(starts.len());
+            let (open, close) = self.fence_block_rows(b);
+            let close = close.map(|c| c + 1).unwrap_or(self.line_starts().len());
             b = if b - open <= close - b { open } else { close };
         }
         b
@@ -4133,6 +4126,19 @@ impl EditorState {
     }
 
     /// The table cell `(row, col)` the pointer is over, or `None` off any table —
+    /// The table's content LEFT edge in window space, horizontal scroll
+    /// applied — THE single source for every x mapping on a table (paint,
+    /// hit-tests, caret, selection, affordances).
+    fn table_left(&self, t: &TableRow, row: usize, bounds: &Bounds<Pixels>) -> Pixels {
+        let total: Pixels = t.col_widths.iter().copied().sum();
+        bounds.origin.x + px(TABLE_GUTTER)
+            - self.table_sx(
+                table_header_row(t, row),
+                total,
+                bounds.size.width - px(TABLE_GUTTER),
+            )
+    }
+
     /// The clamped horizontal scroll of the table headed at `header_row`.
     fn table_sx(&self, header_row: usize, total: Pixels, avail: Pixels) -> Pixels {
         let max = f32::from((total - avail).max(px(0.)));
@@ -4217,13 +4223,12 @@ impl EditorState {
         if t.col_widths.is_empty() {
             return None;
         }
-        let table_left = gutter_left + g;
+        let table_left = self.table_left(t, row, bounds);
         let table_w: Pixels = t.col_widths.iter().copied().sum();
-        let sx = self.table_sx(table_header_row(t, row), table_w, bounds.size.width - g);
-        if pos.x >= table_left + table_w - sx {
+        if pos.x >= table_left + table_w {
             return None;
         }
-        let rel_x = (pos.x - table_left + sx).max(px(0.));
+        let rel_x = (pos.x - table_left).max(px(0.));
         let mut colx = px(0.);
         for (col, &cw) in t.col_widths.iter().enumerate() {
             if rel_x < colx + cw {
@@ -4280,16 +4285,8 @@ impl EditorState {
         if t.is_separator || t.col_widths.is_empty() {
             return None;
         }
-        // A scrolled wide table: the pointer maps to content shifted by sx.
-        let rel = point(
-            rel.x
-                + self.table_sx(
-                    table_header_row(t, row),
-                    t.col_widths.iter().copied().sum(),
-                    bounds.size.width - px(TABLE_GUTTER),
-                ),
-            rel.y,
-        );
+        // A scrolled wide table: the pointer maps to content shifted left.
+        let rel = point(position.x - self.table_left(t, row, bounds), rel.y);
         // Measure at the last paint's size — the style stack is unwound during
         // event dispatch, so `text_style()` here reports the root size.
         let style = window.text_style();
@@ -5409,6 +5406,7 @@ impl Render for EditorState {
                     range,
                     suggestions,
                     scroll,
+                    turn_into: menu_turn_into,
                 } = menu;
                 let count = suggestions.len();
                 // Menu chrome from the host's theme (fallbacks match the former
@@ -5646,12 +5644,15 @@ impl Render for EditorState {
                     .child("Turn into")
                     .child(div().text_size(px(10.)).child("\u{25b8}"))
                     .on_hover(cx.listener(|editor, hovered: &bool, _, cx| {
-                        if *hovered && !editor.menu_turn_into {
-                            editor.menu_turn_into = true;
+                        if *hovered
+                            && let Some(m) = editor.menu.as_mut()
+                            && !m.turn_into
+                        {
+                            m.turn_into = true;
                             cx.notify();
                         }
                     }));
-                let turn_flyout = self.menu_turn_into.then(|| {
+                let turn_flyout = menu_turn_into.then(|| {
                     let rows: Vec<_> = TurnKind::ALL
                         .iter()
                         .enumerate()
@@ -8662,6 +8663,13 @@ fn shape_cell(
 
 /// How many wrap rows table row `cells` need at `col_widths` — 1 for content
 /// that fits; more once a drag-narrowed column forces its text to wrap.
+/// The gutter grip's left edge for an editor whose content starts at
+/// `bounds_left` — THE grip x formula, shared by prepaint (fresh geometry)
+/// and the event-time hover mirror so the two can't drift.
+fn grip_left(bounds_left: Pixels, inset: Pixels) -> Pixels {
+    bounds_left - px(22.) - inset
+}
+
 /// The header row of the table that `t` (the grid row at line `row`) belongs
 /// to — the key of its horizontal-scroll entry.
 fn table_header_row(t: &TableRow, row: usize) -> usize {
@@ -9880,10 +9888,10 @@ impl Element for EditorElement {
             let all = Bounds::new(gpui::Point::default(), window.viewport_size());
             grip_hb = Some(window.insert_hitbox(all, HitboxBehavior::Normal));
         }
-        let grip_left = bounds.origin.x - px(22.) - editor.grip_inset;
+        let gl = grip_left(bounds.origin.x, editor.grip_inset);
         if editor.markdown_style.is_some()
             && editor.line_drag.is_none()
-            && mouse.x >= grip_left - px(4.)
+            && mouse.x >= gl - px(4.)
             && mouse.x <= bounds.origin.x + bounds.size.width
         {
             let y = mouse.y - bounds.origin.y;
@@ -9895,7 +9903,7 @@ impl Element for EditorElement {
                 let sz = px(14.);
                 let rect = Bounds::new(
                     point(
-                        grip_left,
+                        gl,
                         bounds.origin.y + line_tops[row] + (line_heights[row] - sz) / 2.,
                     ),
                     size(sz, sz),
@@ -9933,8 +9941,7 @@ impl Element for EditorElement {
                 let bottom = bounds.origin.y + line_tops[i] + line_heights[i];
                 let width: Pixels = t.col_widths.iter().copied().sum();
                 // A scrolled wide table shifts every affordance with its content.
-                let sx = editor.table_sx(tbl_header, width, bounds.size.width - px(TABLE_GUTTER));
-                let left = bounds.origin.x + px(TABLE_GUTTER) - sx;
+                let left = editor.table_left(t, i, &bounds);
                 let accent = editor.markdown_style.as_ref().map_or(t.border, |s| s.link);
                 let g = px(PILL_ACROSS);
                 let zone = Bounds::new(
@@ -10106,12 +10113,7 @@ impl Element for EditorElement {
                     // ends (not raw-source geometry).
                     if let Some(t) = tables.get(row).and_then(Option::as_ref) {
                         let table_w: Pixels = t.col_widths.iter().copied().sum();
-                        let tleft = bounds.left() + px(TABLE_GUTTER)
-                            - editor.table_sx(
-                                table_header_row(t, row),
-                                table_w,
-                                bounds.size.width - px(TABLE_GUTTER),
-                            );
+                        let tleft = editor.table_left(t, row, &bounds);
                         // Endpoint x's: inside a cell, the exact caret x; at
                         // or past the row's cell span — or in an empty cell
                         // the shaper can't position — the table's edge, so
@@ -10247,12 +10249,7 @@ impl Element for EditorElement {
                 && let Some((x, y_off, _, _)) = table_caret_pos(
                     t,
                     col,
-                    bounds.left() + px(TABLE_GUTTER)
-                        - editor.table_sx(
-                            table_header_row(t, row),
-                            t.col_widths.iter().copied().sum(),
-                            bounds.size.width - px(TABLE_GUTTER),
-                        ),
+                    editor.table_left(t, row, &bounds),
                     &font,
                     font_size,
                     window,
@@ -10390,8 +10387,6 @@ impl Element for EditorElement {
             .as_ref()
             .map_or(text_color, |s| s.link);
         let image_resize = self.editor.read(cx).image_resize;
-        // Wide-table horizontal scroll offsets, snapshotted for the paint loop.
-        let table_sx_map = self.editor.read(cx).table_scroll_x.clone();
         // Window-space bounds of each painted image + its logical line, collected
         // for the next frame's grip hit-testing (committed below).
         let mut image_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
@@ -10715,15 +10710,9 @@ impl Element for EditorElement {
                 // clipped to the viewport — rows paint shifted under a mask.
                 let table_w: Pixels = t.col_widths.iter().copied().sum();
                 let avail = bounds.size.width - px(TABLE_GUTTER);
-                let sx = {
-                    let max = f32::from((table_w - avail).max(px(0.)));
-                    px(table_sx_map
-                        .get(&table_header_row(t, i))
-                        .copied()
-                        .unwrap_or(0.)
-                        .clamp(0., max))
-                };
                 let tleft = origin.x + px(TABLE_GUTTER);
+                let content_left = self.editor.read(cx).table_left(t, i, &bounds);
+                let sx = tleft - content_left;
                 let g = px(TABLE_GUTTER);
                 let mask = gpui::ContentMask {
                     bounds: Bounds::new(point(tleft, origin.y - g), size(avail, *lh + g * 2.)),
@@ -10755,7 +10744,7 @@ impl Element for EditorElement {
                     window.with_content_mask(Some(border_mask), |window| {
                         window.paint_quad(PaintQuad {
                             bounds: Bounds::new(
-                                point(tleft - sx, origin.y),
+                                point(content_left, origin.y),
                                 size(table_w, total_h),
                             ),
                             corner_radii: Corners::all(px(6.)),
@@ -10769,7 +10758,7 @@ impl Element for EditorElement {
                 window.with_content_mask(Some(mask), |window| {
                     paint_table_row(
                         t,
-                        point(tleft - sx, origin.y),
+                        point(content_left, origin.y),
                         *lh,
                         &font,
                         font_size,

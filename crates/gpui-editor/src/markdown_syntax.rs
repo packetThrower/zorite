@@ -1665,16 +1665,6 @@ pub(crate) fn math_regions(content: &str) -> Vec<MathRegion> {
     out
 }
 
-/// Whether the byte at `idx` is escaped by an odd run of immediately-preceding backslashes
-/// (`\$` is a literal dollar, `\\$` is an escaped backslash then a live `$`).
-fn is_escaped(bytes: &[u8], idx: usize) -> bool {
-    let mut n = 0;
-    while idx > n && bytes[idx - 1 - n] == b'\\' {
-        n += 1;
-    }
-    n % 2 == 1
-}
-
 /// Inline `$…$` math spans within a single text line (NOT block `$$` fences) — byte ranges
 /// covering the whole span, both `$` delimiters included. Follows the common (pandoc) rule so
 /// prose like "it cost $5 and $10" isn't mistaken for math: the opening `$` is followed by a
@@ -1713,7 +1703,7 @@ pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] != b'$' || is_escaped(bytes, i) {
+        if bytes[i] != b'$' || is_backslash_escaped(bytes, i) {
             i += 1;
             continue;
         }
@@ -1735,7 +1725,7 @@ pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
         let mut j = i + 1;
         let mut close = None;
         while j < bytes.len() {
-            if bytes[j] == b'$' && !is_escaped(bytes, j) {
+            if bytes[j] == b'$' && !is_backslash_escaped(bytes, j) {
                 let space_before = bytes[j - 1].is_ascii_whitespace();
                 let digit_after = bytes.get(j + 1).is_some_and(|c| c.is_ascii_digit());
                 if !space_before && !digit_after {
