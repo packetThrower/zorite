@@ -647,13 +647,9 @@ pub struct EditorState {
     scan_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<ScanData>)>>,
     /// See [`ScrollCompensatorFn`].
     scroll_compensator: Option<ScrollCompensatorFn>,
-    /// Cross-frame cache of each markdown line's `hidden_runs` output — the
-    /// residual per-frame cost after the scan cache (gpui's own layout cache
-    /// already absorbs glyph shaping): building every line's display string +
-    /// run list on every repaint. Keyed by a hash of the line + its reveal
-    /// state; edits miss only the lines they changed. Capacity-capped in
-    /// `shape_document`.
-    line_run_cache: std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
+    /// Cross-frame shaping caches — line runs, table column widths, and table
+    /// wrap rows (see [`ShapeCaches`]). Capacity-capped in `shape_document`.
+    shape_caches: ShapeCaches,
     /// `content_gen` as of the last paint — a measure with the SAME generation
     /// but different heights means an async (non-edit) height change, the
     /// scroll-anchoring trigger.
@@ -793,7 +789,7 @@ impl EditorState {
             scan_cache: std::cell::RefCell::new(None),
             scroll_compensator: None,
             last_paint_gen: 0,
-            line_run_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            shape_caches: ShapeCaches::default(),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
@@ -6148,8 +6144,8 @@ fn shape_document(
     col_resize: Option<TableColResize>,
     // The content's cached structural scans (see [`ScanData`]).
     scan: &ScanData,
-    // Cross-frame per-line run cache (see `EditorState::line_run_cache`).
-    line_cache: &std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
+    // Cross-frame shaping caches (see [`ShapeCaches`]).
+    caches: &ShapeCaches,
     // Collapsed headings (trimmed source lines) — their section lines fold to
     // height 0 like a folded callout's body.
     folded_headings: &std::collections::HashSet<String>,
@@ -6322,19 +6318,66 @@ fn shape_document(
     let regions: &[markdown_syntax::TableRegion] = if md.is_some() { &scan.tables } else { &[] };
     // Shared component of the per-line run-cache key (see `CachedLineRuns`).
     let run_epoch = line_run_epoch(base_font, md);
-    let mut region_cols: Vec<Vec<Pixels>> = Vec::with_capacity(regions.len());
-    for r in regions {
-        region_cols.push(table_column_widths(
-            &lines,
-            r,
-            window,
-            base_font,
-            base_font_size,
-            base_color,
-            wrap_width,
-            col_resize,
-        ));
-    }
+    // Measured column widths, cached across frames: rebuilt only when the
+    // tables' source text, the wrap width, the font epoch, or a live column
+    // drag changes — measuring shaped every cell of every table per call.
+    let region_cols: Vec<Vec<Pixels>> = {
+        let cols_key = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            for r in regions {
+                for li in r.lines.clone() {
+                    lines[li].hash(&mut h);
+                }
+                if let Some(w) = &r.col_widths_attr {
+                    for v in w {
+                        v.to_bits().hash(&mut h);
+                    }
+                }
+            }
+            wrap_width
+                .map(f32::from)
+                .unwrap_or(-1.)
+                .to_bits()
+                .hash(&mut h);
+            f32::from(base_font_size).to_bits().hash(&mut h);
+            run_epoch.hash(&mut h);
+            if let Some(r) = col_resize {
+                r.header_row.hash(&mut h);
+                r.col.hash(&mut h);
+                r.width.to_bits().hash(&mut h);
+            }
+            h.finish()
+        };
+        let hit = caches
+            .region_cols
+            .borrow()
+            .as_ref()
+            .filter(|(k, cols)| *k == cols_key && cols.len() == regions.len())
+            .map(|(_, cols)| cols.clone());
+        match hit {
+            Some(cols) => cols,
+            None => {
+                let cols: Vec<Vec<Pixels>> = regions
+                    .iter()
+                    .map(|r| {
+                        table_column_widths(
+                            &lines,
+                            r,
+                            window,
+                            base_font,
+                            base_font_size,
+                            base_color,
+                            wrap_width,
+                            col_resize,
+                        )
+                    })
+                    .collect();
+                *caches.region_cols.borrow_mut() = Some((cols_key, cols.clone()));
+                cols
+            }
+        }
+    };
     let table_row_h = base_font_size * LINE_HEIGHT_RATIO + px(12.);
     // Fenced-code-block tracking: collect a block's line indices (so its box can
     // be sized to its widest line + the first/last line marked for rounding) and
@@ -7052,7 +7095,8 @@ fn shape_document(
                 run_epoch.hash(&mut h);
                 h.finish()
             };
-            let cached = line_cache
+            let cached = caches
+                .line_runs
                 .borrow()
                 .get(&key)
                 .filter(|c| c.src == line && c.line_base == line_base)
@@ -7071,7 +7115,7 @@ fn shape_document(
                         reveal_inline,
                         st,
                     );
-                    line_cache.borrow_mut().insert(
+                    caches.line_runs.borrow_mut().insert(
                         key,
                         CachedLineRuns {
                             src: line.to_string(),
@@ -7161,16 +7205,36 @@ fn shape_document(
                     // becomes the header/body border.
                     Some(t) if t.is_separator => px(0.),
                     // A drag-narrowed column wraps its cells — the row grows to
-                    // the tallest cell's wrap rows.
+                    // the tallest cell's wrap rows (memoized: this shaped every
+                    // cell per row per frame).
                     Some(t) => {
-                        let rows = table_row_wrap_rows(
-                            window,
-                            &t.cells,
-                            &t.col_widths,
-                            t.is_header,
-                            base_font,
-                            base_font_size,
-                        );
+                        let row_key = {
+                            use std::hash::{Hash, Hasher};
+                            let mut h = std::collections::hash_map::DefaultHasher::new();
+                            line.hash(&mut h);
+                            for w in &t.col_widths {
+                                f32::from(*w).to_bits().hash(&mut h);
+                            }
+                            t.is_header.hash(&mut h);
+                            run_epoch.hash(&mut h);
+                            h.finish()
+                        };
+                        let hit = caches.cell_rows.borrow().get(&row_key).copied();
+                        let rows = match hit {
+                            Some(r) => r,
+                            None => {
+                                let r = table_row_wrap_rows(
+                                    window,
+                                    &t.cells,
+                                    &t.col_widths,
+                                    t.is_header,
+                                    base_font,
+                                    base_font_size,
+                                );
+                                caches.cell_rows.borrow_mut().insert(row_key, r);
+                                r
+                            }
+                        };
                         table_row_h + base_font_size * LINE_HEIGHT_RATIO * (rows - 1) as f32
                     }
                     None => match widget.as_ref() {
@@ -7232,9 +7296,13 @@ fn shape_document(
     // is fine — the next frame rebuilds only what's visible… which is
     // everything today, but each rebuild re-primes the cache.
     {
-        let mut cache = line_cache.borrow_mut();
+        let mut cache = caches.line_runs.borrow_mut();
         if cache.len() > lines.len() * 2 + 64 {
             cache.clear();
+        }
+        let mut rows = caches.cell_rows.borrow_mut();
+        if rows.len() > lines.len() * 2 + 64 {
+            rows.clear();
         }
     }
     (
@@ -8127,6 +8195,20 @@ struct CachedLineRuns {
     map: Vec<usize>,
 }
 
+/// The editor-owned caches `shape_document` reads and writes (interior-
+/// mutable — shaping runs under a read borrow of the editor):
+/// - `line_runs`: each markdown line's built display + runs (cross-frame).
+/// - `region_cols`: the measured table column widths for the WHOLE document,
+///   one keyed entry — rebuilt when the tables' source, the wrap width, the
+///   font epoch, or a live column drag changes.
+/// - `cell_rows`: per table row, how many wrap rows its tallest cell needs.
+#[derive(Default)]
+struct ShapeCaches {
+    line_runs: std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
+    region_cols: std::cell::RefCell<Option<(u64, Vec<Vec<Pixels>>)>>,
+    cell_rows: std::cell::RefCell<std::collections::HashMap<u64, usize>>,
+}
+
 /// A hash of the inputs shared by every line's run build (font + palette) —
 /// part of the per-line cache key, so a theme or font change misses cleanly.
 fn line_run_epoch(font: &Font, st: Option<&SyntaxStyle>) -> u64 {
@@ -8369,7 +8451,7 @@ impl Element for EditorElement {
                     editor.image_resize,
                     editor.table_col_resize,
                     &scan,
-                    &editor.line_run_cache,
+                    &editor.shape_caches,
                     &editor.folded_headings,
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
@@ -8543,7 +8625,7 @@ impl Element for EditorElement {
                     editor.image_resize,
                     editor.table_col_resize,
                     &editor.scan_data(),
-                    &editor.line_run_cache,
+                    &editor.shape_caches,
                     &editor.folded_headings,
                 )
             };

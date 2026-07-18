@@ -94,7 +94,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [x] Whole-document scans in `shape_document` (`ordered_numbers`,
   `mermaid_blocks`, `math_regions`, selection `row_of`) recomputed 2×/frame —
   memoize on the content version once the cache exists. (S)
-- [ ] **Table cells re-measured every frame** (`table_row_wrap_rows` +
+- [x] **Table cells re-measured every frame** (`table_row_wrap_rows` +
   `paint_table_row` shape per cell per paint) — cache by (content version,
   column-width bucket). (M)
 - [x] **Scroll anchoring** — an async math/mermaid/image render above the
