@@ -80,14 +80,14 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
   header render ragged (Cditor rejects); validate in `table_regions`. (S)
 
 **Performance (gpui-editor):**
-- [ ] **Document shaped TWICE per frame** — `shape_document` runs in the measure
+- [x] **Document shaped TWICE per frame** — `shape_document` runs in the measure
   closure AND prepaint with identical inputs; memoize one frame's result across
   the two passes. Halves editor cost, removes a divergence hazard. (S)
 - [ ] **Cross-frame shaped-line cache** — every blink/hover reshapes every
   visible day's full text; adopt Cditor's `LayoutCacheKey` (content version +
   width bucket + font/theme/scale). gpui-markdown's `PARSE_CACHE` is the
   in-repo template. (M)
-- [ ] **IME UTF-16↔UTF-8 mapping is O(document) per call** — scan from the
+- [x] **IME UTF-16↔UTF-8 mapping is O(document) per call** — scan from the
   caret's line start instead of byte 0; CJK composition latency currently grows
   with note size. Also: `bounds_for_range` anchors the candidate window at the
   composition START (zero-width) — return the marked range's real span. (S/M)
