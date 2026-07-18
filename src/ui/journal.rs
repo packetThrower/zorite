@@ -176,7 +176,8 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                                 })
                                 .max()
                                 .unwrap_or(px(28.0));
-                            d.pl(w.max(px(28.0)))
+                            // +24 leaves room for the drag grip left of the rail.
+                            d.pl(w.max(px(28.0)) + px(24.0))
                         })
                         .flex()
                         .flex_col()
@@ -262,6 +263,7 @@ fn day_section(
         if app.line_numbers() {
             let w =
                 super::page_view::gutter_width(state.read(cx).value().as_ref(), app.text_size());
+            state.update(cx, |s, _| s.set_grip_inset(w));
             editor
                 .child(super::page_view::line_gutter(
                     state.clone(),
@@ -270,6 +272,7 @@ fn day_section(
                 ))
                 .into_any_element()
         } else {
+            state.update(cx, |s, _| s.set_grip_inset(gpui::px(0.)));
             editor.into_any_element()
         }
     } else {

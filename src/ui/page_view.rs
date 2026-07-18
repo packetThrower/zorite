@@ -34,6 +34,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     // sits exactly where it would without a gutter.
     let gutter_w: Option<Pixels> = (app.line_numbers() && (app.wysiwyg() || app.is_page_editing()))
         .then(|| gutter_width(pe.state.read(cx).value().as_ref(), app.text_size()));
+    pe.state.update(cx, |s, _| {
+        s.set_grip_inset(gutter_w.unwrap_or(gpui::px(0.)))
+    });
     div()
         .flex_1()
         .min_w_0()
@@ -73,7 +76,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 // Match the journal feed: uniform padding, left-aligned.
                                 .p(px(28.0))
                                 // The gutter rail lives inside the left padding.
-                                .when_some(gutter_w, |d, w| d.pl(w.max(px(28.0))))
+                                // +24 leaves room for the drag grip left of the rail.
+                                .when_some(gutter_w, |d, w| d.pl(w.max(px(28.0)) + px(24.0)))
                                 .flex()
                                 .flex_col()
                                 // Fill the viewport so the open area below the content

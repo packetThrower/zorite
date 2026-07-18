@@ -112,7 +112,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [x] **"Turn into" block conversion menu** — right-click/handle menu converting
   a block between text/H1–3/lists/todo/quote/callout/code/math, with the
   current kind checked; flat-markdown natural (rewrite the prefix). (M)
-- [ ] **Block drag-reorder** — gutter grip drag to move a block/line (his
+- [x] **Block drag-reorder** — gutter grip drag to move a block/line (his
   gutter_drag + move-subtree pipeline; ours = reorder markdown lines). (M/L)
 - [ ] **Type-to-filter search in the table menu** — the menu is 18 rows now;
   his cell menu filters by label + keywords as you type. (S/M)

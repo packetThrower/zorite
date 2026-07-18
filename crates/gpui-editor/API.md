@@ -46,6 +46,7 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`EditorState::set_markdown_style`](#set_markdown_style) | method | `fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>)` | Turn on WYSIWYG styling |
 | [`EditorState::set_code_languages`](#set_code_languages) | method | `fn set_code_languages(&mut self, langs: Vec<SharedString>)` | Languages for the code card's picker |
 | [`EditorState::set_scroll_compensator`](#set_scroll_compensator) | method | `fn set_scroll_compensator(&mut self, f: impl Fn(Pixels, &mut Window, &mut App) + 'static)` | Scroll anchoring for async block renders |
+| `EditorState::set_grip_inset` | method | `fn set_grip_inset(&mut self, inset: Pixels)` | Shift the block-drag gutter grip left of host gutter chrome (e.g. line numbers) |
 | [`ScrollCompensatorFn`](#set_scroll_compensator) | type alias | `Rc<dyn Fn(Pixels, &mut Window, &mut App)>` | The installed compensator's shape |
 | [`EditorState::clear_markdown_style`](#clear_markdown_style) | method | `fn clear_markdown_style(&mut self, cx: &mut Context<Self>)` | Back to plain text at runtime |
 | [`EditorState::set_block_image_provider`](#set_block_image_provider) | method | `fn set_block_image_provider(&mut self, impl Fn(&str) -> Option<Arc<RenderImage>> + 'static)` | Standalone `![](src)` → decoded image |

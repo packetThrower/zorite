@@ -760,6 +760,16 @@ pub struct EditorState {
     /// run several times before a paint commits fresh `line_tops`; without
     /// this, one async height change compensates once per measure call.
     compensated: std::cell::Cell<bool>,
+    /// An active gutter block drag (Notion/Cditor-style reorder): the grabbed
+    /// block's first + last rows and the current drop boundary (a row index;
+    /// `== rows` drops at the document end).
+    line_drag: Option<(usize, usize, usize)>,
+    /// The row whose gutter grip the pointer hovers (mirrors prepaint's
+    /// computation) — tracked so hover changes repaint the grip.
+    grip_hover_row: Option<usize>,
+    /// Extra left offset for the drag grip — the host sets its line-number
+    /// gutter's width here so the grip sits beside the numbers, not on them.
+    grip_inset: Pixels,
     /// `content_gen` as of the last paint — a measure with the SAME generation
     /// but different heights means an async (non-edit) height change, the
     /// scroll-anchoring trigger.
@@ -904,6 +914,9 @@ impl EditorState {
             shape_caches: ShapeCaches::default(),
             shape_band: std::cell::Cell::new(None),
             compensated: std::cell::Cell::new(false),
+            line_drag: None,
+            grip_hover_row: None,
+            grip_inset: px(0.),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
@@ -2866,6 +2879,12 @@ impl EditorState {
     }
 
     fn on_mouse_up(&mut self, _: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        // End a gutter block drag: splice the block at the drop boundary.
+        if let Some((bs, be, t)) = self.line_drag.take() {
+            self.apply_line_drag(bs, be, t, cx);
+            cx.notify();
+            return;
+        }
         // End an image-resize drag by persisting the rounded width as `{width=N}`
         // in that image's source line (through the normal mutation path, so it
         // joins the undo history + emits Changed); the next paint shows the saved
@@ -2897,6 +2916,16 @@ impl EditorState {
         // matches `block_img`, no snap-back on release, and it can't run off the
         // page). The paint reads this live width for the dragged image (aspect
         // preserved).
+        // While dragging a block by its gutter grip, track the drop boundary
+        // (snapped out of rendered regions); paint draws the indicator there.
+        if let Some((bs, be, t)) = self.line_drag {
+            let b = self.snap_drop_boundary(self.drop_boundary_at(event.position));
+            if b != t {
+                self.line_drag = Some((bs, be, b));
+                cx.notify();
+            }
+            return;
+        }
         // While dragging a table column's border, track the pointer: the new
         // width is the grab width plus the travel, floored so the column can't
         // vanish. Shaping applies it live (see `table_column_widths`).
@@ -3352,6 +3381,203 @@ impl EditorState {
                 (range_start + text.find('\n').map_or(0, |i| i + 1)).min(self.content.len());
             self.selected_range = caret..caret;
         }
+    }
+
+    /// Extra left offset for the gutter drag grip (e.g. the host's
+    /// line-number gutter width), so the grip clears other gutter chrome.
+    pub fn set_grip_inset(&mut self, inset: Pixels) {
+        self.grip_inset = inset;
+    }
+
+    /// The line span the gutter grip drags as one unit: whole fenced/rendered
+    /// regions (code, math, mermaid, tables incl. their style marker,
+    /// property panels), a quote/callout run, a list item with its
+    /// deeper-indented children — otherwise the single line.
+    fn drag_block_rows(&self, row: usize) -> (usize, usize) {
+        let scan = self.scan_data();
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let line_at = |r: usize| &self.content[starts[r]..self.line_end(r)];
+        if let Some(m) = scan
+            .math
+            .iter()
+            .find(|m| m.range.contains(&row) || m.marker_line == Some(row))
+        {
+            let first = m.marker_line.unwrap_or(m.range.start).min(m.range.start);
+            return (first, m.range.end.saturating_sub(1).max(m.range.start));
+        }
+        if let Some((r, _)) = scan.mermaid.iter().find(|(r, _)| r.contains(&row)) {
+            return (r.start, r.end.saturating_sub(1).max(r.start));
+        }
+        if let Some(t) = scan
+            .tables
+            .iter()
+            .find(|t| t.lines.contains(&row) || t.marker_line == Some(row))
+        {
+            let first = t.marker_line.unwrap_or(t.lines.start).min(t.lines.start);
+            return (first, t.lines.end.saturating_sub(1).max(t.lines.start));
+        }
+        if let Some(p) = scan.props.iter().find(|r| r.contains(&row)) {
+            return (p.start, p.end.saturating_sub(1).max(p.start));
+        }
+        if scan.fence_odd.get(row).copied().unwrap_or(false)
+            || line_at(row).trim_start().starts_with("```")
+        {
+            let open = (0..=row)
+                .rev()
+                .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
+                .unwrap_or(0);
+            let close = ((open + 1)..=last_row)
+                .find(|&r| line_at(r).trim_start().starts_with("```"))
+                .unwrap_or(last_row);
+            return (open, close);
+        }
+        if line_at(row).trim_start().starts_with('>') {
+            let is_q = |r: usize| line_at(r).trim_start().starts_with('>');
+            let mut first = row;
+            while first > 0 && is_q(first - 1) {
+                first -= 1;
+            }
+            let mut last = row;
+            while last < last_row && is_q(last + 1) {
+                last += 1;
+            }
+            return (first, last);
+        }
+        if markdown_syntax::list_prefix(line_at(row)).is_some() {
+            let indent = |r: usize| {
+                let l = line_at(r);
+                l.len() - l.trim_start().len()
+            };
+            let base = indent(row);
+            let mut last = row;
+            while last < last_row && !line_at(last + 1).trim().is_empty() && indent(last + 1) > base
+            {
+                last += 1;
+            }
+            return (row, last);
+        }
+        (row, row)
+    }
+
+    /// The row whose gutter grip the pointer would hover (the event-time
+    /// mirror of prepaint's grip computation, for repaint change-detection).
+    fn grip_hover_row_at(&self, position: Point<Pixels>) -> Option<usize> {
+        let bounds = self.last_bounds?;
+        if self.markdown_style.is_none()
+            || self.line_drag.is_some()
+            || position.x < bounds.origin.x - px(26.) - self.grip_inset
+            || position.x > bounds.origin.x + bounds.size.width
+        {
+            return None;
+        }
+        let y = position.y - bounds.origin.y;
+        (0..self.line_tops.len()).find(|&i| {
+            let h = self.line_h(i) * self.row_span(i) as f32;
+            h > px(0.5) && y >= self.line_tops[i] && y < self.line_tops[i] + h
+        })
+    }
+
+    /// The drop boundary (a between-rows index) nearest the pointer, from the
+    /// last paint's committed geometry.
+    fn drop_boundary_at(&self, position: Point<Pixels>) -> usize {
+        let Some(bounds) = self.last_bounds else {
+            return 0;
+        };
+        let y = position.y - bounds.origin.y;
+        for i in 0..self.line_tops.len() {
+            let mid = self.line_tops[i] + self.line_h(i) * self.row_span(i) as f32 / 2.;
+            if y < mid {
+                return i;
+            }
+        }
+        self.line_tops.len()
+    }
+
+    /// Clamp a drop boundary out of the interior of any rendered region — a
+    /// block can't land inside a table, fence, math block, or property panel.
+    fn snap_drop_boundary(&self, mut b: usize) -> usize {
+        let scan = self.scan_data();
+        let snap = |b: usize, s: usize, e: usize| {
+            if b > s && b < e {
+                if b - s <= e - b { s } else { e }
+            } else {
+                b
+            }
+        };
+        for m in scan.math.iter() {
+            let s = m.marker_line.unwrap_or(m.range.start).min(m.range.start);
+            b = snap(b, s, m.range.end);
+        }
+        for (r, _) in scan.mermaid.iter() {
+            b = snap(b, r.start, r.end);
+        }
+        for t in scan.tables.iter() {
+            let s = t.marker_line.unwrap_or(t.lines.start).min(t.lines.start);
+            b = snap(b, s, t.lines.end);
+        }
+        for p in scan.props.iter() {
+            b = snap(b, p.start, p.end);
+        }
+        // Inside a code fence: snap to the opening fence or past the close.
+        if scan.fence_odd.get(b).copied().unwrap_or(false) {
+            let starts = self.line_starts();
+            let line_at = |r: usize| &self.content[starts[r]..self.line_end(r)];
+            let open = (0..b)
+                .rev()
+                .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
+                .unwrap_or(0);
+            let close = (b..starts.len())
+                .find(|&r| line_at(r).trim_start().starts_with("```"))
+                .map(|c| c + 1)
+                .unwrap_or(starts.len());
+            b = if b - open <= close - b { open } else { close };
+        }
+        b
+    }
+
+    /// Land the grabbed block at boundary `t` — one undoable splice of the
+    /// span between the block and the target, caret seated on the block.
+    fn apply_line_drag(&mut self, bs: usize, be: usize, t: usize, cx: &mut Context<Self>) {
+        let starts = self.line_starts();
+        let n = starts.len();
+        if bs >= n || be >= n || (t >= bs && t <= be + 1) {
+            return; // dropped onto itself (or stale rows) — no-op
+        }
+        let block_start = starts[bs];
+        let block_end = self.line_end(be);
+        let block_text = self.content[block_start..block_end].to_string();
+        if t > be {
+            // Down: [block \n between...] → [between... block (\n)]
+            let target_off = if t >= n {
+                self.content.len()
+            } else {
+                starts[t]
+            };
+            let after_block = (block_end + 1).min(self.content.len());
+            let mut new = self.content[after_block..target_off].to_string();
+            if !new.is_empty() && !new.ends_with('\n') {
+                new.push('\n');
+            }
+            let rest_len = new.len();
+            new.push_str(&block_text);
+            if t < n {
+                new.push('\n');
+            }
+            self.replace_range(block_start..target_off, &new, cx);
+            let caret = block_start + rest_len;
+            self.selected_range = caret..caret;
+        } else {
+            // Up: [between... block] → [block \n between...]
+            let target_off = starts[t];
+            let between = &self.content[target_off..block_start];
+            let mut new = block_text.clone();
+            new.push('\n');
+            new.push_str(&between[..between.len().saturating_sub(1)]);
+            self.replace_range(target_off..block_end, &new, cx);
+            self.selected_range = target_off..target_off;
+        }
+        cx.emit(EditorEvent::Changed);
     }
 
     // --- Selection helpers ---------------------------------------------------
@@ -8761,6 +8987,9 @@ struct PrepaintState {
     wrapped: Vec<WrappedLine>,
     /// Per-line wrap-row count (see [`EditorState::wrap_rows`]).
     wrap_rows: Vec<usize>,
+    /// The hovered line's gutter drag grip (line, rect) + its cursor hitbox.
+    grip: Option<(usize, Bounds<Pixels>)>,
+    grip_hb: Option<Hitbox>,
     /// Top offset of each logical line relative to the editor's top.
     line_tops: Vec<Pixels>,
     /// Per-logical-line wrap-row height (variable for headings + images).
@@ -9508,12 +9737,43 @@ impl Element for EditorElement {
             }
         }
 
+        // Gutter drag grip (Cditor/Notion-style block reorder): hovering a
+        // line reveals a six-dot handle in the left margin; pressing it grabs
+        // the line's block (see `drag_block_rows`). Skipped while a drag is
+        // live — the grip would chase the pointer.
+        let mouse = window.mouse_position();
+        let mut grip: Option<(usize, Bounds<Pixels>)> = None;
+        let mut grip_hb: Option<Hitbox> = None;
+        let grip_left = bounds.origin.x - px(22.) - editor.grip_inset;
+        if editor.markdown_style.is_some()
+            && editor.line_drag.is_none()
+            && mouse.x >= grip_left - px(4.)
+            && mouse.x <= bounds.origin.x + bounds.size.width
+        {
+            let y = mouse.y - bounds.origin.y;
+            let row = (0..line_tops.len()).find(|&i| {
+                let h = line_heights[i] * wrap_rows[i] as f32;
+                h > px(0.5) && y >= line_tops[i] && y < line_tops[i] + h
+            });
+            if let Some(row) = row {
+                let sz = px(14.);
+                let rect = Bounds::new(
+                    point(
+                        grip_left,
+                        bounds.origin.y + line_tops[row] + (line_heights[row] - sz) / 2.,
+                    ),
+                    size(sz, sz),
+                );
+                grip_hb = Some(window.insert_hitbox(rect, HitboxBehavior::Normal));
+                grip = Some((row, rect));
+            }
+        }
+
         // Table interaction (issue #16, Cditor-style): the hovered row/column
         // gets an ACCENT OUTLINE (no fill) plus a small pill ON the table border
         // — "+" inserts after it, "−" deletes it. The caret's cell is outlined
         // too. Paint shows/cursors them only while hovered; on_mouse_down
         // hit-tests the committed pill rects.
-        let mouse = window.mouse_position();
         let mut table_zones: Vec<Bounds<Pixels>> = Vec::new();
         let mut row_aff: Option<TableAffordance> = None;
         let mut col_aff: Option<TableAffordance> = None;
@@ -9893,6 +10153,8 @@ impl Element for EditorElement {
         PrepaintState {
             wrapped,
             wrap_rows,
+            grip,
+            grip_hb,
             line_tops,
             line_heights,
             widgets,
@@ -10499,6 +10761,124 @@ impl Element for EditorElement {
                     gr.accent,
                 ));
             }
+        }
+
+        // Gutter drag grip: six muted dots on the hovered line; while a drag
+        // is live, a full-width accent bar marks the drop boundary instead.
+        {
+            let ed = self.editor.read(cx);
+            let accent = ed.markdown_style.as_ref().map_or(text_color, |s| s.link);
+            let mut dot_c = ed.markdown_style.as_ref().map_or(text_color, |s| s.marker);
+            dot_c.a = (dot_c.a * 1.6).min(0.9);
+            if let Some((bs, be, t)) = ed.line_drag {
+                let y = prepaint.line_tops.get(t).copied().unwrap_or_else(|| {
+                    let i = prepaint.line_tops.len().saturating_sub(1);
+                    prepaint.line_tops.last().copied().unwrap_or(px(0.))
+                        + prepaint.line_heights.get(i).copied().unwrap_or(px(0.))
+                            * prepaint.wrap_rows.get(i).copied().unwrap_or(1) as f32
+                });
+                // No bar when the boundary is a no-op (inside the block).
+                if !(t >= bs && t <= be + 1) {
+                    window.paint_quad(fill(
+                        Bounds::new(
+                            point(bounds.origin.x, bounds.origin.y + y - px(1.)),
+                            size(bounds.size.width, px(2.)),
+                        ),
+                        accent,
+                    ));
+                }
+                if let Some(hb) = &prepaint.grip_hb {
+                    window.set_cursor_style(CursorStyle::ClosedHand, hb);
+                }
+            } else if let Some((_, rect)) = prepaint.grip {
+                let d = px(2.5);
+                let gap = px(4.5);
+                for col in 0..2 {
+                    for dr in 0..3 {
+                        let dot = Bounds::new(
+                            point(
+                                rect.origin.x + px(2.) + gap * col as f32,
+                                rect.origin.y + px(1.) + gap * dr as f32,
+                            ),
+                            size(d, d),
+                        );
+                        window.paint_quad(fill(dot, dot_c).corner_radii(Corners::all(px(1.25))));
+                    }
+                }
+                if let Some(hb) = &prepaint.grip_hb {
+                    window.set_cursor_style(CursorStyle::OpenHand, hb);
+                }
+            }
+        }
+        // The grip sits OUTSIDE the editor div's bounds, so the div's own
+        // mouse listeners never see a press on it — start the drag from a
+        // window-level listener gated on the grip's rect instead.
+        if let Some((row, rect)) = prepaint.grip {
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseDownEvent, phase, _window, cx| {
+                if phase == gpui::DispatchPhase::Bubble
+                    && e.button == MouseButton::Left
+                    && rect.contains(&e.position)
+                {
+                    editor.update(cx, |ed, cx| {
+                        let (bs, be) = ed.drag_block_rows(row);
+                        ed.line_drag = Some((bs, be, bs));
+                        ed.is_selecting = false;
+                        ed.menu = None;
+                        cx.notify();
+                    });
+                    cx.stop_propagation();
+                }
+            });
+        }
+        // Track the hovered grip row from a window-level listener — the
+        // gutter sits outside the div, so its own on_mouse_move never fires
+        // there. Notifies only when the hovered row changes.
+        {
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, _w, cx| {
+                if phase == gpui::DispatchPhase::Bubble {
+                    editor.update(cx, |ed, cx| {
+                        let gr = ed.grip_hover_row_at(e.position);
+                        if gr != ed.grip_hover_row {
+                            ed.grip_hover_row = gr;
+                            cx.notify();
+                        }
+                    });
+                }
+            });
+        }
+        // While a drag is live the pointer usually travels down the GUTTER —
+        // still outside the div, where its on_mouse_move / on_mouse_up never
+        // fire — so track the boundary and land the drop from window-level
+        // listeners too (the div's own handlers cover in-bounds travel; both
+        // paths take/compare the same state, so double delivery is a no-op).
+        if self.editor.read(cx).line_drag.is_some() {
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseMoveEvent, phase, _w, cx| {
+                if phase == gpui::DispatchPhase::Bubble {
+                    editor.update(cx, |ed, cx| {
+                        if let Some((bs, be, t)) = ed.line_drag {
+                            let b = ed.snap_drop_boundary(ed.drop_boundary_at(e.position));
+                            if b != t {
+                                ed.line_drag = Some((bs, be, b));
+                                cx.notify();
+                            }
+                        }
+                    });
+                }
+            });
+            let editor = self.editor.clone();
+            window.on_mouse_event(move |e: &MouseUpEvent, phase, _w, cx| {
+                if phase == gpui::DispatchPhase::Bubble && e.button == MouseButton::Left {
+                    editor.update(cx, |ed, cx| {
+                        if let Some((bs, be, t)) = ed.line_drag.take() {
+                            ed.apply_line_drag(bs, be, t, cx);
+                            cx.notify();
+                        }
+                    });
+                }
+            });
         }
 
         let wrapped = std::mem::take(&mut prepaint.wrapped);
