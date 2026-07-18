@@ -123,6 +123,51 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - Skipped (no markdown representation): text/background color marks, cell
   merge/split, per-cell backgrounds, header *columns*, toggle-list containers.
 
+**Ultrareview of PR #52 (2026-07-18)** — non-blocking findings (the two
+blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
+
+*Correctness-adjacent:*
+- [ ] Feed-window day heights are keyed by child POSITION and invalidated only
+  on width change — key by date + invalidate on content change so a day-set or
+  offscreen-content change can't leave stale spacer heights. (S)
+- [ ] Caret-parked-on-marker is patched at two entry points (resize-band press,
+  `rewrite_table_marker`); other focus-without-caret-move affordances (pills,
+  delete handles, code Copy, fold chevrons, image grips) can still flash raw
+  markers — enforce "caret never rests on a collapsed marker line" once in the
+  collapse/caret logic. (M)
+
+*Per-frame / per-event efficiency (gpui-editor):*
+- [ ] Window-level MouseMove listener runs `editor.update` + a full line scan
+  in EVERY loaded editor per pointer move — gate on markdown_style + a y-range
+  early-out (or register only for the hovered editor). (S)
+- [ ] Windowed skip path still hashes every offscreen line twice and makes an
+  empty `shape_runs` call per line per frame; lines containing `$`/`![` never
+  window — key heights by (row, content_gen, epoch), make the placeholder
+  cheap (`Option<WrappedLine>`), derive eligibility from scan output. (M/L)
+- [ ] `line_runs` cache HIT deep-clones (String + Vec<TextRun> + Vec<usize>)
+  per visible line per frame — store the payload behind an `Rc`. (S)
+- [ ] `region_cols` cache rehashes all table text + clones the width vecs per
+  frame even on a hit — key on content_gen instead, store `Rc`. (S)
+- [ ] `on_scroll_wheel` walks O(lines) before the `dx == 0` check — hoist. (S)
+- [ ] Slash flyout rebuilds its item Vec every frame while open (+ twice per
+  arrow key for nth/len) — cache on the Slash state per selected category. (S)
+
+*Dedup / structure:*
+- [ ] Scrolled-table content-left (`bounds.left + GUTTER - sx`) is hand-built
+  at 6+ sites and paint re-implements the clamp inline — one shared
+  `table_left`/`table_avail` helper. (S)
+- [ ] `ShapedLines` is a 9-tuple with 7 hand-replicated placeholder-push sites
+  — a named struct + one `push_placeholder` helper. (M)
+- [ ] Fence-block walk ×3 + quote-run walk ×3 (turn_into, drag_block_rows,
+  snap_drop_boundary/block_kind_at) — `fence_block_rows` + `quote_run_rows`
+  helpers. (S)
+- [ ] `is_backslash_escaped` duplicates `is_escaped` in markdown_syntax.rs —
+  delete one. (S)
+- [ ] `grip_hover_row_at` hand-mirrors the prepaint grip geometry (26 vs
+  grip_left−4 constants) — extract one shared row/band computation. (S)
+- [ ] `menu_turn_into` belongs inside `DiagMenu` (dies with the menu; today
+  it's sticky once hovered and reset at only one open site). (S)
+
 ## App & polish
 - [ ] **Graph-node context menu** — nodes hit-test inside one
   canvas element (`g.hit(position)`), so the shared page-menu builder
