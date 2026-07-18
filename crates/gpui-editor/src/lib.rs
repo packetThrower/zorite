@@ -586,6 +586,10 @@ pub struct EditorState {
     /// cursor/IME positioning.
     wrapped: Vec<WrappedLine>,
     line_tops: Vec<Pixels>,
+    /// Per-logical-line wrap-row count (from the last paint). Geometry reads
+    /// this, not `wrapped[i].wrap_boundaries()` — a windowed-out line's entry
+    /// in `wrapped` is an empty placeholder.
+    wrap_rows: Vec<usize>,
     /// Per-logical-line wrap-row height. Variable so a heading (bigger font) gets
     /// a taller row (W2); `line_height` is the base/fallback for the empty doc
     /// and any row without a recorded height.
@@ -747,6 +751,15 @@ pub struct EditorState {
     /// Cross-frame shaping caches — line runs, table column widths, and table
     /// wrap rows (see [`ShapeCaches`]). Capacity-capped in `shape_document`.
     shape_caches: ShapeCaches,
+    /// The shaping window (element-local y, quantized), set after each
+    /// prepaint from the painted bounds — one frame stale by design, so the
+    /// measure pass and prepaint always shape with the SAME band and the
+    /// measure→prepaint memo keeps hitting.
+    shape_band: std::cell::Cell<Option<(f32, f32)>>,
+    /// Latch: the scroll compensator fired since the last paint. Measure can
+    /// run several times before a paint commits fresh `line_tops`; without
+    /// this, one async height change compensates once per measure call.
+    compensated: std::cell::Cell<bool>,
     /// `content_gen` as of the last paint — a measure with the SAME generation
     /// but different heights means an async (non-edit) height change, the
     /// scroll-anchoring trigger.
@@ -830,6 +843,7 @@ impl EditorState {
             wrapped: Vec::new(),
             line_tops: Vec::new(),
             line_heights: Vec::new(),
+            wrap_rows: Vec::new(),
             widget_rows: Vec::new(),
             offset_maps: Vec::new(),
             line_insets: Vec::new(),
@@ -888,6 +902,8 @@ impl EditorState {
             scroll_compensator: None,
             last_paint_gen: 0,
             shape_caches: ShapeCaches::default(),
+            shape_band: std::cell::Cell::new(None),
+            compensated: std::cell::Cell::new(false),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
@@ -1482,6 +1498,11 @@ impl EditorState {
         });
         *self.scan_cache.borrow_mut() = Some((self.content_gen, data.clone()));
         data
+    }
+
+    /// The wrap-row count of logical line `row` (1 when unrecorded).
+    fn row_span(&self, row: usize) -> usize {
+        self.wrap_rows.get(row).copied().unwrap_or(1).max(1)
     }
 
     /// The wrap-row height of logical line `row` (a heading is taller). Falls
@@ -3512,8 +3533,7 @@ impl EditorState {
             return 0;
         }
         let last = self.wrapped.len() - 1;
-        let total = self.line_tops[last]
-            + self.line_h(last) * (self.wrapped[last].wrap_boundaries().len() + 1) as f32;
+        let total = self.line_tops[last] + self.line_h(last) * self.row_span(last) as f32;
         if target_y >= total {
             // Landing at the very end would park the caret on a trailing
             // collapsed row (a hidden closing ``` fence) and reveal it — clamp
@@ -3530,7 +3550,7 @@ impl EditorState {
         }
         let mut trow = last;
         for i in 0..self.wrapped.len() {
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             if target_y < self.line_tops[i] + h {
                 trow = i;
                 break;
@@ -3661,7 +3681,7 @@ impl EditorState {
         let rel_y = position.y - bounds.top();
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             if rel_y < self.line_tops[i] + h {
                 row = i;
                 break;
@@ -3869,7 +3889,7 @@ impl EditorState {
             if t.is_separator {
                 return false;
             }
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             let lo = if t.is_header {
                 self.line_tops[i] - g
             } else {
@@ -3933,7 +3953,7 @@ impl EditorState {
         );
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
-            let h = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let h = self.line_h(i) * self.row_span(i) as f32;
             if rel.y < self.line_tops[i] + h {
                 row = i;
                 break;
@@ -4611,7 +4631,7 @@ impl EditorState {
         // Which logical line, by the vertical band each occupies (variable height).
         let mut row = self.wrapped.len() - 1;
         for i in 0..self.wrapped.len() {
-            let height = self.line_h(i) * (self.wrapped[i].wrap_boundaries().len() + 1) as f32;
+            let height = self.line_h(i) * self.row_span(i) as f32;
             if rel.y < self.line_tops[i] + height {
                 row = i;
                 break;
@@ -6160,6 +6180,10 @@ type ShapedLines = (
     // Per-line inline `$…$` formulas painted over spacers in the shaped text (empty for
     // lines without any).
     Vec<Vec<InlineMath>>,
+    // Per-line wrap-row count. Geometry (line tops, total height) reads THIS,
+    // not `wrap_boundaries()` — a windowed-out line's `WrappedLine` is an empty
+    // placeholder, but its cached count keeps the layout exact.
+    Vec<usize>,
 );
 
 /// Fit-to-width display size for an inline image from its natural (device) size:
@@ -6482,15 +6506,20 @@ fn shape_document(
     scan: &ScanData,
     // Cross-frame shaping caches (see [`ShapeCaches`]).
     caches: &ShapeCaches,
+    // The shaping window, in element-local y (quantized, one frame stale):
+    // plain lines wholly outside it may skip shaping when their height is
+    // cached. `None` = shape everything (first frame, raw view).
+    band: Option<(Pixels, Pixels)>,
     // Collapsed headings (trimmed source lines) — their section lines fold to
     // height 0 like a folded callout's body.
     folded_headings: &std::collections::HashSet<String>,
 ) -> ShapedLines {
-    let mut wrapped = Vec::new();
-    let mut heights = Vec::new();
+    let mut wrapped: Vec<WrappedLine> = Vec::new();
+    let mut heights: Vec<Pixels> = Vec::new();
+    let mut wrap_rows: Vec<usize> = Vec::new();
     let mut widgets = Vec::new();
     let mut backgrounds: Vec<Option<CodeBg>> = Vec::new();
-    let mut tables = Vec::new();
+    let mut tables: Vec<Option<TableRow>> = Vec::new();
     let mut maps = Vec::new();
     let mut marks: Vec<Option<LineMark>> = Vec::new();
     let mut inline_maths: Vec<Vec<InlineMath>> = Vec::new();
@@ -6773,8 +6802,15 @@ fn shape_document(
     // while blockquote lines continue, cleared by anything else — so every
     // line of the alert gets the kind's bar color.
     let mut alert_run: Option<Hsla> = None;
+    let mut y_acc = px(0.);
     for (idx, &line) in lines.iter().enumerate() {
         let line_end = line_start + line.len();
+        // Running top of this line — mirrors the prepaint `line_tops` walk
+        // (including `line_pads`) so the band test is exact.
+        if idx > 0 {
+            let (tp, bp) = line_pads(backgrounds[idx - 1], tables[idx - 1].as_ref());
+            y_acc += tp + bp + heights[idx - 1] * wrap_rows[idx - 1] as f32;
+        }
 
         // A ready mermaid block renders as its diagram (on the first line) with the
         // rest of the block collapsed — bypassing the normal per-line handling. Its
@@ -6806,6 +6842,7 @@ fn shape_document(
             maps.push(None);
             marks.push(None);
             inline_maths.push(Vec::new());
+            wrap_rows.push(1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -6835,6 +6872,7 @@ fn shape_document(
             maps.push(None);
             marks.push(None);
             inline_maths.push(Vec::new());
+            wrap_rows.push(1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -6866,6 +6904,7 @@ fn shape_document(
             maps.push(None);
             marks.push(None);
             inline_maths.push(Vec::new());
+            wrap_rows.push(1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -6898,6 +6937,7 @@ fn shape_document(
             maps.push(None);
             marks.push(None);
             inline_maths.push(Vec::new());
+            wrap_rows.push(1);
             line_start = line_end + 1;
             continue;
         }
@@ -6927,6 +6967,7 @@ fn shape_document(
             maps.push(None);
             marks.push(None);
             inline_maths.push(Vec::new());
+            wrap_rows.push(1);
             line_start = line_end + 1;
             continue;
         }
@@ -6958,6 +6999,7 @@ fn shape_document(
             maps.push(None);
             marks.push(None);
             inline_maths.push(Vec::new());
+            wrap_rows.push(1);
             line_start = line_end + 1;
             alert_run = None;
             continue;
@@ -7343,6 +7385,10 @@ fn shape_document(
         };
         // Inline `$…$` formulas spliced into this line (populated by the hidden-markers branch).
         let mut line_inline_math: Vec<InlineMath> = Vec::new();
+        // Set (in the markdown branch below) when this line is eligible for the
+        // per-line height cache — its (row height, wrap rows) get recorded at
+        // push time so a later frame can window it out without shaping.
+        let mut plain_hkey: Option<u64> = None;
         let (shaped_text, runs, bg, map) = if collapse_fence || collapse_marker {
             // Hidden ``` fence line or table-style marker: nothing, zero height.
             (String::new(), Vec::new(), None, None)
@@ -7431,6 +7477,65 @@ fn shape_document(
                 run_epoch.hash(&mut h);
                 h.finish()
             };
+            // Windowed shaping: an offscreen plain text line whose height is
+            // already cached skips run-building and shaping entirely — the
+            // cached (row height, wrap rows) keep the layout exact, and its
+            // placeholder WrappedLine is never painted (paint culls the same
+            // band). Never skipped: lines with inline math/images (height
+            // depends on async raster providers, not just the text) and
+            // collapsed lines (fold state isn't in the key).
+            let line_wrap_plain = match mark {
+                Some(m) => wrap_width.map(|w| (w - m.inset()).max(px(0.))),
+                None => wrap_width,
+            };
+            let skip_key = (!line.contains('$')
+                && !line.contains("![")
+                && !collapse_fence
+                && !collapse_marker)
+                .then(|| {
+                    use std::hash::{Hash, Hasher};
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    key.hash(&mut h);
+                    f32::from(fs).to_bits().hash(&mut h);
+                    line_wrap_plain
+                        .map(f32::from)
+                        .unwrap_or(-1.)
+                        .to_bits()
+                        .hash(&mut h);
+                    h.finish()
+                });
+            if let (Some((lo, hi)), Some(hk)) = (band, skip_key) {
+                let hit = caches.line_heights.borrow().get(&hk).copied();
+                if let Some((lh_c, wr_c)) = hit {
+                    let total = lh_c * wr_c as f32;
+                    if y_acc > hi || y_acc + total < lo {
+                        let wl = shape_runs(
+                            window,
+                            &SharedString::default(),
+                            base_font_size,
+                            &[],
+                            wrap_width,
+                        )
+                        .into_iter()
+                        .next()
+                        .expect("a line always shapes to one wrapped line");
+                        wrapped.push(wl);
+                        heights.push(lh_c);
+                        wrap_rows.push(wr_c);
+                        widgets.push(None);
+                        backgrounds.push(None);
+                        tables.push(None);
+                        maps.push(None);
+                        // The REAL mark: paint's nesting-guide bookkeeping
+                        // walks offscreen ancestors' marks.
+                        marks.push(mark);
+                        inline_maths.push(Vec::new());
+                        line_start = line_end + 1;
+                        continue;
+                    }
+                }
+            }
+            plain_hkey = skip_key;
             let cached = caches
                 .line_runs
                 .borrow()
@@ -7598,6 +7703,13 @@ fn shape_document(
                 }
             };
             let line_w = wl.width();
+            if let Some(hk) = plain_hkey {
+                caches
+                    .line_heights
+                    .borrow_mut()
+                    .insert(hk, (h, wl.wrap_boundaries().len() + 1));
+            }
+            wrap_rows.push(wl.wrap_boundaries().len() + 1);
             wrapped.push(wl);
             heights.push(h);
             widgets.push(widget);
@@ -7640,6 +7752,10 @@ fn shape_document(
         if rows.len() > lines.len() * 2 + 64 {
             rows.clear();
         }
+        let mut lh = caches.line_heights.borrow_mut();
+        if lh.len() > lines.len() * 2 + 64 {
+            lh.clear();
+        }
     }
     (
         wrapped,
@@ -7650,6 +7766,7 @@ fn shape_document(
         maps,
         marks,
         inline_maths,
+        wrap_rows,
     )
 }
 
@@ -8572,6 +8689,10 @@ struct ShapeCaches {
     line_runs: std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
     region_cols: std::cell::RefCell<Option<(u64, Vec<Vec<Pixels>>)>>,
     cell_rows: std::cell::RefCell<std::collections::HashMap<u64, usize>>,
+    /// Per-line (row height, wrap rows), keyed by the line-run key ⊕ font
+    /// size ⊕ wrap width — the shaping window's exact heights for skipped
+    /// offscreen lines.
+    line_heights: std::cell::RefCell<std::collections::HashMap<u64, (Pixels, usize)>>,
 }
 
 /// A hash of the inputs shared by every line's run build (font + palette) —
@@ -8638,6 +8759,8 @@ struct ShapeMemo {
 
 struct PrepaintState {
     wrapped: Vec<WrappedLine>,
+    /// Per-line wrap-row count (see [`EditorState::wrap_rows`]).
+    wrap_rows: Vec<usize>,
     /// Top offset of each logical line relative to the editor's top.
     line_tops: Vec<Pixels>,
     /// Per-logical-line wrap-row height (variable for headings + images).
@@ -8817,21 +8940,22 @@ impl Element for EditorElement {
                     editor.table_col_resize,
                     &scan,
                     &editor.shape_caches,
+                    editor.shape_band.get().map(|(a, b)| (px(a), px(b))),
                     &editor.folded_headings,
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
                 // or the element lays out shorter than it paints.
-                let (wrapped, heights, backgrounds, tables) =
-                    (&shaped.0, &shaped.1, &shaped.3, &shaped.4);
+                let (heights, backgrounds, tables, rows) =
+                    (&shaped.1, &shaped.3, &shaped.4, &shaped.8);
                 let mut y = px(0.);
                 let mut needed = px(0.);
-                let mut new_tops: Vec<Pixels> = Vec::with_capacity(wrapped.len());
-                for (i, (line, h)) in wrapped.iter().zip(heights).enumerate() {
+                let mut new_tops: Vec<Pixels> = Vec::with_capacity(heights.len());
+                for (i, h) in heights.iter().enumerate() {
                     let tbl = tables.get(i).and_then(Option::as_ref);
                     let (top, bot) = line_pads(backgrounds[i], tbl);
                     y += top;
                     new_tops.push(y);
-                    let row_h = *h * (line.wrap_boundaries().len() + 1) as f32;
+                    let row_h = *h * rows[i] as f32;
                     // A table's hover "+" add-row strip paints just below its
                     // last row (see `TableAdds`). Keep that space inside the
                     // element for a table near the document's end — outside
@@ -8857,10 +8981,15 @@ impl Element for EditorElement {
                 // scroll container places its children) so its scroll offset
                 // absorbs it in the same frame.
                 let total = y.max(base_lh).max(needed);
+                // ONLY at the real, final width: taffy also measures at
+                // intrinsic (None / min-content) widths, whose unwrapped
+                // heights diverge wildly from the wrapped layout at a narrow
+                // window — a compensation from one of those yanks the scroll
+                // offset by thousands of px and fights the user's scrolling.
                 if let (Some(f), Some(last)) = (&editor.scroll_compensator, editor.last_bounds)
                     && editor.content_gen == editor.last_paint_gen
                     && !editor.line_tops.is_empty()
-                    && wrap_width.is_none_or(|w| (w - last.size.width).abs() < px(1.))
+                    && wrap_width.is_some_and(|w| (w - last.size.width).abs() < px(1.))
                 {
                     let delta = total - last.size.height;
                     if delta.abs() > px(0.5) {
@@ -8868,9 +8997,32 @@ impl Element for EditorElement {
                         let j = (0..n)
                             .find(|&k| (new_tops[k] - editor.line_tops[k]).abs() > px(0.5))
                             .unwrap_or(n);
+                        // Debug tap (ZORITE_WINDOW_DEBUG=1): a height change
+                        // with NO edit and NO width change means a cache
+                        // mismatch or an async raster — log which line moved.
+                        if std::env::var_os("ZORITE_WINDOW_DEBUG").is_some() {
+                            let line_txt = editor
+                                .content
+                                .split('\n')
+                                .nth(j)
+                                .unwrap_or("")
+                                .chars()
+                                .take(60)
+                                .collect::<String>();
+                            eprintln!(
+                                "[wdbg] gen={} delta={:?} first_changed_row={} old_top={:?} new_top={:?} line={:?}",
+                                editor.content_gen,
+                                delta,
+                                j,
+                                editor.line_tops.get(j),
+                                new_tops.get(j),
+                                line_txt
+                            );
+                        }
                         let changed_y =
                             editor.line_tops.get(j).copied().unwrap_or(last.size.height);
-                        if last.origin.y + changed_y < px(0.) {
+                        if last.origin.y + changed_y < px(0.) && !editor.compensated.get() {
+                            editor.compensated.set(true);
                             compensate = Some((f.clone(), delta));
                         }
                     }
@@ -8936,83 +9088,107 @@ impl Element for EditorElement {
                 && m.selection == selection
                 && m.font_size == font_size
         });
-        let (wrapped, line_heights, widgets, backgrounds, tables, maps, marks, inline_maths) =
-            if let Some(m) = memo {
-                m.shaped
-            } else if editor.content.is_empty() {
-                let w = shape_all(
-                    window,
-                    &editor.placeholder,
-                    font_size,
-                    font.clone(),
-                    hsla(0., 0., 0.5, 0.5),
-                    wrap_width,
-                );
-                let n = w.len();
-                (
-                    w,
-                    vec![base_lh; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![None; n],
-                    vec![Vec::new(); n],
-                )
-            } else {
-                shape_document(
-                    window,
-                    &editor.content,
-                    &font,
-                    text_color,
-                    font_size,
-                    &editor.diagnostics,
-                    editor.markdown_style.as_ref(),
-                    wrap_width,
-                    caret_row,
-                    editor.block_image.as_ref(),
-                    editor.block_chip.as_ref(),
-                    editor.embed_view.as_ref(),
-                    editor.block_mermaid.as_ref(),
-                    editor.block_math.as_ref(),
-                    editor.code_highlight.as_ref(),
-                    editor.tab_indent,
-                    editor.block_math_em,
-                    editor.editing_block.as_ref().map(|eb| {
-                        let sr = editor.row_col(eb.range.start).0;
-                        let er = editor
-                            .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
-                            .0;
-                        (sr, er, eb.height)
-                    }),
-                    sf,
-                    selection,
-                    editor.image_resize,
-                    editor.table_col_resize,
-                    &editor.scan_data(),
-                    &editor.shape_caches,
-                    &editor.folded_headings,
-                )
-            };
+        let (
+            wrapped,
+            line_heights,
+            widgets,
+            backgrounds,
+            tables,
+            maps,
+            marks,
+            inline_maths,
+            wrap_rows,
+        ) = if let Some(m) = memo {
+            m.shaped
+        } else if editor.content.is_empty() {
+            let w = shape_all(
+                window,
+                &editor.placeholder,
+                font_size,
+                font.clone(),
+                hsla(0., 0., 0.5, 0.5),
+                wrap_width,
+            );
+            let n = w.len();
+            let rows: Vec<usize> = w.iter().map(|l| l.wrap_boundaries().len() + 1).collect();
+            (
+                w,
+                vec![base_lh; n],
+                vec![None; n],
+                vec![None; n],
+                vec![None; n],
+                vec![None; n],
+                vec![None; n],
+                vec![Vec::new(); n],
+                rows,
+            )
+        } else {
+            shape_document(
+                window,
+                &editor.content,
+                &font,
+                text_color,
+                font_size,
+                &editor.diagnostics,
+                editor.markdown_style.as_ref(),
+                wrap_width,
+                caret_row,
+                editor.block_image.as_ref(),
+                editor.block_chip.as_ref(),
+                editor.embed_view.as_ref(),
+                editor.block_mermaid.as_ref(),
+                editor.block_math.as_ref(),
+                editor.code_highlight.as_ref(),
+                editor.tab_indent,
+                editor.block_math_em,
+                editor.editing_block.as_ref().map(|eb| {
+                    let sr = editor.row_col(eb.range.start).0;
+                    let er = editor
+                        .row_col(eb.range.end.saturating_sub(1).max(eb.range.start))
+                        .0;
+                    (sr, er, eb.height)
+                }),
+                sf,
+                selection,
+                editor.image_resize,
+                editor.table_col_resize,
+                &editor.scan_data(),
+                &editor.shape_caches,
+                editor.shape_band.get().map(|(a, b)| (px(a), px(b))),
+                &editor.folded_headings,
+            )
+        };
+
+        // Publish NEXT frame's shaping window: the viewport band in
+        // element-local y with a viewport of margin each side, quantized so
+        // the band (and with it the measure→prepaint memo) stays stable
+        // across small scrolls. Read back one frame stale — both passes of a
+        // frame always shape with the same band.
+        {
+            let vh = f32::from(window.viewport_size().height).max(1.);
+            let top = -f32::from(bounds.origin.y);
+            let q = 512.0;
+            let lo = (((top - vh) / q).floor() * q).max(0.);
+            let hi = ((top + 2. * vh) / q).ceil() * q;
+            editor.shape_band.set(Some((lo, hi)));
+        }
 
         // Top offset of each logical line (running sum of variable wrap heights),
         // reserving a gap above/below each code block so its padded box has its
         // own space (no overlap with the adjacent line, no blank line required).
         let mut line_tops = Vec::with_capacity(wrapped.len());
         let mut y = px(0.);
-        for (idx, ((line, lh), bg)) in wrapped
-            .iter()
-            .zip(line_heights.iter())
-            .zip(backgrounds.iter())
-            .enumerate()
-        {
+        for (idx, lh) in line_heights.iter().enumerate() {
             // Code-box pads plus the table gutter rows (see `line_pads`) — baked
             // into line_tops so the caret / click / paint all shift with them,
             // and neither table affordance overlaps the adjacent line.
-            let (top_pad, bot_pad) = line_pads(*bg, tables.get(idx).and_then(Option::as_ref));
+            let (top_pad, bot_pad) = line_pads(
+                backgrounds.get(idx).copied().flatten(),
+                tables.get(idx).and_then(Option::as_ref),
+            );
             y += top_pad;
             line_tops.push(y);
-            y += *lh * (line.wrap_boundaries().len() + 1) as f32 + bot_pad;
+            y += *lh * wrap_rows[idx] as f32 + bot_pad;
         }
 
         // Corner-grip hitboxes for each inline image, in `widgets` order (matching
@@ -9135,7 +9311,7 @@ impl Element for EditorElement {
                 let card_top = bounds.origin.y + line_tops[i] - top_pad;
                 let card_bottom = bounds.origin.y
                     + line_tops[last]
-                    + line_heights[last] * (wrapped[last].wrap_boundaries().len() + 1) as f32
+                    + line_heights[last] * wrap_rows[last] as f32
                     + last_bot_pad;
                 let card = Bounds::new(
                     point(bounds.origin.x, card_top),
@@ -9716,6 +9892,7 @@ impl Element for EditorElement {
 
         PrepaintState {
             wrapped,
+            wrap_rows,
             line_tops,
             line_heights,
             widgets,
@@ -9818,6 +9995,7 @@ impl Element for EditorElement {
         // active ancestor level, so a faint vertical line can drop from each down
         // through its descendants. Popped on dedent, reset off the list.
         let mut outline: Vec<Pixels> = Vec::new();
+        let viewport_h = window.viewport_size().height;
         for (i, ((line, top), lh)) in prepaint
             .wrapped
             .iter()
@@ -9852,6 +10030,14 @@ impl Element for EditorElement {
                     outline.push(bullet_x);
                 }
                 _ => outline.clear(),
+            }
+            // Windowed paint: a line fully outside the window's viewport paints
+            // nothing. The guide bookkeeping above still runs — a visible list
+            // row's ancestor guides can start above the viewport. The slack
+            // covers code-box pads and table affordances that overhang the row.
+            let advance = *lh * prepaint.wrap_rows.get(i).copied().unwrap_or(1) as f32;
+            if origin.y + advance + px(64.) < px(0.) || origin.y - px(64.) > viewport_h {
+                continue;
             }
             // Fenced code block: one rounded, content-fit box (sized to the
             // widest line, like a table). The first line rounds + pads the top, the
@@ -10405,6 +10591,7 @@ impl Element for EditorElement {
             editor.wrapped = wrapped;
             editor.line_tops = line_tops;
             editor.line_heights = line_heights;
+            editor.wrap_rows = std::mem::take(&mut prepaint.wrap_rows);
             editor.widget_rows = widget_rows;
             editor.offset_maps = offset_maps;
             editor.chip_rows = chip_rows;
@@ -10427,6 +10614,7 @@ impl Element for EditorElement {
             editor.table_row_del = table_row_del;
             editor.table_col_del = table_col_del;
             editor.last_bounds = Some(bounds);
+            editor.compensated.set(false);
             editor.last_paint_gen = editor.content_gen;
             editor.line_height = base_lh;
             editor.font_size = font_size;

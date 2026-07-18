@@ -103,7 +103,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
   after height deltas) fixes it without windowing. (M)
 - [x] `apply_auto_replace` rescans all lines above for fence parity on every
   boundary keystroke — cache/bound it. (S)
-- [ ] **Windowed rendering + estimated heights** — Cditor's actual 100k-block
+- [x] **Windowed rendering + estimated heights** — Cditor's actual 100k-block
   machinery (render window + spacers, estimated↔measured convergence, budgeted
   layout); the editor's only L-sized perf item, defer until someone has a huge
   note. (L)
