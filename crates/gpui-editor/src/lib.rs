@@ -2804,6 +2804,20 @@ impl EditorState {
                 orig: width,
                 width,
             });
+            // The press focuses the editor without moving the caret — if it
+            // was parked on this table's style-marker line (offset 0 right
+            // after a document loads), reveal-on-caret would flash the raw
+            // `<!-- table:… -->` mid-drag. Seat it in the header cell instead.
+            let caret_row = self.row_col(self.selected_range.start).0;
+            if self
+                .scan_data()
+                .tables
+                .iter()
+                .any(|r| r.lines.start == header_row && r.marker_line == Some(caret_row))
+            {
+                let caret = self.caret_pos_for_cell(header_row, 0, 0);
+                self.selected_range = caret..caret;
+            }
             self.is_selecting = false;
             cx.notify();
             return;
@@ -4739,7 +4753,8 @@ impl EditorState {
             ),
             (None, None) => return,
         };
-        let (row, cell, in_cell) = self.caret_table_cell_pos().unwrap_or((0, 0, 0));
+        let cell_pos = self.caret_table_cell_pos();
+        let old_caret = self.selected_range.start;
         // The marker edit adds/removes one line ABOVE the table (or replaces in
         // place) — shift the caret's row index to keep it in its cell.
         let row_shift: isize = match (region.marker_line, new.is_empty()) {
@@ -4750,8 +4765,26 @@ impl EditorState {
         self.record_edit(&range, &new);
         self.content.replace_range(range.clone(), &new);
         self.remap_diagnostics(&range, new.len());
-        let same_row = (row as isize + row_shift).max(0) as usize;
-        let caret = self.caret_pos_for_cell(same_row, cell, in_cell);
+        let caret = match cell_pos {
+            Some((row, cell, in_cell)) => {
+                let same_row = (row as isize + row_shift).max(0) as usize;
+                self.caret_pos_for_cell(same_row, cell, in_cell)
+            }
+            // Caret wasn't in this table (e.g. a border drag from elsewhere):
+            // keep it where it was, shifted by the edit's byte delta — seating
+            // it "in a cell" would land it on the marker line and reveal it.
+            None => {
+                let delta = new.len() as isize - (range.end - range.start) as isize;
+                if old_caret >= range.end {
+                    (old_caret as isize + delta).max(0) as usize
+                } else if old_caret > range.start {
+                    range.start + new.len()
+                } else {
+                    old_caret
+                }
+            }
+        };
+        let caret = caret.min(self.content.len());
         self.selected_range = caret..caret;
         self.table_menu = None;
         cx.emit(EditorEvent::Changed);
