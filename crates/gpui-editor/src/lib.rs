@@ -3468,8 +3468,8 @@ impl EditorState {
                 .unwrap_or(last_row);
             return (open, close);
         }
-        if markdown_syntax::blockquote_prefix(&line_at(row)).is_some() {
-            let is_q = |r: usize| markdown_syntax::blockquote_prefix(&line_at(r)).is_some();
+        if markdown_syntax::blockquote_prefix(line_at(row)).is_some() {
+            let is_q = |r: usize| markdown_syntax::blockquote_prefix(line_at(r)).is_some();
             let mut first = row;
             while first > 0 && is_q(first - 1) {
                 first -= 1;
