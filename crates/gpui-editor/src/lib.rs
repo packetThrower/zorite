@@ -7952,10 +7952,11 @@ fn shape_document(
 
         // Code lines are inset by CODE_INSET on each side; a gutter mark insets the
         // left only. Either wraps at a correspondingly narrower width. A table
-        // row's raw source never wraps — it renders as a grid row (a wide
-        // table scrolls instead), and a wrapped hidden source would multiply
-        // the row's advance by its wrap count.
-        let line_wrap = if table.is_some() {
+        // row or widget line (image, chip) never wraps its raw source — a
+        // grid row / the widget renders instead, and a wrapped hidden source
+        // would multiply the row's advance by its wrap count. (Revealed-on-
+        // caret lines have `table`/`widget` = None here and wrap normally.)
+        let line_wrap = if table.is_some() || widget.is_some() {
             None
         } else if is_code {
             wrap_width.map(|w| (w - px(2. * CODE_INSET)).max(px(0.)))
