@@ -310,35 +310,22 @@ impl TurnKind {
 /// Strip a line's block dressing (heading hashes, list/todo bullet, ordered
 /// number, quote `>`), leaving the text a "Turn into" conversion re-prefixes.
 fn strip_block_prefix(line: &str) -> &str {
-    let t = line.trim_start();
-    for p in ["- [ ] ", "- [x] ", "- [X] "] {
-        if let Some(r) = t.strip_prefix(p) {
-            return r;
-        }
+    // Composes the renderer's own recognizers so the strip grammar can't
+    // drift from what WYSIWYG classifies (task/list/heading/quote).
+    if let Some((p, ..)) = markdown_syntax::task_prefix(line) {
+        return &line[p..];
     }
-    let hashes = t.len() - t.trim_start_matches('#').len();
-    if (1..=6).contains(&hashes)
-        && let Some(r) = t[hashes..].strip_prefix(' ')
-    {
-        return r;
+    if let Some((p, ..)) = markdown_syntax::list_prefix(line) {
+        return &line[p..];
     }
-    for p in ["- ", "* ", "+ "] {
-        if let Some(r) = t.strip_prefix(p) {
-            return r;
-        }
+    if let Some(n) = markdown_syntax::heading_level(line) {
+        let after = &line[n as usize..];
+        return after.strip_prefix(' ').unwrap_or(after);
     }
-    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-    if digits > 0
-        && let Some(r) = t[digits..]
-            .strip_prefix(". ")
-            .or_else(|| t[digits..].strip_prefix(") "))
-    {
-        return r;
+    if let Some(p) = markdown_syntax::blockquote_prefix(line) {
+        return &line[p..];
     }
-    if let Some(r) = t.strip_prefix("> ").or_else(|| t.strip_prefix('>')) {
-        return r;
-    }
-    t
+    line.trim_start()
 }
 
 /// Join `body` lines each carrying the prefix `p(index)` produces — the
@@ -3264,37 +3251,43 @@ impl EditorState {
         let Some(&start) = starts.get(row) else {
             return TurnKind::Text;
         };
-        let t = self.content[start..self.line_end(row)].trim_start();
-        if scan.fence_odd.get(row).copied().unwrap_or(false) || t.starts_with("```") {
+        // The renderer's own recognizers (task/list/heading/quote/alert), so
+        // the checked kind always agrees with what WYSIWYG actually renders.
+        let line = &self.content[start..self.line_end(row)];
+        if scan.fence_odd.get(row).copied().unwrap_or(false) || line.trim_start().starts_with("```")
+        {
             return TurnKind::Code;
         }
-        if ["- [ ]", "- [x]", "- [X]"].iter().any(|p| t.starts_with(p)) {
+        if markdown_syntax::task_prefix(line).is_some() {
             return TurnKind::Todo;
         }
-        match t.len() - t.trim_start_matches('#').len() {
-            1 if t.starts_with("# ") => return TurnKind::H1,
-            2 if t.starts_with("## ") => return TurnKind::H2,
-            3 if t.starts_with("### ") => return TurnKind::H3,
+        match markdown_syntax::heading_level(line) {
+            Some(1) => return TurnKind::H1,
+            Some(2) => return TurnKind::H2,
+            Some(3) => return TurnKind::H3,
             _ => {}
         }
-        if ["- ", "* ", "+ "].iter().any(|p| t.starts_with(p)) {
-            return TurnKind::Bullet;
+        if let Some((_, _, ordered, _)) = markdown_syntax::list_prefix(line) {
+            return if ordered {
+                TurnKind::Numbered
+            } else {
+                TurnKind::Bullet
+            };
         }
-        let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
-        if digits > 0 && (t[digits..].starts_with(". ") || t[digits..].starts_with(") ")) {
-            return TurnKind::Numbered;
-        }
-        if t.starts_with('>') {
-            // Callout if the caret's contiguous `>`-run carries a `[!KIND]`
-            // marker anywhere; the marker line itself or any body line counts.
-            let line_at = |r: usize| self.content[starts[r]..self.line_end(r)].trim_start();
+        if markdown_syntax::blockquote_prefix(line).is_some() {
+            // Callout if the caret's contiguous `>`-run carries a VALID
+            // `[!KIND]` marker anywhere (marker line or body line).
+            let line_at = |r: usize| &self.content[starts[r]..self.line_end(r)];
+            let is_q = |r: usize| markdown_syntax::blockquote_prefix(line_at(r)).is_some();
             let mut first = row;
-            while first > 0 && line_at(first - 1).starts_with('>') {
+            while first > 0 && is_q(first - 1) {
                 first -= 1;
             }
             let mut r = first;
-            while r < starts.len() && line_at(r).starts_with('>') {
-                if line_at(r)[1..].trim_start().starts_with("[!") {
+            while r < starts.len() && is_q(r) {
+                let l = line_at(r);
+                let p = markdown_syntax::blockquote_prefix(l).unwrap_or(0);
+                if markdown_syntax::alert_kind(&l[p..]).is_some() {
                     return TurnKind::Callout;
                 }
                 r += 1;
@@ -3341,7 +3334,7 @@ impl EditorState {
                 (first, last, body)
             }
             TurnKind::Quote | TurnKind::Callout => {
-                let is_q = |r: usize| line_at(r).trim_start().starts_with('>');
+                let is_q = |r: usize| markdown_syntax::blockquote_prefix(&line_at(r)).is_some();
                 let mut first = row;
                 while first > 0 && is_q(first - 1) {
                     first -= 1;
@@ -3452,8 +3445,8 @@ impl EditorState {
                 .unwrap_or(last_row);
             return (open, close);
         }
-        if line_at(row).trim_start().starts_with('>') {
-            let is_q = |r: usize| line_at(r).trim_start().starts_with('>');
+        if markdown_syntax::blockquote_prefix(&line_at(row)).is_some() {
+            let is_q = |r: usize| markdown_syntax::blockquote_prefix(&line_at(r)).is_some();
             let mut first = row;
             while first > 0 && is_q(first - 1) {
                 first -= 1;
@@ -11003,13 +10996,15 @@ impl Element for EditorElement {
         }
         // The grip sits OUTSIDE the editor div's bounds, so the div's own
         // mouse listeners never see a press on it — start the drag from a
-        // window-level listener gated on the grip's rect instead.
-        if let Some((row, rect)) = prepaint.grip {
+        // window-level listener instead, gated on the grip's HITBOX (not the
+        // bare rect): is_hovered respects occlusion, so a dialog/menu/popover
+        // covering the gutter blocks the drag from starting through it.
+        if let (Some((row, _)), Some(hb)) = (prepaint.grip, prepaint.grip_hb.clone()) {
             let editor = self.editor.clone();
-            window.on_mouse_event(move |e: &MouseDownEvent, phase, _window, cx| {
+            window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
                 if phase == gpui::DispatchPhase::Bubble
                     && e.button == MouseButton::Left
-                    && rect.contains(&e.position)
+                    && hb.is_hovered(window)
                 {
                     editor.update(cx, |ed, cx| {
                         let (bs, be) = ed.drag_block_rows(row);
@@ -11220,6 +11215,11 @@ mod tests {
         assert_eq!(strip_block_prefix("> quoted"), "quoted");
         assert_eq!(strip_block_prefix(">bare"), "bare");
         assert_eq!(strip_block_prefix("plain"), "plain");
+        // Renderer-grammar forms the old hand-rolled version missed.
+        assert_eq!(strip_block_prefix("* [ ] star task"), "star task");
+        assert_eq!(strip_block_prefix("+ [x] plus task"), "plus task");
+        assert_eq!(strip_block_prefix("3) paren"), "paren");
+        assert_eq!(strip_block_prefix("#### H4"), "H4");
         // Not block prefixes: mid-word hash runs, `#tag`, a lone dash.
         assert_eq!(strip_block_prefix("#tag"), "#tag");
         assert_eq!(strip_block_prefix("-dash"), "-dash");
