@@ -10075,6 +10075,12 @@ impl Element for EditorElement {
                         continue;
                     };
                     let lh = line_heights.get(row).copied().unwrap_or(base_lh);
+                    // A collapsed row (hidden marker/fence line, the table's
+                    // `|---|` separator, a folded body) has no visible text —
+                    // painting its quad would smear a band over its neighbors.
+                    if lh <= px(0.5) {
+                        continue;
+                    }
                     let top = line_tops[row];
                     let line_start = starts[row];
                     let a = s.max(line_start) - line_start;
@@ -10082,22 +10088,43 @@ impl Element for EditorElement {
                     // Table row: highlight between the cell positions of the selection
                     // ends (not raw-source geometry).
                     if let Some(t) = tables.get(row).and_then(Option::as_ref) {
+                        let table_w: Pixels = t.col_widths.iter().copied().sum();
                         let tleft = bounds.left() + px(TABLE_GUTTER)
                             - editor.table_sx(
                                 table_header_row(t, row),
-                                t.col_widths.iter().copied().sum(),
+                                table_w,
                                 bounds.size.width - px(TABLE_GUTTER),
                             );
-                        if let (Some((xa, ..)), Some((xb, ..))) = (
-                            table_caret_pos(t, a, tleft, &font, font_size, window),
-                            table_caret_pos(t, b, tleft, &font, font_size, window),
-                        ) {
-                            let (lo, hi) = (xa.min(xb), xa.max(xb));
-                            let cy = bounds.top() + top + (lh - base_lh) / 2.;
+                        // Endpoint x's: inside a cell, the exact caret x; at
+                        // or past the row's cell span — or in an empty cell
+                        // the shaper can't position — the table's edge, so
+                        // vacant trailing cells highlight too.
+                        let first_start = t.cell_ranges.first().map_or(0, |r| r.start);
+                        let last_end = t.cell_ranges.last().map_or(0, |r| r.end);
+                        let xa = if a <= first_start {
+                            tleft
+                        } else {
+                            table_caret_pos(t, a, tleft, &font, font_size, window)
+                                .map_or(tleft, |(x, ..)| x)
+                        };
+                        let xb = if b >= last_end {
+                            tleft + table_w
+                        } else {
+                            table_caret_pos(t, b, tleft, &font, font_size, window)
+                                .map_or(tleft + table_w, |(x, ..)| x)
+                        };
+                        // Clamp to the table's visible band — a wide
+                        // (scrolling) table's cells extend past the
+                        // viewport, but its highlight must not. Full row
+                        // height, so wrapped cells highlight every wrap row.
+                        let vis_l = bounds.left() + px(TABLE_GUTTER);
+                        let vis_r = bounds.left() + bounds.size.width;
+                        let (lo, hi) = (xa.min(xb).max(vis_l), xa.max(xb).min(vis_r));
+                        if hi > lo {
                             sels.push(fill(
                                 Bounds::from_corners(
-                                    point(lo, cy),
-                                    point(hi.max(lo + px(2.)), cy + base_lh),
+                                    point(lo, bounds.top() + top),
+                                    point(hi, bounds.top() + top + lh),
                                 ),
                                 color,
                             ));
