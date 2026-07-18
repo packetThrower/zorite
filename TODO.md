@@ -73,7 +73,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [x] **Backslash escapes ignored for `*` `` ` `` `~` `[`** — only `_` checks;
   `\*text\*` styles in WYSIWYG but shows literal in the reader. Shared
   `is_escaped` helper (one exists for math). (S/M)
-- [ ] **Nested inline inside emphasis dropped** — `**bold *italic* bold**` /
+- [x] **Nested inline inside emphasis dropped** — `**bold *italic* bold**` /
   `` **bold `code`** ``: scan_line consumes the outer construct wholesale, inner
   marks render literal; reader nests correctly. Needs body re-scan. (M/L)
 - [ ] Table well-formedness: body rows with a different cell count than the
