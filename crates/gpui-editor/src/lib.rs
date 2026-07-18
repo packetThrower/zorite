@@ -1529,6 +1529,7 @@ impl EditorState {
             }
         }
         let data = std::rc::Rc::new(ScanData {
+            generation: self.content_gen,
             ordered: markdown_syntax::ordered_numbers(&lines),
             tables: markdown_syntax::table_regions(&self.content),
             mermaid: markdown_syntax::mermaid_blocks(&self.content),
@@ -3337,8 +3338,8 @@ impl EditorState {
             // Callout if the caret's contiguous `>`-run carries a VALID
             // `[!KIND]` marker anywhere (marker line or body line).
             let (first, last) = self.quote_run_rows(row);
-            for r in first..=last {
-                let l = &self.content[starts[r]..self.line_end(r)];
+            for (r, &start) in starts.iter().enumerate().take(last + 1).skip(first) {
+                let l = &self.content[start..self.line_end(r)];
                 let p = markdown_syntax::blockquote_prefix(l).unwrap_or(0);
                 if markdown_syntax::alert_kind(&l[p..]).is_some() {
                     return TurnKind::Callout;
@@ -3505,6 +3506,8 @@ impl EditorState {
             || self.line_drag.is_some()
             || position.x < grip_left(bounds.origin.x, self.grip_inset) - px(4.)
             || position.x > bounds.origin.x + bounds.size.width
+            || position.y < bounds.origin.y
+            || position.y > bounds.origin.y + bounds.size.height
         {
             return None;
         }
@@ -4158,6 +4161,12 @@ impl EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Vertical scrolling is the overwhelmingly common case — bail before
+        // the O(lines) row walk when there's no horizontal delta.
+        let dx = f32::from(event.delta.pixel_delta(px(20.)).x);
+        if dx == 0. {
+            return;
+        }
         let Some(bounds) = self.last_bounds else {
             return;
         };
@@ -4177,10 +4186,6 @@ impl EditorState {
         let total: Pixels = t.col_widths.iter().copied().sum();
         let avail = bounds.size.width - px(TABLE_GUTTER);
         if total <= avail {
-            return;
-        }
-        let dx = f32::from(event.delta.pixel_delta(px(20.)).x);
-        if dx == 0. {
             return;
         }
         let header = table_header_row(t, row);
@@ -6541,6 +6546,7 @@ impl ShapedDoc {
     /// Push one line that renders as something other than shaped text — a
     /// widget/collapsed/windowed-out line: an empty placeholder `WrappedLine`,
     /// the given height/widget/mark, and `rows` wrap rows.
+    #[allow(clippy::too_many_arguments)]
     fn push_placeholder(
         &mut self,
         window: &mut Window,
@@ -7065,25 +7071,13 @@ fn shape_document(
     // Measured column widths, cached across frames: rebuilt only when the
     // tables' source text, the wrap width, the font epoch, or a live column
     // drag changes — measuring shaped every cell of every table per call.
-    let region_cols: Vec<Vec<Pixels>> = {
+    let region_cols: std::rc::Rc<Vec<Vec<Pixels>>> = {
         let cols_key = {
             use std::hash::{Hash, Hasher};
             let mut h = std::collections::hash_map::DefaultHasher::new();
-            for r in regions {
-                for li in r.lines.clone() {
-                    lines[li].hash(&mut h);
-                }
-                if let Some(w) = &r.col_widths_attr {
-                    for v in w {
-                        v.to_bits().hash(&mut h);
-                    }
-                }
-            }
-            wrap_width
-                .map(f32::from)
-                .unwrap_or(-1.)
-                .to_bits()
-                .hash(&mut h);
+            // The scan generation covers every table byte and the `cols=`
+            // attr — no need to rehash the table text per frame.
+            scan.generation.hash(&mut h);
             f32::from(base_font_size).to_bits().hash(&mut h);
             run_epoch.hash(&mut h);
             if let Some(r) = col_resize {
@@ -7102,20 +7096,22 @@ fn shape_document(
         match hit {
             Some(cols) => cols,
             None => {
-                let cols: Vec<Vec<Pixels>> = regions
-                    .iter()
-                    .map(|r| {
-                        table_column_widths(
-                            &lines,
-                            r,
-                            window,
-                            base_font,
-                            base_font_size,
-                            base_color,
-                            col_resize,
-                        )
-                    })
-                    .collect();
+                let cols: std::rc::Rc<Vec<Vec<Pixels>>> = std::rc::Rc::new(
+                    regions
+                        .iter()
+                        .map(|r| {
+                            table_column_widths(
+                                &lines,
+                                r,
+                                window,
+                                base_font,
+                                base_font_size,
+                                base_color,
+                                col_resize,
+                            )
+                        })
+                        .collect(),
+                );
                 *caches.region_cols.borrow_mut() = Some((cols_key, cols.clone()));
                 cols
             }
@@ -8953,7 +8949,7 @@ struct CachedLineRuns {
 #[derive(Default)]
 struct ShapeCaches {
     line_runs: std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
-    region_cols: std::cell::RefCell<Option<(u64, Vec<Vec<Pixels>>)>>,
+    region_cols: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Vec<Pixels>>>)>>,
     cell_rows: std::cell::RefCell<std::collections::HashMap<u64, usize>>,
     /// Per-line (row height, wrap rows), keyed by the line-run key ⊕ font
     /// size ⊕ wrap width — the shaping window's exact heights for skipped
@@ -8998,6 +8994,9 @@ pub type ScrollCompensatorFn = std::rc::Rc<dyn Fn(Pixels, &mut Window, &mut App)
 /// memo); now they rebuild only when the content actually changes, and the
 /// caret-driven table ops + auto-replace reuse the same scan.
 pub(crate) struct ScanData {
+    /// The `content_gen` this scan was built for — cache keys use this
+    /// instead of rehashing content.
+    generation: u64,
     ordered: Vec<(u32, usize)>,
     tables: Vec<markdown_syntax::TableRegion>,
     mermaid: Vec<(Range<usize>, String)>,
@@ -10938,18 +10937,23 @@ impl Element for EditorElement {
         }
         // Track the hovered grip row from a window-level listener — the
         // gutter sits outside the div, so its own on_mouse_move never fires
-        // there. Notifies only when the hovered row changes.
-        {
+        // there. Every editor's listener sees every pointer move, so the
+        // common miss (pointer nowhere near this editor) must stay cheap: a
+        // read-only check first (grip_hover_row_at bails on the x band and
+        // y range in O(1)), entity update only on an actual change — and no
+        // listener at all for raw-view editors.
+        if self.editor.read(cx).markdown_style.is_some() {
             let editor = self.editor.clone();
             window.on_mouse_event(move |e: &MouseMoveEvent, phase, _w, cx| {
                 if phase == gpui::DispatchPhase::Bubble {
-                    editor.update(cx, |ed, cx| {
-                        let gr = ed.grip_hover_row_at(e.position);
-                        if gr != ed.grip_hover_row {
+                    let ed = editor.read(cx);
+                    let gr = ed.grip_hover_row_at(e.position);
+                    if gr != ed.grip_hover_row {
+                        editor.update(cx, |ed, cx| {
                             ed.grip_hover_row = gr;
                             cx.notify();
-                        }
-                    });
+                        });
+                    }
                 }
             });
         }
