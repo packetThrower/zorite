@@ -118,7 +118,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
   his cell menu filters by label + keywords as you type. (S/M)
 - [ ] **Clear contents** verb (cell/row/column) in the table menu. (S)
 - [ ] **⌘D duplicate** keybinding + shortcut hints rendered in menu rows. (S)
-- [ ] Wide-table **horizontal scroll** instead of scaling columns down — UX
+- [x] Wide-table **horizontal scroll** instead of scaling columns down — UX
   decision; his tables scroll in-place with their own scrollbar. (M)
 - Skipped (no markdown representation): text/background color marks, cell
   merge/split, per-cell backgrounds, header *columns*, toggle-list containers.

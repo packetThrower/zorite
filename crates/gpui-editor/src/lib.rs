@@ -767,6 +767,11 @@ pub struct EditorState {
     /// The row whose gutter grip the pointer hovers (mirrors prepaint's
     /// computation) — tracked so hover changes repaint the grip.
     grip_hover_row: Option<usize>,
+    /// Horizontal scroll of each wide table, keyed by its header row — wide
+    /// tables keep natural column widths and scroll in place. Keys drift on
+    /// edits above a table; entries are clamped at use, so a stale one is a
+    /// harmless partial offset. (ponytail: no eviction, the map stays tiny)
+    table_scroll_x: std::collections::HashMap<usize, f32>,
     /// Extra left offset for the drag grip — the host sets its line-number
     /// gutter's width here so the grip sits beside the numbers, not on them.
     grip_inset: Pixels,
@@ -916,6 +921,7 @@ impl EditorState {
             compensated: std::cell::Cell::new(false),
             line_drag: None,
             grip_hover_row: None,
+            table_scroll_x: std::collections::HashMap::new(),
             grip_inset: px(0.),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
@@ -4097,6 +4103,60 @@ impl EditorState {
     }
 
     /// The table cell `(row, col)` the pointer is over, or `None` off any table —
+    /// The clamped horizontal scroll of the table headed at `header_row`.
+    fn table_sx(&self, header_row: usize, total: Pixels, avail: Pixels) -> Pixels {
+        let max = f32::from((total - avail).max(px(0.)));
+        px(self
+            .table_scroll_x
+            .get(&header_row)
+            .copied()
+            .unwrap_or(0.)
+            .clamp(0., max))
+    }
+
+    /// Horizontal wheel/trackpad over a wide table scrolls IT, not the page —
+    /// vertical deltas fall through to the outer scroll container untouched.
+    fn on_scroll_wheel(
+        &mut self,
+        event: &gpui::ScrollWheelEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(bounds) = self.last_bounds else {
+            return;
+        };
+        let rel_y = event.position.y - bounds.top();
+        let Some(row) = (0..self.line_tops.len()).find(|&i| {
+            let h = self.line_h(i) * self.row_span(i) as f32;
+            h > px(0.5) && rel_y >= self.line_tops[i] && rel_y < self.line_tops[i] + h
+        }) else {
+            return;
+        };
+        let Some(t) = self.table_rows.get(row).and_then(Option::as_ref) else {
+            return;
+        };
+        if t.col_widths.is_empty() {
+            return;
+        }
+        let total: Pixels = t.col_widths.iter().copied().sum();
+        let avail = bounds.size.width - px(TABLE_GUTTER);
+        if total <= avail {
+            return;
+        }
+        let dx = f32::from(event.delta.pixel_delta(px(20.)).x);
+        if dx == 0. {
+            return;
+        }
+        let header = table_header_row(t, row);
+        let max = f32::from(total - avail);
+        let cur = self.table_scroll_x.get(&header).copied().unwrap_or(0.);
+        let new = (cur - dx).clamp(0., max);
+        if new != cur {
+            self.table_scroll_x.insert(header, new);
+            cx.notify();
+        }
+    }
+
     /// drives the delete-handle repaint + reveal.
     fn hovered_table_cell(&self, pos: Point<Pixels>) -> Option<(usize, usize)> {
         let bounds = self.last_bounds.as_ref()?;
@@ -4129,10 +4189,11 @@ impl EditorState {
         }
         let table_left = gutter_left + g;
         let table_w: Pixels = t.col_widths.iter().copied().sum();
-        if pos.x >= table_left + table_w {
+        let sx = self.table_sx(table_header_row(t, row), table_w, bounds.size.width - g);
+        if pos.x >= table_left + table_w - sx {
             return None;
         }
-        let rel_x = (pos.x - table_left).max(px(0.));
+        let rel_x = (pos.x - table_left + sx).max(px(0.));
         let mut colx = px(0.);
         for (col, &cw) in t.col_widths.iter().enumerate() {
             if rel_x < colx + cw {
@@ -4189,6 +4250,16 @@ impl EditorState {
         if t.is_separator || t.col_widths.is_empty() {
             return None;
         }
+        // A scrolled wide table: the pointer maps to content shifted by sx.
+        let rel = point(
+            rel.x
+                + self.table_sx(
+                    table_header_row(t, row),
+                    t.col_widths.iter().copied().sum(),
+                    bounds.size.width - px(TABLE_GUTTER),
+                ),
+            rel.y,
+        );
         // Measure at the last paint's size — the style stack is unwound during
         // event dispatch, so `text_style()` here reports the root size.
         let style = window.text_style();
@@ -5273,6 +5344,7 @@ impl Render for EditorState {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
+            .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .child(EditorElement {
                 editor: cx.entity(),
             })
@@ -6959,7 +7031,6 @@ fn shape_document(
                             base_font,
                             base_font_size,
                             base_color,
-                            wrap_width,
                             col_resize,
                         )
                     })
@@ -7847,8 +7918,13 @@ fn shape_document(
         };
 
         // Code lines are inset by CODE_INSET on each side; a gutter mark insets the
-        // left only. Either wraps at a correspondingly narrower width.
-        let line_wrap = if is_code {
+        // left only. Either wraps at a correspondingly narrower width. A table
+        // row's raw source never wraps — it renders as a grid row (a wide
+        // table scrolls instead), and a wrapped hidden source would multiply
+        // the row's advance by its wrap count.
+        let line_wrap = if table.is_some() {
+            None
+        } else if is_code {
             wrap_width.map(|w| (w - px(2. * CODE_INSET)).max(px(0.)))
         } else if let Some(m) = mark {
             wrap_width.map(|w| (w - m.inset()).max(px(0.)))
@@ -8396,8 +8472,8 @@ pub fn paint_doc_icon(
 }
 
 /// Content-fit column widths for a table region (W4c): each column sized to its
-/// widest cell (header measured bold) + padding, with a minimum, and the whole
-/// table scaled down proportionally to fit `wrap_width` if it would overflow.
+/// widest cell (header measured bold) + padding, with a minimum. A table wider
+/// than the viewport is NOT scaled down — it scrolls horizontally in place.
 #[allow(clippy::too_many_arguments)]
 fn table_column_widths(
     lines: &[&str],
@@ -8406,7 +8482,6 @@ fn table_column_widths(
     base_font: &Font,
     font_size: Pixels,
     color: Hsla,
-    wrap_width: Option<Pixels>,
     col_resize: Option<TableColResize>,
 ) -> Vec<Pixels> {
     // Reader parity: a row with MORE cells than the header widens the grid —
@@ -8476,15 +8551,9 @@ fn table_column_widths(
     {
         widths[r.col] = px(r.width.max(24.));
     }
-    if let Some(avail) = wrap_width {
-        let total = widths.iter().sum::<Pixels>();
-        if total > avail && total > px(0.) {
-            let scale = f32::from(avail) / f32::from(total);
-            for w in &mut widths {
-                *w *= scale;
-            }
-        }
-    }
+    // No scale-to-fit: a table wider than the viewport keeps its natural
+    // columns and scrolls horizontally in place (Cditor-style) — see
+    // `EditorState::table_scroll_x`.
     widths
 }
 
@@ -8543,6 +8612,16 @@ fn shape_cell(
 
 /// How many wrap rows table row `cells` need at `col_widths` — 1 for content
 /// that fits; more once a drag-narrowed column forces its text to wrap.
+/// The header row of the table that `t` (the grid row at line `row`) belongs
+/// to — the key of its horizontal-scroll entry.
+fn table_header_row(t: &TableRow, row: usize) -> usize {
+    match t.body_index {
+        Some(b) => row.saturating_sub(b + 2),
+        None if t.is_separator => row.saturating_sub(1),
+        None => row,
+    }
+}
+
 /// The width available to cell `c` of a row with `cells_len` cells: a short
 /// row's LAST cell spans the remaining columns (reader parity — e.g. a
 /// two-cell header over a wider body), otherwise its own column.
@@ -9802,8 +9881,10 @@ impl Element for EditorElement {
             if t.is_last && !t.col_widths.is_empty() {
                 let top = tbl_top.unwrap_or(bounds.origin.y + line_tops[i]);
                 let bottom = bounds.origin.y + line_tops[i] + line_heights[i];
-                let left = bounds.origin.x + px(TABLE_GUTTER);
                 let width: Pixels = t.col_widths.iter().copied().sum();
+                // A scrolled wide table shifts every affordance with its content.
+                let sx = editor.table_sx(tbl_header, width, bounds.size.width - px(TABLE_GUTTER));
+                let left = bounds.origin.x + px(TABLE_GUTTER) - sx;
                 let accent = editor.markdown_style.as_ref().map_or(t.border, |s| s.link);
                 let g = px(PILL_ACROSS);
                 let zone = Bounds::new(
@@ -9968,23 +10049,15 @@ impl Element for EditorElement {
                     // Table row: highlight between the cell positions of the selection
                     // ends (not raw-source geometry).
                     if let Some(t) = tables.get(row).and_then(Option::as_ref) {
+                        let tleft = bounds.left() + px(TABLE_GUTTER)
+                            - editor.table_sx(
+                                table_header_row(t, row),
+                                t.col_widths.iter().copied().sum(),
+                                bounds.size.width - px(TABLE_GUTTER),
+                            );
                         if let (Some((xa, ..)), Some((xb, ..))) = (
-                            table_caret_pos(
-                                t,
-                                a,
-                                bounds.left() + px(TABLE_GUTTER),
-                                &font,
-                                font_size,
-                                window,
-                            ),
-                            table_caret_pos(
-                                t,
-                                b,
-                                bounds.left() + px(TABLE_GUTTER),
-                                &font,
-                                font_size,
-                                window,
-                            ),
+                            table_caret_pos(t, a, tleft, &font, font_size, window),
+                            table_caret_pos(t, b, tleft, &font, font_size, window),
                         ) {
                             let (lo, hi) = (xa.min(xb), xa.max(xb));
                             let cy = bounds.top() + top + (lh - base_lh) / 2.;
@@ -10097,7 +10170,12 @@ impl Element for EditorElement {
                 && let Some((x, y_off, _, _)) = table_caret_pos(
                     t,
                     col,
-                    bounds.left() + px(TABLE_GUTTER),
+                    bounds.left() + px(TABLE_GUTTER)
+                        - editor.table_sx(
+                            table_header_row(t, row),
+                            t.col_widths.iter().copied().sum(),
+                            bounds.size.width - px(TABLE_GUTTER),
+                        ),
                     &font,
                     font_size,
                     window,
@@ -10235,6 +10313,8 @@ impl Element for EditorElement {
             .as_ref()
             .map_or(text_color, |s| s.link);
         let image_resize = self.editor.read(cx).image_resize;
+        // Wide-table horizontal scroll offsets, snapshotted for the paint loop.
+        let table_sx_map = self.editor.read(cx).table_scroll_x.clone();
         // Window-space bounds of each painted image + its logical line, collected
         // for the next frame's grip hit-testing (committed below).
         let mut image_rects: Vec<(usize, Bounds<Pixels>)> = Vec::new();
@@ -10554,10 +10634,28 @@ impl Element for EditorElement {
                 }
             }
             if let Some(t) = prepaint.tables.get(i).and_then(Option::as_ref) {
+                // A wide table keeps natural columns, scrolled by sx and
+                // clipped to the viewport — rows paint shifted under a mask.
+                let table_w: Pixels = t.col_widths.iter().copied().sum();
+                let avail = bounds.size.width - px(TABLE_GUTTER);
+                let sx = {
+                    let max = f32::from((table_w - avail).max(px(0.)));
+                    px(table_sx_map
+                        .get(&table_header_row(t, i))
+                        .copied()
+                        .unwrap_or(0.)
+                        .clamp(0., max))
+                };
+                let tleft = origin.x + px(TABLE_GUTTER);
+                let g = px(TABLE_GUTTER);
+                let mask = gpui::ContentMask {
+                    bounds: Bounds::new(point(tleft, origin.y - g), size(avail, *lh + g * 2.)),
+                };
                 // The header row paints the whole table's rounded outer border
-                // (one box around all its rows, matching the reading view) — for the
-                // Grid style only; the others are box-less. Each row then paints its
-                // shading, dividers, + cell text.
+                // (one box around all its rows, matching the reading view) — for
+                // the Grid style only; the others are box-less. It spans the
+                // WHOLE table's height, so it gets its own full-height mask
+                // (the per-row mask below would clip it to the header band).
                 if t.is_header && matches!(t.style, markdown_syntax::TableStyle::Grid) {
                     let mut total_h = px(0.);
                     for j in i..prepaint.tables.len() {
@@ -10571,30 +10669,55 @@ impl Element for EditorElement {
                             None => break,
                         }
                     }
-                    let table_w = t.col_widths.iter().sum();
-                    window.paint_quad(PaintQuad {
+                    let border_mask = gpui::ContentMask {
                         bounds: Bounds::new(
-                            point(origin.x + px(TABLE_GUTTER), origin.y),
-                            size(table_w, total_h),
+                            point(tleft, origin.y - g),
+                            size(avail, total_h + g * 2.),
                         ),
-                        corner_radii: Corners::all(px(6.)),
-                        background: hsla(0., 0., 0., 0.).into(),
-                        border_widths: Edges::all(px(1.)),
-                        border_color: t.border,
-                        border_style: BorderStyle::Solid,
+                    };
+                    window.with_content_mask(Some(border_mask), |window| {
+                        window.paint_quad(PaintQuad {
+                            bounds: Bounds::new(
+                                point(tleft - sx, origin.y),
+                                size(table_w, total_h),
+                            ),
+                            corner_radii: Corners::all(px(6.)),
+                            background: hsla(0., 0., 0., 0.).into(),
+                            border_widths: Edges::all(px(1.)),
+                            border_color: t.border,
+                            border_style: BorderStyle::Solid,
+                        });
                     });
                 }
-                paint_table_row(
-                    t,
-                    point(origin.x + px(TABLE_GUTTER), origin.y),
-                    *lh,
-                    &font,
-                    font_size,
-                    base_lh,
-                    text_color,
-                    window,
-                    cx,
-                );
+                window.with_content_mask(Some(mask), |window| {
+                    paint_table_row(
+                        t,
+                        point(tleft - sx, origin.y),
+                        *lh,
+                        &font,
+                        font_size,
+                        base_lh,
+                        text_color,
+                        window,
+                        cx,
+                    );
+                });
+                // A slim track thumb under the last row shows there's more
+                // table to the side (and how far along you are).
+                if t.is_last && table_w > avail {
+                    let th_w = (avail / f32::from(table_w) * f32::from(avail)).max(px(24.));
+                    let range = f32::from(table_w - avail);
+                    let th_x = tleft + (avail - th_w) * (f32::from(sx) / range);
+                    let mut th_c = t.border;
+                    th_c.a = (th_c.a * 1.5).min(0.8);
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(point(th_x, origin.y + *lh - px(4.)), size(th_w, px(3.))),
+                            th_c,
+                        )
+                        .corner_radii(Corners::all(px(1.5))),
+                    );
+                }
             } else if let Some(Block::Image(w)) = prepaint.widgets.get(i).and_then(Option::as_ref) {
                 // Inline image (W4a): paint the decoded image instead of source,
                 // inset to the row's gutter so a list-item image sits past its
