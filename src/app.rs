@@ -474,6 +474,19 @@ pub struct AppView {
     pub loaded_days: usize,
     pub day_editors: HashMap<String, DayEditor>,
     pub feed_scroll: ScrollHandle,
+    /// Tracks the feed column's children (one bounds per day section) WITHOUT
+    /// scrolling it — feeds the reader-day windowing: offscreen days render as
+    /// fixed-height spacers instead of full markdown trees.
+    pub feed_items: ScrollHandle,
+    /// Last-known full height of each day section (by day index), so a
+    /// windowed-out day's spacer preserves the scroll geometry.
+    pub feed_day_heights: std::cell::RefCell<HashMap<usize, Pixels>>,
+    /// Day indices rendered as spacers last frame — their (spacer) bounds must
+    /// not overwrite the real heights.
+    pub feed_spacers: std::cell::RefCell<std::collections::HashSet<usize>>,
+    /// Feed viewport width the heights were measured at; a resize reflows
+    /// every day, so the cache clears when it changes.
+    pub feed_heights_width: std::cell::Cell<Pixels>,
     /// Scroll offset of the open completion menu — persists across the per-keystroke rebuild
     /// of `Slash`, so the list doesn't snap back to the top as the user types or arrows.
     pub slash_scroll: ScrollHandle,
@@ -883,6 +896,10 @@ impl AppView {
             last_tabs_saved: String::new(),
             whiteboard_views: HashMap::new(),
             feed_scroll: ScrollHandle::new(),
+            feed_items: ScrollHandle::new(),
+            feed_day_heights: std::cell::RefCell::new(HashMap::new()),
+            feed_spacers: std::cell::RefCell::new(std::collections::HashSet::new()),
+            feed_heights_width: std::cell::Cell::new(gpui::px(0.)),
             slash_scroll: ScrollHandle::new(),
             slash_flyout_scroll: ScrollHandle::new(),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
