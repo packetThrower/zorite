@@ -72,6 +72,26 @@ pub struct SyntaxStyle {
     pub property_icon: Option<PropertyIconFn>,
 }
 
+impl Style {
+    /// `self` layered over `base` (the enclosing construct's style): the
+    /// booleans OR, the options prefer `self`'s — so `code` inside bold keeps
+    /// its color/tint while inheriting the bold weight.
+    fn over(mut self, base: &Style) -> Style {
+        self.bold |= base.bold;
+        self.italic |= base.italic;
+        self.strike |= base.strike;
+        self.underline |= base.underline;
+        self.mono |= base.mono;
+        if self.color.is_none() {
+            self.color = base.color;
+        }
+        if self.bg.is_none() {
+            self.bg = base.bg;
+        }
+        self
+    }
+}
+
 /// Maps a property key to an icon asset path the host serves, or `None` for no
 /// icon. Host-provided so the crate makes no assumption about which assets exist.
 pub type PropertyIconFn = std::rc::Rc<dyn Fn(&str) -> Option<gpui::SharedString>>;
@@ -95,6 +115,10 @@ struct Style {
     /// format bar) edit it. Structural markers (links, headings, math) keep
     /// the reveal, since their raw text is the only way to edit them.
     always_hide: bool,
+    /// Non-zero on a formatting marker: the opener and closer of one construct
+    /// share an id, so `fmt_marker_pairs` can pair them even with NESTED
+    /// constructs between (adjacency no longer identifies the pair).
+    pair_id: u16,
     /// What a hidden marker paints in its place (e.g. a block link's `#^`
     /// shows ` → `): every replacement byte maps back to the span's start, so
     /// the display↔source maps stay consistent. `None` = plain removal.
@@ -394,41 +418,28 @@ fn scan(text: &str, st: &SyntaxStyle) -> Vec<Span> {
 /// The always-hidden formatting-marker PAIRS on a line, as
 /// `(opening range, closing range)` per construct — for the editor's
 /// Cditor-style delete (skip the invisible bytes; collapse an emptied pair).
-/// Constructs don't nest in span space (the scanner consumes a construct
-/// wholesale), so pairing is a left-to-right walk: an always-hidden span, at
-/// most one body span, then its always-hidden closer.
 pub(crate) fn fmt_marker_pairs(line: &str, st: &SyntaxStyle) -> Vec<(Range<usize>, Range<usize>)> {
     let mut spans = scan(line, st);
     spans.sort_by_key(|s| s.range.start);
+    // The scanner stamps each construct's opener + closer with a shared
+    // `pair_id`, so pairing survives NESTED constructs between them (the old
+    // adjacency walk assumed at most one body span).
+    let mut open: Vec<(u16, Range<usize>)> = Vec::new();
     let mut pairs = Vec::new();
-    let mut i = 0;
-    while i < spans.len() {
-        if !spans[i].style.always_hide {
-            i += 1;
+    for sp in spans.into_iter().filter(|s| s.style.always_hide) {
+        let id = sp.style.pair_id;
+        if id == 0 {
             continue;
         }
-        let open = spans[i].range.clone();
-        // Optional single body span directly after the opener.
-        let mut j = i + 1;
-        let mut body_end = open.end;
-        if let Some(b) = spans
-            .get(j)
-            .filter(|b| !b.style.always_hide && b.range.start == open.end)
-        {
-            body_end = b.range.end;
-            j += 1;
-        }
-        match spans
-            .get(j)
-            .filter(|c| c.style.always_hide && c.range.start == body_end)
-        {
-            Some(c) => {
-                pairs.push((open, c.range.clone()));
-                i = j + 1;
+        match open.iter().position(|(oid, _)| *oid == id) {
+            Some(k) => {
+                let (_, o) = open.remove(k);
+                pairs.push((o, sp.range));
             }
-            None => i += 1,
+            None => open.push((id, sp.range)),
         }
     }
+    pairs.sort_by_key(|(o, _)| o.start);
     pairs
 }
 
@@ -444,17 +455,62 @@ fn marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
 }
 
 /// A formatting marker that NEVER reveals (not even with the caret inside its
-/// construct) — see [`Style::always_hide`].
-fn fmt_marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
+/// construct) — see [`Style::always_hide`]. The construct's opener and closer
+/// share `pair_id` (see [`fmt_marker_pairs`]).
+fn fmt_marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla, pair_id: u16) {
     out.push(Span {
         range,
         style: Style {
             color: Some(color),
             hide: true,
             always_hide: true,
+            pair_id,
             ..Default::default()
         },
     });
+}
+
+/// Recursively scan a formatting construct's body: inner constructs nest
+/// (bold inside italic, code inside bold, …) with `style` layered under them,
+/// and the gaps — the construct's own plain text — carry `style` itself.
+/// Depth-capped; at the cap the body is one flat styled span.
+#[allow(clippy::too_many_arguments)]
+fn scan_styled_body(
+    text: &str,
+    s: usize,
+    e: usize,
+    st: &SyntaxStyle,
+    out: &mut Vec<Span>,
+    style: Style,
+    depth: u8,
+    next_id: &mut u16,
+) {
+    if s >= e {
+        return;
+    }
+    if depth >= 3 {
+        push(out, s..e, style);
+        return;
+    }
+    let before = out.len();
+    scan_inline(text, s, e, st, out, &style, depth + 1, next_id);
+    // Fill the gaps between the inner constructs with the body style.
+    let mut covered: Vec<Range<usize>> = out[before..].iter().map(|sp| sp.range.clone()).collect();
+    covered.sort_by_key(|r| r.start);
+    let mut pos = s;
+    let mut fills: Vec<Range<usize>> = Vec::new();
+    for r in covered {
+        if r.start > pos {
+            fills.push(pos..r.start);
+        }
+        pos = pos.max(r.end);
+    }
+    if pos < e {
+        fills.push(pos..e);
+    }
+    for f in fills {
+        push(out, f, style.clone());
+    }
 }
 
 /// Heading styling (`#`..`######` + a space) for `text[from..end]`: dim the
@@ -537,6 +593,28 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             return;
         }
     }
+    let mut next_id = 1u16;
+    scan_inline(text, i, end, st, out, &Style::default(), 0, &mut next_id);
+}
+
+/// The inline scanning loop, recursive so formatting constructs NEST: a
+/// construct's body re-scans with the construct's style as `base` (layered by
+/// [`Style::over`]), matching the reader's CommonMark nesting — `**bold
+/// *italic* bold**` styles the inner run bold+italic. `start` is the segment
+/// start (word-boundary and image-bang checks are segment-local).
+#[allow(clippy::too_many_arguments)]
+fn scan_inline(
+    text: &str,
+    start: usize,
+    end: usize,
+    st: &SyntaxStyle,
+    out: &mut Vec<Span>,
+    base: &Style,
+    depth: u8,
+    next_id: &mut u16,
+) {
+    let b = text.as_bytes();
+    let mut i = start;
     while i < end {
         let c = b[i];
         // A backslash escape (`\*`, `\|`, `\\`, … — any ASCII punctuation):
@@ -581,7 +659,9 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 }
             }
             if let Some(close) = close {
-                fmt_marker(out, i..i + n, st.marker);
+                let id = *next_id;
+                *next_id += 1;
+                fmt_marker(out, i..i + n, st.marker, id);
                 push(
                     out,
                     i + n..close,
@@ -589,9 +669,10 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                         color: Some(st.code),
                         bg: Some(st.code_bg),
                         ..Default::default()
-                    },
+                    }
+                    .over(base),
                 );
-                fmt_marker(out, close..close + n, st.marker);
+                fmt_marker(out, close..close + n, st.marker, id);
                 i = close + n;
                 continue;
             }
@@ -609,16 +690,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && b[i + 1] == b'*'
             && let Some(close) = find2_unescaped(b, i + 2, end, b'*', b'*')
         {
-            fmt_marker(out, i..i + 2, st.marker);
-            push(
+            let id = *next_id;
+            *next_id += 1;
+            fmt_marker(out, i..i + 2, st.marker, id);
+            scan_styled_body(
+                text,
+                i + 2,
+                close,
+                st,
                 out,
-                i + 2..close,
                 Style {
                     bold: true,
                     ..Default::default()
-                },
+                }
+                .over(base),
+                depth,
+                next_id,
             );
-            fmt_marker(out, close..close + 2, st.marker);
+            fmt_marker(out, close..close + 2, st.marker, id);
             i = close + 2;
             continue;
         }
@@ -628,16 +717,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && let Some(close) = find1_unescaped(b, i + 1, end, b'*')
             && close > i + 1
         {
-            fmt_marker(out, i..i + 1, st.marker);
-            push(
+            let id = *next_id;
+            *next_id += 1;
+            fmt_marker(out, i..i + 1, st.marker, id);
+            scan_styled_body(
+                text,
+                i + 1,
+                close,
+                st,
                 out,
-                i + 1..close,
                 Style {
                     italic: true,
                     ..Default::default()
-                },
+                }
+                .over(base),
+                depth,
+                next_id,
             );
-            fmt_marker(out, close..close + 1, st.marker);
+            fmt_marker(out, close..close + 1, st.marker, id);
             i = close + 1;
             continue;
         }
@@ -655,16 +752,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 && b[i + 2] != b' '
                 && let Some(close) = find_underscore_close(b, i + 2, end, true)
             {
-                fmt_marker(out, i..i + 2, st.marker);
-                push(
+                let id = *next_id;
+                *next_id += 1;
+                fmt_marker(out, i..i + 2, st.marker, id);
+                scan_styled_body(
+                    text,
+                    i + 2,
+                    close,
+                    st,
                     out,
-                    i + 2..close,
                     Style {
                         bold: true,
                         ..Default::default()
-                    },
+                    }
+                    .over(base),
+                    depth,
+                    next_id,
                 );
-                fmt_marker(out, close..close + 2, st.marker);
+                fmt_marker(out, close..close + 2, st.marker, id);
                 i = close + 2;
                 continue;
             }
@@ -673,16 +778,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 && b[i + 1] != b' '
                 && let Some(close) = find_underscore_close(b, i + 1, end, false)
             {
-                fmt_marker(out, i..i + 1, st.marker);
-                push(
+                let id = *next_id;
+                *next_id += 1;
+                fmt_marker(out, i..i + 1, st.marker, id);
+                scan_styled_body(
+                    text,
+                    i + 1,
+                    close,
+                    st,
                     out,
-                    i + 1..close,
                     Style {
                         italic: true,
                         ..Default::default()
-                    },
+                    }
+                    .over(base),
+                    depth,
+                    next_id,
                 );
-                fmt_marker(out, close..close + 1, st.marker);
+                fmt_marker(out, close..close + 1, st.marker, id);
                 i = close + 1;
                 continue;
             }
@@ -694,16 +807,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             && b[i + 1] == b'~'
             && let Some(close) = find2_unescaped(b, i + 2, end, b'~', b'~')
         {
-            fmt_marker(out, i..i + 2, st.marker);
-            push(
+            let id = *next_id;
+            *next_id += 1;
+            fmt_marker(out, i..i + 2, st.marker, id);
+            scan_styled_body(
+                text,
+                i + 2,
+                close,
+                st,
                 out,
-                i + 2..close,
                 Style {
                     strike: true,
                     ..Default::default()
-                },
+                }
+                .over(base),
+                depth,
+                next_id,
             );
-            fmt_marker(out, close..close + 2, st.marker);
+            fmt_marker(out, close..close + 2, st.marker, id);
             i = close + 2;
             continue;
         }
@@ -722,7 +843,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 Style {
                     color: Some(st.link),
                     ..Default::default()
-                },
+                }
+                .over(base),
             );
             marker(out, i + 1..i + 2, st.marker); // hide the `^`
             push(
@@ -731,7 +853,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 Style {
                     color: Some(st.link),
                     ..Default::default()
-                },
+                }
+                .over(base),
             );
             i = rb + 1;
             continue;
@@ -747,7 +870,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
             let link = Style {
                 color: Some(st.link),
                 ..Default::default()
-            };
+            }
+            .over(base);
             // An anchor in the target — a block ref (`[[Note#^id]]`) or a
             // heading (`[[Note#My Heading]]`) — renders its `#^`/`#` as ` → `
             // (the reader does the same), keeping the anchor text readable:
@@ -812,7 +936,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 Style {
                     color: Some(st.link),
                     ..Default::default()
-                },
+                }
+                .over(base),
             );
             marker(out, rb..rp + 1, st.marker);
             i = rp + 1;
@@ -834,7 +959,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                 Style {
                     color: Some(st.link),
                     ..Default::default()
-                },
+                }
+                .over(base),
             );
             marker(out, rb..rb2 + 1, st.marker);
             i = rb2 + 1;
@@ -848,16 +974,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         {
             let body = i + 6;
             let close = body + rel;
-            fmt_marker(out, i..body, st.marker);
-            push(
+            let id = *next_id;
+            *next_id += 1;
+            fmt_marker(out, i..body, st.marker, id);
+            scan_styled_body(
+                text,
+                body,
+                close,
+                st,
                 out,
-                body..close,
                 Style {
                     bg: Some(st.mark_bg),
                     ..Default::default()
-                },
+                }
+                .over(base),
+                depth,
+                next_id,
             );
-            fmt_marker(out, close..close + 7, st.marker);
+            fmt_marker(out, close..close + 7, st.marker, id);
             i = close + 7;
             continue;
         }
@@ -869,16 +1003,24 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
         {
             let body = i + 3;
             let close = body + rel;
-            fmt_marker(out, i..body, st.marker);
-            push(
+            let id = *next_id;
+            *next_id += 1;
+            fmt_marker(out, i..body, st.marker, id);
+            scan_styled_body(
+                text,
+                body,
+                close,
+                st,
                 out,
-                body..close,
                 Style {
                     underline: true,
                     ..Default::default()
-                },
+                }
+                .over(base),
+                depth,
+                next_id,
             );
-            fmt_marker(out, close..close + 4, st.marker);
+            fmt_marker(out, close..close + 4, st.marker, id);
             i = close + 4;
             continue;
         }
@@ -897,7 +1039,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     Style {
                         color: Some(st.link),
                         ..Default::default()
-                    },
+                    }
+                    .over(base),
                 );
                 i = j;
                 continue;
@@ -916,7 +1059,8 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
                     Style {
                         color: Some(st.tag),
                         ..Default::default()
-                    },
+                    }
+                    .over(base),
                 );
                 i = j;
                 continue;
@@ -2612,6 +2756,38 @@ mod tests {
         // CommonMark: \**bold** = literal *, italic "bold", literal *.
         let (disp, _, _) = hidden_runs(r"\**bold**", &font, c, &[], None, 0, 0, false, &st);
         assert_eq!(disp, "*bold*");
+    }
+
+    #[test]
+    fn nested_inline_styles_layer() {
+        let st = test_style();
+        // **bold *italic* bold** — the inner run carries BOTH styles, the
+        // gaps around it stay bold (the reader nests the same way).
+        let line = "**bold *it* bold**";
+        let mut out = Vec::new();
+        scan_line(line, 0, line.len(), &st, &mut out);
+        let styled = |s: usize, e: usize| out.iter().find(|sp| sp.range == (s..e)).unwrap();
+        let inner = styled(8, 10); // "it"
+        assert!(inner.style.bold && inner.style.italic);
+        let gap = styled(2, 7); // "bold " before the italic
+        assert!(gap.style.bold && !gap.style.italic);
+        // Inline code inside bold keeps its tint and inherits the weight.
+        let line = "**b `c` d**";
+        let mut out = Vec::new();
+        scan_line(line, 0, line.len(), &st, &mut out);
+        let code = out
+            .iter()
+            .find(|sp| sp.range == (5..6))
+            .expect("code body span");
+        assert!(code.style.bold && code.style.bg.is_some());
+        // Display hides every marker, nested included.
+        let font = gpui::font("Helvetica");
+        let c = hsla(0., 0., 0., 1.);
+        let (disp, _, _) = hidden_runs("**bold *it* bold**", &font, c, &[], None, 0, 0, false, &st);
+        assert_eq!(disp, "bold it bold");
+        // Pairing survives nesting: two pairs, outer first.
+        let pairs = fmt_marker_pairs("**bold *it* bold**", &st);
+        assert_eq!(pairs, vec![(0..2, 16..18), (7..8, 10..11)]);
     }
 
     #[test]
