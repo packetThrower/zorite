@@ -130,7 +130,7 @@ blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
 - [ ] Feed-window day heights are keyed by child POSITION and invalidated only
   on width change — key by date + invalidate on content change so a day-set or
   offscreen-content change can't leave stale spacer heights. (S)
-- [ ] Caret-parked-on-marker is patched at two entry points (resize-band press,
+- [x] Caret-parked-on-marker is patched at two entry points (resize-band press,
   `rewrite_table_marker`); other focus-without-caret-move affordances (pills,
   delete handles, code Copy, fold chevrons, image grips) can still flash raw
   markers — enforce "caret never rests on a collapsed marker line" once in the

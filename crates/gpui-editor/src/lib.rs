@@ -307,6 +307,38 @@ impl TurnKind {
     }
 }
 
+/// If `offset` sits on a collapsed marker line (a table style marker or a
+/// math align marker), the offset of the nearest line that reveals nothing
+/// when the caret rests there: the table's header, or the line after the
+/// math block. Otherwise `offset` unchanged.
+fn caret_off_marker_line(content: &str, offset: usize) -> usize {
+    let row = content[..offset.min(content.len())].matches('\n').count();
+    let line_start = |r: usize| {
+        let mut off = 0;
+        for (i, l) in content.split('\n').enumerate() {
+            if i == r {
+                return off;
+            }
+            off += l.len() + 1;
+        }
+        content.len()
+    };
+    if let Some(t) = markdown_syntax::table_regions(content)
+        .iter()
+        .find(|t| t.marker_line == Some(row))
+    {
+        return line_start(t.lines.start);
+    }
+    if let Some(m) = markdown_syntax::math_regions(content)
+        .iter()
+        .find(|m| m.marker_line == Some(row))
+    {
+        // Anywhere inside a math region reveals it whole — land after it.
+        return line_start(m.range.end);
+    }
+    offset
+}
+
 /// Strip a line's block dressing (heading hashes, list/todo bullet, ordered
 /// number, quote `>`), leaving the text a "Turn into" conversion re-prefixes.
 fn strip_block_prefix(line: &str) -> &str {
@@ -976,7 +1008,12 @@ impl EditorState {
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.content_gen += 1;
         self.content = text.into();
-        self.selected_range = 0..0;
+        // Never park the loaded caret on a collapsed marker line (`<!-- table/
+        // math:… -->`): the first focus would reveal it raw mid-interaction.
+        // This is the ONE passive parking path — every other caret write is a
+        // deliberate placement (which SHOULD reveal markers for editing).
+        let caret = caret_off_marker_line(&self.content, 0);
+        self.selected_range = caret..caret;
         self.selection_reversed = false;
         self.marked_range = None;
         // A programmatic load isn't undoable to the prior document.
@@ -2791,20 +2828,6 @@ impl EditorState {
                 orig: width,
                 width,
             });
-            // The press focuses the editor without moving the caret — if it
-            // was parked on this table's style-marker line (offset 0 right
-            // after a document loads), reveal-on-caret would flash the raw
-            // `<!-- table:… -->` mid-drag. Seat it in the header cell instead.
-            let caret_row = self.row_col(self.selected_range.start).0;
-            if self
-                .scan_data()
-                .tables
-                .iter()
-                .any(|r| r.lines.start == header_row && r.marker_line == Some(caret_row))
-            {
-                let caret = self.caret_pos_for_cell(header_row, 0, 0);
-                self.selected_range = caret..caret;
-            }
             self.is_selecting = false;
             cx.notify();
             return;
@@ -11204,6 +11227,21 @@ fn word_boundary_input(new_text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn caret_off_marker_line_cases() {
+        use super::caret_off_marker_line;
+        // Table marker at the top: the caret steps to the header line.
+        let doc = "<!-- table:grid cols=40,40 -->\n| a | b |\n| --- | --- |\n| 1 | 2 |";
+        assert_eq!(caret_off_marker_line(doc, 0), 31);
+        // Math align marker: the caret lands after the block.
+        let doc = "<!-- math:center -->\n$$\nx^2\n$$\nafter";
+        assert_eq!(caret_off_marker_line(doc, 0), 31);
+        assert_eq!(&doc[31..], "after");
+        // Plain lines pass through untouched.
+        assert_eq!(caret_off_marker_line("hello\nworld", 0), 0);
+        assert_eq!(caret_off_marker_line("", 0), 0);
+    }
+
     #[test]
     fn strip_block_prefix_cases() {
         use super::strip_block_prefix;
