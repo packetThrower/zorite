@@ -643,6 +643,8 @@ pub struct EditorState {
     /// See [`ShapeMemo`] — `RefCell` because the measure closure holds only a
     /// read borrow of the editor.
     shape_memo: std::cell::RefCell<Option<ShapeMemo>>,
+    /// See [`ScanData`].
+    scan_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<ScanData>)>>,
     /// Bumped on every content mutation — cheap staleness key for caches
     /// (the UTF-16 conversion anchor below; a shape cache later).
     content_gen: u64,
@@ -775,6 +777,7 @@ impl EditorState {
             table_col_resize_rects: Vec::new(),
             table_resize_hover: None,
             shape_memo: std::cell::RefCell::new(None),
+            scan_cache: std::cell::RefCell::new(None),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
             editing_block: None,
@@ -1023,13 +1026,13 @@ impl EditorState {
         if line.is_empty() {
             return;
         }
-        // Inside a fenced code block (odd count of ``` fences above), the
-        // text is verbatim — never rewrite it.
-        let fences = self.content[..line_start]
-            .lines()
-            .filter(|l| l.trim_start().starts_with("```"))
-            .count();
-        if fences % 2 == 1 || line.trim_start().starts_with("```") {
+        // Inside a fenced code block, the text is verbatim — never rewrite it.
+        // Fence parity comes from the cached scan (this runs on every boundary
+        // keystroke; the per-line rescan grew with the document).
+        let (row, _) = self.row_col(boundary);
+        if *self.scan_data().fence_odd.get(row).unwrap_or(&false)
+            || line.trim_start().starts_with("```")
+        {
             return;
         }
         let Some((r, replacement)) = f(line) else {
@@ -1331,6 +1334,36 @@ impl EditorState {
             .enumerate()
             .map(|(row, &top)| (top, self.line_h(row)))
             .collect()
+    }
+
+    /// The cached [`ScanData`] for the current content, rebuilding on a
+    /// generation mismatch.
+    fn scan_data(&self) -> std::rc::Rc<ScanData> {
+        if let Some((generation, data)) = self.scan_cache.borrow().as_ref()
+            && *generation == self.content_gen
+        {
+            return data.clone();
+        }
+        let lines: Vec<&str> = self.content.split('\n').collect();
+        let mut fence_odd = Vec::with_capacity(lines.len());
+        let mut odd = false;
+        for l in &lines {
+            fence_odd.push(odd);
+            if l.trim_start().starts_with("```") {
+                odd = !odd;
+            }
+        }
+        let data = std::rc::Rc::new(ScanData {
+            ordered: markdown_syntax::ordered_numbers(&lines),
+            tables: markdown_syntax::table_regions(&self.content),
+            mermaid: markdown_syntax::mermaid_blocks(&self.content),
+            math: markdown_syntax::math_regions(&self.content),
+            props: markdown_syntax::property_regions(&self.content),
+            alert_folds: markdown_syntax::alert_fold_regions(&self.content),
+            fence_odd,
+        });
+        *self.scan_cache.borrow_mut() = Some((self.content_gen, data.clone()));
+        data
     }
 
     /// The wrap-row height of logical line `row` (a heading is taller). Falls
@@ -3852,8 +3885,8 @@ impl EditorState {
             return None;
         }
         let cell = table_cell_at(t, col);
-        let regions = markdown_syntax::table_regions(&self.content);
-        let region = regions.iter().find(|r| r.lines.contains(&row))?;
+        let scan = self.scan_data();
+        let region = scan.tables.iter().find(|r| r.lines.contains(&row))?;
         Some(match region.aligns.get(cell) {
             Some(markdown_syntax::Align::Center) => CellAlign::Center,
             Some(markdown_syntax::Align::Right) => CellAlign::Right,
@@ -3874,8 +3907,8 @@ impl EditorState {
         let cell = table_cell_at(t, col);
         // Read the table's columns from the current content (fresh), so repeated
         // clicks build on the latest alignment, not a stale painted snapshot.
-        let regions = markdown_syntax::table_regions(&self.content);
-        let Some(region) = regions.iter().find(|r| r.lines.contains(&row)) else {
+        let scan = self.scan_data();
+        let Some(region) = scan.tables.iter().find(|r| r.lines.contains(&row)) else {
             return;
         };
         let mut aligns = region.aligns.clone();
@@ -3921,9 +3954,8 @@ impl EditorState {
     /// columns)`, or `None` outside a table.
     fn caret_table_block(&self) -> Option<(usize, usize, usize, usize)> {
         let (row, _) = self.row_col(self.cursor_offset());
-        let region = markdown_syntax::table_regions(&self.content)
-            .into_iter()
-            .find(|r| r.lines.contains(&row))?;
+        let scan = self.scan_data();
+        let region = scan.tables.iter().find(|r| r.lines.contains(&row))?;
         Some((
             region.lines.start,
             region.lines.start + 1,
@@ -4041,9 +4073,11 @@ impl EditorState {
     /// The caret row's table region, when inside one.
     fn caret_table_region(&self) -> Option<markdown_syntax::TableRegion> {
         let (row, _) = self.row_col(self.cursor_offset());
-        markdown_syntax::table_regions(&self.content)
-            .into_iter()
+        self.scan_data()
+            .tables
+            .iter()
             .find(|r| r.lines.contains(&row))
+            .cloned()
     }
 
     /// Duplicate the caret's row below itself (the header duplicates as the
@@ -4152,9 +4186,12 @@ impl EditorState {
     /// Persist a finished column-border drag: every column's current display
     /// width goes into the marker's `cols=` list (style preserved).
     fn commit_table_col_widths(&mut self, resize: TableColResize, cx: &mut Context<Self>) {
-        let Some(region) = markdown_syntax::table_regions(&self.content)
-            .into_iter()
+        let Some(region) = self
+            .scan_data()
+            .tables
+            .iter()
             .find(|r| r.lines.start == resize.header_row)
+            .cloned()
         else {
             return;
         };
@@ -4450,11 +4487,9 @@ impl EditorState {
         let line_end = self.line_end(row);
         let line = &self.content[line_start..line_end];
         // Inside a fenced code block the text is verbatim — no markers there.
-        let fences = self.content[..line_start]
-            .lines()
-            .filter(|l| l.trim_start().starts_with("```"))
-            .count();
-        if fences % 2 == 1 || line.trim_start().starts_with("```") {
+        if *self.scan_data().fence_odd.get(row).unwrap_or(&false)
+            || line.trim_start().starts_with("```")
+        {
             return None;
         }
         let pairs = markdown_syntax::fmt_marker_pairs(line, st);
@@ -6087,6 +6122,8 @@ fn shape_document(
     resize: Option<ImageResize>,
     // An in-progress column-border drag: that column takes the live width.
     col_resize: Option<TableColResize>,
+    // The content's cached structural scans (see [`ScanData`]).
+    scan: &ScanData,
     // Collapsed headings (trimmed source lines) — their section lines fold to
     // height 0 like a folded callout's body.
     folded_headings: &std::collections::HashSet<String>,
@@ -6102,7 +6139,7 @@ fn shape_document(
     let lines: Vec<&str> = content.split('\n').collect();
     // Ordered items paint their computed CommonMark position, not their
     // literal source digits (the reader renumbers the same way).
-    let ordered_nums = markdown_syntax::ordered_numbers(&lines);
+    let ordered_nums = &scan.ordered;
     // Rows a (non-empty) selection touches. A selected block reveals its raw
     // source just like the caret's block does, so what's highlighted is what a
     // copy carries — the per-line pass below already reveals inline markers on
@@ -6125,11 +6162,13 @@ fn shape_document(
     // block and the host has a rendered bitmap. The diagram paints on the block's
     // first line; the rest collapse. Caret inside / still rendering → raw code.
     let mermaid: Vec<(Range<usize>, BlockImg)> = match block_mermaid.filter(|_| md.is_some()) {
-        Some(f) => markdown_syntax::mermaid_blocks(content)
-            .into_iter()
+        Some(f) => scan
+            .mermaid
+            .iter()
             .filter(|(range, _)| {
                 caret_row.is_none_or(|cr| !range.contains(&cr)) && !sel_hits(range)
             })
+            .cloned()
             .filter_map(|(range, source)| {
                 // Sized by the provider's logical dimensions, like math below —
                 // never texture pixels ÷ window scale factor.
@@ -6157,9 +6196,11 @@ fn shape_document(
     // $$…$$ math blocks ready to render: caret outside + a typeset bitmap ready. Like
     // mermaid, the equation paints on the block's first line, the rest collapse.
     let math: Vec<(Range<usize>, BlockImg)> = match block_math.filter(|_| md.is_some()) {
-        Some(f) => markdown_syntax::math_regions(content)
-            .into_iter()
+        Some(f) => scan
+            .math
+            .iter()
             .filter(|r| caret_row.is_none_or(|cr| !r.range.contains(&cr)) && !sel_hits(&r.range))
+            .cloned()
             .filter_map(|r| {
                 // Sized by the provider's logical dimensions — NOT texture pixels
                 // ÷ window scale factor (see [`BlockMathFn`]: the raster's density
@@ -6191,9 +6232,11 @@ fn shape_document(
     // its lines collapse; the caret entering the region is filtered out here so
     // the raw source shows for editing.
     let props: Vec<(Range<usize>, PropPanel)> = match md {
-        Some(st) => markdown_syntax::property_regions(content)
-            .into_iter()
+        Some(st) => scan
+            .props
+            .iter()
             .filter(|r| caret_row.is_none_or(|cr| !r.contains(&cr)) && !sel_hits(r))
+            .cloned()
             .map(|r| {
                 let panel = build_prop_panel(
                     &lines,
@@ -6215,13 +6258,15 @@ fn shape_document(
     // Folded callouts (`> [!NOTE]-`): each region's BODY lines collapse (the
     // marker line stays, painting the label + chevron) unless the caret is
     // inside the region — reveal-on-caret, so arrowing in unfolds for editing.
-    let mut alert_folds: Vec<Range<usize>> = md
-        .map(|_| markdown_syntax::alert_fold_regions(content))
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|(r, folded)| *folded && caret_row.is_none_or(|cr| !r.contains(&cr)))
-        .map(|(r, _)| r)
-        .collect();
+    let mut alert_folds: Vec<Range<usize>> = if md.is_some() {
+        scan.alert_folds
+            .iter()
+            .filter(|(r, folded)| *folded && caret_row.is_none_or(|cr| !r.contains(&cr)))
+            .map(|(r, _)| r.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
     // Collapsed heading sections fold the same way: the heading line stays
     // (its chevron paints there), the section's lines go to height 0, and the
     // caret STRICTLY INSIDE THE BODY reveals — the fold state itself is
@@ -6248,11 +6293,9 @@ fn shape_document(
         Vec::new()
     };
     // Table regions (W4c); content-fit column widths shared by each region's rows.
-    let regions = md
-        .map(|_| markdown_syntax::table_regions(content))
-        .unwrap_or_default();
+    let regions: &[markdown_syntax::TableRegion] = if md.is_some() { &scan.tables } else { &[] };
     let mut region_cols: Vec<Vec<Pixels>> = Vec::with_capacity(regions.len());
-    for r in &regions {
+    for r in regions {
         region_cols.push(table_column_widths(
             &lines,
             r,
@@ -7992,6 +8035,24 @@ struct TableAffordance {
     accent: Hsla,
 }
 
+/// Content-derived structural scans — tables, ordered-list numbering,
+/// mermaid/math regions, property runs, foldable callouts, and per-line
+/// fence parity — cached per [`EditorState::content_gen`]. `shape_document`
+/// recomputed all of these on every call (twice a frame before the shape
+/// memo); now they rebuild only when the content actually changes, and the
+/// caret-driven table ops + auto-replace reuse the same scan.
+pub(crate) struct ScanData {
+    ordered: Vec<(u32, usize)>,
+    tables: Vec<markdown_syntax::TableRegion>,
+    mermaid: Vec<(Range<usize>, String)>,
+    math: Vec<markdown_syntax::MathRegion>,
+    props: Vec<Range<usize>>,
+    alert_folds: Vec<(Range<usize>, bool)>,
+    /// Whether each line STARTS inside a fenced code block (odd count of ```
+    /// fences above it).
+    fence_odd: Vec<bool>,
+}
+
 /// One frame's shaping, memoized between the measure pass and prepaint —
 /// both shape the IDENTICAL inputs, so the measure's result is handed to
 /// prepaint instead of shaping the whole document twice per frame. Consumed
@@ -8151,6 +8212,7 @@ impl Element for EditorElement {
                     (usize::MAX, usize::MAX)
                 };
                 let sf = window.scale_factor();
+                let scan = editor.scan_data();
                 let shaped = shape_document(
                     window,
                     &editor.content,
@@ -8180,6 +8242,7 @@ impl Element for EditorElement {
                     selection,
                     editor.image_resize,
                     editor.table_col_resize,
+                    &scan,
                     &editor.folded_headings,
                 );
                 // Mirror prepaint's `line_tops` walk exactly (same `line_pads`),
@@ -8319,6 +8382,7 @@ impl Element for EditorElement {
                     selection,
                     editor.image_resize,
                     editor.table_col_resize,
+                    &editor.scan_data(),
                     &editor.folded_headings,
                 )
             };

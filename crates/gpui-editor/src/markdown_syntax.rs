@@ -1622,6 +1622,7 @@ pub(crate) fn math_align_marker(line: &str) -> Option<MathAlign> {
 
 /// A detected `$$…$$` block: its line range (both fences), the LaTeX between them, its
 /// alignment, and the optional `<!-- math:ALIGN -->` marker line directly above it.
+#[derive(Clone)]
 pub(crate) struct MathRegion {
     pub range: Range<usize>,
     pub source: String,
@@ -1867,6 +1868,7 @@ pub(crate) fn table_style_marker(line: &str) -> Option<TableStyle> {
 /// A detected GFM table region: the half-open range of logical line indices it
 /// spans (header, separator, then body rows) and its per-column alignment, plus
 /// an optional `<!-- table:STYLE -->` marker line directly above it.
+#[derive(Clone)]
 pub(crate) struct TableRegion {
     pub lines: Range<usize>,
     pub aligns: Vec<Align>,
