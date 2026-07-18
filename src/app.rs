@@ -414,6 +414,13 @@ struct PdfFieldEdit {
     _sub: gpui::Subscription,
 }
 
+/// (level, page title, rows) — the slash flyout's cached item list.
+type FlyoutCache = (
+    slash::SlashLevel,
+    String,
+    std::rc::Rc<Vec<slash::PaletteItem>>,
+);
+
 pub struct AppView {
     db: Db,
     /// This view's window, so it can tell whether a cross-window tab drag is
@@ -492,13 +499,7 @@ pub struct AppView {
     pub slash_scroll: ScrollHandle,
     pub slash_flyout_scroll: ScrollHandle,
     /// Flyout rows cache — see [`Self::slash_flyout_items`].
-    slash_flyout_cache: std::cell::RefCell<
-        Option<(
-            slash::SlashLevel,
-            String,
-            std::rc::Rc<Vec<slash::PaletteItem>>,
-        )>,
-    >,
+    slash_flyout_cache: std::cell::RefCell<Option<FlyoutCache>>,
 
     /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
     /// native menu bar instead; this gives the other OSes visual parity.

@@ -9025,6 +9025,12 @@ struct CachedLineRuns {
     map: std::rc::Rc<Vec<usize>>,
 }
 
+/// The validity marker + per-row content keys of the run-key memo.
+type RowKeys = (Option<u64>, Vec<Option<u64>>);
+
+/// The measured table column widths cache: one keyed entry for the doc.
+type RegionCols = Option<(u64, std::rc::Rc<Vec<Vec<Pixels>>>)>;
+
 /// The editor-owned caches `shape_document` reads and writes (interior-
 /// mutable — shaping runs under a read borrow of the editor):
 /// - `line_runs`: each markdown line's built display + runs (cross-frame).
@@ -9035,7 +9041,7 @@ struct CachedLineRuns {
 #[derive(Default)]
 struct ShapeCaches {
     line_runs: std::cell::RefCell<std::collections::HashMap<u64, CachedLineRuns>>,
-    region_cols: std::cell::RefCell<Option<(u64, std::rc::Rc<Vec<Vec<Pixels>>>)>>,
+    region_cols: std::cell::RefCell<RegionCols>,
     cell_rows: std::cell::RefCell<std::collections::HashMap<u64, usize>>,
     /// Per-line (row height, wrap rows), keyed by the line-run key ⊕ font
     /// size ⊕ wrap width — the shaping window's exact heights for skipped
@@ -9045,7 +9051,7 @@ struct ShapeCaches {
     /// valid for one (scan generation, epoch) pair — so a steady-state frame
     /// hashes three u64s per line instead of every line's bytes. Diagnostics
     /// changes invalidate explicitly (see `set_diagnostics`).
-    row_keys: std::cell::RefCell<(Option<u64>, Vec<Option<u64>>)>,
+    row_keys: std::cell::RefCell<RowKeys>,
 }
 
 /// A hash of the inputs shared by every line's run build (font + palette) —
@@ -10117,33 +10123,72 @@ impl Element for EditorElement {
                         // vacant trailing cells highlight too.
                         let first_start = t.cell_ranges.first().map_or(0, |r| r.start);
                         let last_end = t.cell_ranges.last().map_or(0, |r| r.end);
-                        let xa = if a <= first_start {
-                            tleft
-                        } else {
-                            table_caret_pos(t, a, tleft, &font, font_size, window)
-                                .map_or(tleft, |(x, ..)| x)
-                        };
-                        let xb = if b >= last_end {
-                            tleft + table_w
-                        } else {
-                            table_caret_pos(t, b, tleft, &font, font_size, window)
-                                .map_or(tleft + table_w, |(x, ..)| x)
-                        };
                         // Clamp to the table's visible band — a wide
                         // (scrolling) table's cells extend past the
-                        // viewport, but its highlight must not. Full row
-                        // height, so wrapped cells highlight every wrap row.
+                        // viewport, but its highlight must not.
                         let vis_l = bounds.left() + px(TABLE_GUTTER);
                         let vis_r = bounds.left() + bounds.size.width;
-                        let (lo, hi) = (xa.min(xb).max(vis_l), xa.max(xb).min(vis_r));
-                        if hi > lo {
-                            sels.push(fill(
-                                Bounds::from_corners(
-                                    point(lo, bounds.top() + top),
-                                    point(hi, bounds.top() + top + lh),
-                                ),
-                                color,
-                            ));
+                        let mut band = |lo: Pixels, hi: Pixels, y: Pixels, h: Pixels| {
+                            let (lo, hi) = (lo.max(vis_l), hi.min(vis_r));
+                            if hi > lo {
+                                sels.push(fill(
+                                    Bounds::from_corners(point(lo, y), point(hi, y + h)),
+                                    color,
+                                ));
+                            }
+                        };
+                        let pa = (a > first_start && a < last_end)
+                            .then(|| table_caret_pos(t, a, tleft, &font, font_size, window))
+                            .flatten();
+                        let pb = (b > first_start && b < last_end)
+                            .then(|| table_caret_pos(t, b, tleft, &font, font_size, window))
+                            .flatten();
+                        match (pa, pb) {
+                            // Both ends inside the SAME (possibly wrapped)
+                            // cell: per-wrap-row bands within that cell —
+                            // one full-height band would smear the whole row.
+                            (Some((xa, ya, ca, _)), Some((xb, yb, cb, _))) if ca == cb => {
+                                let pad = px(TABLE_CELL_PAD);
+                                let cell_x = tleft
+                                    + t.col_widths[..ca.min(t.col_widths.len())]
+                                        .iter()
+                                        .copied()
+                                        .sum::<Pixels>();
+                                let cw = cell_span_width(&t.col_widths, t.cells.len(), ca);
+                                let (cl, cr) = (cell_x + pad, cell_x + cw - pad);
+                                let y0 = bounds.top() + top + px(6.);
+                                if ya == yb {
+                                    band(
+                                        xa.min(xb),
+                                        xa.max(xb).max(xa.min(xb) + px(2.)),
+                                        y0 + ya,
+                                        base_lh,
+                                    );
+                                } else {
+                                    band(xa, cr, y0 + ya, base_lh);
+                                    let mut y = ya + base_lh;
+                                    while y < yb {
+                                        band(cl, cr, y0 + y, base_lh);
+                                        y += base_lh;
+                                    }
+                                    band(cl, xb, y0 + yb, base_lh);
+                                }
+                            }
+                            // Anything else: one full-height band between the
+                            // endpoint x's (row edges for out-of-span ends).
+                            _ => {
+                                let xa = if a <= first_start {
+                                    tleft
+                                } else {
+                                    pa.map_or(tleft, |(x, ..)| x)
+                                };
+                                let xb = if b >= last_end {
+                                    tleft + table_w
+                                } else {
+                                    pb.map_or(tleft + table_w, |(x, ..)| x)
+                                };
+                                band(xa.min(xb), xa.max(xb), bounds.top() + top, lh);
+                            }
                         }
                         continue;
                     }
