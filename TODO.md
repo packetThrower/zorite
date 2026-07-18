@@ -109,7 +109,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
   note. (L)
 
 **Features (natural markdown fits, from his UI):**
-- [ ] **"Turn into" block conversion menu** — right-click/handle menu converting
+- [x] **"Turn into" block conversion menu** — right-click/handle menu converting
   a block between text/H1–3/lists/todo/quote/callout/code/math, with the
   current kind checked; flat-markdown natural (rewrite the prefix). (M)
 - [ ] **Block drag-reorder** — gutter grip drag to move a block/line (his

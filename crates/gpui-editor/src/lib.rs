@@ -257,6 +257,100 @@ struct DiagMenu {
     scroll: ScrollHandle,
 }
 
+/// A block kind the right-click "Turn into" menu converts between —
+/// flat-markdown natural: each conversion is a line-prefix rewrite (fenced
+/// kinds wrap/unwrap the block's lines).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TurnKind {
+    Text,
+    H1,
+    H2,
+    H3,
+    Bullet,
+    Numbered,
+    Todo,
+    Quote,
+    Callout,
+    Code,
+    Math,
+}
+
+impl TurnKind {
+    const ALL: [TurnKind; 11] = [
+        TurnKind::Text,
+        TurnKind::H1,
+        TurnKind::H2,
+        TurnKind::H3,
+        TurnKind::Bullet,
+        TurnKind::Numbered,
+        TurnKind::Todo,
+        TurnKind::Quote,
+        TurnKind::Callout,
+        TurnKind::Code,
+        TurnKind::Math,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            TurnKind::Text => "Text",
+            TurnKind::H1 => "Heading 1",
+            TurnKind::H2 => "Heading 2",
+            TurnKind::H3 => "Heading 3",
+            TurnKind::Bullet => "Bulleted list",
+            TurnKind::Numbered => "Numbered list",
+            TurnKind::Todo => "To-do",
+            TurnKind::Quote => "Quote",
+            TurnKind::Callout => "Callout",
+            TurnKind::Code => "Code block",
+            TurnKind::Math => "Math block",
+        }
+    }
+}
+
+/// Strip a line's block dressing (heading hashes, list/todo bullet, ordered
+/// number, quote `>`), leaving the text a "Turn into" conversion re-prefixes.
+fn strip_block_prefix(line: &str) -> &str {
+    let t = line.trim_start();
+    for p in ["- [ ] ", "- [x] ", "- [X] "] {
+        if let Some(r) = t.strip_prefix(p) {
+            return r;
+        }
+    }
+    let hashes = t.len() - t.trim_start_matches('#').len();
+    if (1..=6).contains(&hashes)
+        && let Some(r) = t[hashes..].strip_prefix(' ')
+    {
+        return r;
+    }
+    for p in ["- ", "* ", "+ "] {
+        if let Some(r) = t.strip_prefix(p) {
+            return r;
+        }
+    }
+    let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    if digits > 0
+        && let Some(r) = t[digits..]
+            .strip_prefix(". ")
+            .or_else(|| t[digits..].strip_prefix(") "))
+    {
+        return r;
+    }
+    if let Some(r) = t.strip_prefix("> ").or_else(|| t.strip_prefix('>')) {
+        return r;
+    }
+    t
+}
+
+/// Join `body` lines each carrying the prefix `p(index)` produces — the
+/// assembly half of a "Turn into" conversion.
+fn prefix_lines(body: &[String], p: impl Fn(usize) -> String) -> String {
+    body.iter()
+        .enumerate()
+        .map(|(i, l)| format!("{}{l}", p(i)))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A column edit applied to every row of a table (insert/delete a cell at index).
 #[derive(Clone, Copy)]
 enum ColEdit {
@@ -560,6 +654,9 @@ pub struct EditorState {
     markdown_style: Option<SyntaxStyle>,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
+    /// Whether the menu's "Turn into" flyout is open (hover-opened, lives
+    /// until the menu closes).
+    menu_turn_into: bool,
     /// The open table right-click menu's anchor (window space), if any. Its actions
     /// operate on the caret's table cell.
     table_menu: Option<Point<Pixels>>,
@@ -757,6 +854,7 @@ impl EditorState {
             diagnostics: Vec::new(),
             markdown_style: None,
             menu: None,
+            menu_turn_into: false,
             table_menu: None,
             table_menu_scroll: ScrollHandle::new(),
             image_menu: None,
@@ -3042,6 +3140,7 @@ impl EditorState {
             }
             None => (offset..offset, Vec::new()),
         };
+        self.menu_turn_into = false;
         self.menu = Some(DiagMenu {
             anchor,
             range,
@@ -3082,6 +3181,156 @@ impl EditorState {
         self.selected_range = range;
         self.selection_reversed = false;
         self.replace_text_in_range(None, text, window, cx);
+    }
+
+    /// The "Turn into" kind of the block containing `row` — what the flyout
+    /// shows checked.
+    fn block_kind_at(&self, row: usize) -> TurnKind {
+        let scan = self.scan_data();
+        if scan.math.iter().any(|m| m.range.contains(&row)) {
+            return TurnKind::Math;
+        }
+        let starts = self.line_starts();
+        let Some(&start) = starts.get(row) else {
+            return TurnKind::Text;
+        };
+        let t = self.content[start..self.line_end(row)].trim_start();
+        if scan.fence_odd.get(row).copied().unwrap_or(false) || t.starts_with("```") {
+            return TurnKind::Code;
+        }
+        if ["- [ ]", "- [x]", "- [X]"].iter().any(|p| t.starts_with(p)) {
+            return TurnKind::Todo;
+        }
+        match t.len() - t.trim_start_matches('#').len() {
+            1 if t.starts_with("# ") => return TurnKind::H1,
+            2 if t.starts_with("## ") => return TurnKind::H2,
+            3 if t.starts_with("### ") => return TurnKind::H3,
+            _ => {}
+        }
+        if ["- ", "* ", "+ "].iter().any(|p| t.starts_with(p)) {
+            return TurnKind::Bullet;
+        }
+        let digits = t.len() - t.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        if digits > 0 && (t[digits..].starts_with(". ") || t[digits..].starts_with(") ")) {
+            return TurnKind::Numbered;
+        }
+        if t.starts_with('>') {
+            // Callout if the caret's contiguous `>`-run carries a `[!KIND]`
+            // marker anywhere; the marker line itself or any body line counts.
+            let line_at = |r: usize| self.content[starts[r]..self.line_end(r)].trim_start();
+            let mut first = row;
+            while first > 0 && line_at(first - 1).starts_with('>') {
+                first -= 1;
+            }
+            let mut r = first;
+            while r < starts.len() && line_at(r).starts_with('>') {
+                if line_at(r)[1..].trim_start().starts_with("[!") {
+                    return TurnKind::Callout;
+                }
+                r += 1;
+            }
+            return TurnKind::Quote;
+        }
+        TurnKind::Text
+    }
+
+    /// Convert the caret's block to `kind` — the "Turn into" menu action.
+    /// One undoable edit rewriting the block's lines; fenced kinds (code,
+    /// math) and quote runs convert as whole blocks.
+    fn turn_into(&mut self, kind: TurnKind, window: &mut Window, cx: &mut Context<Self>) {
+        let row = self.row_col(self.selected_range.start).0;
+        let cur = self.block_kind_at(row);
+        if cur == kind {
+            return;
+        }
+        let scan = self.scan_data();
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let line_at = |r: usize| self.content[starts[r]..self.line_end(r)].to_string();
+        // The block's line span + its content with the current dressing removed.
+        let (first, last, mut body): (usize, usize, Vec<String>) = match cur {
+            TurnKind::Code => {
+                let open = (0..=row)
+                    .rev()
+                    .find(|&r| !scan.fence_odd.get(r).copied().unwrap_or(false))
+                    .unwrap_or(0);
+                let close =
+                    ((open + 1)..=last_row).find(|&r| line_at(r).trim_start().starts_with("```"));
+                let last = close.unwrap_or(last_row);
+                let body_end = close.map(|c| c - 1).unwrap_or(last_row);
+                let body = ((open + 1)..=body_end).map(line_at).collect();
+                (open, last, body)
+            }
+            TurnKind::Math => {
+                let Some(reg) = scan.math.iter().find(|m| m.range.contains(&row)) else {
+                    return;
+                };
+                let first = reg.range.start;
+                let last = reg.range.end.saturating_sub(1).max(first);
+                let body = ((first + 1)..last).map(line_at).collect();
+                (first, last, body)
+            }
+            TurnKind::Quote | TurnKind::Callout => {
+                let is_q = |r: usize| line_at(r).trim_start().starts_with('>');
+                let mut first = row;
+                while first > 0 && is_q(first - 1) {
+                    first -= 1;
+                }
+                let mut last = row;
+                while last < last_row && is_q(last + 1) {
+                    last += 1;
+                }
+                let body = (first..=last)
+                    .filter_map(|r| {
+                        let line = line_at(r);
+                        let stripped = strip_block_prefix(&line);
+                        // Drop the `[!KIND]` marker token; keep any title text
+                        // after it (and skip the line if that leaves nothing).
+                        if let Some(rest) = stripped.trim_start().strip_prefix("[!") {
+                            let after = rest.split_once(']').map(|(_, a)| a).unwrap_or("");
+                            let after = after.trim_start_matches(['-', '+']).trim();
+                            return (!after.is_empty()).then(|| after.to_string());
+                        }
+                        Some(stripped.to_string())
+                    })
+                    .collect();
+                (first, last, body)
+            }
+            _ => (
+                row,
+                row,
+                vec![strip_block_prefix(&line_at(row)).to_string()],
+            ),
+        };
+        if body.is_empty() {
+            body.push(String::new());
+        }
+        let text = match kind {
+            TurnKind::Text => body.join("\n"),
+            TurnKind::H1 => prefix_lines(&body, |_| "# ".into()),
+            TurnKind::H2 => prefix_lines(&body, |_| "## ".into()),
+            TurnKind::H3 => prefix_lines(&body, |_| "### ".into()),
+            TurnKind::Bullet => prefix_lines(&body, |_| "- ".into()),
+            TurnKind::Numbered => prefix_lines(&body, |i| format!("{}. ", i + 1)),
+            TurnKind::Todo => prefix_lines(&body, |_| "- [ ] ".into()),
+            TurnKind::Quote => prefix_lines(&body, |_| "> ".into()),
+            TurnKind::Callout => format!("> [!NOTE]\n{}", prefix_lines(&body, |_| "> ".into())),
+            TurnKind::Code => format!("```\n{}\n```", body.join("\n")),
+            TurnKind::Math => format!("$$\n{}\n$$", body.join("\n")),
+        };
+        let range = starts[first]..self.line_end(last);
+        let range_start = range.start;
+        self.selected_range = range;
+        self.selection_reversed = false;
+        self.replace_text_in_range(None, &text, window, cx);
+        // Fenced kinds: the caret parks after the closing fence, revealing the
+        // raw markers (reveal-on-caret) — seat it on the body's first line
+        // instead, like `set_code_lang`.
+        if matches!(kind, TurnKind::Code | TurnKind::Math) {
+            let caret =
+                (range_start + text.find('\n').map_or(0, |i| i + 1)).min(self.content.len());
+            self.selected_range = caret..caret;
+        }
     }
 
     // --- Selection helpers ---------------------------------------------------
@@ -5010,49 +5259,134 @@ impl Render for EditorState {
                         )
                 });
 
+                // "Turn into" block conversion (Cditor-style): a row whose
+                // hover opens a kind-list flyout beside the menu, the caret
+                // block's current kind checked.
+                let cur_kind = self.block_kind_at(self.row_col(self.selected_range.start).0);
+                let turn_row = div()
+                    .id("menu-turn-into")
+                    .flex_shrink_0()
+                    .px(px(10.))
+                    .py(px(3.))
+                    .hover(move |s| s.bg(hover))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(16.))
+                    .child("Turn into")
+                    .child(div().text_size(px(10.)).child("\u{25b8}"))
+                    .on_hover(cx.listener(|editor, hovered: &bool, _, cx| {
+                        if *hovered && !editor.menu_turn_into {
+                            editor.menu_turn_into = true;
+                            cx.notify();
+                        }
+                    }));
+                let turn_flyout = self.menu_turn_into.then(|| {
+                    let rows: Vec<_> = TurnKind::ALL
+                        .iter()
+                        .enumerate()
+                        .map(|(i, &k)| {
+                            let checked = k == cur_kind;
+                            div()
+                                .id(("turn-kind", i))
+                                .flex_shrink_0()
+                                .px(px(10.))
+                                .py(px(3.))
+                                .hover(move |s| s.bg(hover))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(div().w(px(12.)).flex_shrink_0().child(if checked {
+                                    "\u{2713}"
+                                } else {
+                                    ""
+                                }))
+                                .child(k.label())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.turn_into(k, window, cx);
+                                    }),
+                                )
+                        })
+                        .collect();
+                    // An absolute sibling of the (overflow-clipped) menu box —
+                    // out of flow, so it can't inflate the anchored bounds and
+                    // re-trigger the window snap (the slash-flyout lesson).
+                    div()
+                        .absolute()
+                        .left(gpui::relative(1.))
+                        .bottom(px(0.))
+                        .ml(px(2.))
+                        .occlude()
+                        .min_w(px(140.))
+                        .cursor(CursorStyle::Arrow)
+                        .bg(menu_bg)
+                        .border_1()
+                        .border_color(menu_border)
+                        .rounded(px(6.))
+                        .shadow_md()
+                        .text_color(menu_fg)
+                        .text_size(px(13.))
+                        .flex()
+                        .flex_col()
+                        .py(px(4.))
+                        .children(rows)
+                });
+
                 // Deferred + anchored to a window-space top layer with `.occlude()`,
                 // so it renders above the page chrome and captures the wheel — else a
                 // scroll over the popup scrolls the page behind it.
                 gpui::deferred(
                     gpui::anchored().position(anchor).snap_to_window().child(
-                        div()
-                            .relative()
-                            .occlude()
-                            .min_w(px(150.))
-                            // Override the editor's I-beam — the menu is a normal
-                            // pointer surface (children inherit this hitbox's cursor).
-                            .cursor(CursorStyle::Arrow)
-                            .bg(menu_bg)
-                            .border_1()
-                            .border_color(menu_border)
-                            .rounded(px(6.))
-                            .shadow_md()
-                            // Clip rows + thumb to the rounded box.
-                            .overflow_hidden()
-                            .text_color(menu_fg)
-                            .text_size(px(13.))
-                            // A click anywhere outside the menu dismisses it.
-                            .on_mouse_down_out(cx.listener(|editor, _: &MouseDownEvent, _, cx| {
-                                editor.menu = None;
-                                cx.notify();
-                            }))
-                            .children(format_bar)
-                            .children(has_sel.then(|| div().h(px(1.)).bg(menu_border)))
-                            .children((count > 0).then(|| {
-                                // The scroll viewport: shows ~6 rows, the rest scroll.
-                                div()
-                                    .id("suggestion-menu")
-                                    .max_h(px(MAX_H))
-                                    .overflow_y_scroll()
-                                    .track_scroll(&scroll)
-                                    .flex()
-                                    .flex_col()
-                                    .py(px(PAD))
-                                    .children(rows)
-                            }))
-                            .children((count > 0).then(|| div().h(px(1.)).bg(menu_border)))
-                            .child(clipboard)
-                            .children(thumb),
+                        div().relative().children(turn_flyout).child(
+                            div()
+                                .relative()
+                                .occlude()
+                                .min_w(px(150.))
+                                // Override the editor's I-beam — the menu is a normal
+                                // pointer surface (children inherit this hitbox's cursor).
+                                .cursor(CursorStyle::Arrow)
+                                .bg(menu_bg)
+                                .border_1()
+                                .border_color(menu_border)
+                                .rounded(px(6.))
+                                .shadow_md()
+                                // Clip rows + thumb to the rounded box.
+                                .overflow_hidden()
+                                .text_color(menu_fg)
+                                .text_size(px(13.))
+                                // A click anywhere outside the menu dismisses it.
+                                .on_mouse_down_out(cx.listener(
+                                    |editor, _: &MouseDownEvent, _, cx| {
+                                        editor.menu = None;
+                                        cx.notify();
+                                    },
+                                ))
+                                .children(format_bar)
+                                .children(has_sel.then(|| div().h(px(1.)).bg(menu_border)))
+                                .children((count > 0).then(|| {
+                                    // The scroll viewport: shows ~6 rows, the rest scroll.
+                                    div()
+                                        .id("suggestion-menu")
+                                        .max_h(px(MAX_H))
+                                        .overflow_y_scroll()
+                                        .track_scroll(&scroll)
+                                        .flex()
+                                        .flex_col()
+                                        .py(px(PAD))
+                                        .children(rows)
+                                }))
+                                .children((count > 0).then(|| div().h(px(1.)).bg(menu_border)))
+                                .child(clipboard)
+                                .child(div().h(px(1.)).bg(menu_border))
+                                .child(div().flex().flex_col().py(px(4.)).child(turn_row))
+                                .children(thumb),
+                        ),
                     ),
                 )
             }))
@@ -10082,6 +10416,22 @@ fn word_boundary_input(new_text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn strip_block_prefix_cases() {
+        use super::strip_block_prefix;
+        assert_eq!(strip_block_prefix("# Title"), "Title");
+        assert_eq!(strip_block_prefix("### Deep"), "Deep");
+        assert_eq!(strip_block_prefix("- [x] done"), "done");
+        assert_eq!(strip_block_prefix("- item"), "item");
+        assert_eq!(strip_block_prefix("12. nth"), "nth");
+        assert_eq!(strip_block_prefix("> quoted"), "quoted");
+        assert_eq!(strip_block_prefix(">bare"), "bare");
+        assert_eq!(strip_block_prefix("plain"), "plain");
+        // Not block prefixes: mid-word hash runs, `#tag`, a lone dash.
+        assert_eq!(strip_block_prefix("#tag"), "#tag");
+        assert_eq!(strip_block_prefix("-dash"), "-dash");
+    }
+
     #[test]
     fn find_in_source_cases() {
         use super::find_in_source;
