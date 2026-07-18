@@ -845,7 +845,7 @@ impl AppView {
             active: 0,
             searching: false,
             tab_scroll: ScrollHandle::new(),
-            mode: theme::Mode::Dark,
+            mode: theme::Mode::Auto,
             system_dark: true,
             settings_window: None,
             skins: skins::builtin_skins(),
