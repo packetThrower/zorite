@@ -173,6 +173,46 @@ blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
 - [x] `menu_turn_into` belongs inside `DiagMenu` (dies with the menu; today
   it's sticky once hovered and reset at only one open site). (S)
 
+## v0.11.0 — i18n (analysis 2026-07-18)
+
+~550–600 user-facing strings: settings.rs ~200 (labels + search keywords),
+app.rs ~120 (dialogs/menus/errors), src/ui/* ~150, slash.rs ~50 (labels AND
+search keywords), dates.rs 19 (hardcoded English month/weekday names),
+gpui-editor ~40 (clipboard verbs, Turn-into kinds, table menu, code chrome),
+whiteboard/pdf/markdown ~20 (toolbars, alert titles). Already done for free:
+spellcheck follows the OS locale (both platforms); whiteboard has CJK font
+fallback.
+
+**Architecture:** `rust-i18n` (YAML per locale, `t!()`, compile-time embedded,
+runtime switch via full re-render) + `sys-locale` for the Auto default +
+a Settings → Language picker persisted like theme mode. Fluent is the upgrade
+path if plural-heavy languages ever hurt. **Crates stay host-agnostic**: no
+`t!` in crates/* — inject small `Labels` structs with English defaults
+(the `SyntaxStyle` pattern; `set_labels(...)` on editor/whiteboard/pdf).
+
+**Decisions:**
+- Alert titles localize via injected labels in BOTH engines (cross-view rule);
+  `[!NOTE]` source keywords are GFM syntax — never translated.
+- Dates: i18n keys for 12 months + 7 weekdays (no chrono/icu dep); us/eu/long
+  format options unchanged.
+- Slash search matches localized labels PLUS English aliases.
+- DB-stored names ("Journal", "Templates", titles) are user data — never
+  migrated; localize only creation-time defaults; Templates lookup keeps
+  matching the stored name.
+- RTL (Arabic/Hebrew) explicitly OUT of scope — gpui has no real bidi.
+- Docs site: Starlight i18n is a separate, optional effort.
+
+**Phases:**
+- [ ] 1. Scaffold: rust-i18n + sys-locale + en.yml + Settings language picker (S)
+- [ ] 2. Settings window extraction — biggest, self-contained proving ground (M)
+- [ ] 3. App chrome sweep: dialogs, menus, sidebar, slash palette + keywords,
+  dates (L, mechanical tail)
+- [ ] 4. Crate `Labels` structs + host wiring; alert titles both engines (M)
+- [ ] 5. zh-CN first — ask jychen (@JYChen-8866); the whiteboard-adoption
+  commit's original Chinese strings are a ready glossary (S/M, mostly review)
+- [ ] 6. Per-locale QA: overflow in fixed-width chrome, `.small()` scale with
+  CJK glyph heights (M)
+
 ## App & polish
 - [ ] **Graph-node context menu** — nodes hit-test inside one
   canvas element (`g.hit(position)`), so the shared page-menu builder
