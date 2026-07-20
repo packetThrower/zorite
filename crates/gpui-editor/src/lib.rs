@@ -576,7 +576,7 @@ pub fn inline_math_sources(content: &str) -> Vec<SharedString> {
             continue;
         }
         for span in markdown_syntax::inline_math_spans(line) {
-            out.push(line[span.start + 1..span.end - 1].into());
+            out.push(markdown_syntax::inline_math_latex(line, &span).into());
         }
     }
     out
@@ -1346,7 +1346,7 @@ impl EditorState {
         let mut best: Option<Range<usize>> = None;
         for line in self.content.split('\n') {
             for span in markdown_syntax::inline_math_spans(line) {
-                if &line[span.start + 1..span.end - 1] == latex {
+                if markdown_syntax::inline_math_latex(line, &span) == latex {
                     let abs = line_start + span.start..line_start + span.end;
                     if best
                         .as_ref()
@@ -2541,7 +2541,7 @@ impl EditorState {
             .map(|s| {
                 (
                     line_start + s.start..line_start + s.end,
-                    SharedString::from(line[s.start + 1..s.end - 1].to_string()),
+                    SharedString::from(markdown_syntax::inline_math_latex(line, &s).to_string()),
                 )
             })
     }
@@ -6735,7 +6735,7 @@ fn shape_inline_math(
         if caret_col.is_some_and(|c| span.start < c && c < span.end) {
             continue;
         }
-        let latex = &line[span.start + 1..span.end - 1];
+        let latex = markdown_syntax::inline_math_latex(line, &span);
         let Some((img, lw, lh)) = block_math(latex) else {
             continue; // not yet rasterized — leave the raw source until it lands
         };

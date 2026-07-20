@@ -1658,11 +1658,38 @@ pub(crate) fn math_regions(content: &str) -> Vec<MathRegion> {
                 marker_line,
             });
             i = end;
+        } else if let Some(inner) = one_line_math(lines[i]) {
+            // `$$x^2$$` ALONE on a line is display math too (issue #54) —
+            // same block treatment (size, centering, alignment marker), one
+            // line instead of fenced. Mid-text pairs stay inline spans.
+            let (align, marker_line) =
+                match i.checked_sub(1).map(|m| (m, math_align_marker(lines[m]))) {
+                    Some((m, Some(a))) => (a, Some(m)),
+                    _ => (MathAlign::default(), None),
+                };
+            out.push(MathRegion {
+                range: i..i + 1,
+                source: inner.to_string(),
+                align,
+                marker_line,
+            });
+            i += 1;
         } else {
             i += 1;
         }
     }
     out
+}
+
+/// The inner LaTeX when the whole (trimmed) line is one `$$…$$` pair with
+/// non-empty content — the one-line display-math form.
+fn one_line_math(line: &str) -> Option<&str> {
+    let t = line.trim();
+    let inner = t.strip_prefix("$$")?.strip_suffix("$$")?;
+    let inner = inner.trim();
+    // `$$$$`, `$$ $$`, and interior `$$`s (two pairs jammed together) are
+    // not the one-line form.
+    (!inner.is_empty() && !inner.contains("$$")).then_some(inner)
 }
 
 /// Inline `$…$` math spans within a single text line (NOT block `$$` fences) — byte ranges
@@ -1698,6 +1725,17 @@ pub(crate) fn inline_image_spans(line: &str) -> Vec<(Range<usize>, Range<usize>)
     out
 }
 
+/// The LaTeX inside an inline-math `span` of `line` — strips one `$` per
+/// side, or two for a same-line `$$…$$` display pair.
+pub(crate) fn inline_math_latex<'a>(line: &'a str, span: &Range<usize>) -> &'a str {
+    let d = if line[span.clone()].starts_with("$$") {
+        2
+    } else {
+        1
+    };
+    &line[span.start + d..span.end - d]
+}
+
 pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
     let bytes = line.as_bytes();
     let mut out = Vec::new();
@@ -1707,9 +1745,35 @@ pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
             i += 1;
             continue;
         }
-        // Opening `$`: reject `$$` (empty/block) and a space right after.
+        // `$$…$$` on ONE line is display math (issue #54; block `$$` fences
+        // live on their own lines and never form a same-line pair). Unlike
+        // `$…$` there are no space rules — pandoc display math allows them —
+        // but the pair must close on this line around non-space content.
+        if bytes.get(i + 1) == Some(&b'$') {
+            let mut j = i + 2;
+            let mut close = None;
+            while j + 1 < bytes.len() {
+                if bytes[j] == b'$' && bytes[j + 1] == b'$' && !is_backslash_escaped(bytes, j) {
+                    close = Some(j);
+                    break;
+                }
+                j += 1;
+            }
+            match close {
+                Some(c) if line[i + 2..c].trim().is_empty() => {}
+                Some(c) => {
+                    out.push(i..c + 2);
+                    i = c + 2;
+                    continue;
+                }
+                None => {}
+            }
+            i += 2;
+            continue;
+        }
+        // Opening `$`: reject a space right after.
         match bytes.get(i + 1) {
-            Some(b'$') | None => {
+            None => {
                 i += 1;
                 continue;
             }
@@ -2309,6 +2373,40 @@ mod tests {
         for r in inline_math_spans(line) {
             assert!(line.is_char_boundary(r.start) && line.is_char_boundary(r.end));
         }
+    }
+
+    #[test]
+    fn one_line_math_regions() {
+        // `$$x$$` alone on a line is a display-math REGION (block treatment);
+        // mid-text pairs are not.
+        let r = math_regions("before\n$$x^2$$\nafter");
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].range, 1..2);
+        assert_eq!(r[0].source, "x^2");
+        assert!(math_regions("prose $$x$$ prose").is_empty());
+        // The alignment marker above applies, as with fenced blocks.
+        let r = math_regions("<!-- math:right -->\n$$x$$");
+        assert_eq!(r[0].marker_line, Some(0));
+        // Degenerate forms are not regions.
+        assert!(math_regions("$$$$").is_empty());
+        assert!(math_regions("$$ $$").is_empty());
+    }
+
+    #[test]
+    fn inline_display_math_double_dollar() {
+        // Same-line `$$…$$` is display math (issue #54): one span covering
+        // both delimiter pairs, spaces inside allowed.
+        assert_eq!(spans("$$E=mc^2$$"), vec!["$$E=mc^2$$"]);
+        assert_eq!(spans("a $$ x + y $$ b"), vec!["$$ x + y $$"]);
+        assert_eq!(inline_math_latex("$$E=mc^2$$", &(0..10)), "E=mc^2");
+        assert_eq!(inline_math_latex("$x$", &(0..3)), "x");
+        // Unclosed / empty pairs match nothing; a lone `$$` fence line is
+        // the BLOCK scanner's business.
+        assert_eq!(spans("$$"), Vec::<&str>::new());
+        assert_eq!(spans("$$$$"), Vec::<&str>::new());
+        assert_eq!(spans("$$x"), Vec::<&str>::new());
+        // A `$$` pair doesn't swallow a later single-dollar span.
+        assert_eq!(spans("$$a$$ then $b$"), vec!["$$a$$", "$b$"]);
     }
 
     #[test]

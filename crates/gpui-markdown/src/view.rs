@@ -874,6 +874,27 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
             {
                 return Some(render_embed(&target, label, content, ctx, window));
             }
+            // A paragraph that is EXACTLY one `$$…$$` math node is one-line
+            // display math (issue #54): block treatment — the block renderer,
+            // centered, steered by an adjacent `<!-- math:… -->` marker —
+            // matching WYSIWYG. A lone single-`$` span stays inline-sized;
+            // the promotion requires the `$$` delimiters in the source.
+            if let [mdast::Node::InlineMath(m)] = p.children.as_slice()
+                && let Some(renderer) = ctx.on_math.clone()
+                && let Some(start) = m.position.as_ref().map(|pos| pos.start.offset)
+                && ctx.source.get(start..).is_some_and(|s| s.starts_with("$$"))
+            {
+                let row = div().w_full().flex();
+                let row = match preceding_math_align(&ctx.source, Some(start)) {
+                    Some(MathMarkerAlign::Left) => row.justify_start(),
+                    Some(MathMarkerAlign::Right) => row.justify_end(),
+                    _ => row.justify_center(),
+                };
+                return Some(
+                    row.child(renderer(m.value.clone().into()))
+                        .into_any_element(),
+                );
+            }
             // A block of `key:: value` lines renders as a property panel.
             if let Some(rows) = property_rows(p, &ctx.source.clone()) {
                 ctx.counter += 1;

@@ -3810,7 +3810,13 @@ impl AppView {
                 cx.notify();
                 return None;
             }
-            let replacement = format!("${latex}$");
+            // A same-line `$$…$$` display pair keeps its double delimiters.
+            let dollars = if edit.source.read(cx).text()[range.clone()].starts_with("$$") {
+                "$$"
+            } else {
+                "$"
+            };
+            let replacement = format!("{dollars}{latex}{dollars}");
             let new_range = range.start..range.start + replacement.len();
             edit.source
                 .update(cx, |e, cx| e.replace_range(range, &replacement, cx));
@@ -3825,7 +3831,6 @@ impl AppView {
             return Some((edit.source, new_range));
         }
         let align = to_editor_align(edit.editor.read(cx).align());
-        let block = format!("$$\n{latex}\n$$");
         // End the in-line edit (closes the gap, re-renders the formula) + get the range.
         let range = edit.source.update(cx, |e, cx| e.end_editing_block(cx))?;
         // Safety: only splice if the range still starts a `$$` block. A stale/shifted range
@@ -3835,6 +3840,14 @@ impl AppView {
             cx.notify();
             return None;
         }
+        // A one-line `$$…$$` source keeps its one-line form (issue #54);
+        // fenced blocks keep fences. Multi-line LaTeX always needs fences.
+        let was_one_line = !edit.source.read(cx).text()[range.clone()].contains('\n');
+        let block = if was_one_line && !latex.contains('\n') {
+            format!("$${latex}$$")
+        } else {
+            format!("$$\n{latex}\n$$")
+        };
         // Fold the alignment marker into the same recorded edit: replace the block (and any
         // existing `<!-- math:ALIGN -->` line above it) with `<marker?>` + the new block.
         let (full_range, prefix) = edit.source.read(cx).math_marker_edit(range, align);
@@ -3845,9 +3858,29 @@ impl AppView {
         // Recorded (undoable) splice — NOT `set_text`, which would wipe the document's undo
         // history. `replace_range` snaps to char boundaries, so a shifted/stale range can't
         // panic; read the result back rather than splicing the string ourselves.
-        edit.source
-            .update(cx, |e, cx| e.replace_range(full_range, &replacement, cx));
+        // The caret: replace_range parks it at the splice END — the closing `$$`
+        // — which reveal-on-caret would show raw. On a blur-commit (clicking
+        // elsewhere) the click already seated the caret where the user wants
+        // it: preserve that, shifted by the splice delta, and if it still
+        // lands inside the block, step to the line after it.
+        let old_caret = edit.source.read(cx).cursor();
+        edit.source.update(cx, |e, cx| {
+            e.replace_range(full_range.clone(), &replacement, cx)
+        });
         let new = edit.source.read(cx).text().to_string();
+        let delta = replacement.len() as isize - (full_range.end - full_range.start) as isize;
+        let caret = if old_caret >= full_range.end {
+            (old_caret as isize + delta).max(0) as usize
+        } else {
+            old_caret
+        };
+        let caret = if caret >= new_range.start && caret <= new_range.end {
+            new_range.end + 1
+        } else {
+            caret
+        };
+        edit.source
+            .update(cx, |e, cx| e.set_cursor(caret.min(new.len()), cx));
         // Rasterize the edited formula into the shared store, or the block-math provider
         // can't find the (now-changed) LaTeX and the block shows raw `$$…$$`.
         self.ensure_content_math(&new, cx);
