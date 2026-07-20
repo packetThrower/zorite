@@ -32,6 +32,9 @@ pub enum Trigger {
     Tag,
     /// `{{` — template placeholder.
     Placeholder,
+    /// `((` — Logseq-style block reference: search blocks by content, pick
+    /// one, and a `[[Page#^id]]` link lands (anchoring the target if needed).
+    BlockRef,
     /// `\` inside a `$$…$$` block — a LaTeX command.
     Math,
 }
@@ -49,6 +52,13 @@ pub enum ItemKind {
     Property,
     /// The hidden `/play` easter egg — only offered on that exact query.
     Game,
+    /// Link the picked block: page row id + final title + the block's line
+    /// index — accept anchors the line (if needed) and inserts the link.
+    BlockRefPick {
+        page: i64,
+        title: String,
+        line: usize,
+    },
 }
 
 /// One entry in the open palette.
@@ -111,6 +121,15 @@ pub fn detect(value: &str, cursor: usize) -> Option<(Trigger, usize, String)> {
     }
     if let Some((start, q)) = detect_bracket(value, cursor, "{{", "}}") {
         return Some((Trigger::Placeholder, start, q));
+    }
+    // Block ref: `((` — but never inside math (block, inline, or a same-line
+    // `$$…$$` being typed), where parens are just parens.
+    if !in_math_block(value, cursor)
+        && !in_inline_math(value, cursor)
+        && !in_inline_display_math(value, cursor)
+        && let Some((start, q)) = detect_bracket(value, cursor, "((", "))")
+    {
+        return Some((Trigger::BlockRef, start, q));
     }
     // Tag: `#` at a boundary with at least one tag char after it, so a lone
     // `#` and markdown headings (`# `) don't trigger.
@@ -175,6 +194,18 @@ fn in_math_block(value: &str, cursor: usize) -> bool {
 /// inline math, the way [`in_math_block`] does for `$$` blocks. A text line carrying inline math
 /// has single `$`; `\$` (escaped) doesn't count.
 fn in_inline_math(value: &str, cursor: usize) -> bool {
+    dollars_before(value, cursor) % 2 == 1
+}
+
+/// Whether `cursor` sits inside a same-line `$$…$$` display span being typed:
+/// an even `$` count forming an odd number of `$$` pairs precedes it.
+fn in_inline_display_math(value: &str, cursor: usize) -> bool {
+    let n = dollars_before(value, cursor);
+    n.is_multiple_of(2) && (n / 2) % 2 == 1
+}
+
+/// Unescaped `$`s on the caret's line before `cursor` (`\$` doesn't count).
+fn dollars_before(value: &str, cursor: usize) -> usize {
     let cursor = cursor.min(value.len());
     let line_start = value[..cursor].rfind('\n').map_or(0, |i| i + 1);
     let bytes = value.as_bytes();
@@ -191,7 +222,7 @@ fn in_inline_math(value: &str, cursor: usize) -> bool {
             count += 1;
         }
     }
-    count % 2 == 1
+    count
 }
 
 /// A `\name` LaTeX command ending at the caret (an alphabetic run back to a `\`). Unlike
@@ -449,6 +480,51 @@ pub fn build_math_items(query: &str) -> Vec<PaletteItem> {
 }
 
 /// An `Insert` palette item that drops the caret at the end of `snippet`.
+/// Block-reference completion: each row is a page's content; every line
+/// containing the query becomes a pickable block (its text as the label).
+/// Skips lines that can't carry a ` ^id` anchor (fences + their bodies,
+/// table rows, properties, markers) — and asks for 2+ chars first.
+pub fn build_block_ref_items(query: &str, rows: &[(i64, String, String)]) -> Vec<PaletteItem> {
+    let q = query.trim().to_lowercase();
+    if q.chars().count() < 2 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    'rows: for (id, title, content) in rows {
+        let mut in_fence = false;
+        for (li, line) in content.split('\n').enumerate() {
+            let t = line.trim_start();
+            if t.starts_with("```") {
+                in_fence = !in_fence;
+                continue;
+            }
+            if in_fence
+                || t.is_empty()
+                || t.starts_with('|')
+                || t.starts_with("<!--")
+                || t.starts_with("$$")
+                || gpui_markdown::syntax::property(line).is_some()
+                || !line.to_lowercase().contains(&q)
+            {
+                continue;
+            }
+            let snippet: String = t.chars().take(64).collect();
+            out.push(PaletteItem {
+                label: format!("{snippet} — {title}"),
+                kind: ItemKind::BlockRefPick {
+                    page: *id,
+                    title: title.clone(),
+                    line: li,
+                },
+            });
+            if out.len() >= MAX_COMPLETION_ITEMS {
+                break 'rows;
+            }
+        }
+    }
+    out
+}
+
 fn insert_item(label: String, snippet: String) -> PaletteItem {
     let caret = snippet.len();
     PaletteItem {
@@ -686,6 +762,35 @@ fn is_boundary(b: u8) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_ref_trigger_and_items() {
+        // `((` opens the block palette; `))` closes it; math parens don't.
+        assert_eq!(
+            detect("see ((wa", 8),
+            Some((Trigger::BlockRef, 4, "wa".to_string()))
+        );
+        assert_eq!(detect("see ((done))", 12), None);
+        assert_ne!(detect("$$f((x)", 7).map(|t| t.0), Some(Trigger::BlockRef));
+        // Items: matching lines become picks; fences/tables/properties and
+        // sub-2-char queries don't.
+        let rows = vec![(
+            7i64,
+            "WAF".to_string(),
+            "intro\n- Imperva waf rules\n| waf | t |\nkey:: waf\n```\nwaf code\n```".to_string(),
+        )];
+        let items = build_block_ref_items("waf", &rows);
+        assert_eq!(items.len(), 1);
+        assert!(items[0].label.contains("Imperva waf rules"));
+        assert!(items[0].label.contains("WAF"));
+        match &items[0].kind {
+            ItemKind::BlockRefPick { page, line, .. } => {
+                assert_eq!((*page, *line), (7, 1));
+            }
+            _ => panic!("wrong kind"),
+        }
+        assert!(build_block_ref_items("w", &rows).is_empty());
+    }
 
     #[test]
     fn slash_alone_triggers_empty_query() {

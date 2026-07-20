@@ -717,10 +717,24 @@ fn is_internal_prop(key: &str) -> bool {
 
 use gpui_markdown::syntax::property as parse_prop;
 
+/// The import-side identity of a block carrying an `id::` property.
+struct BlockRef {
+    /// The page title / journal date the block lands in — the `[[target#^id]]`
+    /// link target. Empty when unknown (highlights pages): refs fall back to
+    /// the inlined text.
+    target: String,
+    /// The block's first content line — the inline fallback.
+    text: String,
+}
+
 /// Per-import conversion state: the block-ref map and pending asset copies.
 struct Converter {
-    /// `id:: <uuid>` → that block's first content line, for `((ref))`s.
-    id_map: HashMap<String, String>,
+    /// `id:: <uuid>` → its block's identity, for `((ref))`s (issue #53:
+    /// refs become real block LINKS, not inlined text).
+    id_map: HashMap<String, BlockRef>,
+    /// Ids some `((…))` references anywhere in the vault — their blocks get
+    /// a ` ^short` anchor on import so the links have a destination.
+    referenced: std::collections::HashSet<String>,
     /// Asset files to copy: (source path, managed ref like `images/x.png`).
     copies: Vec<(PathBuf, String)>,
     assets_dir: PathBuf,
@@ -738,6 +752,7 @@ impl Converter {
     fn new(root: &Path) -> Self {
         Self {
             id_map: HashMap::new(),
+            referenced: std::collections::HashSet::new(),
             copies: Vec::new(),
             assets_dir: root.join("assets"),
             warnings: Vec::new(),
@@ -745,7 +760,8 @@ impl Converter {
     }
 
     /// Pass 1: collect `id::` properties so `((block-ref))`s can resolve.
-    fn collect_ids(&mut self, blocks: &[Block]) {
+    /// `target` is the page title / journal date the block will land in.
+    fn collect_ids(&mut self, blocks: &[Block], target: Option<&str>) {
         for b in blocks {
             let Some(id) = b
                 .lines
@@ -760,7 +776,25 @@ impl Converter {
                 .find(|l| !l.trim().is_empty() && parse_prop(l).is_none())
                 .map(|l| l.trim().to_string())
                 .unwrap_or_default();
-            self.id_map.insert(id, text);
+            self.id_map.insert(
+                id,
+                BlockRef {
+                    target: target.unwrap_or_default().to_string(),
+                    text,
+                },
+            );
+        }
+    }
+
+    /// Pass 1: every `((id))` the raw text references, so pass 2 can anchor
+    /// exactly the blocks that need it.
+    fn collect_refs(&mut self, text: &str) {
+        let mut rest = text;
+        while let Some(p) = rest.find("((") {
+            rest = &rest[p + 2..];
+            if let Some(end) = rest.find("))") {
+                self.referenced.insert(rest[..end].trim().to_string());
+            }
         }
     }
 
@@ -863,6 +897,26 @@ impl Converter {
         }
         if lines.is_empty() {
             return None;
+        }
+        // A block whose `id::` some `((ref))` targets gets a ` ^short` anchor
+        // on its first plain content line, so the imported `[[page#^short]]`
+        // links land (issue #53). Fence/table lines can't carry anchors — if
+        // the block has no plain line, the link degrades to page navigation.
+        if let Some(id) = block.lines.iter().find_map(|l| {
+            parse_prop(l).and_then(|(k, v)| (k == "id").then(|| v.trim().to_string()))
+        }) && self.referenced.contains(&id)
+            && let Some(first) = lines.iter_mut().find(|l| {
+                let t = l.trim_start();
+                !t.is_empty()
+                    && parse_prop(l).is_none()
+                    && !t.starts_with('|')
+                    && !t.starts_with("```")
+            })
+        {
+            let anchor = format!(" ^{}", short_block_id(&id));
+            if !first.ends_with(&anchor) {
+                first.push_str(&anchor);
+            }
         }
         let task = convert_task(&mut lines[0]);
         Some(ConvBlock {
@@ -987,7 +1041,7 @@ fn strip_priority(text: &str) -> &str {
 /// `{{video url}}` → url, `{{embed [[X]]}}` → `[[X]]`, `{{embed ((id))}}` →
 /// the block's text; queries and anything unrecognized stay visible as
 /// inline code so nothing is silently lost.
-fn convert_macros(line: &str, id_map: &HashMap<String, String>) -> String {
+fn convert_macros(line: &str, id_map: &HashMap<String, BlockRef>) -> String {
     let mut out = String::new();
     let mut rest = line;
     while let Some(start) = rest.find("{{") {
@@ -1002,7 +1056,7 @@ fn convert_macros(line: &str, id_map: &HashMap<String, String>) -> String {
             let target = target.trim();
             if let Some(id) = target.strip_prefix("((").and_then(|t| t.strip_suffix("))")) {
                 match id_map.get(id.trim()) {
-                    Some(text) => out.push_str(text),
+                    Some(r) => out.push_str(&r.text),
                     None => out.push_str(target),
                 }
             } else {
@@ -1018,7 +1072,7 @@ fn convert_macros(line: &str, id_map: &HashMap<String, String>) -> String {
 }
 
 /// `((uuid))` → the referenced block's text (left as-is when unknown).
-fn convert_block_refs(line: &str, id_map: &HashMap<String, String>) -> String {
+fn convert_block_refs(line: &str, id_map: &HashMap<String, BlockRef>) -> String {
     let mut out = String::new();
     let mut rest = line;
     while let Some(start) = rest.find("((") {
@@ -1028,13 +1082,25 @@ fn convert_block_refs(line: &str, id_map: &HashMap<String, String>) -> String {
         let inner = rest[start + 2..start + end].trim();
         out.push_str(&rest[..start]);
         match id_map.get(inner) {
-            Some(text) => out.push_str(text),
+            // A known block on a known page: a real block link (issue #53) —
+            // the target block gets a matching ` ^short` anchor on import.
+            Some(r) if !r.target.is_empty() => {
+                out.push_str(&format!("[[{}#^{}]]", r.target, short_block_id(inner)));
+            }
+            // Known block, unknown page (highlights): the old inline text.
+            Some(r) => out.push_str(&r.text),
             None => out.push_str(&rest[start..start + end + 2]),
         }
         rest = &rest[start + end + 2..];
     }
     out.push_str(rest);
     out
+}
+
+/// The imported anchor id for a Logseq block uuid: its first 8 hex chars —
+/// short enough to live in the source, unique enough for a vault.
+fn short_block_id(uuid: &str) -> &str {
+    &uuid[..8.min(uuid.len())]
 }
 
 /// `[[A/B]]` → `[[A::B]]` (segments trimmed) and `#[[multi word]]` →
@@ -1341,7 +1407,27 @@ pub fn read_graph(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
             }
         };
         let blocks = parse_outline(&text);
-        conv.collect_ids(&blocks);
+        // The link target a block on this file resolves to: the page's final
+        // title (a first-block `title::` overrides the filename) or the
+        // journal date. Highlights pages derive titles later — their ids fall
+        // back to inlined text.
+        let target = match &file.kind {
+            Kind::Journal(date) => Some(date.clone()),
+            Kind::Page(title_guess) => Some(
+                blocks
+                    .first()
+                    .and_then(|b| {
+                        b.lines.iter().find_map(|l| {
+                            parse_prop(l)
+                                .and_then(|(k, v)| (k == "title").then(|| name_to_title(v)))
+                        })
+                    })
+                    .unwrap_or_else(|| title_guess.clone()),
+            ),
+            Kind::Highlights => None,
+        };
+        conv.collect_ids(&blocks, target.as_deref());
+        conv.collect_refs(&text);
         parsed.push((file.kind, blocks));
     }
 
@@ -1416,6 +1502,65 @@ pub fn read_graph(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_refs_import_as_links_with_anchors() {
+        // A synthetic vault: a target block with an id, a ref to it, a
+        // title::-renamed page, a journal block, and an unresolvable ref.
+        let root = std::env::temp_dir().join(format!("zorite-logseq-refs-{}", std::process::id()));
+        let pages = root.join("pages");
+        let journals = root.join("journals");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::create_dir_all(&journals).unwrap();
+        std::fs::write(
+            pages.join("Target.md"),
+            "- first line\n  id:: 638b7565-ac9b-4d71-ac77-758bc6ceec42\n- other\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("Renamed.md"),
+            "- title:: Actual Name\n- kept\n  id:: 12345678-aaaa-bbbb-cccc-ddddeeee0000\n",
+        )
+        .unwrap();
+        std::fs::write(
+            journals.join("2024_02_07.md"),
+            "- day block\n  id:: aaaabbbb-cccc-dddd-eeee-ffff00001111\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("Source.md"),
+            "- see ((638b7565-ac9b-4d71-ac77-758bc6ceec42)) here\n\
+             - renamed ((12345678-aaaa-bbbb-cccc-ddddeeee0000))\n\
+             - day ((aaaabbbb-cccc-dddd-eeee-ffff00001111))\n\
+             - broken ((00000000-0000-0000-0000-000000000000))\n",
+        )
+        .unwrap();
+
+        let bundle = read_graph(&root, &Options { flatten: true }).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+
+        let page = |t: &str| {
+            bundle
+                .pages
+                .iter()
+                .find(|p| p.title == t)
+                .unwrap_or_else(|| panic!("page {t} missing"))
+        };
+        // Referenced blocks grew anchors on their first content line.
+        assert!(page("Target").content.contains("first line ^638b7565"));
+        assert!(page("Actual Name").content.contains("kept ^12345678"));
+        assert!(bundle.days[0].content.contains("day block ^aaaabbbb"));
+        // Refs became block links — to the FINAL titles.
+        let src = &page("Source").content;
+        assert!(src.contains("see [[Target#^638b7565]] here"), "{src}");
+        assert!(src.contains("renamed [[Actual Name#^12345678]]"), "{src}");
+        assert!(src.contains("day [[2024-02-07#^aaaabbbb]]"), "{src}");
+        // An id nothing declares stays literal.
+        assert!(
+            src.contains("((00000000-0000-0000-0000-000000000000))"),
+            "{src}"
+        );
+    }
 
     // -- filenames --
 
@@ -1644,13 +1789,32 @@ mod tests {
             "`{{query (task TODO)}}`"
         );
         let mut ids = HashMap::new();
-        ids.insert("abc".to_string(), "the block text".to_string());
+        ids.insert(
+            "abc".to_string(),
+            BlockRef {
+                target: String::new(),
+                text: "the block text".to_string(),
+            },
+        );
+        // No known target page: embeds and refs fall back to inlined text.
         assert_eq!(convert_macros("{{embed ((abc))}}", &ids), "the block text");
         assert_eq!(
             convert_block_refs("see ((abc)) here", &ids),
             "see the block text here"
         );
         assert_eq!(convert_block_refs("((missing))", &ids), "((missing))");
+        // A known target: a block link with the shortened anchor id.
+        ids.insert(
+            "638b7565-ac9b-4d71-ac77-758bc6ceec42".to_string(),
+            BlockRef {
+                target: "Target".to_string(),
+                text: "first line".to_string(),
+            },
+        );
+        assert_eq!(
+            convert_block_refs("((638b7565-ac9b-4d71-ac77-758bc6ceec42))", &ids),
+            "[[Target#^638b7565]]"
+        );
     }
 
     #[test]

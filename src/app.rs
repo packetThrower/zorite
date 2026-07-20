@@ -2788,6 +2788,10 @@ impl AppView {
                 slash::build_link_items(&query, &linkable, &self.aliases)
             }
             Trigger::Tag => slash::build_tag_items(&query, &self.pages),
+            Trigger::BlockRef => {
+                let rows = self.db.search_rows(&query, 40).unwrap_or_default();
+                slash::build_block_ref_items(&query, &rows)
+            }
             Trigger::Placeholder => slash::build_placeholder_items(&query),
             Trigger::Math => slash::build_math_items(&query),
         };
@@ -2909,6 +2913,81 @@ impl AppView {
         }));
     }
 
+    /// The anchor id of `line` in page `page_id`, creating one when the line
+    /// has none: a ` ^id` (8 hex chars, hashed from the page + line) appends
+    /// to the line — through the OPEN editor when there is one (undo +
+    /// autosave), else straight to the DB. `None` when the line can't carry
+    /// an anchor (shifted content, fences, table rows).
+    fn ensure_block_anchor(
+        &mut self,
+        page_id: i64,
+        line_idx: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, usize)> {
+        let p = self.db.get_page(page_id).ok()??;
+        let lines: Vec<&str> = p.content.split('\n').collect();
+        let line = *lines.get(line_idx)?;
+        if let Some((_, id)) = gpui_markdown::syntax::block_id(line) {
+            return Some((id.to_string(), usize::MAX));
+        }
+        let t = line.trim_start();
+        if t.is_empty() || t.starts_with("```") || t.starts_with('|') {
+            return None;
+        }
+        let id = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            page_id.hash(&mut h);
+            line_idx.hash(&mut h);
+            line.hash(&mut h);
+            format!("{:08x}", h.finish() as u32)
+        };
+        // Byte range of the line's trimmed end, so the anchor lands before
+        // any trailing whitespace is dropped.
+        let start: usize = lines[..line_idx].iter().map(|l| l.len() + 1).sum();
+        let end = start + line.trim_end().len();
+        let anchor = format!(" ^{id}");
+        // Route through the open editor (keeps its undo history; its Changed
+        // event autosaves) — the day's editor for journals, the open page's
+        // otherwise. Fall back to a direct DB save.
+        let open_editor = if p.is_journal {
+            p.journal_date
+                .as_deref()
+                .and_then(|d| self.day_editors.get(d))
+                .map(|de| de.state.clone())
+        } else {
+            self.page_editor
+                .as_ref()
+                .filter(|pe| pe.id == page_id)
+                .map(|pe| pe.state.clone())
+        };
+        match open_editor {
+            Some(state) => {
+                state.update(cx, |e, cx| {
+                    // The anchor edit must not move the USER'S caret — this
+                    // may be the very document the palette is open in.
+                    let old = e.cursor();
+                    e.replace_range(end..end, &anchor, cx);
+                    let restored = if old >= end { old + anchor.len() } else { old };
+                    e.set_cursor(restored.min(e.value().len()), cx);
+                    cx.emit(gpui_editor::EditorEvent::Changed);
+                });
+            }
+            None => {
+                let mut new = p.content.clone();
+                new.replace_range(end..end, &anchor);
+                match (p.is_journal, p.journal_date.as_deref()) {
+                    (true, Some(d)) => {
+                        let d = d.to_string();
+                        self.save_journal(&d, &new, cx);
+                    }
+                    _ => self.save_page_content(page_id, &new, cx),
+                }
+            }
+        }
+        Some((id, end))
+    }
+
     fn slash_title(&self, target: &SlashTarget) -> String {
         match target {
             SlashTarget::Day(d) => d.clone(),
@@ -2928,6 +3007,7 @@ impl AppView {
             OpenPicker(SlashTarget, usize, gpui::Bounds<gpui::Pixels>),
             Property(SlashTarget),
             Game,
+            BlockRef(i64, String, usize),
         }
         // With the flyout focused, Enter accepts ITS highlighted row.
         let flyout_item = self
@@ -2953,6 +3033,9 @@ impl AppView {
                 ItemKind::TablePicker => Act::OpenPicker(s.target.clone(), s.start, s.caret),
                 ItemKind::Property => Act::Property(s.target.clone()),
                 ItemKind::Game => Act::Game,
+                ItemKind::BlockRefPick { page, title, line } => {
+                    Act::BlockRef(*page, title.clone(), *line)
+                }
             }
         };
         match act {
@@ -2974,6 +3057,37 @@ impl AppView {
                 self.open_game(window, cx);
             }
             Act::Insert(snippet, caret) => self.insert_slash(snippet, caret, window, cx),
+            // A picked block: anchor its line (if it has no ` ^id` yet), then
+            // link to it. An unanchorable line degrades to a page link.
+            Act::BlockRef(page, title, line) => {
+                // A same-document ref: the anchor insertion shifts everything
+                // after it — including the palette's trigger offset.
+                let same_doc = self.slash.as_ref().is_some_and(|s| match &s.target {
+                    SlashTarget::Page(pid) => *pid == page,
+                    SlashTarget::Day(d) => self
+                        .db
+                        .get_page(page)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|p| p.journal_date.as_deref() == Some(d.as_str())),
+                });
+                let snippet = match self.ensure_block_anchor(page, line, cx) {
+                    Some((id, at)) => {
+                        if same_doc
+                            && at != usize::MAX
+                            && let Some(s) = self.slash.as_mut()
+                            && at <= s.start
+                        {
+                            // " ^" + 8 hex chars.
+                            s.start += id.len() + 2;
+                        }
+                        format!("[[{title}#^{id}]]")
+                    }
+                    None => format!("[[{title}]]"),
+                };
+                let caret = snippet.len();
+                self.insert_slash(snippet, caret, window, cx);
+            }
             Act::Property(target) => {
                 // Insert a placeholder property line, then open the in-place
                 // form on it with the key field ready to type/pick.
@@ -3204,6 +3318,12 @@ impl AppView {
                 tail += closer.len();
                 break;
             }
+        }
+        // The block-ref palette opens on `((` but inserts a `[[…]]` link —
+        // a `))` sitting right after the caret is the trigger's own closer
+        // (typed Logseq-style), not content: absorb it too.
+        if s.trigger == Trigger::BlockRef && value[tail..].starts_with("))") {
+            tail += 2;
         }
         let new = format!("{}{}{}", &value[..start], snippet, &value[tail..]);
         let caret_off = start + caret;
