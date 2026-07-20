@@ -665,6 +665,28 @@ enum MathMarkerAlign {
 /// The `<!-- math:ALIGN -->` marker on the line **directly above** the block
 /// starting at byte `start`, if any — the same adjacency rule the editor's
 /// `math_regions` uses, so a marker separated by a blank line steers neither.
+/// The single `$$…$$` math node among a paragraph's children, if there is
+/// EXACTLY one: its index, node, and source offset. Two-plus display pairs
+/// (or none) return `None` and render inline as before.
+fn only_display_math<'a>(
+    children: &'a [mdast::Node],
+    source: &str,
+) -> Option<(usize, &'a mdast::InlineMath, usize)> {
+    let mut found = None;
+    for (ix, node) in children.iter().enumerate() {
+        if let mdast::Node::InlineMath(m) = node
+            && let Some(start) = m.position.as_ref().map(|pos| pos.start.offset)
+            && source.get(start..).is_some_and(|s| s.starts_with("$$"))
+        {
+            if found.is_some() {
+                return None;
+            }
+            found = Some((ix, m, start));
+        }
+    }
+    found
+}
+
 fn preceding_math_align(source: &str, start: Option<usize>) -> Option<MathMarkerAlign> {
     let start = start?.min(source.len());
     let before = source[..start].strip_suffix('\n')?;
@@ -715,7 +737,15 @@ fn parse_cached(source: &str) -> Option<Arc<mdast::Node>> {
 
 impl RenderOnce for MarkdownView {
     fn render(self, window: &mut Window, _cx: &mut App) -> impl IntoElement {
+        // Words-attached `$$` fences (`wer $$` … `$$ wer`) normalize onto
+        // their own lines before parsing, so they render as display math
+        // instead of degenerate paragraphs — matching WYSIWYG's forgiving
+        // scanner (issue #54 follow-up).
         let source = self.source;
+        let source: SharedString = match crate::syntax::normalize_math_fences(&source) {
+            std::borrow::Cow::Borrowed(_) => source,
+            std::borrow::Cow::Owned(s) => s.into(),
+        };
         let block_scroll = self.block_scroll;
         let root_id: SharedString = format!("{}-md-root", self.id_base).into();
         let mut ctx = Ctx {
@@ -874,15 +904,14 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
             {
                 return Some(render_embed(&target, label, content, ctx, window));
             }
-            // A paragraph that is EXACTLY one `$$…$$` math node is one-line
-            // display math (issue #54): block treatment — the block renderer,
-            // centered, steered by an adjacent `<!-- math:… -->` marker —
-            // matching WYSIWYG. A lone single-`$` span stays inline-sized;
-            // the promotion requires the `$$` delimiters in the source.
-            if let [mdast::Node::InlineMath(m)] = p.children.as_slice()
-                && let Some(renderer) = ctx.on_math.clone()
-                && let Some(start) = m.position.as_ref().map(|pos| pos.start.offset)
-                && ctx.source.get(start..).is_some_and(|s| s.starts_with("$$"))
+            // A paragraph containing exactly one `$$…$$` math node is display
+            // math (issue #54): the formula renders on its own centered row —
+            // any text around it gets rows of its own — steered by an
+            // adjacent `<!-- math:… -->` marker, matching WYSIWYG. Lone
+            // single-`$` spans stay inline-sized; the promotion requires the
+            // `$$` delimiters in the source.
+            if let Some(renderer) = ctx.on_math.clone()
+                && let Some((ix, m, start)) = only_display_math(&p.children, &ctx.source)
             {
                 let row = div().w_full().flex();
                 let row = match preceding_math_align(&ctx.source, Some(start)) {
@@ -890,10 +919,20 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     Some(MathMarkerAlign::Right) => row.justify_end(),
                     _ => row.justify_center(),
                 };
-                return Some(
-                    row.child(renderer(m.value.clone().into()))
-                        .into_any_element(),
-                );
+                let formula = row.child(renderer(m.value.clone().into()));
+                let (before, after) = (&p.children[..ix], &p.children[ix + 1..]);
+                if before.is_empty() && after.is_empty() {
+                    return Some(formula.into_any_element());
+                }
+                let mut column = div().flex().flex_col().gap(px(6.0));
+                if !before.is_empty() {
+                    column = column.child(inline_element(before, ctx));
+                }
+                column = column.child(formula);
+                if !after.is_empty() {
+                    column = column.child(inline_element(after, ctx));
+                }
+                return Some(column.into_any_element());
             }
             // A block of `key:: value` lines renders as a property panel.
             if let Some(rows) = property_rows(p, &ctx.source.clone()) {

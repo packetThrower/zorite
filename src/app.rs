@@ -3811,15 +3811,45 @@ impl AppView {
                 return None;
             }
             // A same-line `$$…$$` display pair keeps its double delimiters.
-            let dollars = if edit.source.read(cx).text()[range.clone()].starts_with("$$") {
+            let content = edit.source.read(cx).text().to_string();
+            let dollars = if content[range.clone()].starts_with("$$") {
                 "$$"
             } else {
                 "$"
             };
-            let replacement = format!("{dollars}{latex}{dollars}");
-            let new_range = range.start..range.start + replacement.len();
+            let pair = format!("{dollars}{latex}{dollars}");
+            // `$$…$$` is DISPLAY math — it never stays words-mixed. When the
+            // span shares its line with other text, the commit splits the
+            // line (words / formula / words) so the formula renders as a
+            // block with the words visible (issue #54). Single-`$` spans
+            // stay inline in place.
+            let line_start = content[..range.start].rfind('\n').map_or(0, |p| p + 1);
+            let line_end = content[range.end..]
+                .find('\n')
+                .map_or(content.len(), |p| range.end + p);
+            let before = content[line_start..range.start].trim_end();
+            let after = content[range.end..line_end].trim_start();
+            let (edit_range, replacement, pair_start) =
+                if dollars == "$$" && (!before.is_empty() || !after.is_empty()) {
+                    let mut repl = String::new();
+                    if !before.is_empty() {
+                        repl.push_str(before);
+                        repl.push('\n');
+                    }
+                    let ps = repl.len();
+                    repl.push_str(&pair);
+                    if !after.is_empty() {
+                        repl.push('\n');
+                        repl.push_str(after);
+                    }
+                    (line_start..line_end, repl, ps)
+                } else {
+                    (range.clone(), pair.clone(), 0)
+                };
+            let new_range =
+                edit_range.start + pair_start..edit_range.start + pair_start + pair.len();
             edit.source
-                .update(cx, |e, cx| e.replace_range(range, &replacement, cx));
+                .update(cx, |e, cx| e.replace_range(edit_range, &replacement, cx));
             let new = edit.source.read(cx).text().to_string();
             self.ensure_content_math(&new, cx);
             self.ensure_content_embeds(&new, cx);

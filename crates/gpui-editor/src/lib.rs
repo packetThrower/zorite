@@ -309,6 +309,22 @@ impl TurnKind {
     }
 }
 
+/// Canonicalize freshly loaded content: words-attached `$$` forms (mixed
+/// lines, words-on-fence-lines) normalize onto their own lines — in memory,
+/// persisted on the first edit — so STORED documents render display math
+/// exactly like fresh typing and the reader's pre-parse normalization.
+/// Unpaired `$$` prose/code is untouched. Both load paths (`with_text`,
+/// `set_text`) route through here.
+fn normalize_loaded(content: String) -> String {
+    if !content.contains("$$") {
+        return content;
+    }
+    match gpui_markdown::syntax::normalize_math_fences(&content) {
+        std::borrow::Cow::Owned(n) => n,
+        std::borrow::Cow::Borrowed(_) => content,
+    }
+}
+
 /// If `offset` sits on a collapsed marker line (a table style marker or a
 /// math align marker), the offset of the nearest line that reveals nothing
 /// when the caret rests there: the table's header, or the line after the
@@ -957,8 +973,9 @@ impl EditorState {
 
     /// Builder: start with the given text (caret at the start).
     pub fn with_text(mut self, text: impl Into<String>) -> Self {
-        self.content = text.into();
-        self.selected_range = 0..0;
+        self.content = normalize_loaded(text.into());
+        let caret = caret_off_marker_line(&self.content, 0);
+        self.selected_range = caret..caret;
         self
     }
 
@@ -1005,7 +1022,7 @@ impl EditorState {
     /// Replace the whole document; resets the caret to the start.
     pub fn set_text(&mut self, text: impl Into<String>, cx: &mut Context<Self>) {
         self.content_gen += 1;
-        self.content = text.into();
+        self.content = normalize_loaded(text.into());
         // Never park the loaded caret on a collapsed marker line (`<!-- table/
         // math:… -->`): the first focus would reveal it raw mid-interaction.
         // This is the ONE passive parking path — every other caret write is a
@@ -1214,6 +1231,12 @@ impl EditorState {
             return;
         }
         let Some((r, replacement)) = f(line) else {
+            // No host rule fired — normalize math around the caret instead:
+            // words-attached `$$` fences and words-mixed `$$…$$` pairs split
+            // onto their own lines (issue #54: the formula renders display,
+            // the words stay VISIBLE — nothing is ever hidden). Paragraph-
+            // bounded, one recorded edit.
+            self.normalize_math_at(row);
             return;
         };
         if r.start >= r.end || r.end > line.len() {
@@ -2261,6 +2284,15 @@ impl EditorState {
                         .replace('\n', " ")
                         .replace("\\|", "|")
                         .replace('|', "\\|");
+                } else if self.markdown_style.is_some() && text.contains("$$") {
+                    // Words-attached `$$` fences / words-mixed pairs in pasted
+                    // text split onto their own lines (issue #54) — same
+                    // normalization typing gets.
+                    if let std::borrow::Cow::Owned(n) =
+                        gpui_markdown::syntax::normalize_math_fences(&text)
+                    {
+                        text = n;
+                    }
                 }
                 self.replace_text_in_range(None, &text, window, cx);
             }
@@ -3249,6 +3281,51 @@ impl EditorState {
         {
             cx.notify();
         }
+    }
+
+    /// Run the shared math-fence normalizer over the paragraph containing
+    /// `row` (blank-line bounded), splicing only when it changes something.
+    /// One recorded (undoable) edit; the caret shifts with the insertion.
+    fn normalize_math_at(&mut self, row: usize) {
+        if self.markdown_style.is_none() {
+            return;
+        }
+        let starts = self.line_starts();
+        let last_row = starts.len().saturating_sub(1);
+        let blank = |r: usize| self.content[starts[r]..self.line_end(r)].trim().is_empty();
+        let mut first = row;
+        while first > 0 && !blank(first - 1) {
+            first -= 1;
+        }
+        let mut last = row;
+        while last < last_row && !blank(last + 1) {
+            last += 1;
+        }
+        let span = starts[first]..self.line_end(last);
+        let para = &self.content[span.clone()];
+        if !para.contains("$$") {
+            return;
+        }
+        let normalized = match gpui_markdown::syntax::normalize_math_fences(para) {
+            std::borrow::Cow::Borrowed(_) => return,
+            std::borrow::Cow::Owned(s) => s,
+        };
+        let old_caret = self.selected_range.start;
+        let delta = normalized.len() as isize - (span.end - span.start) as isize;
+        self.record_edit(&span, &normalized);
+        self.content =
+            self.content[..span.start].to_owned() + &normalized + &self.content[span.end..];
+        self.remap_diagnostics(&span, normalized.len());
+        // Typing happens at/after the paragraph's tail — shifting by the whole
+        // delta keeps the caret on its text for the common case.
+        let caret = if old_caret >= span.start {
+            (old_caret as isize + delta).max(0) as usize
+        } else {
+            old_caret
+        };
+        let caret = caret.min(self.content.len());
+        self.selected_range = caret..caret;
+        self.last_edit = EditKind::Other;
     }
 
     /// Replace `range` with a chosen suggestion and close the menu.

@@ -1633,8 +1633,19 @@ pub(crate) struct MathRegion {
 pub(crate) fn math_regions(content: &str) -> Vec<MathRegion> {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut out = Vec::new();
+    let mut in_code = false;
     let mut i = 0;
     while i < lines.len() {
+        if lines[i].trim_start().starts_with("```") {
+            // `$$` inside a fenced code block (shell PIDs!) is never math.
+            in_code = !in_code;
+            i += 1;
+            continue;
+        }
+        if in_code {
+            i += 1;
+            continue;
+        }
         if lines[i].trim() == "$$" {
             let start = i;
             let mut j = i + 1;
@@ -1659,9 +1670,10 @@ pub(crate) fn math_regions(content: &str) -> Vec<MathRegion> {
             });
             i = end;
         } else if let Some(inner) = one_line_math(lines[i]) {
-            // `$$x^2$$` ALONE on a line is display math too (issue #54) —
-            // same block treatment (size, centering, alignment marker), one
-            // line instead of fenced. Mid-text pairs stay inline spans.
+            // `$$x^2$$` ALONE on a line is display math (issue #54): block
+            // treatment (size, centering, alignment marker). Lines mixing
+            // words with a pair are normalized apart at edit time (see
+            // `apply_auto_replace`) — never hidden.
             let (align, marker_line) =
                 match i.checked_sub(1).map(|m| (m, math_align_marker(lines[m]))) {
                     Some((m, Some(a))) => (a, Some(m)),
@@ -2378,18 +2390,29 @@ mod tests {
     #[test]
     fn one_line_math_regions() {
         // `$$x$$` alone on a line is a display-math REGION (block treatment);
-        // mid-text pairs are not.
+        // so is a single complete pair with words around it (see
+        // `forgiving_math_forms`).
         let r = math_regions("before\n$$x^2$$\nafter");
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].range, 1..2);
         assert_eq!(r[0].source, "x^2");
-        assert!(math_regions("prose $$x$$ prose").is_empty());
         // The alignment marker above applies, as with fenced blocks.
         let r = math_regions("<!-- math:right -->\n$$x$$");
         assert_eq!(r[0].marker_line, Some(0));
         // Degenerate forms are not regions.
         assert!(math_regions("$$$$").is_empty());
         assert!(math_regions("$$ $$").is_empty());
+    }
+
+    #[test]
+    fn forgiving_math_forms() {
+        // Words mixed with math are NORMALIZED apart (edit-time), never
+        // hidden: mixed lines are not regions themselves.
+        assert!(math_regions("words $$E=mc^2$$ more").is_empty());
+        assert!(math_regions("fees are $$5 and $$10 total").is_empty());
+        assert!(math_regions("wer $$\nu(m)=v(n,x)\n$$ wer").is_empty());
+        // `$$` inside a fenced code block is never math.
+        assert!(math_regions("```sh\necho $$\n$$\n```").is_empty());
     }
 
     #[test]

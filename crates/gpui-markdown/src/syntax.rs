@@ -659,9 +659,158 @@ fn find2(b: &[u8], from: usize, end: usize, c1: u8, c2: u8) -> Option<usize> {
     (from..end.saturating_sub(1)).find(|&i| b[i] == c1 && b[i + 1] == c2)
 }
 
+// --- Forgiving `$$` fences (words attached) ----------------------------------
+
+/// Classify a words-attached `$$` fence line: `Some(true)` for an opener
+/// (`words $$` — the `$$` trails), `Some(false)` for a closer (`$$ words` —
+/// the `$$` leads). A bare `$$` (the strict form) and lines whose `$$` pairs
+/// up on the same line classify as neither.
+pub fn math_fence_words(line: &str) -> Option<bool> {
+    let t = line.trim();
+    if t == "$$" || t.len() <= 2 {
+        return None;
+    }
+    if t.ends_with("$$") && !t[..t.len() - 2].contains("$$") {
+        return Some(true);
+    }
+    if t.starts_with("$$") && !t[2..].contains("$$") {
+        return Some(false);
+    }
+    None
+}
+
+/// A single complete `$$…$$` pair on a line that ALSO carries other text —
+/// strict inner rules (non-empty, no interior `$$`, no delimiter-adjacent
+/// whitespace), so prose about prices (`$$5 and $$10`) never matches. Table
+/// rows keep their cells.
+pub fn embedded_math(line: &str) -> Option<(usize, usize)> {
+    let t = line.trim_start();
+    if t.starts_with('|') {
+        return None;
+    }
+    let s = line.find("$$")?;
+    let e = line.rfind("$$")?;
+    if e < s + 3 {
+        return None;
+    }
+    let inner = &line[s + 2..e];
+    (!inner.is_empty()
+        && !inner.contains("$$")
+        && !inner.starts_with(char::is_whitespace)
+        && !inner.ends_with(char::is_whitespace))
+    .then_some((s, e + 2))
+}
+
+/// Split words-attached `$$` fences onto their own lines when they pair up
+/// (an opener needs a closer before the next blank line) — `wer $$` → `wer` +
+/// `$$`, `$$ wer` → `$$` + `wer` — and split a words-mixed complete pair onto
+/// its own line (`text $$x$$ text` → three lines), so a math parser sees
+/// well-formed display blocks. Code fences are left alone; unpaired `$$`s
+/// (prose, prices) pass through untouched. Borrowed when nothing changes.
+pub fn normalize_math_fences(source: &str) -> std::borrow::Cow<'_, str> {
+    if !source.contains("$$") {
+        return std::borrow::Cow::Borrowed(source);
+    }
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut changed = false;
+    let mut in_code = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let t = lines[i].trim();
+        if t.starts_with("```") {
+            in_code = !in_code;
+            out.push(lines[i].to_string());
+            i += 1;
+            continue;
+        }
+        if !in_code && let Some((s, e)) = embedded_math(lines[i]) {
+            let (before, after) = (lines[i][..s].trim_end(), lines[i][e..].trim_start());
+            if !before.is_empty() {
+                out.push(before.to_string());
+            }
+            out.push(lines[i][s..e].to_string());
+            if !after.is_empty() {
+                out.push(after.to_string());
+            }
+            changed = changed || !before.is_empty() || !after.is_empty();
+            i += 1;
+            continue;
+        }
+        if !in_code && math_fence_words(lines[i]) == Some(true) {
+            // A closer before the next blank line pairs the fences; a blank
+            // first means this was prose, not math.
+            let closer = (i + 1..lines.len())
+                .take_while(|&j| !lines[j].trim().is_empty())
+                .find(|&j| lines[j].trim() == "$$" || math_fence_words(lines[j]) == Some(false));
+            if let Some(j) = closer {
+                let open = lines[i].trim_end();
+                out.push(open[..open.len() - 2].trim_end().to_string());
+                out.push("$$".to_string());
+                for inner in &lines[i + 1..j] {
+                    out.push(inner.to_string());
+                }
+                out.push("$$".to_string());
+                let close = lines[j].trim_start();
+                let rest = close[2..].trim_start();
+                if !rest.is_empty() {
+                    out.push(rest.to_string());
+                }
+                changed = true;
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(lines[i].to_string());
+        i += 1;
+    }
+    if changed {
+        std::borrow::Cow::Owned(out.join("\n"))
+    } else {
+        std::borrow::Cow::Borrowed(source)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn math_fence_normalization() {
+        // Paired words-fences split onto their own lines.
+        assert_eq!(
+            normalize_math_fences("wer $$\nx+y\n$$ wer").as_ref(),
+            "wer\n$$\nx+y\n$$\nwer"
+        );
+        // An opener with no closer before a blank line is prose — untouched
+        // (and Borrowed).
+        let prose = "cost $$\n\nlater";
+        assert!(matches!(
+            normalize_math_fences(prose),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // Code fences are left alone.
+        let code = "```sh\necho $$\n$$\n```";
+        assert!(matches!(
+            normalize_math_fences(code),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // A words-mixed complete pair splits onto its own line.
+        assert_eq!(
+            normalize_math_fences("What if words $$E=mc^2$$ more").as_ref(),
+            "What if words\n$$E=mc^2$$\nmore"
+        );
+        // Prices (delimiter-adjacent whitespace) stay prose.
+        assert!(matches!(
+            normalize_math_fences("fees are $$5 and $$10 total"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+        // A pair ALONE on its line is already well-formed.
+        assert!(matches!(
+            normalize_math_fences("$$y$$"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 
     #[test]
     fn alert_recognition_both_forms() {
