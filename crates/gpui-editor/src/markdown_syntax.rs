@@ -2096,9 +2096,11 @@ pub(crate) fn is_table_row(line: &str) -> bool {
 /// Contiguous runs of `key:: value` property lines (Obsidian/Logseq-style
 /// metadata) — each renders as a two-column panel, the WYSIWYG twin of the
 /// reader's `render_property_table`. A run is one or more adjacent property
-/// lines; any non-property line ends it. Fenced code is skipped so a
-/// `Type::method()` code line isn't mistaken for a property. Returns line-index
-/// ranges in order.
+/// lines; any non-property line ends it. A leading list marker is tolerated
+/// (`- key:: value`, the Logseq props-only-block shape — the reader's parser
+/// consumes the marker and panels it, so the editor matches). Fenced code is
+/// skipped so a `Type::method()` code line isn't mistaken for a property.
+/// Returns line-index ranges in order.
 pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut out = Vec::new();
@@ -2110,12 +2112,12 @@ pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
             i += 1;
             continue;
         }
-        if !in_fence && gpui_markdown::syntax::property(lines[i]).is_some() {
+        if !in_fence && gpui_markdown::syntax::prefixed_property(lines[i]).is_some() {
             let start = i;
             i += 1;
             while i < lines.len()
                 && !lines[i].trim_start().starts_with("```")
-                && gpui_markdown::syntax::property(lines[i]).is_some()
+                && gpui_markdown::syntax::prefixed_property(lines[i]).is_some()
             {
                 i += 1;
             }
@@ -3162,5 +3164,9 @@ mod tests {
         // A `Type::method()` line inside a code fence isn't a property.
         let r2 = property_regions("```rust\nFoo::bar()\n```\nkey:: v");
         assert_eq!(r2, vec![3..4]);
+        // A list-marker property line (Logseq props-only block) counts too;
+        // an ordinary bullet doesn't.
+        let r3 = property_regions("- status:: open\n  time:: 3pm\n- plain bullet");
+        assert_eq!(r3, vec![0..2]);
     }
 }

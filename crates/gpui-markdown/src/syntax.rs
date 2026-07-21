@@ -627,6 +627,31 @@ pub fn property(line: &str) -> Option<(&str, &str)> {
     Some((key, rest[idx + 2..].trim()))
 }
 
+/// [`property`], tolerating a leading list marker — the Logseq shape for a
+/// props-only block (`- key:: value`, also `* ` / `+ ` / `1. ` / `1) `).
+/// Returns `(prefix, key, value)`; `prefix` is everything before the key
+/// (indent + marker), so editors can write the line back unchanged.
+pub fn prefixed_property(line: &str) -> Option<(&str, &str, &str)> {
+    let ws = line.len() - line.trim_start().len();
+    if let Some((k, v)) = property(line) {
+        return Some((&line[..ws], k, v));
+    }
+    let rest = &line[ws..];
+    let body = if let Some(r) = ["- ", "* ", "+ "].iter().find_map(|m| rest.strip_prefix(m)) {
+        r
+    } else {
+        let d = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let b = rest.as_bytes();
+        if d > 0 && rest.len() > d + 1 && matches!(b[d], b'.' | b')') && b[d + 1] == b' ' {
+            &rest[d + 2..]
+        } else {
+            return None;
+        }
+    };
+    let (k, v) = property(body)?;
+    Some((&line[..line.len() - body.len()], k, v))
+}
+
 /// A rendered piece of a property value: literal text, or a link "pill" (a
 /// wiki-link, `#tag`, or URL shown as a rounded chip). Both panels render values
 /// through this so they pill-ify identically.
@@ -973,6 +998,21 @@ mod tests {
         assert_eq!(property("just prose"), None);
         assert_eq!(property(":: value"), None);
         assert_eq!(property("1key:: v"), None);
+    }
+
+    #[test]
+    fn prefixed_property_tolerates_list_markers() {
+        // Plain / indented lines: prefix is the indent.
+        assert_eq!(prefixed_property("k:: v"), Some(("", "k", "v")));
+        assert_eq!(prefixed_property("  k:: v"), Some(("  ", "k", "v")));
+        // List markers (Logseq props-only block), bullets and numbers.
+        assert_eq!(prefixed_property("- k:: v"), Some(("- ", "k", "v")));
+        assert_eq!(prefixed_property("  * k:: v"), Some(("  * ", "k", "v")));
+        assert_eq!(prefixed_property("2. k:: v"), Some(("2. ", "k", "v")));
+        // Not properties: a plain bullet, a task, a numberless dot.
+        assert_eq!(prefixed_property("- plain bullet"), None);
+        assert_eq!(prefixed_property("- [ ] k:: v"), None);
+        assert_eq!(prefixed_property(". k:: v"), None);
     }
 
     #[test]

@@ -8238,7 +8238,7 @@ fn build_prop_panel(
     let mut key_w = px(0.);
     let mut val_w = px(0.);
     for &line in &lines[range.start..range.end] {
-        let Some((k, v)) = gpui_markdown::syntax::property(line) else {
+        let Some((_, k, v)) = gpui_markdown::syntax::prefixed_property(line) else {
             continue;
         };
         key_w = key_w.max(measure_width(window, k, font, font_size));

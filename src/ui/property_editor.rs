@@ -48,6 +48,10 @@ pub struct PropertyEditor {
 impl gpui::EventEmitter<PropExit> for PropertyEditor {}
 
 struct Row {
+    /// Everything before the key on the source line (indent + an optional
+    /// list marker, e.g. `  ` or `- `) — written back verbatim so an
+    /// indented / bulleted property keeps its place in the outline.
+    prefix: String,
     key: Field,
     value: Field,
 }
@@ -119,7 +123,8 @@ impl PropertyEditor {
     ) -> Self {
         let rows = parse(source)
             .into_iter()
-            .map(|(k, v)| Row {
+            .map(|(p, k, v)| Row {
+                prefix: p,
                 key: Field::new(&k),
                 value: Field::new(&v),
             })
@@ -185,7 +190,8 @@ impl PropertyEditor {
     }
 
     /// The current fields serialized back to `key:: value` lines (empty-key rows
-    /// dropped). This is what the host writes over the source block on commit.
+    /// dropped), each behind its original prefix (indent / list marker). This is
+    /// what the host writes over the source block on commit.
     pub fn to_source(&self, _cx: &App) -> String {
         self.rows
             .iter()
@@ -194,7 +200,7 @@ impl PropertyEditor {
                 if k.is_empty() {
                     return None;
                 }
-                Some(format!("{k}:: {}", r.value.text.trim()))
+                Some(format!("{}{k}:: {}", r.prefix, r.value.text.trim()))
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -275,7 +281,19 @@ impl PropertyEditor {
     }
 
     fn add_row(&mut self, cx: &mut Context<Self>) {
+        // A new row sits at the same outline position as the one above it.
+        let prefix = self.rows.last().map_or(String::new(), |r| {
+            // Under a `- key:: value` first row, siblings indent under the
+            // marker rather than repeating the bullet.
+            let ws = r.prefix.len() - r.prefix.trim_start().len();
+            if r.prefix[ws..].is_empty() {
+                r.prefix.clone()
+            } else {
+                " ".repeat(r.prefix.len())
+            }
+        });
         self.rows.push(Row {
+            prefix,
             key: Field::default(),
             value: Field::default(),
         });
@@ -854,13 +872,15 @@ fn next_boundary(s: &str, i: usize) -> usize {
     s[i..].chars().next().map_or(i, |c| i + c.len_utf8())
 }
 
-/// Split a property block into `(key, value)` pairs, ignoring lines that aren't
-/// properties (via the shared grammar).
-fn parse(source: &str) -> Vec<(String, String)> {
+/// Split a property block into `(prefix, key, value)` triples — prefix is the
+/// line's indent + optional list marker, kept for writeback — ignoring lines
+/// that aren't properties (via the shared grammar).
+fn parse(source: &str) -> Vec<(String, String, String)> {
     source
         .lines()
         .filter_map(|l| {
-            gpui_markdown::syntax::property(l).map(|(k, v)| (k.to_string(), v.to_string()))
+            gpui_markdown::syntax::prefixed_property(l)
+                .map(|(p, k, v)| (p.to_string(), k.to_string(), v.to_string()))
         })
         .collect()
 }
@@ -871,12 +891,13 @@ mod tests {
 
     #[test]
     fn parse_reads_property_lines_only() {
-        let rows = parse("attendees:: Bob, Sue\ntime:: 3:00pm\njust prose");
+        let rows = parse("attendees:: Bob, Sue\n  time:: 3:00pm\n- status:: open\njust prose");
         assert_eq!(
             rows,
             vec![
-                ("attendees".to_string(), "Bob, Sue".to_string()),
-                ("time".to_string(), "3:00pm".to_string()),
+                (String::new(), "attendees".into(), "Bob, Sue".into()),
+                ("  ".into(), "time".into(), "3:00pm".into()),
+                ("- ".into(), "status".into(), "open".into()),
             ]
         );
     }

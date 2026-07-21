@@ -952,7 +952,14 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
             // A block of `key:: value` lines renders as a property panel.
             if let Some(rows) = property_rows(p, &ctx.source.clone()) {
                 ctx.counter += 1;
-                return Some(render_property_table(rows, ctx, ctx.counter));
+                return Some(render_property_table(rows, ctx, ctx.counter, window));
+            }
+            // A MIXED paragraph — prose lines with `key:: value` lines among
+            // them (the Logseq shape: props right under a block's first
+            // line) — renders each property run as a panel between the prose
+            // rows, matching WYSIWYG's line-based property regions.
+            if let Some(el) = render_mixed_properties(p, ctx, window) {
+                return Some(el);
             }
             // A paragraph that *starts* with `![alt](src)` (optionally
             // `{width=N}`) renders as a real image via the host. Any text that
@@ -2341,14 +2348,204 @@ fn property_rows(p: &mdast::Paragraph, source: &str) -> Option<Vec<(String, Stri
     (!rows.is_empty()).then_some(rows)
 }
 
+/// One piece of a mixed prose/property paragraph: clipped prose children, or
+/// a property run's rows (in [`property_rows`]' `(key, value, v_off)` form).
+enum MixedSeg {
+    Prose(Vec<mdast::Node>),
+    Props(Vec<(String, String, usize)>),
+}
+
+/// A paragraph mixing prose lines and `key:: value` lines (the Logseq shape:
+/// properties right under a block's first content line) renders as a column —
+/// prose rows with a property panel per property run. `None` when the
+/// paragraph isn't mixed (all-or-nothing paragraphs keep their fast paths) or
+/// a segment boundary can't be clipped cleanly (falls back to plain prose).
+fn render_mixed_properties(
+    p: &mdast::Paragraph,
+    ctx: &mut Ctx,
+    window: &mut Window,
+) -> Option<AnyElement> {
+    let source = ctx.source.clone();
+    let pos = p.position.as_ref()?;
+    let raw = source.get(pos.start.offset..pos.end.offset)?;
+    // The paragraph's lines with their SOURCE offsets (line-start byte).
+    let mut lines: Vec<(usize, &str)> = Vec::new();
+    let mut off = pos.start.offset;
+    for line in raw.split('\n') {
+        lines.push((off, line));
+        off += line.len() + 1;
+    }
+    let is_prop: Vec<bool> = lines
+        .iter()
+        .map(|(_, l)| crate::syntax::property(l).is_some())
+        .collect();
+    if is_prop.iter().all(|&b| b) || !is_prop.iter().any(|&b| b) {
+        return None; // pure paragraphs keep their existing paths
+    }
+    // Contiguous runs of same-kind lines → segments, clipped up front so any
+    // failure falls back to plain prose rendering before anything is built.
+    let mut segs: Vec<MixedSeg> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let prop = is_prop[i];
+        let start = i;
+        while i < lines.len() && is_prop[i] == prop {
+            i += 1;
+        }
+        if prop {
+            let rows = lines[start..i]
+                .iter()
+                .map(|(off, line)| {
+                    let (key, value) = crate::syntax::property(line).expect("classified above");
+                    // Value offset: past `key::` + leading whitespace, so
+                    // click-to-edit lands on the value (same as property_rows).
+                    let idx = line.find("::").unwrap_or(0) + 2;
+                    let lead = line[idx..].len() - line[idx..].trim_start().len();
+                    (key.to_string(), value.to_string(), off + idx + lead)
+                })
+                .collect();
+            segs.push(MixedSeg::Props(rows));
+        } else {
+            let seg_start = lines[start].0;
+            let (last_off, last_line) = lines[i - 1];
+            let children =
+                clip_children(&p.children, seg_start..last_off + last_line.len(), &source)?;
+            if !children.is_empty() {
+                segs.push(MixedSeg::Prose(children));
+            }
+        }
+    }
+    let mut column = div().flex().flex_col().gap(px(6.0));
+    for seg in segs {
+        match seg {
+            MixedSeg::Prose(children) => column = column.child(inline_element(&children, ctx)),
+            MixedSeg::Props(rows) => {
+                ctx.counter += 1;
+                column = column.child(render_property_table(rows, ctx, ctx.counter, window));
+            }
+        }
+    }
+    Some(column.into_any_element())
+}
+
+/// The paragraph children falling inside the source range `seg` (a whole
+/// number of lines): wholly-contained children clone as-is; a text node
+/// straddling a boundary is split at its line boundaries (soft breaks live in
+/// text nodes). `None` when a non-text child straddles — the caller falls
+/// back rather than guessing.
+fn clip_children(
+    children: &[mdast::Node],
+    seg: Range<usize>,
+    source: &str,
+) -> Option<Vec<mdast::Node>> {
+    let mut out = Vec::new();
+    for ch in children {
+        let cpos = ch.position()?;
+        let (cs, ce) = (cpos.start.offset, cpos.end.offset);
+        if ce <= seg.start || cs >= seg.end {
+            continue;
+        }
+        if cs >= seg.start && ce <= seg.end {
+            out.push(ch.clone());
+            continue;
+        }
+        // A hard break (two trailing spaces) straddling a segment boundary is
+        // meaningless once the lines split — drop it.
+        if matches!(ch, mdast::Node::Break(_)) {
+            continue;
+        }
+        let mdast::Node::Text(t) = ch else {
+            return None;
+        };
+        out.push(clip_text(t, &seg, source)?);
+    }
+    Some(out)
+}
+
+/// Slice a soft-wrapped text node to the lines intersecting `seg`. Value
+/// lines map 1:1 to the node's source lines, with continuation indent the
+/// parser stripped re-derived per line (`source_line.ends_with(value_line)`),
+/// so the clipped node's position offsets stay exact in source coordinates.
+fn clip_text(t: &mdast::Text, seg: &Range<usize>, source: &str) -> Option<mdast::Node> {
+    let pos = t.position.as_ref()?;
+    let (ns, ne) = (pos.start.offset, pos.end.offset);
+    let src_lines: Vec<&str> = source.get(ns..ne)?.split('\n').collect();
+    let val_lines: Vec<&str> = t.value.split('\n').collect();
+    if src_lines.len() != val_lines.len() {
+        return None;
+    }
+    let mut kept: Vec<&str> = Vec::new();
+    let mut span: Option<(usize, usize)> = None;
+    let mut soff = ns;
+    for (sl, vl) in src_lines.iter().zip(&val_lines) {
+        // The parser strips trailing whitespace (soft breaks, `\r` of CRLF
+        // endings) and leading continuation indent from value lines — compare
+        // against the trimmed source line and re-derive the indent.
+        let st = sl.trim_end();
+        if !st.ends_with(vl) {
+            return None;
+        }
+        let vstart = soff + (st.len() - vl.len());
+        let vend = vstart + vl.len();
+        if vstart < seg.end && vend > seg.start {
+            // Kept lines are consecutive by construction: `seg` is a
+            // contiguous line range, and node lines are walked in order.
+            kept.push(vl);
+            span = Some((span.map_or(vstart, |(s, _)| s), vend));
+        }
+        soff += sl.len() + 1;
+    }
+    let (start, end) = span?;
+    let mut position = pos.clone();
+    position.start.offset = start;
+    position.end.offset = end;
+    Some(mdast::Node::Text(mdast::Text {
+        value: kept.join("\n"),
+        position: Some(position),
+    }))
+}
+
 /// Renders a run of `key:: value` properties as a two-column panel: a muted key
 /// column and the value rendered inline (wiki-links/tags stay live), each row
-/// highlighting on hover.
+/// highlighting on hover. The key column is measured to the widest key (plus
+/// icon room), matching WYSIWYG's panel instead of a fixed width.
 fn render_property_table(
     rows: Vec<(String, String, usize)>,
     ctx: &mut Ctx,
     id: usize,
+    window: &mut Window,
 ) -> AnyElement {
+    let mut key_font = window.text_style().font();
+    key_font.weight = FontWeight::MEDIUM;
+    let key_w = rows.iter().fold(px(0.0), |acc, (k, ..)| {
+        let run = TextRun {
+            len: k.len(),
+            font: key_font.clone(),
+            color: ctx.style.text_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        acc.max(
+            window
+                .text_system()
+                .shape_line(
+                    SharedString::from(k.clone()),
+                    ctx.style.text_size,
+                    &[run],
+                    None,
+                )
+                .width(),
+        )
+    });
+    // Icon room (icon + its gap) when the host resolves icons, then the same
+    // 20px of breathing room WYSIWYG's panel gives past the widest key.
+    let icon_indent = if ctx.style.property_icon.is_some() {
+        f32::from(ctx.style.text_size) + 6.0
+    } else {
+        0.0
+    };
+    let key_cell_w = key_w + px(icon_indent + 20.0);
     let key_col = ctx.style.muted_color;
     let tag_c = ctx.style.tag_color;
     let link_c = ctx.style.link_color;
@@ -2418,7 +2615,7 @@ fn render_property_table(
         // Key cell: an optional host-resolved icon, then the muted key name.
         let icon_path = ctx.style.property_icon.as_ref().and_then(|f| f(&key));
         let mut key_cell = div()
-            .w(px(140.0))
+            .w(key_cell_w)
             .flex_shrink_0()
             .flex()
             .items_center()
@@ -3185,6 +3382,37 @@ mod tests {
             panic!("paragraph");
         };
         assert!(property_rows(p2, "k:: v\njust prose").is_none());
+    }
+
+    #[test]
+    fn mixed_property_clipping_survives_real_world_line_endings() {
+        // The Logseq shape: a prose first line, then property lines — with
+        // CRLF endings, a trailing space, and a two-space hard break (a
+        // `Break` child), all of which real vaults carry.
+        let src =
+            "#meeting with [[IPC]] ^abc  \r\ntime:: 14:01 \r\nsubject:: EMS comms\r\nattendees::";
+        let mdast::Node::Root(r) = parse_cached(src).unwrap().as_ref().clone() else {
+            panic!("root");
+        };
+        let mdast::Node::Paragraph(p) = &r.children[0] else {
+            panic!("paragraph");
+        };
+        // Prose segment = line 1 (source byte range).
+        let line1_end = src.find('\n').unwrap(); // includes the \r — a whole line
+        let kids = clip_children(&p.children, 0..line1_end, src)
+            .expect("clip must survive CRLF + trailing spaces + hard breaks");
+        assert_eq!(kids.len(), 1);
+        let mdast::Node::Text(t) = &kids[0] else {
+            panic!("text");
+        };
+        assert_eq!(t.value, "#meeting with [[IPC]] ^abc");
+        let pos = t.position.as_ref().unwrap();
+        assert_eq!(
+            &src[pos.start.offset..pos.end.offset],
+            "#meeting with [[IPC]] ^abc"
+        );
+        // And the property lines still classify (\r-tolerant).
+        assert!(crate::syntax::property("time:: 14:01 \r").is_some());
     }
 
     #[test]
