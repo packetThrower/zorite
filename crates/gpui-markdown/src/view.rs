@@ -27,6 +27,16 @@ use crate::syntax::{
 /// own theme; defaults are a neutral dark palette.
 #[derive(Clone)]
 pub struct MarkdownStyle {
+    /// Resolves a block link's display text: `(page, id)` → the target
+    /// block's text, host-supplied. `None` (or a `None` return) keeps the
+    /// `Page → id` form.
+    #[allow(clippy::type_complexity)]
+    pub block_label: Option<Rc<dyn Fn(&str, &str) -> Option<String>>>,
+    /// How many pages reference a block id — a non-zero count renders a small
+    /// clickable badge in place of the hidden ` ^id` anchor (Logseq-style),
+    /// linked through the `refs:^id` target the host resolves. `None` (or 0)
+    /// keeps the anchor invisible.
+    pub block_ref_count: Option<BlockRefCountFn>,
     pub text_color: Hsla,
     pub text_size: Pixels,
     /// Body line height as a multiple of `text_size`. Hosts with an editor
@@ -74,6 +84,9 @@ pub struct MarkdownStyle {
 /// icon. Host-provided so the crate makes no assumption about which assets exist.
 pub type PropertyIconFn = Rc<dyn Fn(&str) -> Option<SharedString>>;
 
+/// Maps a block id to how many pages reference it (0 = no badge).
+pub type BlockRefCountFn = Rc<dyn Fn(&str) -> usize>;
+
 /// Per-kind SVG asset paths for the alert title icons.
 #[derive(Clone)]
 pub struct AlertIcons {
@@ -87,6 +100,8 @@ pub struct AlertIcons {
 impl Default for MarkdownStyle {
     fn default() -> Self {
         Self {
+            block_label: None,
+            block_ref_count: None,
             text_color: rgb(0xE6E6E6).into(),
             text_size: px(15.0),
             line_height: 1.45,
@@ -1998,6 +2013,13 @@ fn push_text(
                     let anchored = (display == target).then(|| {
                         let (page, block) = crate::syntax::split_block_anchor(display);
                         if let Some(id) = block {
+                            // A resolvable block link shows the target
+                            // block's text (matching WYSIWYG).
+                            if let Some(label) =
+                                style.block_label.as_ref().and_then(|f| f(page, id))
+                            {
+                                return Some(label);
+                            }
                             return Some(format!("{page} → {id}"));
                         }
                         let (page, heading) = crate::syntax::split_heading_anchor(display);
@@ -2016,15 +2038,52 @@ fn push_text(
             i += 1; // not a valid link; the '[' stays plain
             continue;
         }
+        // A `((id))` frontend block ref (only a construct when the resolver
+        // knows the id — prose parens stay prose): the target block's text,
+        // linked through the anchor-only `#^id` target the host resolves.
+        if value[i..].starts_with("((")
+            && let Some(close) = value[i + 2..].find("))")
+        {
+            let id = &value[i + 2..i + 2 + close];
+            if !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                && let Some(label) = style.block_label.as_ref().and_then(|f| f("", id))
+            {
+                out.map(src_base + plain_start);
+                push_run(&value[plain_start..i], cur, out);
+                out.map(src_base + i);
+                push_link(&label, &format!("#^{id}"), style.link_color, cur, out);
+                i += 2 + close + 2;
+                plain_start = i;
+                continue;
+            }
+        }
         // An Obsidian block-id anchor (` ^some-id` at a line's end) is an
         // addressing artifact, not content — hide it (like Obsidian's preview).
+        // A referenced block instead shows a small count badge (Logseq-style),
+        // linked through `refs:^id` for the host to list the referencers.
         // Text nodes carry soft breaks, so a "line end" is a `\n` or the end of
         // the value.
         if bytes[i] == b' ' && value[i + 1..].starts_with('^') {
             let end = value[i..].find('\n').map_or(value.len(), |p| i + p);
-            if crate::syntax::block_id(&value[..end]).is_some_and(|(at, _)| at == i) {
+            if let Some((at, id)) = crate::syntax::block_id(&value[..end])
+                && at == i
+            {
                 out.map(src_base + plain_start);
                 push_run(&value[plain_start..i], cur, out);
+                let refs = style.block_ref_count.as_ref().map_or(0, |f| f(id));
+                if refs > 0 {
+                    out.map(src_base + i);
+                    push_link(
+                        &format!(" {}", crate::syntax::superscript(refs)),
+                        &format!("refs:^{id}"),
+                        style.tag_color,
+                        cur,
+                        out,
+                    );
+                }
                 i = end;
                 plain_start = i;
                 continue;
@@ -2341,6 +2400,11 @@ fn render_property_table(
                                         crate::syntax::LinkHit::Page(t) => {
                                             if let Some(h) = &on_wiki {
                                                 h(t.clone().into(), window, cx);
+                                            }
+                                        }
+                                        crate::syntax::LinkHit::BlockRef(id) => {
+                                            if let Some(h) = &on_wiki {
+                                                h(format!("#^{id}").into(), window, cx);
                                             }
                                         }
                                         crate::syntax::LinkHit::Url(u) => cx.open_url(u),

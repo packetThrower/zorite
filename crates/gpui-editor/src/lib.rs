@@ -2736,6 +2736,9 @@ impl EditorState {
                 gpui_markdown::syntax::LinkHit::Page(t) => {
                     cx.emit(EditorEvent::OpenWikiLink(t.clone().into()))
                 }
+                gpui_markdown::syntax::LinkHit::BlockRef(id) => {
+                    cx.emit(EditorEvent::OpenWikiLink(format!("#^{id}").into()))
+                }
                 gpui_markdown::syntax::LinkHit::Url(u) => {
                     cx.emit(EditorEvent::OpenLink(u.clone().into()))
                 }
@@ -2791,11 +2794,32 @@ impl EditorState {
                     cx.emit(EditorEvent::OpenWikiLink(title.into()));
                     return;
                 }
+                Some(markdown_syntax::LinkHit::BlockRef(id)) => {
+                    cx.emit(EditorEvent::OpenWikiLink(format!("#^{id}").into()));
+                    return;
+                }
                 Some(markdown_syntax::LinkHit::Url(url)) => {
                     cx.emit(EditorEvent::OpenLink(url.into()));
                     return;
                 }
                 None => {}
+            }
+            // The reference-count badge painted over a hidden ` ^id` anchor:
+            // a click on its (replaced) range lists the referencers. Only when
+            // the anchor is hidden — with the caret on the line the raw text
+            // is revealed for editing and clicks place the caret as usual.
+            if self.row_col(self.selected_range.start).0 != row
+                && let Some((at, id)) = gpui_markdown::syntax::block_id(line)
+                && offset - start >= at
+                && self
+                    .markdown_style
+                    .as_ref()
+                    .and_then(|st| st.block_ref_count.as_ref().map(|f| f(id)))
+                    .unwrap_or(0)
+                    > 0
+            {
+                cx.emit(EditorEvent::OpenWikiLink(format!("refs:^{id}").into()));
+                return;
             }
         }
         // A press on a table's hover "+" strip adds a row (below) or column (right).
@@ -9151,6 +9175,7 @@ fn line_run_epoch(font: &Font, st: Option<&SyntaxStyle>) -> u64 {
             hash_hsla(c, &mut h);
         }
         st.mono.family.hash(&mut h);
+        st.block_label_gen.hash(&mut h);
     }
     h.finish()
 }
@@ -9889,7 +9914,24 @@ impl Element for EditorElement {
                     backgrounds.get(i).copied().flatten(),
                     marks.get(i).copied().flatten(),
                 );
-                for (range, _) in markdown_syntax::links(line) {
+                // The reference-count badge over a hidden ` ^id` anchor is
+                // clickable too (skipped on the caret's line, where the raw
+                // anchor is revealed for editing).
+                let badge = editor
+                    .markdown_style
+                    .as_ref()
+                    .and_then(|st| st.block_ref_count.as_ref())
+                    .filter(|_| editor.row_col(editor.selected_range.start).0 != i)
+                    .and_then(|f| {
+                        gpui_markdown::syntax::block_id(line)
+                            .filter(|(_, id)| f(id) > 0)
+                            .map(|(at, _)| at..line.len())
+                    });
+                for range in markdown_syntax::links(line)
+                    .into_iter()
+                    .map(|(r, _)| r)
+                    .chain(badge)
+                {
                     let map = maps.get(i).and_then(Option::as_ref);
                     let d1 = display_col_in(map, range.start);
                     let d2 = display_col_in(map, range.end);

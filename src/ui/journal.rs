@@ -354,7 +354,12 @@ fn rendered_day(
         let embeds = app.build_embed_map(&content);
         let fold_date = d.clone();
         let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
-            .style(theme::markdown_style(app.list_indent(), app.text_size()))
+            .style({
+                let mut st = theme::markdown_style(app.list_indent(), app.text_size());
+                st.block_label = Some(app.block_label_resolver());
+                st.block_ref_count = Some(app.block_ref_count_resolver());
+                st
+            })
             // Feed find (⌘F): paint this day's matches. The active index is
             // best-effort — block matching (rendered text) can count slightly
             // differently than the bar's source scan; the day + soft

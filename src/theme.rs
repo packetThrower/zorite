@@ -282,6 +282,10 @@ fn mono_font() -> &'static str {
 pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown::MarkdownStyle {
     let p = get();
     gpui_markdown::MarkdownStyle {
+        // The host injects the block-label and ref-count resolvers after
+        // construction (they need AppView state); the theme stays data-only.
+        block_label: None,
+        block_ref_count: None,
         text_color: p.text_primary,
         text_size,
         line_height: gpui_editor::LINE_HEIGHT_RATIO,
@@ -326,6 +330,9 @@ pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown:
 pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
     let p = get();
     gpui_editor::SyntaxStyle {
+        block_label: None,
+        block_label_gen: 0,
+        block_ref_count: None,
         marker: p.text_tertiary,
         code: p.code,
         code_bg: p.glass,

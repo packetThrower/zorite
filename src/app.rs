@@ -414,6 +414,10 @@ struct PdfFieldEdit {
     _sub: gpui::Subscription,
 }
 
+/// `(page, ^id)` → the target block's text — the shape both engines'
+/// styles carry for block-link labels.
+type BlockLabelFn = std::rc::Rc<dyn Fn(&str, &str) -> Option<String>>;
+
 /// (level, page title, rows) — the slash flyout's cached item list.
 type FlyoutCache = (
     slash::SlashLevel,
@@ -500,6 +504,22 @@ pub struct AppView {
     pub slash_flyout_scroll: ScrollHandle,
     /// Flyout rows cache — see [`Self::slash_flyout_items`].
     slash_flyout_cache: std::cell::RefCell<Option<FlyoutCache>>,
+    /// Resolved block-link labels: `^id` → (page title lowercased, the
+    /// target block's text). Filled by `ensure_content_block_labels`; read
+    /// by the resolver both engines' styles carry (`((id))` lookups pass an
+    /// empty page).
+    block_label_store: Rc<std::cell::RefCell<HashMap<String, (String, String)>>>,
+    /// Bumped when the store changes — re-keys the editor's line-run cache
+    /// (threaded through `SyntaxStyle::block_label_gen`).
+    block_label_gen: u64,
+    /// `^id` → page title, for the `((id))` FRONTEND form: editors show/edit
+    /// `((id))`; the DB stores Obsidian `[[Page#^id]]`. Filled at load
+    /// translation, palette picks, and the label-ensure pass.
+    block_ref_index: Rc<std::cell::RefCell<HashMap<String, String>>>,
+    /// `^id` → how many pages reference it, for the count badge painted on a
+    /// referenced block (both views). Cold ids fill in the label-ensure pass;
+    /// the debounced doc-changed refresh re-queries the known set.
+    block_ref_counts: Rc<std::cell::RefCell<HashMap<String, usize>>>,
 
     /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
     /// native menu bar instead; this gives the other OSes visual parity.
@@ -912,6 +932,10 @@ impl AppView {
             slash_scroll: ScrollHandle::new(),
             slash_flyout_scroll: ScrollHandle::new(),
             slash_flyout_cache: std::cell::RefCell::new(None),
+            block_label_store: Rc::new(std::cell::RefCell::new(HashMap::new())),
+            block_label_gen: 0,
+            block_ref_index: Rc::new(std::cell::RefCell::new(HashMap::new())),
+            block_ref_counts: Rc::new(std::cell::RefCell::new(HashMap::new())),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
             page_editor: None,
             pages: Vec::new(),
@@ -1074,9 +1098,11 @@ impl AppView {
             .flatten()
             .map(|p| p.content)
             .unwrap_or_default();
+        let content = self.to_frontend_refs(&content);
         let state = make_editor(
             &content,
             self.wysiwyg,
+            self.editor_style(),
             self.list_indent,
             self.image_store(),
             self.mermaid_store(),
@@ -1249,6 +1275,9 @@ impl AppView {
                 .flatten()
                 .map(|p| p.content)
                 .unwrap_or_default();
+            // Compare + load in FRONTEND form ((id)) — the DB form would
+            // never match the editor and churn set_text every signal.
+            let content = self.to_frontend_refs(&content);
             if let Some(de) = self.day_editors.get(&date)
                 && de.state.read(cx).value() != content
             {
@@ -1269,6 +1298,8 @@ impl AppView {
     /// Save a page's content to the DB and signal other windows to refresh. The
     /// single choke point for content writes, so every save reaches other windows.
     pub(crate) fn save_page_content(&mut self, id: i64, content: &str, cx: &mut Context<Self>) {
+        // The frontend edits `((id))`; the DB stores Obsidian `[[Page#^id]]`.
+        let content = &self.to_db_refs(content);
         if let Err(e) = self.db.set_page_content(id, content) {
             log::error!("save page {id}: {e}");
         }
@@ -1347,12 +1378,18 @@ impl AppView {
         // created / renamed / deleted elsewhere).
         if let Some(id) = self.page_editor.as_ref().map(|pe| pe.id)
             && let Ok(bl) = self.db.backlinks(id)
-            && let Some(pe) = self.page_editor.as_mut()
-            && pe.id == id
         {
-            pe.backlinks = bl;
-            pe.unlinked = self.db.unlinked_mentions(id).unwrap_or_default();
+            self.warm_backlink_labels(&bl, cx);
+            if let Some(pe) = self.page_editor.as_mut()
+                && pe.id == id
+            {
+                pe.backlinks = bl;
+                pe.unlinked = self.db.unlinked_mentions(id).unwrap_or_default();
+            }
         }
+        // A save anywhere may have added/removed block references — re-check
+        // the badge counts (debounced with the rest of this refresh).
+        self.refresh_block_ref_counts(cx);
         self.refresh_sidebar();
         cx.notify();
     }
@@ -1427,6 +1464,41 @@ impl AppView {
     }
 
     pub fn open_page_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A block's reference-count badge targets `refs:^id`: list the pages
+        // referencing that block instead of navigating.
+        if let Some(id) = title.strip_prefix("refs:^") {
+            self.show_block_refs_dialog(id.to_string(), window, cx);
+            return;
+        }
+        // A `((id))` frontend ref arrives as a bare `#^id`: resolve its page
+        // through the index, falling back to a content search (ids saved as
+        // literal `((id))` before the index warmed). NEVER get_or_create from
+        // an anchor-only target — that would mint a junk `#^id` page.
+        if let Some(id) = title.strip_prefix("#^") {
+            // Read borrow ends before the fallback's write borrow.
+            let hit = self.block_ref_index.borrow().get(id).cloned();
+            let page = hit.or_else(|| {
+                let hit = self
+                    .db
+                    .page_referencing(&format!(" ^{id}"))
+                    .ok()
+                    .flatten()?;
+                let p = self.db.get_page(hit).ok().flatten()?;
+                let title = p.journal_date.clone().unwrap_or(p.title);
+                self.block_ref_index
+                    .borrow_mut()
+                    .insert(id.to_string(), title.clone());
+                Some(title)
+            });
+            match page {
+                Some(p) => {
+                    let full = format!("{p}#^{id}");
+                    self.open_page_title(&full, window, cx);
+                }
+                None => log::warn!("block ref ^{id}: no page carries the anchor"),
+            }
+            return;
+        }
         // A `[[Note#^block-id]]` link targets a block: open the note, then seat
         // the caret at (and scroll to) the line carrying the `^block-id` anchor.
         // Only the `#^` form is an anchor — a bare `#` stays part of the title.
@@ -2419,9 +2491,11 @@ impl AppView {
             }
         };
         let pid = page.id;
+        let page_content = self.to_frontend_refs(&page.content);
         let state = make_editor(
-            &page.content,
+            &page_content,
             self.wysiwyg,
+            self.editor_style(),
             self.list_indent,
             self.image_store(),
             self.mermaid_store(),
@@ -2559,6 +2633,7 @@ impl AppView {
         });
         let backlinks = self.db.backlinks(pid).unwrap_or_default();
         let unlinked = self.db.unlinked_mentions(pid).unwrap_or_default();
+        self.warm_backlink_labels(&backlinks, cx);
 
         // Inline-editable title: renames the page on Enter or blur.
         let title_state =
@@ -2642,8 +2717,10 @@ impl AppView {
             log::error!("rebuild links for page {source_id}: {e}");
         }
         self.signal_doc_changed(cx);
+        let bl = self.db.backlinks(page_id).unwrap_or_default();
+        self.warm_backlink_labels(&bl, cx);
         if let Some(pe) = self.page_editor.as_mut() {
-            pe.backlinks = self.db.backlinks(page_id).unwrap_or_default();
+            pe.backlinks = bl;
             pe.unlinked = self.db.unlinked_mentions(page_id).unwrap_or_default();
         }
         cx.notify();
@@ -3081,7 +3158,11 @@ impl AppView {
                             // " ^" + 8 hex chars.
                             s.start += id.len() + 2;
                         }
-                        format!("[[{title}#^{id}]]")
+                        // The FRONTEND form; expands to [[title#^id]] at save.
+                        self.block_ref_index
+                            .borrow_mut()
+                            .insert(id.clone(), title.clone());
+                        format!("(({id}))")
                     }
                     None => format!("[[{title}]]"),
                 };
@@ -4304,7 +4385,306 @@ impl AppView {
         }
     }
 
+    /// DB → frontend: unaliased `[[Page#^id]]` block links become `((id))`
+    /// (recording id → page in the index for the reverse trip). Idempotent.
+    fn to_frontend_refs(&self, content: &str) -> String {
+        if !content.contains("#^") {
+            return content.to_string();
+        }
+        let mut out = String::with_capacity(content.len());
+        let mut rest = content;
+        while let Some(open) = rest.find("[[") {
+            let Some(close) = rest[open..].find("]]") else {
+                break;
+            };
+            let inner = &rest[open + 2..open + close];
+            out.push_str(&rest[..open]);
+            match inner.split_once("#^") {
+                Some((page, id))
+                    if !page.is_empty()
+                        && !id.is_empty()
+                        && !id.contains('|')
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') =>
+                {
+                    self.block_ref_index
+                        .borrow_mut()
+                        .insert(id.to_string(), page.to_string());
+                    out.push_str(&format!("(({id}))"));
+                }
+                _ => out.push_str(&rest[open..open + close + 2]),
+            }
+            rest = &rest[open + close + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// Frontend → DB: `((id))` expands to `[[Page#^id]]` via the index; ids
+    /// the index doesn't know stay literal. Idempotent.
+    fn to_db_refs(&self, content: &str) -> String {
+        if !content.contains("((") {
+            return content.to_string();
+        }
+        let mut out = String::with_capacity(content.len());
+        let mut rest = content;
+        while let Some(open) = rest.find("((") {
+            let Some(close) = rest[open..].find("))") else {
+                break;
+            };
+            let id = &rest[open + 2..open + close];
+            out.push_str(&rest[..open]);
+            match self.block_ref_index.borrow().get(id) {
+                Some(page)
+                    if !id.is_empty()
+                        && id
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') =>
+                {
+                    out.push_str(&format!("[[{page}#^{id}]]"));
+                }
+                _ => out.push_str(&rest[open..open + close + 2]),
+            }
+            rest = &rest[open + close + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    /// The block-label resolver both engines' styles carry: a pure store
+    /// lookup (never the DB — this runs during render).
+    pub(crate) fn block_label_resolver(&self) -> BlockLabelFn {
+        let store = self.block_label_store.clone();
+        std::rc::Rc::new(move |page, id| {
+            store.borrow().get(id).and_then(|(p, label)| {
+                (page.is_empty() || *p == page.to_lowercase()).then(|| label.clone())
+            })
+        })
+    }
+
+    /// The block reference-count resolver both engines' styles carry: a pure
+    /// store lookup (never the DB — this runs during render); 0 = no badge.
+    pub(crate) fn block_ref_count_resolver(&self) -> Rc<dyn Fn(&str) -> usize> {
+        let counts = self.block_ref_counts.clone();
+        Rc::new(move |id| counts.borrow().get(id).copied().unwrap_or(0))
+    }
+
+    /// The editor syntax style with the block-label resolver + generation
+    /// installed — every `set_markdown_style` call routes through here.
+    fn editor_style(&self) -> gpui_editor::SyntaxStyle {
+        let mut st = theme::editor_syntax_style();
+        st.block_label = Some(self.block_label_resolver());
+        st.block_label_gen = self.block_label_gen;
+        st.block_ref_count = Some(self.block_ref_count_resolver());
+        st
+    }
+
+    /// Resolve every `[[Page#^id]]` in `content` into the label store (the
+    /// target block's text, prefix-stripped + truncated). A change bumps the
+    /// generation and re-pushes editor styles so cached lines re-key.
+    fn ensure_content_block_labels(&mut self, content: &str, cx: &mut Context<Self>) {
+        let mut changed = false;
+        let rest = content;
+        // Both ref forms: `[[Page#^id]]` (DB/reader form — also warms the
+        // id→page index) and `((id))` (frontend form — page via the index).
+        let mut refs: Vec<(String, String)> = Vec::new();
+        {
+            let mut r = rest;
+            while let Some(open) = r.find("[[") {
+                r = &r[open + 2..];
+                let Some(close) = r.find("]]") else { break };
+                let inner = &r[..close];
+                r = &r[close + 2..];
+                if let Some((page, id)) = inner.split_once("#^")
+                    && !page.is_empty()
+                    && !id.is_empty()
+                    && !id.contains('|')
+                {
+                    self.block_ref_index
+                        .borrow_mut()
+                        .insert(id.to_string(), page.to_string());
+                    refs.push((page.to_string(), id.to_string()));
+                }
+            }
+            let mut r = rest;
+            while let Some(open) = r.find("((") {
+                r = &r[open + 2..];
+                let Some(close) = r.find("))") else { break };
+                let id = &r[..close];
+                r = &r[close + 2..];
+                if id.is_empty()
+                    || !id
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                {
+                    continue;
+                }
+                // Index first; else find the page CARRYING the anchor (ids
+                // saved as literal `((id))` before the index warmed) and
+                // record it — self-healing for pre-index content. Two
+                // statements: the read borrow must END before the fallback
+                // takes the write borrow.
+                let hit = self.block_ref_index.borrow().get(id).cloned();
+                let page = hit.or_else(|| {
+                    let hit = self
+                        .db
+                        .page_referencing(&format!(" ^{id}"))
+                        .ok()
+                        .flatten()?;
+                    let p = self.db.get_page(hit).ok().flatten()?;
+                    let title = p.journal_date.clone().unwrap_or(p.title);
+                    self.block_ref_index
+                        .borrow_mut()
+                        .insert(id.to_string(), title.clone());
+                    Some(title)
+                });
+                if let Some(page) = page {
+                    refs.push((page, id.to_string()));
+                }
+            }
+        }
+        for (page, id) in refs {
+            let Ok(Some(p)) = self.db.get_page_by_title(&page) else {
+                continue;
+            };
+            let lines: Vec<&str> = p.content.split('\n').collect();
+            let label = lines.iter().enumerate().find_map(|(li, line)| {
+                let (cut, lid) = gpui_markdown::syntax::block_id(line)?;
+                (lid == id).then(|| {
+                    let mut t = line[..cut].trim();
+                    // Strip list/task/heading dressing for a clean label.
+                    for p in ["- [ ] ", "- [x] ", "- [X] ", "- ", "* ", "+ "] {
+                        if let Some(r) = t.strip_prefix(p) {
+                            t = r.trim_start();
+                            break;
+                        }
+                    }
+                    t = t.trim_start_matches('#').trim_start();
+                    let indent = |l: &str| l.len() - l.trim_start().len();
+                    let base = indent(line);
+                    let has_children = lines
+                        .get(li + 1)
+                        .is_some_and(|n| !n.trim().is_empty() && indent(n) > base);
+                    let mut label: String = t.chars().take(60).collect();
+                    if t.chars().count() > 60 || has_children {
+                        label.push('…');
+                    }
+                    label
+                })
+            });
+            if let Some(label) = label {
+                let entry = (page.to_lowercase(), label);
+                if self.block_label_store.borrow().get(&id) != Some(&entry) {
+                    self.block_label_store.borrow_mut().insert(id, entry);
+                    changed = true;
+                }
+            }
+        }
+        // The other side: `^id` anchors this content CARRIES — referenced
+        // ones get a count badge. Only cold ids query the DB; the debounced
+        // doc-changed refresh keeps the known set current.
+        for line in content.split('\n') {
+            if let Some((_, id)) = gpui_markdown::syntax::block_id(line)
+                && !self.block_ref_counts.borrow().contains_key(id)
+            {
+                let n = self.db.count_block_refs(id).unwrap_or(0);
+                self.block_ref_counts.borrow_mut().insert(id.to_string(), n);
+                changed |= n > 0;
+            }
+        }
+        if changed {
+            self.bump_block_meta(cx);
+        }
+    }
+
+    /// Bump the block-metadata generation (labels / ref counts changed) and
+    /// re-push editor styles so cached lines re-key.
+    fn bump_block_meta(&mut self, cx: &mut Context<Self>) {
+        self.block_label_gen += 1;
+        let states: Vec<Entity<EditorState>> = self
+            .day_editors
+            .values()
+            .map(|de| de.state.clone())
+            .chain(self.page_editor.as_ref().map(|pe| pe.state.clone()))
+            .collect();
+        let style = self.editor_style();
+        for state in states {
+            state.update(cx, |editor, cx| {
+                editor.set_markdown_style(style.clone(), cx)
+            });
+        }
+    }
+
+    /// Re-query every known block-ref count (a save may have added or removed
+    /// references anywhere); runs on the debounced doc-changed refresh.
+    fn refresh_block_ref_counts(&mut self, cx: &mut Context<Self>) {
+        let ids: Vec<String> = self.block_ref_counts.borrow().keys().cloned().collect();
+        let mut changed = false;
+        for id in ids {
+            let n = self.db.count_block_refs(&id).unwrap_or(0);
+            changed |= self.block_ref_counts.borrow_mut().insert(id, n) != Some(n);
+        }
+        if changed {
+            self.bump_block_meta(cx);
+        }
+    }
+
+    /// Resolve the block labels referenced inside backlink snippets, so the
+    /// linked-reference cards render `[[Page#^id]]` refs as the block's text.
+    fn warm_backlink_labels(&mut self, links: &[Backlink], cx: &mut Context<Self>) {
+        let snippets: Vec<String> = links
+            .iter()
+            .filter(|b| b.snippet.contains("#^") || b.snippet.contains("(("))
+            .map(|b| b.snippet.clone())
+            .collect();
+        for s in snippets {
+            self.ensure_content_block_labels(&s, cx);
+        }
+    }
+
+    /// Open a linked-reference card's source page and seat the caret at the
+    /// referencing line (Logseq-style jump-to-block). `line` is the 0-based
+    /// line index from [`Backlink`]; the byte offset is recomputed against the
+    /// editor's (frontend-form) content once the page is up.
+    pub fn open_backlink(
+        &mut self,
+        page_id: i64,
+        line: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.db.is_whiteboard(page_id) {
+            self.open_whiteboard(page_id, window, cx);
+            return;
+        }
+        match self.db.get_page(page_id) {
+            Ok(Some(page)) => {
+                self.open_page_foreground(page, window, cx);
+                let weak = cx.entity().downgrade();
+                window.defer(cx, move |window, cx| {
+                    let _ = weak.update(cx, |this, cx| {
+                        let Some(pe) = this.page_editor.as_ref().filter(|pe| pe.id == page_id)
+                        else {
+                            return;
+                        };
+                        let source = pe.state.read(cx).value().to_string();
+                        let offset = source
+                            .split_inclusive('\n')
+                            .take(line)
+                            .map(str::len)
+                            .sum::<usize>();
+                        this.edit_page_at_offset(offset, px(160.0), window, cx);
+                    });
+                });
+            }
+            Ok(None) => log::warn!("page {page_id} not found"),
+            Err(e) => log::error!("open page {page_id}: {e}"),
+        }
+    }
+
     fn ensure_content_math(&mut self, content: &str, cx: &mut Context<Self>) {
+        self.ensure_content_block_labels(content, cx);
         for source in gpui_editor::math_sources(content) {
             self.ensure_math_loaded(source, cx);
         }
@@ -5745,6 +6125,71 @@ impl AppView {
         }
     }
 
+    /// The count badge on a referenced block was clicked: a dialog listing
+    /// every page referencing the block, each row jumping to its reference.
+    fn show_block_refs_dialog(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        let refs = self.db.block_referencers(&id).unwrap_or_default();
+        if refs.is_empty() {
+            return;
+        }
+        self.warm_backlink_labels(&refs, cx);
+        let mut style = theme::markdown_style(self.list_indent(), px(13.0));
+        style.block_label = Some(self.block_label_resolver());
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, window, _cx| {
+            let mut list = div().flex().flex_col().gap_2();
+            for (i, bl) in refs.iter().enumerate() {
+                let weak_row = weak.clone();
+                let page_id = bl.source_page_id;
+                let line = bl.line;
+                list = list.child(
+                    div()
+                        .id(("block-ref-row", i))
+                        .px_3()
+                        .py_2()
+                        .rounded(px(6.0))
+                        .bg(theme::glass())
+                        .cursor_pointer()
+                        .hover(|h| h.bg(theme::glass_strong()))
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(theme::accent())
+                                .child(bl.source_page_title.clone()),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(theme::text_secondary())
+                                .child(
+                                    gpui_markdown::MarkdownView::new(
+                                        format!("block-ref-md-{i}"),
+                                        bl.snippet.clone(),
+                                    )
+                                    .style(style.clone()),
+                                ),
+                        )
+                        .on_click(move |_, window, cx| {
+                            window.close_dialog(cx);
+                            let _ = weak_row.update(cx, |this, cx| {
+                                this.open_backlink(page_id, line, window, cx)
+                            });
+                        }),
+                );
+            }
+            dialog
+                .title(format!("Linked references ({})", refs.len()))
+                .w(px(480.0))
+                // The default dialog seat (10% down) reads awkwardly for a
+                // click-through list — drop it toward the window's middle.
+                .margin_top(window.viewport_size().height * 0.3)
+                .child(list)
+        });
+    }
+
     /// Open the "insert page card" dialog, then place the chosen page as a card
     /// at world `(x, y)` on board `board_id`.
     fn place_embed_dialog(
@@ -6736,9 +7181,10 @@ impl AppView {
                 .map(|de| de.state.clone())
                 .chain(self.page_editor.as_ref().map(|pe| pe.state.clone()))
                 .collect();
+            let style = self.editor_style();
             for state in states {
                 state.update(cx, |editor, cx| {
-                    editor.set_markdown_style(theme::editor_syntax_style(), cx)
+                    editor.set_markdown_style(style.clone(), cx)
                 });
             }
         }
@@ -7110,10 +7556,11 @@ impl AppView {
             .map(|de| de.state.clone())
             .chain(self.page_editor.as_ref().map(|pe| pe.state.clone()))
             .collect();
+        let style = self.editor_style();
         for state in states {
             state.update(cx, |editor, cx| {
                 if on {
-                    editor.set_markdown_style(theme::editor_syntax_style(), cx);
+                    editor.set_markdown_style(style.clone(), cx);
                 } else {
                     editor.clear_markdown_style(cx);
                 }
@@ -8817,6 +9264,7 @@ impl AppView {
                 // Backlink snippets now show the rewritten `[[new]]` text.
                 let backlinks = self.db.backlinks(id).unwrap_or_default();
                 let unlinked = self.db.unlinked_mentions(id).unwrap_or_default();
+                self.warm_backlink_labels(&backlinks, cx);
                 if let Some(pe) = self.page_editor.as_mut() {
                     pe.title = new_title.clone();
                     pe.backlinks = backlinks;
@@ -9841,6 +10289,7 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 fn make_editor(
     content: &str,
     wysiwyg: bool,
+    style: gpui_editor::SyntaxStyle,
     list_indent: usize,
     image_store: Rc<RefCell<crate::images::ImageStore>>,
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
@@ -9937,7 +10386,7 @@ fn make_editor(
     // you type (W1). Off = plain raw markdown ("editor mode").
     if wysiwyg {
         editor.update(cx, |editor, cx| {
-            editor.set_markdown_style(theme::editor_syntax_style(), cx)
+            editor.set_markdown_style(style.clone(), cx)
         });
     }
     editor

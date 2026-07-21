@@ -290,6 +290,9 @@ fn roman(mut n: u32) -> String {
 pub enum LinkHit {
     Page(String),
     Url(String),
+    /// A `((id))` block reference (Logseq-style frontend form) — the host
+    /// resolves the id to its page + anchor.
+    BlockRef(String),
 }
 
 /// Split a wiki-link's inner text into `(target, display)`:
@@ -369,6 +372,23 @@ pub fn links(line: &str) -> Vec<(std::ops::Range<usize>, LinkHit)> {
             }
             i = close + 2;
             continue;
+        }
+        // Block ref: `((id))` — an anchor-shaped id (word chars / `-`).
+        if c == b'('
+            && i + 1 < end
+            && b[i + 1] == b'('
+            && let Some(close) = find2(b, i + 2, end, b')', b')')
+        {
+            let id = &line[i + 2..close];
+            if !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            {
+                out.push((i..close + 2, LinkHit::BlockRef(id.to_string())));
+                i = close + 2;
+                continue;
+            }
         }
         // Footnote reference [^label]: styled like a link but not one.
         if c == b'['
@@ -451,6 +471,16 @@ pub fn block_id(line: &str) -> Option<(usize, &str)> {
 /// block carrying `^id` on the page `Note`; anything else is a plain page
 /// target. Only the `#^` form is an anchor — a bare `#` stays part of the
 /// title (page names may contain it, and `file.pdf#p3` has its own meaning).
+/// Superscript digits (`¹²…`) for the block reference-count badge — reads
+/// small at any text size, so the badge doesn't shout on heading lines.
+pub fn superscript(n: usize) -> String {
+    const DIGITS: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    n.to_string()
+        .bytes()
+        .map(|b| DIGITS[(b - b'0') as usize])
+        .collect()
+}
+
 pub fn split_block_anchor(target: &str) -> (&str, Option<&str>) {
     match target.split_once("#^") {
         Some((page, id)) if !page.is_empty() && !id.is_empty() => (page, Some(id)),

@@ -1202,6 +1202,7 @@ impl Db {
                 source_page_id: id,
                 source_page_title: source_title,
                 snippet: clip_line(content[line_start..line_end].trim()),
+                line: content[..line_start].matches('\n').count(),
             });
         }
         Ok(out)
@@ -1226,14 +1227,15 @@ impl Db {
             .collect()
     }
 
-    /// Pages that link to `page_id`, each with the linking line as a
-    /// snippet — the "Linked References" list.
+    /// Pages that link to `page_id`, each with the referencing block (line +
+    /// indented children) as a markdown snippet — the "Linked References"
+    /// list. `line` locates the reference for jump-to-block.
     pub fn backlinks(&self, page_id: i64) -> rusqlite::Result<Vec<Backlink>> {
         let Some(target) = self.get_page(page_id)? else {
             return Ok(Vec::new());
         };
         let mut stmt = self.conn.prepare(
-            "SELECT p.id, p.title, p.content FROM page_links l \
+            "SELECT p.id, p.title, p.content, p.kind FROM page_links l \
              JOIN pages p ON p.id = l.source_page_id \
              WHERE l.target_page_id = ?1 AND p.id != ?1 \
              ORDER BY p.is_journal DESC, p.journal_date DESC, p.title COLLATE NOCASE",
@@ -1243,15 +1245,31 @@ impl Db {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
             ))
         })?;
         let mut out = Vec::new();
         for r in rows {
-            let (id, title, content) = r?;
+            let (id, title, content, kind) = r?;
+            // A whiteboard's content is scene JSON, not prose.
+            if kind == "whiteboard" {
+                out.push(Backlink {
+                    source_page_id: id,
+                    source_page_title: title,
+                    snippet: "Whiteboard".into(),
+                    line: 0,
+                });
+                continue;
+            }
+            let (line, snippet) = match find_reference(&content, &target.title) {
+                Some((line, off)) => (line, reference_block(&content, off)),
+                None => (0, snippet(&content, &format!("[[{}]]", target.title))),
+            };
             out.push(Backlink {
                 source_page_id: id,
                 source_page_title: title,
-                snippet: snippet(&content, &format!("[[{}]]", target.title)),
+                snippet,
+                line,
             });
         }
         Ok(out)
@@ -1319,6 +1337,66 @@ impl Db {
         Ok(rows)
     }
 
+    /// How many pages reference block `id` — via the DB form `[[Page#^id]]`
+    /// or a literal `((id))` — for the block's reference-count badge.
+    /// Whiteboards are excluded (scene JSON, not prose).
+    pub fn count_block_refs(&self, id: &str) -> rusqlite::Result<usize> {
+        let db_form = format!("%#^{}]]%", escape_like(id));
+        let fe_form = format!("%(({}))%", escape_like(id));
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM pages \
+                 WHERE (content LIKE ?1 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\') \
+                 AND kind != 'whiteboard'",
+                params![db_form, fe_form],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n as usize)
+    }
+
+    /// The pages behind [`Self::count_block_refs`], each with its referencing
+    /// block as a snippet — the badge's click-through list.
+    pub fn block_referencers(&self, id: &str) -> rusqlite::Result<Vec<Backlink>> {
+        let db_form = format!("%#^{}]]%", escape_like(id));
+        let fe_form = format!("%(({}))%", escape_like(id));
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, content FROM pages \
+             WHERE (content LIKE ?1 ESCAPE '\\' OR content LIKE ?2 ESCAPE '\\') \
+             AND kind != 'whiteboard' \
+             ORDER BY is_journal DESC, journal_date DESC, title COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map(params![db_form, fe_form], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let needles = [format!("#^{id}]]"), format!("(({id}))")];
+        let mut out = Vec::new();
+        for r in rows {
+            let (pid, title, content) = r?;
+            let mut line = 0;
+            let mut off = 0;
+            let mut scan = 0;
+            for (idx, l) in content.split('\n').enumerate() {
+                if needles.iter().any(|n| l.contains(n.as_str())) {
+                    line = idx;
+                    off = scan;
+                    break;
+                }
+                scan += l.len() + 1;
+            }
+            out.push(Backlink {
+                source_page_id: pid,
+                source_page_title: title,
+                snippet: reference_block(&content, off),
+                line,
+            });
+        }
+        Ok(out)
+    }
+
     /// The id of a page whose content references `needle` (e.g. an image path) —
     /// used to jump to the page that shows a file found in search. First match by
     /// the usual ordering (journals newest-first, then title).
@@ -1353,6 +1431,53 @@ pub(crate) fn snippet(content: &str, needle: &str) -> String {
         .unwrap_or("")
         .trim();
     clip_line(line)
+}
+
+/// The first line whose links target `title` (a `[[wiki]]`, anchored
+/// `[[title#…]]`, or `#tag` form, case-insensitive), as
+/// `(line index, byte offset of the line start)`.
+fn find_reference(content: &str, title: &str) -> Option<(usize, usize)> {
+    use gpui_markdown::syntax::{LinkHit, links, split_block_anchor, split_heading_anchor};
+    let mut off = 0;
+    for (idx, line) in content.split('\n').enumerate() {
+        for (_, hit) in links(line) {
+            if let LinkHit::Page(t) = hit {
+                let base = split_heading_anchor(split_block_anchor(&t).0).0;
+                if t.eq_ignore_ascii_case(title) || base.eq_ignore_ascii_case(title) {
+                    return Some((idx, off));
+                }
+            }
+        }
+        off += line.len() + 1;
+    }
+    None
+}
+
+/// The referencing block, Logseq-style: the line at `line_start` plus its
+/// more-indented children, dedented to the line's own indent and capped.
+fn reference_block(content: &str, line_start: usize) -> String {
+    const MAX_LINES: usize = 8;
+    fn indent(l: &str) -> usize {
+        l.len() - l.trim_start().len()
+    }
+    fn dedent(l: &str, base: usize) -> &str {
+        &l[indent(l).min(base)..]
+    }
+    let mut it = content[line_start..].split('\n');
+    let first = it.next().unwrap_or("");
+    let base = indent(first);
+    let mut out = vec![dedent(first, base).to_string()];
+    for line in it {
+        if line.trim().is_empty() || indent(line) <= base {
+            break;
+        }
+        if out.len() == MAX_LINES {
+            out.push("…".into());
+            break;
+        }
+        out.push(dedent(line, base).to_string());
+    }
+    out.join("\n")
 }
 
 /// Truncate a snippet line to a readable length.

@@ -83,7 +83,7 @@ crate root; nothing from `gpui-markdown` is re-exported.)
 | [`EditorState::copy_table`](#copy_table) | method | `fn copy_table(&mut self, cx: &mut Context<Self>)` | Whole table to the clipboard (markdown) |
 | [`EditorState::set_table_style`](#set_table_style) | method | `fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>)` | Rewrite the table's style marker |
 | [`EditorEvent`](#enum-editorevent) | enum | 8 variants | Everything the editor asks the host to do |
-| [`SyntaxStyle`](#struct-syntaxstyle) | struct | 22 public fields | Colors + fonts + icon hooks for WYSIWYG |
+| [`SyntaxStyle`](#struct-syntaxstyle) | struct | 25 public fields | Colors + fonts + icon hooks for WYSIWYG — incl. `block_label: Option<Rc<dyn Fn(&str, &str) -> Option<String>>>` (block-link display resolver) + `block_label_gen: u64` (bumped when labels change, re-keys the line cache) + `block_ref_count: Option<BlockRefCountFn>` (id → referencing-page count; >0 paints a superscript badge over the hidden ` ^id` anchor whose click emits `OpenWikiLink("refs:^id")`) |
 | [`AlertIcons`](#struct-alerticons) | struct | 5 public fields | SVG asset paths for alert title icons |
 | [`Diagnostic`](#struct-diagnostic) | struct | `pub range: Range<usize>` | A flagged (underlined) span |
 | [`CellAlign`](#enum-cellalign) | enum | `Left · Center · Right` | A table column's alignment |

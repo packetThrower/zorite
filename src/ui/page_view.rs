@@ -353,7 +353,12 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         let embeds = app.build_embed_map(&content);
         let fold_page_id = pe.id;
         let mut md = gpui_markdown::MarkdownView::new("page-md", content)
-            .style(theme::markdown_style(app.list_indent(), app.text_size()))
+            .style({
+                let mut st = theme::markdown_style(app.list_indent(), app.text_size());
+                st.block_label = Some(app.block_label_resolver());
+                st.block_ref_count = Some(app.block_ref_count_resolver());
+                st
+            })
             // Track block bounds so find can scroll the active match into view.
             .track_blocks(app.md_block_scroll.clone())
             .on_image(crate::ui::image::renderer(
@@ -751,6 +756,21 @@ fn backlink_row(
     cx: &mut Context<AppView>,
 ) -> gpui::AnyElement {
     let page_id = bl.source_page_id;
+    let line = bl.line;
+    // The referencing block rendered as real markdown (block-ref labels
+    // resolve via the shared store); clicking anywhere on the card jumps to
+    // the referencing line on the source page.
+    let snippet = {
+        let mut st = theme::markdown_style(app.list_indent(), px(13.0));
+        st.block_label = Some(app.block_label_resolver());
+        div()
+            .text_size(px(13.0))
+            .text_color(theme::text_secondary())
+            .child(
+                gpui_markdown::MarkdownView::new(format!("bl-md-{i}"), bl.snippet.clone())
+                    .style(st),
+            )
+    };
     let row = div()
         .id(("bl", i))
         .px_3()
@@ -768,15 +788,10 @@ fn backlink_row(
                 .text_color(theme::accent())
                 .child(bl.source_page_title.clone()),
         )
-        .child(
-            div()
-                .text_size(px(13.0))
-                .text_color(theme::text_secondary())
-                .child(bl.snippet.clone()),
-        )
+        .child(snippet)
         .on_click(
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
-                this.open_page_id(page_id, window, cx);
+                this.open_backlink(page_id, line, window, cx);
             }),
         );
     // The linked-reference rows carry the shared page menu too.
