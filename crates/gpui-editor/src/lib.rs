@@ -9859,7 +9859,7 @@ impl Element for EditorElement {
                     continue;
                 };
                 let line = &editor.content[start..editor.line_end(i)];
-                if markdown_syntax::heading_level(line).is_none() || lh == px(0.) {
+                if markdown_syntax::line_heading_level(line).is_none() || lh == px(0.) {
                     continue;
                 }
                 let top = bounds.origin.y + line_tops[i];

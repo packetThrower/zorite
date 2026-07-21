@@ -1232,12 +1232,28 @@ pub(crate) fn heading_level(line: &str) -> Option<u8> {
     ((1..=6).contains(&n) && (n == b.len() || b[n] == b' ')).then_some(n as u8)
 }
 
+/// [`heading_level`], also matching a heading behind a list marker
+/// (`- ### Notes`, the outliner shape). Returns the depth plus the line's
+/// indent when it's a LIST heading (`None` = a top-level heading) — list
+/// headings fold by indent, not by heading boundaries.
+pub(crate) fn line_heading_level(line: &str) -> Option<(u8, Option<usize>)> {
+    if let Some(l) = heading_level(line) {
+        return Some((l, None));
+    }
+    let p = list_prefix(line).map(|(p, ..)| p)?;
+    let l = heading_level(&line[p..])?;
+    Some((l, Some(line.len() - line.trim_start().len())))
+}
+
 /// Line ranges (heading line through section end) of collapsed heading
 /// sections: `folded` holds the trimmed source lines of folded headings
-/// (`## Goals`). A section runs from its heading to the next heading of the
-/// same or a higher level, fence-aware — mirrors
-/// [`gpui_markdown::syntax::extract_section`]. Every line matching a folded
-/// key folds (duplicate headings fold together; the key is the line text).
+/// (`## Goals`). A top-level section runs from its heading to the next
+/// heading of the same or a higher level, fence-aware — mirrors
+/// [`gpui_markdown::syntax::extract_section`]. A LIST heading's section
+/// (`- ### Notes`) is its indented children: it runs while lines sit deeper
+/// than the heading's own indent (blank lines included). Every line matching
+/// a folded key folds (duplicate headings fold together; the key is the line
+/// text).
 pub(crate) fn heading_fold_regions(
     content: &str,
     folded: &std::collections::HashSet<String>,
@@ -1246,6 +1262,7 @@ pub(crate) fn heading_fold_regions(
         return Vec::new();
     }
     let lines: Vec<&str> = content.split('\n').collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
     let mut out = Vec::new();
     let mut in_fence = false;
     let mut i = 0;
@@ -1258,17 +1275,23 @@ pub(crate) fn heading_fold_regions(
         let level = if in_fence {
             None
         } else {
-            heading_level(lines[i])
+            line_heading_level(lines[i])
         };
         match level {
-            Some(l) if folded.contains(lines[i].trim()) => {
+            Some((l, list_indent)) if folded.contains(lines[i].trim()) => {
                 let start = i;
                 i += 1;
                 while i < lines.len() {
                     if lines[i].trim_start().starts_with("```") {
                         in_fence = !in_fence;
-                    } else if !in_fence && heading_level(lines[i]).is_some_and(|n| n <= l) {
-                        break;
+                    } else if !in_fence {
+                        let stop = match list_indent {
+                            None => heading_level(lines[i]).is_some_and(|n| n <= l),
+                            Some(ind) => !lines[i].trim().is_empty() && indent(lines[i]) <= ind,
+                        };
+                        if stop {
+                            break;
+                        }
                     }
                     i += 1;
                 }
@@ -3154,6 +3177,11 @@ mod tests {
         let folded: std::collections::HashSet<String> = ["# Top".to_string()].into();
         assert_eq!(heading_fold_regions(src, &folded), vec![0..9]);
         assert!(heading_fold_regions(src, &Default::default()).is_empty());
+        // A LIST heading folds its indented children (blanks included) and
+        // stops at the next sibling — not at unrelated later headings.
+        let src = "* ### Notes: ^abc\n  - one\n\n  - two\n* sibling\n# After";
+        let folded: std::collections::HashSet<String> = ["* ### Notes: ^abc".to_string()].into();
+        assert_eq!(heading_fold_regions(src, &folded), vec![0..4]);
     }
 
     #[test]

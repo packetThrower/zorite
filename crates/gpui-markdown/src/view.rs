@@ -1519,6 +1519,15 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
                     ctx.strike_done = prev_strike;
                 }
             }
+            // A folded heading inside a list item hides the item's remaining
+            // children (its nested sub-list) — the outliner twin of the root
+            // walk's section skip. Siblings are separate topics and stay.
+            if let mdast::Node::Heading(h) = child
+                && heading_fold_key(h, &ctx.source)
+                    .is_some_and(|k| ctx.folded_headings.contains(&k))
+            {
+                break;
+            }
         }
 
         // If the item leads with a heading, nudge the bullet down to the
