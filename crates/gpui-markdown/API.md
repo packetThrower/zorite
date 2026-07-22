@@ -44,6 +44,7 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 | [`link_at`](#link_at) | fn | `fn link_at(line: &str, col: usize) -> Option<LinkHit>` | The link under a byte column | — |
 | [`block_id`](#block_id) | fn | `fn block_id(line: &str) -> Option<(usize, &str)>` | Trailing ` ^block-id` anchor on a line | — |
 | [`split_block_anchor`](#split_block_anchor) | fn | `fn split_block_anchor(target: &str) -> (&str, Option<&str>)` | Split `Note#^id` into `(page, block id)` | — |
+| [`superscript`](#superscript) | fn | `fn superscript(n: usize) -> String` | `n` as superscript digits (`¹²`) — the ref-count badge text | — |
 | [`split_heading_anchor`](#split_heading_anchor) | fn | `fn split_heading_anchor(target: &str) -> (&str, Option<&str>)` | Split `Note#Heading` into `(page, heading)` | — |
 | [`find_heading_line`](#find_heading_line) | fn | `fn find_heading_line(content: &str, heading: &str) -> Option<usize>` | Byte offset of a matching ATX heading's line | — |
 | [`find_block_line`](#find_block_line) | fn | `fn find_block_line(content: &str, id: &str) -> Option<usize>` | Byte offset of the line carrying `^id` | — |
@@ -74,7 +75,7 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 | [`MarkdownView::on_embed_image`](#markdownviewon_embed_image) | builder | `fn on_embed_image(self, renderer: ImageRenderer) -> Self` | Image renderer used *inside* embeds | `view` |
 | [`MarkdownView::folded_headings`](#markdownviewfolded_headings) | builder | `fn folded_headings(self, folded: HashSet<String>) -> Self` | The host-owned set of collapsed headings | `view` |
 | [`MarkdownView::on_heading_toggle`](#markdownviewon_heading_toggle) | builder | `fn on_heading_toggle(self, handler: HeadingToggleHandler) -> Self` | Handle heading fold-chevron clicks | `view` |
-| [`MarkdownStyle`](#struct-markdownstyle) | struct | 19 pub fields | Visual configuration (host maps its theme on) | `view` |
+| [`MarkdownStyle`](#struct-markdownstyle) | struct | 21 pub fields | Visual configuration (host maps its theme on) — incl. `block_label: Option<Rc<dyn Fn(&str, &str) -> Option<String>>>` (block-link display resolver) + `block_ref_count: Option<BlockRefCountFn>` (id → referencing-page count; >0 renders a superscript badge linking to `refs:^id` in place of the hidden ` ^id` anchor) | `view` |
 | `impl Default for MarkdownStyle` | trait impl | `fn default() -> Self` | Neutral dark palette | `view` |
 | [`AlertColors`](#struct-alertcolors) | struct | 5 pub fields | Alert border/title colors, one per kind | `view` |
 | `impl Default for AlertColors` | trait impl | `fn default() -> Self` | GitHub's dark palette | `view` |
@@ -549,6 +550,17 @@ space** starts (so renderers can hide the whole tail) and the id itself
 **Guarantees & edge cases** — the id must be non-empty, made of word chars /
 `-`, and sit at the line's **end** (trailing whitespace tolerated; a mid-line
 `^id` doesn't count).
+
+---
+
+## `superscript`
+
+```rust
+pub fn superscript(n: usize) -> String
+```
+
+`n` rendered as Unicode superscript digits (`12` → `¹²`) — the block
+reference-count badge text, small at any font size. Infallible.
 
 ---
 

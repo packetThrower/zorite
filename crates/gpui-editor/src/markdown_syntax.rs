@@ -52,6 +52,19 @@ pub struct SyntaxStyle {
     pub rule: Hsla,
     /// `<mark>` highlight background.
     pub mark_bg: Hsla,
+    /// Resolves a block link's display text: `(page, id)` → the target
+    /// block's text, host-supplied. `None` (or a `None` return) keeps the
+    /// `Page → id` form.
+    #[allow(clippy::type_complexity)]
+    pub block_label: Option<std::rc::Rc<dyn Fn(&str, &str) -> Option<String>>>,
+    /// Bumped by the host when resolved labels change — part of the line-run
+    /// cache epoch, so cached lines re-key when a target block edits.
+    pub block_label_gen: u64,
+    /// How many pages reference a block id — a non-zero count paints a small
+    /// badge in place of the hidden ` ^id` anchor (Logseq-style; clicking it
+    /// emits `OpenWikiLink("refs:^id")` for the host to list the referencers).
+    /// Count changes ride `block_label_gen` for cache re-keying.
+    pub block_ref_count: Option<BlockRefCountFn>,
     /// Popover/menu surface background (e.g. the right-click table menu).
     pub popover_bg: Hsla,
     /// Popover/menu border.
@@ -96,6 +109,9 @@ impl Style {
 /// icon. Host-provided so the crate makes no assumption about which assets exist.
 pub type PropertyIconFn = std::rc::Rc<dyn Fn(&str) -> Option<gpui::SharedString>>;
 
+/// Maps a block id to how many pages reference it (0 = no badge).
+pub type BlockRefCountFn = std::rc::Rc<dyn Fn(&str) -> usize>;
+
 /// Styling a scanned span adds on top of the editor's base run.
 #[derive(Clone, Default)]
 struct Style {
@@ -122,7 +138,7 @@ struct Style {
     /// What a hidden marker paints in its place (e.g. a block link's `#^`
     /// shows ` → `): every replacement byte maps back to the span's start, so
     /// the display↔source maps stay consistent. `None` = plain removal.
-    replace: Option<&'static str>,
+    replace: Option<SharedString>,
 }
 
 struct Span {
@@ -317,7 +333,7 @@ pub(crate) fn hidden_runs(
     // place). A visible segment is copied verbatim, so source↔display is 1:1
     // within it — which lets a diagnostic (source coords) map straight onto
     // the display.
-    let mut segs: Vec<(Range<usize>, Option<&Style>, Option<&'static str>)> = Vec::new();
+    let mut segs: Vec<(Range<usize>, Option<&Style>, Option<SharedString>)> = Vec::new();
     let mut pos = 0;
     for span in &spans {
         if span.range.start > pos {
@@ -333,7 +349,7 @@ pub(crate) fn hidden_runs(
             && (span.style.always_hide || force || (!reveal_inline && !in_construct && !in_prefix));
         if !hidden {
             segs.push((span.range.clone(), Some(&span.style), None));
-        } else if let Some(rep) = span.style.replace {
+        } else if let Some(rep) = span.style.replace.clone() {
             segs.push((span.range.clone(), Some(&span.style), Some(rep)));
         }
         pos = span.range.end;
@@ -355,7 +371,7 @@ pub(crate) fn hidden_runs(
         // back to the span's start (so caret/click math lands on the marker),
         // and it takes one run in the marker's own style.
         if let Some(rep) = replace {
-            display.push_str(rep);
+            display.push_str(rep.as_ref());
             map.extend(std::iter::repeat_n(src.start, rep.len()));
             runs.push(run_for(
                 rep.len(),
@@ -553,13 +569,35 @@ fn apply_heading(
 /// UTF-8-safe (an ASCII byte never appears inside a multi-byte char).
 fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut Vec<Span>) {
     let b = text.as_bytes();
-    if apply_heading(text, start, end, st, out) {
-        return;
-    }
     // An Obsidian block-id anchor at the line's end (` ^some-id`) is addressing,
     // not content: a marker span dims it and W6 hides it (reveal-on-caret).
-    if let Some((at, _)) = gpui_markdown::syntax::block_id(&text[start..end]) {
-        marker(out, start + at..end, st.marker);
+    // A referenced block instead paints a small count badge in the anchor's
+    // place (Logseq-style; the anchor hitbox/click emit `refs:^id`).
+    // Hidden BEFORE the heading fast-path — heading lines carry anchors too
+    // (`### Notes ^id` used to show the raw tail).
+    let end = match gpui_markdown::syntax::block_id(&text[start..end]) {
+        Some((at, id)) => {
+            let refs = st.block_ref_count.as_ref().map_or(0, |f| f(id));
+            if refs > 0 {
+                let badge = format!(" {}", gpui_markdown::syntax::superscript(refs));
+                out.push(Span {
+                    range: start + at..end,
+                    style: Style {
+                        color: Some(st.tag),
+                        hide: true,
+                        replace: Some(SharedString::from(badge)),
+                        ..Default::default()
+                    },
+                });
+            } else {
+                marker(out, start + at..end, st.marker);
+            }
+            start + at
+        }
+        None => end,
+    };
+    if apply_heading(text, start, end, st, out) {
+        return;
     }
     // Blockquote: leading `>` (GFM nesting) + optional spaces. Hide the markers;
     // the body keeps inline styling over a muted base color (set by the caller).
@@ -859,6 +897,36 @@ fn scan_inline(
             i = rb + 1;
             continue;
         }
+        // Block ref, frontend form: `((id))` — a construct ONLY when the
+        // host's resolver knows the id (so prose parens stay prose). Renders
+        // as the target block's text, link-colored; raw on caret.
+        if c == b'('
+            && !is_backslash_escaped(b, i)
+            && i + 1 < end
+            && b[i + 1] == b'('
+            && let Some(close) = find2(b, i + 2, end, b')', b')')
+        {
+            let id = &text[i + 2..close];
+            let label = (!id.is_empty()
+                && id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'))
+            .then(|| st.block_label.as_ref().and_then(|f| f("", id)))
+            .flatten();
+            if let Some(label) = label {
+                out.push(Span {
+                    range: i..close + 2,
+                    style: Style {
+                        color: Some(st.link),
+                        hide: true,
+                        replace: Some(SharedString::from(label)),
+                        ..Default::default()
+                    },
+                });
+                i = close + 2;
+                continue;
+            }
+        }
         // Wiki-link: [[Page]] (check before single-[ link).
         if c == b'['
             && !is_backslash_escaped(b, i)
@@ -891,15 +959,38 @@ fn scan_inline(
                 }
                 _ => None,
             };
-            match anchor {
-                Some((a, alen)) if a > 0 && a + alen < target_end => {
+            // (See also the `((id))` frontend form handled below.)
+            // A resolvable `[[Page#^id]]` (no alias) displays the TARGET
+            // BLOCK'S TEXT instead of `Page → id` — the whole inner span
+            // swaps for the resolved label (reveal-on-caret shows the raw
+            // form for editing, like any hidden construct).
+            let resolved = match anchor {
+                Some((a, 2)) if a > 0 && a + 2 < target_end && target_end == inner.len() => st
+                    .block_label
+                    .as_ref()
+                    .and_then(|f| f(&inner[..a], &inner[a + 2..target_end])),
+                _ => None,
+            };
+            match (resolved, anchor) {
+                (Some(label), _) => {
+                    out.push(Span {
+                        range: i + 2..close,
+                        style: Style {
+                            color: Some(st.link),
+                            hide: true,
+                            replace: Some(SharedString::from(label)),
+                            ..Default::default()
+                        },
+                    });
+                }
+                (None, Some((a, alen))) if a > 0 && a + alen < target_end => {
                     push(out, i + 2..i + 2 + a, link.clone());
                     out.push(Span {
                         range: i + 2 + a..i + 2 + a + alen,
                         style: Style {
                             color: Some(st.marker),
                             hide: true,
-                            replace: Some(" → "),
+                            replace: Some(" → ".into()),
                             ..Default::default()
                         },
                     });
@@ -1141,12 +1232,28 @@ pub(crate) fn heading_level(line: &str) -> Option<u8> {
     ((1..=6).contains(&n) && (n == b.len() || b[n] == b' ')).then_some(n as u8)
 }
 
+/// [`heading_level`], also matching a heading behind a list marker
+/// (`- ### Notes`, the outliner shape). Returns the depth plus the line's
+/// indent when it's a LIST heading (`None` = a top-level heading) — list
+/// headings fold by indent, not by heading boundaries.
+pub(crate) fn line_heading_level(line: &str) -> Option<(u8, Option<usize>)> {
+    if let Some(l) = heading_level(line) {
+        return Some((l, None));
+    }
+    let p = list_prefix(line).map(|(p, ..)| p)?;
+    let l = heading_level(&line[p..])?;
+    Some((l, Some(line.len() - line.trim_start().len())))
+}
+
 /// Line ranges (heading line through section end) of collapsed heading
 /// sections: `folded` holds the trimmed source lines of folded headings
-/// (`## Goals`). A section runs from its heading to the next heading of the
-/// same or a higher level, fence-aware — mirrors
-/// [`gpui_markdown::syntax::extract_section`]. Every line matching a folded
-/// key folds (duplicate headings fold together; the key is the line text).
+/// (`## Goals`). A top-level section runs from its heading to the next
+/// heading of the same or a higher level, fence-aware — mirrors
+/// [`gpui_markdown::syntax::extract_section`]. A LIST heading's section
+/// (`- ### Notes`) is its indented children: it runs while lines sit deeper
+/// than the heading's own indent (blank lines included). Every line matching
+/// a folded key folds (duplicate headings fold together; the key is the line
+/// text).
 pub(crate) fn heading_fold_regions(
     content: &str,
     folded: &std::collections::HashSet<String>,
@@ -1155,6 +1262,7 @@ pub(crate) fn heading_fold_regions(
         return Vec::new();
     }
     let lines: Vec<&str> = content.split('\n').collect();
+    let indent = |l: &str| l.len() - l.trim_start().len();
     let mut out = Vec::new();
     let mut in_fence = false;
     let mut i = 0;
@@ -1167,17 +1275,23 @@ pub(crate) fn heading_fold_regions(
         let level = if in_fence {
             None
         } else {
-            heading_level(lines[i])
+            line_heading_level(lines[i])
         };
         match level {
-            Some(l) if folded.contains(lines[i].trim()) => {
+            Some((l, list_indent)) if folded.contains(lines[i].trim()) => {
                 let start = i;
                 i += 1;
                 while i < lines.len() {
                     if lines[i].trim_start().starts_with("```") {
                         in_fence = !in_fence;
-                    } else if !in_fence && heading_level(lines[i]).is_some_and(|n| n <= l) {
-                        break;
+                    } else if !in_fence {
+                        let stop = match list_indent {
+                            None => heading_level(lines[i]).is_some_and(|n| n <= l),
+                            Some(ind) => !lines[i].trim().is_empty() && indent(lines[i]) <= ind,
+                        };
+                        if stop {
+                            break;
+                        }
                     }
                     i += 1;
                 }
@@ -2005,9 +2119,11 @@ pub(crate) fn is_table_row(line: &str) -> bool {
 /// Contiguous runs of `key:: value` property lines (Obsidian/Logseq-style
 /// metadata) — each renders as a two-column panel, the WYSIWYG twin of the
 /// reader's `render_property_table`. A run is one or more adjacent property
-/// lines; any non-property line ends it. Fenced code is skipped so a
-/// `Type::method()` code line isn't mistaken for a property. Returns line-index
-/// ranges in order.
+/// lines; any non-property line ends it. A leading list marker is tolerated
+/// (`- key:: value`, the Logseq props-only-block shape — the reader's parser
+/// consumes the marker and panels it, so the editor matches). Fenced code is
+/// skipped so a `Type::method()` code line isn't mistaken for a property.
+/// Returns line-index ranges in order.
 pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
     let lines: Vec<&str> = content.split('\n').collect();
     let mut out = Vec::new();
@@ -2019,12 +2135,12 @@ pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
             i += 1;
             continue;
         }
-        if !in_fence && gpui_markdown::syntax::property(lines[i]).is_some() {
+        if !in_fence && gpui_markdown::syntax::prefixed_property(lines[i]).is_some() {
             let start = i;
             i += 1;
             while i < lines.len()
                 && !lines[i].trim_start().starts_with("```")
-                && gpui_markdown::syntax::property(lines[i]).is_some()
+                && gpui_markdown::syntax::prefixed_property(lines[i]).is_some()
             {
                 i += 1;
             }
@@ -2597,6 +2713,9 @@ mod tests {
     fn test_style() -> SyntaxStyle {
         let c = hsla(0., 0., 0.5, 1.);
         SyntaxStyle {
+            block_label: None,
+            block_label_gen: 0,
+            block_ref_count: None,
             marker: c,
             code: c,
             code_bg: c,
@@ -3058,6 +3177,11 @@ mod tests {
         let folded: std::collections::HashSet<String> = ["# Top".to_string()].into();
         assert_eq!(heading_fold_regions(src, &folded), vec![0..9]);
         assert!(heading_fold_regions(src, &Default::default()).is_empty());
+        // A LIST heading folds its indented children (blanks included) and
+        // stops at the next sibling — not at unrelated later headings.
+        let src = "* ### Notes: ^abc\n  - one\n\n  - two\n* sibling\n# After";
+        let folded: std::collections::HashSet<String> = ["* ### Notes: ^abc".to_string()].into();
+        assert_eq!(heading_fold_regions(src, &folded), vec![0..4]);
     }
 
     #[test]
@@ -3068,5 +3192,9 @@ mod tests {
         // A `Type::method()` line inside a code fence isn't a property.
         let r2 = property_regions("```rust\nFoo::bar()\n```\nkey:: v");
         assert_eq!(r2, vec![3..4]);
+        // A list-marker property line (Logseq props-only block) counts too;
+        // an ordinary bullet doesn't.
+        let r3 = property_regions("- status:: open\n  time:: 3pm\n- plain bullet");
+        assert_eq!(r3, vec![0..2]);
     }
 }

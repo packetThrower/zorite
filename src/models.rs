@@ -24,11 +24,15 @@ pub struct Page {
 }
 
 /// One row of a page's "Linked References" panel: another page whose
-/// text links to the page being viewed, with the linking line as a
-/// snippet.
+/// text links to the page being viewed, with the linking block as a
+/// markdown snippet.
 #[derive(Clone, Debug)]
 pub struct Backlink {
     pub source_page_id: i64,
     pub source_page_title: String,
     pub snippet: String,
+    /// 0-based line index of the referencing line in the source content —
+    /// stable across the DB↔frontend `[[Page#^id]]`↔`((id))` rewrite (which
+    /// never adds or removes newlines). 0 when the line couldn't be located.
+    pub line: usize,
 }

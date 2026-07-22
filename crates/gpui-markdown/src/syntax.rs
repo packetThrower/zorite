@@ -290,6 +290,9 @@ fn roman(mut n: u32) -> String {
 pub enum LinkHit {
     Page(String),
     Url(String),
+    /// A `((id))` block reference (Logseq-style frontend form) — the host
+    /// resolves the id to its page + anchor.
+    BlockRef(String),
 }
 
 /// Split a wiki-link's inner text into `(target, display)`:
@@ -369,6 +372,23 @@ pub fn links(line: &str) -> Vec<(std::ops::Range<usize>, LinkHit)> {
             }
             i = close + 2;
             continue;
+        }
+        // Block ref: `((id))` — an anchor-shaped id (word chars / `-`).
+        if c == b'('
+            && i + 1 < end
+            && b[i + 1] == b'('
+            && let Some(close) = find2(b, i + 2, end, b')', b')')
+        {
+            let id = &line[i + 2..close];
+            if !id.is_empty()
+                && id
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            {
+                out.push((i..close + 2, LinkHit::BlockRef(id.to_string())));
+                i = close + 2;
+                continue;
+            }
         }
         // Footnote reference [^label]: styled like a link but not one.
         if c == b'['
@@ -451,6 +471,16 @@ pub fn block_id(line: &str) -> Option<(usize, &str)> {
 /// block carrying `^id` on the page `Note`; anything else is a plain page
 /// target. Only the `#^` form is an anchor — a bare `#` stays part of the
 /// title (page names may contain it, and `file.pdf#p3` has its own meaning).
+/// Superscript digits (`¹²…`) for the block reference-count badge — reads
+/// small at any text size, so the badge doesn't shout on heading lines.
+pub fn superscript(n: usize) -> String {
+    const DIGITS: [char; 10] = ['⁰', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+    n.to_string()
+        .bytes()
+        .map(|b| DIGITS[(b - b'0') as usize])
+        .collect()
+}
+
 pub fn split_block_anchor(target: &str) -> (&str, Option<&str>) {
     match target.split_once("#^") {
         Some((page, id)) if !page.is_empty() && !id.is_empty() => (page, Some(id)),
@@ -595,6 +625,31 @@ pub fn property(line: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((key, rest[idx + 2..].trim()))
+}
+
+/// [`property`], tolerating a leading list marker — the Logseq shape for a
+/// props-only block (`- key:: value`, also `* ` / `+ ` / `1. ` / `1) `).
+/// Returns `(prefix, key, value)`; `prefix` is everything before the key
+/// (indent + marker), so editors can write the line back unchanged.
+pub fn prefixed_property(line: &str) -> Option<(&str, &str, &str)> {
+    let ws = line.len() - line.trim_start().len();
+    if let Some((k, v)) = property(line) {
+        return Some((&line[..ws], k, v));
+    }
+    let rest = &line[ws..];
+    let body = if let Some(r) = ["- ", "* ", "+ "].iter().find_map(|m| rest.strip_prefix(m)) {
+        r
+    } else {
+        let d = rest.bytes().take_while(u8::is_ascii_digit).count();
+        let b = rest.as_bytes();
+        if d > 0 && rest.len() > d + 1 && matches!(b[d], b'.' | b')') && b[d + 1] == b' ' {
+            &rest[d + 2..]
+        } else {
+            return None;
+        }
+    };
+    let (k, v) = property(body)?;
+    Some((&line[..line.len() - body.len()], k, v))
 }
 
 /// A rendered piece of a property value: literal text, or a link "pill" (a
@@ -943,6 +998,21 @@ mod tests {
         assert_eq!(property("just prose"), None);
         assert_eq!(property(":: value"), None);
         assert_eq!(property("1key:: v"), None);
+    }
+
+    #[test]
+    fn prefixed_property_tolerates_list_markers() {
+        // Plain / indented lines: prefix is the indent.
+        assert_eq!(prefixed_property("k:: v"), Some(("", "k", "v")));
+        assert_eq!(prefixed_property("  k:: v"), Some(("  ", "k", "v")));
+        // List markers (Logseq props-only block), bullets and numbers.
+        assert_eq!(prefixed_property("- k:: v"), Some(("- ", "k", "v")));
+        assert_eq!(prefixed_property("  * k:: v"), Some(("  * ", "k", "v")));
+        assert_eq!(prefixed_property("2. k:: v"), Some(("2. ", "k", "v")));
+        // Not properties: a plain bullet, a task, a numberless dot.
+        assert_eq!(prefixed_property("- plain bullet"), None);
+        assert_eq!(prefixed_property("- [ ] k:: v"), None);
+        assert_eq!(prefixed_property(". k:: v"), None);
     }
 
     #[test]
