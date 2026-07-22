@@ -812,6 +812,11 @@ pub struct EditorState {
     /// edits above a table; entries are clamped at use, so a stale one is a
     /// harmless partial offset. (ponytail: no eviction, the map stays tiny)
     table_scroll_x: std::collections::HashMap<usize, f32>,
+    /// Last-paint wide-table scroll thumbs (padded grab rects), so the thumb
+    /// is mouse-draggable, not just an indicator.
+    table_thumbs: Vec<TableThumb>,
+    /// A live thumb drag: `(header row, grab x, scroll offset at grab)`.
+    table_thumb_drag: Option<(usize, Pixels, f32)>,
     /// Extra left offset for the drag grip — the host sets its line-number
     /// gutter's width here so the grip sits beside the numbers, not on them.
     grip_inset: Pixels,
@@ -962,6 +967,8 @@ impl EditorState {
             line_drag: None,
             grip_hover_row: None,
             table_scroll_x: std::collections::HashMap::new(),
+            table_thumbs: Vec::new(),
+            table_thumb_drag: None,
             grip_inset: px(0.),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
@@ -2879,6 +2886,19 @@ impl EditorState {
             }
             return;
         }
+        // A press on a wide table's scroll thumb starts a thumb drag — the
+        // table scrolls with the pointer (see `on_mouse_move`).
+        if let Some(&TableThumb { header, .. }) = self
+            .table_thumbs
+            .iter()
+            .find(|t| t.grab.contains(&event.position))
+        {
+            let sx = self.table_scroll_x.get(&header).copied().unwrap_or(0.);
+            self.table_thumb_drag = Some((header, event.position.x, sx));
+            self.is_selecting = false;
+            cx.notify();
+            return;
+        }
         // A press on a column border's resize band starts a drag — the column
         // resizes live; release persists the width (issue #16). A DOUBLE-click
         // auto-fits the column to its content instead (the Excel/Sheets
@@ -2995,6 +3015,11 @@ impl EditorState {
             cx.notify();
             return;
         }
+        // End a table scroll-thumb drag (the live offsets are already stored).
+        if self.table_thumb_drag.take().is_some() {
+            cx.notify();
+            return;
+        }
         // End a column-border drag by persisting every column's width into the
         // table marker's `cols=` list (one undo step, emits Changed).
         if let Some(resize) = self.table_col_resize.take() {
@@ -3023,6 +3048,24 @@ impl EditorState {
             let b = self.snap_drop_boundary(self.drop_boundary_at(event.position));
             if b != t {
                 self.line_drag = Some((bs, be, b));
+                cx.notify();
+            }
+            return;
+        }
+        // While dragging a wide table's scroll thumb, track the pointer: thumb
+        // travel maps to content scroll through the committed factor.
+        if let Some((header, grab_x, start_sx)) = self.table_thumb_drag {
+            let factor = self
+                .table_thumbs
+                .iter()
+                .find(|t| t.header == header)
+                .map_or(0., |t| t.factor);
+            let sx = start_sx + f32::from(event.position.x - grab_x) * factor;
+            // Clamp at use like the wheel path — the paint clamps too, but a
+            // sane stored value keeps other consumers simple.
+            let sx = sx.max(0.);
+            if self.table_scroll_x.get(&header).copied().unwrap_or(0.) != sx {
+                self.table_scroll_x.insert(header, sx);
                 cx.notify();
             }
             return;
@@ -3260,12 +3303,26 @@ impl EditorState {
             }
         }
         // Right-click in a table cell: place the caret there + open the table menu
-        // (insert/delete rows + columns), instead of the spell menu.
+        // (insert/delete rows + columns), instead of the spell menu. INSIDE a
+        // selection, keep the selection and show the clipboard menu instead —
+        // Cut/Copy act on it, like prose; the structure menu stays a
+        // selection-free right-click away.
         if let Some(offset) = self.table_offset_at(event.position, window) {
             self.menu = None;
             self.focus(window, cx);
-            self.move_to(offset, cx);
-            self.table_menu = Some(event.position);
+            let sel = self.selected_range.clone();
+            if !sel.is_empty() && offset >= sel.start && offset <= sel.end {
+                self.menu = Some(DiagMenu {
+                    anchor: event.position,
+                    range: offset..offset,
+                    suggestions: Vec::new(),
+                    scroll: ScrollHandle::new(),
+                    turn_into: false,
+                });
+            } else {
+                self.move_to(offset, cx);
+                self.table_menu = Some(event.position);
+            }
             cx.notify();
             return;
         }
@@ -8845,6 +8902,20 @@ fn grip_left(bounds_left: Pixels, inset: Pixels) -> Pixels {
     bounds_left - px(22.) - inset
 }
 
+/// A wide table's scroll thumb — its visual rect, (padded) grab rect, and
+/// the mapping from thumb travel to content scroll. Built in prepaint (with
+/// a hand-cursor hitbox), drawn in paint, committed for drag hit-tests.
+#[derive(Clone, Copy)]
+struct TableThumb {
+    rect: Bounds<Pixels>,
+    grab: Bounds<Pixels>,
+    /// Header row — the table's `table_scroll_x` key.
+    header: usize,
+    /// Content px scrolled per px of thumb travel.
+    factor: f32,
+    color: Hsla,
+}
+
 /// The header row of the table that `t` (the grid row at line `row`) belongs
 /// to — the key of its horizontal-scroll entry.
 fn table_header_row(t: &TableRow, row: usize) -> usize {
@@ -9375,6 +9446,7 @@ struct PrepaintState {
     alert_icons: Option<markdown_syntax::AlertIcons>,
     /// Per-table hover zones (the grid plus pill reach) — repaint gating.
     table_zones: Vec<(Bounds<Pixels>, usize)>,
+    table_thumbs: Vec<(TableThumb, Hitbox)>,
     /// Hovered-row / hovered-column border pills + outlines (issue #16).
     row_aff: Option<TableAffordance>,
     col_aff: Option<TableAffordance>,
@@ -10132,6 +10204,7 @@ impl Element for EditorElement {
         // too. Paint shows/cursors them only while hovered; on_mouse_down
         // hit-tests the committed pill rects.
         let mut table_zones: Vec<(Bounds<Pixels>, usize)> = Vec::new();
+        let mut table_thumbs: Vec<(TableThumb, Hitbox)> = Vec::new();
         let mut row_aff: Option<TableAffordance> = None;
         let mut col_aff: Option<TableAffordance> = None;
         let mut col_resize_grips: Vec<ColResizeGrip> = Vec::new();
@@ -10165,6 +10238,37 @@ impl Element for EditorElement {
                 // slides left with its scroll offset, but the visible grid
                 // stays put — hover and the wheel target what's on screen.
                 table_zones.push((zone.intersect(&bounds), tbl_header));
+
+                // The scroll thumb under a wide table: geometry + a
+                // hand-cursor hitbox here; paint draws it and mouse-down
+                // drags it (see `on_mouse_down`).
+                let avail = bounds.size.width - px(TABLE_GUTTER);
+                if width > avail {
+                    let th_w = (avail / f32::from(width) * f32::from(avail)).max(px(24.));
+                    let range = f32::from(width - avail);
+                    let sx = editor.table_sx(tbl_header, width, avail);
+                    // Track left is FIXED (the gutter edge) — `left` is the
+                    // scrolled content edge and would drift the thumb.
+                    let track = bounds.origin.x + px(TABLE_GUTTER);
+                    let th_x = track + (avail - th_w) * (f32::from(sx) / range);
+                    let mut th_c = t.border;
+                    th_c.a = (th_c.a * 1.5).min(0.8);
+                    let rect = Bounds::new(point(th_x, bottom - px(4.)), size(th_w, px(3.)));
+                    let grab = Bounds::new(
+                        rect.origin - point(px(4.), px(6.)),
+                        rect.size + size(px(8.), px(12.)),
+                    );
+                    table_thumbs.push((
+                        TableThumb {
+                            rect,
+                            grab,
+                            header: tbl_header,
+                            factor: range / f32::from(avail - th_w).max(1.),
+                            color: th_c,
+                        },
+                        window.insert_hitbox(grab, HitboxBehavior::Normal),
+                    ));
+                }
 
                 // The caret's cell (this table only), outlined like Cditor's.
                 if let Some((crow, ccell, _)) = caret_pos
@@ -10594,6 +10698,7 @@ impl Element for EditorElement {
                 .as_ref()
                 .and_then(|st| st.alert_icons.clone()),
             table_zones,
+            table_thumbs,
             row_aff,
             col_aff,
             caret_cell,
@@ -10967,7 +11072,6 @@ impl Element for EditorElement {
                 let avail = bounds.size.width - px(TABLE_GUTTER);
                 let tleft = origin.x + px(TABLE_GUTTER);
                 let content_left = self.editor.read(cx).table_left(t, i, &bounds);
-                let sx = tleft - content_left;
                 let g = px(TABLE_GUTTER);
                 let mask = gpui::ContentMask {
                     bounds: Bounds::new(point(tleft, origin.y - g), size(avail, *lh + g * 2.)),
@@ -11023,22 +11127,6 @@ impl Element for EditorElement {
                         cx,
                     );
                 });
-                // A slim track thumb under the last row shows there's more
-                // table to the side (and how far along you are).
-                if t.is_last && table_w > avail {
-                    let th_w = (avail / f32::from(table_w) * f32::from(avail)).max(px(24.));
-                    let range = f32::from(table_w - avail);
-                    let th_x = tleft + (avail - th_w) * (f32::from(sx) / range);
-                    let mut th_c = t.border;
-                    th_c.a = (th_c.a * 1.5).min(0.8);
-                    window.paint_quad(
-                        fill(
-                            Bounds::new(point(th_x, origin.y + *lh - px(4.)), size(th_w, px(3.))),
-                            th_c,
-                        )
-                        .corner_radii(Corners::all(px(1.5))),
-                    );
-                }
             } else if let Some(Block::Image(w)) = prepaint.widgets.get(i).and_then(Option::as_ref) {
                 // Inline image (W4a): paint the decoded image instead of source,
                 // inset to the row's gutter so a list-item image sits past its
@@ -11214,6 +11302,13 @@ impl Element for EditorElement {
             }
         }
 
+        // Wide-table scroll thumbs (from prepaint): the slim track under a
+        // wide table's last row, with a hand cursor over its grab band —
+        // draggable (see `on_mouse_down`).
+        for (thumb, hb) in &prepaint.table_thumbs {
+            window.paint_quad(fill(thumb.rect, thumb.color).corner_radii(Corners::all(px(1.5))));
+            window.set_cursor_style(CursorStyle::PointingHand, hb);
+        }
         // Gutter drag grip: six muted dots on the hovered line; while a drag
         // is live, a full-width accent bar marks the drop boundary instead.
         {
@@ -11446,6 +11541,7 @@ impl Element for EditorElement {
             editor.prop_pill_rects = prop_pill_rects;
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
+            editor.table_thumbs = prepaint.table_thumbs.iter().map(|(t, _)| *t).collect();
             editor.code_chip_rects = code_chip_rects;
             editor.table_col_resize_rects = table_col_resize_rects;
             editor.code_card_rects = std::mem::take(&mut prepaint.code_card_rects);

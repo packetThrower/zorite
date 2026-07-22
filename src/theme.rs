@@ -438,6 +438,30 @@ pub fn set_ui_font(family: &str, cx: &mut App) {
     };
 }
 
+/// Register the bundled IBM Plex Sans faces on Linux. gpui's Linux "system
+/// UI font" (`.SystemUIFont`) resolves to the literal family "IBM Plex Sans"
+/// — Zed bundles it, so on machines without it installed the family loads
+/// nothing: text still renders via per-glyph fallback, but bold/italic face
+/// matching has no variants to pick, so `**bold**` / `_italic_` silently
+/// render regular. Bundling the four core faces (OFL, see
+/// assets/fonts/LICENSE.txt) makes emphasis work on every distro, X11 and
+/// Wayland alike. macOS/Windows resolve real system fonts — no need there.
+#[cfg(target_os = "linux")]
+pub fn register_bundled_fonts(cx: &App) {
+    let faces: [&'static [u8]; 4] = [
+        include_bytes!("../assets/fonts/IBMPlexSans-Regular.ttf"),
+        include_bytes!("../assets/fonts/IBMPlexSans-Italic.ttf"),
+        include_bytes!("../assets/fonts/IBMPlexSans-Bold.ttf"),
+        include_bytes!("../assets/fonts/IBMPlexSans-BoldItalic.ttf"),
+    ];
+    if let Err(e) = cx
+        .text_system()
+        .add_fonts(faces.map(std::borrow::Cow::Borrowed).to_vec())
+    {
+        log::warn!("registering bundled fonts: {e}");
+    }
+}
+
 /// Register every font file in the managed `fonts/` dir with gpui's text
 /// system, so a user-added face is usable by family name like an installed
 /// one. Run once at startup, before any window opens.

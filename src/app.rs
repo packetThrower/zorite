@@ -673,6 +673,10 @@ pub struct AppView {
     /// Debounced cross-window "document changed" signal, so the feed-reloading
     /// `apply_external_edit` doesn't run on every keystroke (only after idle).
     signal_task: Option<Task<()>>,
+    /// The latest window rect awaiting its debounced save (bounds events
+    /// stream during an interactive resize; the write runs after idle).
+    pending_window_bounds: Option<(gpui::Bounds<Pixels>, bool)>,
+    bounds_save_task: Option<Task<()>>,
     /// Templates parsed from the reserved `Templates` page.
     templates: Vec<Template>,
     /// The page (id + title) targeted by an open right-click context menu,
@@ -825,27 +829,35 @@ impl AppView {
         // Persist the window's rect as it moves/resizes (when the Settings →
         // General toggle is on — the sidecar file's presence is the switch).
         // Fullscreen is skipped: the last windowed rect is the useful one.
-        let bounds_sub = cx.observe_window_bounds(window, |_this, window, _cx| {
+        // DEBOUNCED: X11 streams bounds events during an interactive resize,
+        // and a synchronous file write per event stalls the event loop —
+        // the window visibly jumped between processed frames on Linux.
+        let bounds_sub = cx.observe_window_bounds(window, |this: &mut AppView, window, cx| {
             if !crate::paths::window_bounds_enabled() {
                 return;
             }
-            match window.window_bounds() {
-                WindowBounds::Windowed(b) => crate::paths::save_window_bounds(
-                    f32::from(b.origin.x),
-                    f32::from(b.origin.y),
-                    f32::from(b.size.width),
-                    f32::from(b.size.height),
-                    false,
-                ),
-                WindowBounds::Maximized(b) => crate::paths::save_window_bounds(
-                    f32::from(b.origin.x),
-                    f32::from(b.origin.y),
-                    f32::from(b.size.width),
-                    f32::from(b.size.height),
-                    true,
-                ),
-                WindowBounds::Fullscreen(_) => {}
-            }
+            let pending = match window.window_bounds() {
+                WindowBounds::Windowed(b) => (b, false),
+                WindowBounds::Maximized(b) => (b, true),
+                WindowBounds::Fullscreen(_) => return,
+            };
+            this.pending_window_bounds = Some(pending);
+            this.bounds_save_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(400))
+                    .await;
+                let _ = this.update(cx, |this, _| {
+                    if let Some((b, maximized)) = this.pending_window_bounds.take() {
+                        crate::paths::save_window_bounds(
+                            f32::from(b.origin.x),
+                            f32::from(b.origin.y),
+                            f32::from(b.size.width),
+                            f32::from(b.size.height),
+                            maximized,
+                        );
+                    }
+                });
+            }));
         });
 
         // The encrypted-PDF password field; Enter submits like the Unlock button.
@@ -956,6 +968,8 @@ impl AppView {
             table_picker: None,
             spell_task: None,
             signal_task: None,
+            pending_window_bounds: None,
+            bounds_save_task: None,
             templates: Vec::new(),
             context_page: None,
             context_target: None,
