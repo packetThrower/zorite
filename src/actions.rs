@@ -135,7 +135,6 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("secondary-p", ExportActivePdf, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
-        KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         // Find-in-page (a Page tab's rendered text) vs the global note search.
@@ -145,6 +144,12 @@ pub fn bind_keys(cx: &mut App) {
         // Fit over-wide images back into the page / journal view.
         KeyBinding::new("secondary-shift-i", FitImages, None),
     ]);
+    // Quit: ⌘Q on macOS, Ctrl+Q on Linux (the GNOME/KDE convention). NOT on
+    // Windows — Alt+F4 is the convention there and already quits (the OS
+    // delivers it as a window close; gpui exits at zero windows), while a
+    // Ctrl+Q binding mostly fires by accident.
+    #[cfg(not(target_os = "windows"))]
+    cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
 }
 
 /// Install the application menu bar. Native on macOS; on Windows/Linux the menus

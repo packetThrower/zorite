@@ -2251,6 +2251,10 @@ impl Render for SettingsView {
                                     ),
                                     ("Export active tab as PDF", vec![keys::MOD, "P"]),
                                     ("Open settings", vec![keys::MOD, ","]),
+                                    // Windows quits with the OS convention.
+                                    #[cfg(target_os = "windows")]
+                                    ("Quit", vec!["Alt", "F4"]),
+                                    #[cfg(not(target_os = "windows"))]
                                     ("Quit", vec![keys::MOD, "Q"]),
                                 ];
                                 let edit_rows: Vec<(&str, Vec<&str>)> = vec![

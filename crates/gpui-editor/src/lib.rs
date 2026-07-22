@@ -673,6 +673,11 @@ pub struct EditorState {
     /// window's text-style stack is unwound there, so `window.text_style()`
     /// would report the root size, not the host wrapper's.
     font_size: Pixels,
+    /// The font of the last paint, for the same reason: event-time
+    /// `text_style()` reports the ROOT font, whose family/metrics can differ
+    /// from what the table was painted with (column auto-fit measured with
+    /// the wrong glyph widths and wrapped cells).
+    paint_font: Option<Font>,
     is_selecting: bool,
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
@@ -908,6 +913,7 @@ impl EditorState {
             last_bounds: None,
             line_height: px(20.),
             font_size: px(16.),
+            paint_font: None,
             is_selecting: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -2874,12 +2880,18 @@ impl EditorState {
             return;
         }
         // A press on a column border's resize band starts a drag — the column
-        // resizes live; release persists the width (issue #16).
+        // resizes live; release persists the width (issue #16). A DOUBLE-click
+        // auto-fits the column to its content instead (the Excel/Sheets
+        // convention for a column border).
         if let Some(&(_, header_row, col, width)) = self
             .table_col_resize_rects
             .iter()
             .find(|(band, ..)| band.contains(&event.position))
         {
+            if event.click_count == 2 {
+                self.autofit_table_col(header_row, col, window, cx);
+                return;
+            }
             self.table_col_resize = Some(TableColResize {
                 header_row,
                 col,
@@ -4416,10 +4428,12 @@ impl EditorState {
         }
         // A scrolled wide table: the pointer maps to content shifted left.
         let rel = point(position.x - self.table_left(t, row, bounds), rel.y);
-        // Measure at the last paint's size — the style stack is unwound during
-        // event dispatch, so `text_style()` here reports the root size.
-        let style = window.text_style();
-        let font = style.font();
+        // Measure at the last paint's font + size — the style stack is unwound
+        // during event dispatch, so `text_style()` here reports the root style.
+        let font = self
+            .paint_font
+            .clone()
+            .unwrap_or_else(|| window.text_style().font());
         let font_size = self.font_size;
         let pad = px(TABLE_CELL_PAD);
         // Column the click is in, and its left x.
@@ -4948,6 +4962,63 @@ impl EditorState {
 
     /// Persist a finished column-border drag: every column's current display
     /// width goes into the marker's `cols=` list (style preserved).
+    /// Double-click on a column border: auto-fit the column to its widest
+    /// content (Excel's AutoFit). Measures the region with explicit widths
+    /// stripped, then persists the natural width through the same marker path
+    /// as a drag release.
+    fn autofit_table_col(
+        &mut self,
+        header_row: usize,
+        col: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut region) = self
+            .scan_data()
+            .tables
+            .iter()
+            .find(|r| r.lines.start == header_row)
+            .cloned()
+        else {
+            return;
+        };
+        region.col_widths_attr = None; // natural, content-measured widths
+        let content = self.content.clone();
+        let lines: Vec<&str> = content.split('\n').collect();
+        // Measure with the PAINT font — the shaping that lays the table out
+        // uses it, and the root font event dispatch reports has different
+        // metrics (autofit widths were off by the family drift).
+        let font = self
+            .paint_font
+            .clone()
+            .unwrap_or_else(|| window.text_style().font());
+        let natural = table_column_widths(
+            &lines,
+            &region,
+            window,
+            &font,
+            self.font_size,
+            Hsla::default(),
+            None,
+        );
+        let Some(&w) = natural.get(col) else {
+            return;
+        };
+        // Ceil: the marker serializes widths as whole px (`w.round()`), and a
+        // fraction-of-a-pixel shortfall wraps the widest cell's last word.
+        self.commit_table_col_widths(
+            TableColResize {
+                header_row,
+                col,
+                start_x: px(0.),
+                orig: 0.,
+                width: f32::from(w).ceil(),
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
     fn commit_table_col_widths(&mut self, resize: TableColResize, cx: &mut Context<Self>) {
         let Some(region) = self
             .scan_data()
@@ -11391,6 +11462,7 @@ impl Element for EditorElement {
             editor.last_paint_gen = editor.content_gen;
             editor.line_height = base_lh;
             editor.font_size = font_size;
+            editor.paint_font = Some(font.clone());
         });
     }
 }
