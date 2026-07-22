@@ -11171,18 +11171,24 @@ impl Element for EditorElement {
                     window.set_cursor_style(CursorStyle::ClosedHand, hb);
                 }
             } else if let Some((_, rect)) = prepaint.grip {
-                let d = px(2.5);
+                // Snap each dot to the DEVICE pixel grid: at fractional scale
+                // factors (Windows 100/125/150%) the 2.5px dots otherwise
+                // straddle pixel boundaries at per-dot subpixel phases and
+                // antialias to visibly different sizes (macOS @2x masked it).
+                let scale = window.scale_factor();
+                let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
+                let d = snap(px(2.5));
                 let gap = px(4.5);
                 for col in 0..2 {
                     for dr in 0..3 {
                         let dot = Bounds::new(
                             point(
-                                rect.origin.x + px(2.) + gap * col as f32,
-                                rect.origin.y + px(1.) + gap * dr as f32,
+                                snap(rect.origin.x + px(2.) + gap * col as f32),
+                                snap(rect.origin.y + px(1.) + gap * dr as f32),
                             ),
                             size(d, d),
                         );
-                        window.paint_quad(fill(dot, dot_c).corner_radii(Corners::all(px(1.25))));
+                        window.paint_quad(fill(dot, dot_c).corner_radii(Corners::all(d * 0.5)));
                     }
                 }
                 if let Some(hb) = &prepaint.grip_hb {
