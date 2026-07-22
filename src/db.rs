@@ -162,6 +162,33 @@ fn file_is_encrypted(path: &Path) -> bool {
     }
 }
 
+thread_local! {
+    /// A just-verified (key-derived) connection, handed from the unlock
+    /// screen's `verify_key` to the main window's `open` so the deliberately
+    /// slow SQLCipher KDF runs once, not twice. Main-thread only — both ends
+    /// run there. Keyed by path so a test/sandbox verify can't leak into a
+    /// different open.
+    static VERIFIED: std::cell::RefCell<Option<(PathBuf, Connection)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn stash_verified(path: &Path, conn: Connection) {
+    VERIFIED.with(|v| *v.borrow_mut() = Some((path.to_path_buf(), conn)));
+}
+
+fn take_verified(path: &Path) -> Option<Connection> {
+    VERIFIED.with(|v| {
+        let mut slot = v.borrow_mut();
+        match slot.take() {
+            Some((p, conn)) if p == path => Some(conn),
+            other => {
+                *slot = other;
+                None
+            }
+        }
+    })
+}
+
 impl Db {
     /// Open the app database, decrypting with `key` when one is given. A
     /// wrong (or missing) key on an encrypted file surfaces as an error from
@@ -176,13 +203,22 @@ impl Db {
     }
 
     fn open_at(path: &Path, key: Option<&str>) -> Result<Self, OpenError> {
-        let mut conn = Connection::open(path).map_err(OpenError::bare)?;
-        // The key must be the FIRST statement on the connection — anything
-        // else touches the (unreadable) pages first and fails.
-        if let Some(key) = key {
-            conn.pragma_update(None, "key", key)
-                .map_err(OpenError::bare)?;
-        }
+        // Reuse the connection the unlock screen just verified: SQLCipher's
+        // key derivation is deliberately slow, and paying it a SECOND time
+        // here doubled the blank-window beat between login and first paint.
+        let mut conn = match take_verified(path) {
+            Some(conn) => conn,
+            None => {
+                let conn = Connection::open(path).map_err(OpenError::bare)?;
+                // The key must be the FIRST statement on the connection —
+                // anything else touches the (unreadable) pages first and fails.
+                if let Some(key) = key {
+                    conn.pragma_update(None, "key", key)
+                        .map_err(OpenError::bare)?;
+                }
+                conn
+            }
+        };
         // WAL keeps the per-keystroke autosave write off the fsync-per-commit path
         // (rollback journal + synchronous=FULL fsyncs twice per write); in WAL,
         // synchronous=NORMAL fsyncs only at checkpoint and is still durable across an
@@ -268,12 +304,18 @@ impl Db {
         let Ok(conn) = Connection::open(path) else {
             return false;
         };
-        conn.pragma_update(None, "key", key).is_ok()
+        let ok = conn.pragma_update(None, "key", key).is_ok()
             && conn
                 .query_row("SELECT count(*) FROM sqlite_master", [], |r| {
                     r.get::<_, i64>(0)
                 })
-                .is_ok()
+                .is_ok();
+        if ok {
+            // Keep the derived connection for the main window's `open` —
+            // the KDF already ran; no need to pay it twice.
+            stash_verified(path, conn);
+        }
+        ok
     }
 
     /// If an on-disk schema upgrade is pending, copy the database to

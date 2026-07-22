@@ -640,10 +640,11 @@ pub struct EditorState {
     /// mouse-down.
     table_row_add_rects: Vec<(Bounds<Pixels>, usize)>,
     table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)>,
-    /// Each table's hover zone (grid + a thin margin), committed every paint so
-    /// `on_mouse_move` can repaint when the pointer's table-affordance region
-    /// changes (the editor otherwise only repaints on the caret blink).
-    table_hover_zones: Vec<Bounds<Pixels>>,
+    /// Each table's hover zone (grid + a thin margin) with its header row,
+    /// committed every paint so `on_mouse_move` can repaint when the pointer's
+    /// table-affordance region changes (the editor otherwise only repaints on
+    /// the caret blink) and `on_scroll_wheel` can hit-test the PAINTED table.
+    table_hover_zones: Vec<(Bounds<Pixels>, usize)>,
     /// The affordance region the pointer was last in — `(table index, 0 = zone /
     /// 1 = below strip / 2 = right strip)` — so the repaint fires only on change.
     table_hover_region: Option<(usize, u8)>,
@@ -672,6 +673,11 @@ pub struct EditorState {
     /// window's text-style stack is unwound there, so `window.text_style()`
     /// would report the root size, not the host wrapper's.
     font_size: Pixels,
+    /// The font of the last paint, for the same reason: event-time
+    /// `text_style()` reports the ROOT font, whose family/metrics can differ
+    /// from what the table was painted with (column auto-fit measured with
+    /// the wrong glyph widths and wrapped cells).
+    paint_font: Option<Font>,
     is_selecting: bool,
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
@@ -806,6 +812,11 @@ pub struct EditorState {
     /// edits above a table; entries are clamped at use, so a stale one is a
     /// harmless partial offset. (ponytail: no eviction, the map stays tiny)
     table_scroll_x: std::collections::HashMap<usize, f32>,
+    /// Last-paint wide-table scroll thumbs (padded grab rects), so the thumb
+    /// is mouse-draggable, not just an indicator.
+    table_thumbs: Vec<TableThumb>,
+    /// A live thumb drag: `(header row, grab x, scroll offset at grab)`.
+    table_thumb_drag: Option<(usize, Pixels, f32)>,
     /// Extra left offset for the drag grip — the host sets its line-number
     /// gutter's width here so the grip sits beside the numbers, not on them.
     grip_inset: Pixels,
@@ -907,6 +918,7 @@ impl EditorState {
             last_bounds: None,
             line_height: px(20.),
             font_size: px(16.),
+            paint_font: None,
             is_selecting: false,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
@@ -955,6 +967,8 @@ impl EditorState {
             line_drag: None,
             grip_hover_row: None,
             table_scroll_x: std::collections::HashMap::new(),
+            table_thumbs: Vec::new(),
+            table_thumb_drag: None,
             grip_inset: px(0.),
             content_gen: 0,
             utf16_anchor: std::cell::Cell::new((0, 0, 0)),
@@ -2872,13 +2886,32 @@ impl EditorState {
             }
             return;
         }
+        // A press on a wide table's scroll thumb starts a thumb drag — the
+        // table scrolls with the pointer (see `on_mouse_move`).
+        if let Some(&TableThumb { header, .. }) = self
+            .table_thumbs
+            .iter()
+            .find(|t| t.grab.contains(&event.position))
+        {
+            let sx = self.table_scroll_x.get(&header).copied().unwrap_or(0.);
+            self.table_thumb_drag = Some((header, event.position.x, sx));
+            self.is_selecting = false;
+            cx.notify();
+            return;
+        }
         // A press on a column border's resize band starts a drag — the column
-        // resizes live; release persists the width (issue #16).
+        // resizes live; release persists the width (issue #16). A DOUBLE-click
+        // auto-fits the column to its content instead (the Excel/Sheets
+        // convention for a column border).
         if let Some(&(_, header_row, col, width)) = self
             .table_col_resize_rects
             .iter()
             .find(|(band, ..)| band.contains(&event.position))
         {
+            if event.click_count == 2 {
+                self.autofit_table_col(header_row, col, window, cx);
+                return;
+            }
             self.table_col_resize = Some(TableColResize {
                 header_row,
                 col,
@@ -2982,6 +3015,11 @@ impl EditorState {
             cx.notify();
             return;
         }
+        // End a table scroll-thumb drag (the live offsets are already stored).
+        if self.table_thumb_drag.take().is_some() {
+            cx.notify();
+            return;
+        }
         // End a column-border drag by persisting every column's width into the
         // table marker's `cols=` list (one undo step, emits Changed).
         if let Some(resize) = self.table_col_resize.take() {
@@ -3010,6 +3048,24 @@ impl EditorState {
             let b = self.snap_drop_boundary(self.drop_boundary_at(event.position));
             if b != t {
                 self.line_drag = Some((bs, be, b));
+                cx.notify();
+            }
+            return;
+        }
+        // While dragging a wide table's scroll thumb, track the pointer: thumb
+        // travel maps to content scroll through the committed factor.
+        if let Some((header, grab_x, start_sx)) = self.table_thumb_drag {
+            let factor = self
+                .table_thumbs
+                .iter()
+                .find(|t| t.header == header)
+                .map_or(0., |t| t.factor);
+            let sx = start_sx + f32::from(event.position.x - grab_x) * factor;
+            // Clamp at use like the wheel path — the paint clamps too, but a
+            // sane stored value keeps other consumers simple.
+            let sx = sx.max(0.);
+            if self.table_scroll_x.get(&header).copied().unwrap_or(0.) != sx {
+                self.table_scroll_x.insert(header, sx);
                 cx.notify();
             }
             return;
@@ -3247,12 +3303,26 @@ impl EditorState {
             }
         }
         // Right-click in a table cell: place the caret there + open the table menu
-        // (insert/delete rows + columns), instead of the spell menu.
+        // (insert/delete rows + columns), instead of the spell menu. INSIDE a
+        // selection, keep the selection and show the clipboard menu instead —
+        // Cut/Copy act on it, like prose; the structure menu stays a
+        // selection-free right-click away.
         if let Some(offset) = self.table_offset_at(event.position, window) {
             self.menu = None;
             self.focus(window, cx);
-            self.move_to(offset, cx);
-            self.table_menu = Some(event.position);
+            let sel = self.selected_range.clone();
+            if !sel.is_empty() && offset >= sel.start && offset <= sel.end {
+                self.menu = Some(DiagMenu {
+                    anchor: event.position,
+                    range: offset..offset,
+                    suggestions: Vec::new(),
+                    scroll: ScrollHandle::new(),
+                    turn_into: false,
+                });
+            } else {
+                self.move_to(offset, cx);
+                self.table_menu = Some(event.position);
+            }
             cx.notify();
             return;
         }
@@ -4213,7 +4283,7 @@ impl EditorState {
         let i = self
             .table_hover_zones
             .iter()
-            .position(|z| z.contains(&pos))?;
+            .position(|(z, _)| z.contains(&pos))?;
         let strip = if self
             .table_row_add_rects
             .iter()
@@ -4268,20 +4338,37 @@ impl EditorState {
         // Vertical scrolling is the overwhelmingly common case — bail before
         // the O(lines) row walk when there's no horizontal delta.
         let dx = f32::from(event.delta.pixel_delta(px(20.)).x);
+        if std::env::var_os("ZORITE_WHEEL_DEBUG").is_some() {
+            eprintln!("wheel: delta={:?} dx={dx}", event.delta);
+        }
         if dx == 0. {
             return;
         }
+        let dbg = std::env::var_os("ZORITE_WHEEL_DEBUG").is_some();
         let Some(bounds) = self.last_bounds else {
             return;
         };
-        let rel_y = event.position.y - bounds.top();
-        let Some(row) = (0..self.line_tops.len()).find(|&i| {
-            let h = self.line_h(i) * self.row_span(i) as f32;
-            h > px(0.5) && rel_y >= self.line_tops[i] && rel_y < self.line_tops[i] + h
-        }) else {
+        // Hit-test the PAINTED table zone (grid + margin, from the last
+        // paint), not the text row model — table paint runs taller than its
+        // logical rows (top gutter, cell padding), which left the lower rows
+        // of a tall table unresponsive to the wheel.
+        let Some(&(_, header)) = self
+            .table_hover_zones
+            .iter()
+            .find(|(z, _)| z.contains(&event.position))
+        else {
+            if dbg {
+                eprintln!("wheel: not over a table zone");
+            }
             return;
         };
-        let Some(t) = self.table_rows.get(row).and_then(Option::as_ref) else {
+        // A horizontally-dominant wheel over a table belongs to the table —
+        // consume it even at the scroll ends, so leftover deltas don't spill
+        // into the page. Vertical-dominant scrolling keeps feeding the page.
+        if dx.abs() >= f32::from(event.delta.pixel_delta(px(20.)).y).abs() {
+            cx.stop_propagation();
+        }
+        let Some(t) = self.table_rows.get(header).and_then(Option::as_ref) else {
             return;
         };
         if t.col_widths.is_empty() {
@@ -4290,9 +4377,11 @@ impl EditorState {
         let total: Pixels = t.col_widths.iter().copied().sum();
         let avail = bounds.size.width - px(TABLE_GUTTER);
         if total <= avail {
+            if dbg {
+                eprintln!("wheel: fits total={total:?} avail={avail:?}");
+            }
             return;
         }
-        let header = table_header_row(t, row);
         let max = f32::from(total - avail);
         let cur = self.table_scroll_x.get(&header).copied().unwrap_or(0.);
         let new = (cur - dx).clamp(0., max);
@@ -4396,10 +4485,12 @@ impl EditorState {
         }
         // A scrolled wide table: the pointer maps to content shifted left.
         let rel = point(position.x - self.table_left(t, row, bounds), rel.y);
-        // Measure at the last paint's size — the style stack is unwound during
-        // event dispatch, so `text_style()` here reports the root size.
-        let style = window.text_style();
-        let font = style.font();
+        // Measure at the last paint's font + size — the style stack is unwound
+        // during event dispatch, so `text_style()` here reports the root style.
+        let font = self
+            .paint_font
+            .clone()
+            .unwrap_or_else(|| window.text_style().font());
         let font_size = self.font_size;
         let pad = px(TABLE_CELL_PAD);
         // Column the click is in, and its left x.
@@ -4928,6 +5019,63 @@ impl EditorState {
 
     /// Persist a finished column-border drag: every column's current display
     /// width goes into the marker's `cols=` list (style preserved).
+    /// Double-click on a column border: auto-fit the column to its widest
+    /// content (Excel's AutoFit). Measures the region with explicit widths
+    /// stripped, then persists the natural width through the same marker path
+    /// as a drag release.
+    fn autofit_table_col(
+        &mut self,
+        header_row: usize,
+        col: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(mut region) = self
+            .scan_data()
+            .tables
+            .iter()
+            .find(|r| r.lines.start == header_row)
+            .cloned()
+        else {
+            return;
+        };
+        region.col_widths_attr = None; // natural, content-measured widths
+        let content = self.content.clone();
+        let lines: Vec<&str> = content.split('\n').collect();
+        // Measure with the PAINT font — the shaping that lays the table out
+        // uses it, and the root font event dispatch reports has different
+        // metrics (autofit widths were off by the family drift).
+        let font = self
+            .paint_font
+            .clone()
+            .unwrap_or_else(|| window.text_style().font());
+        let natural = table_column_widths(
+            &lines,
+            &region,
+            window,
+            &font,
+            self.font_size,
+            Hsla::default(),
+            None,
+        );
+        let Some(&w) = natural.get(col) else {
+            return;
+        };
+        // Ceil: the marker serializes widths as whole px (`w.round()`), and a
+        // fraction-of-a-pixel shortfall wraps the widest cell's last word.
+        self.commit_table_col_widths(
+            TableColResize {
+                header_row,
+                col,
+                start_x: px(0.),
+                orig: 0.,
+                width: f32::from(w).ceil(),
+            },
+            cx,
+        );
+        cx.notify();
+    }
+
     fn commit_table_col_widths(&mut self, resize: TableColResize, cx: &mut Context<Self>) {
         let Some(region) = self
             .scan_data()
@@ -8754,6 +8902,20 @@ fn grip_left(bounds_left: Pixels, inset: Pixels) -> Pixels {
     bounds_left - px(22.) - inset
 }
 
+/// A wide table's scroll thumb — its visual rect, (padded) grab rect, and
+/// the mapping from thumb travel to content scroll. Built in prepaint (with
+/// a hand-cursor hitbox), drawn in paint, committed for drag hit-tests.
+#[derive(Clone, Copy)]
+struct TableThumb {
+    rect: Bounds<Pixels>,
+    grab: Bounds<Pixels>,
+    /// Header row — the table's `table_scroll_x` key.
+    header: usize,
+    /// Content px scrolled per px of thumb travel.
+    factor: f32,
+    color: Hsla,
+}
+
 /// The header row of the table that `t` (the grid row at line `row`) belongs
 /// to — the key of its horizontal-scroll entry.
 fn table_header_row(t: &TableRow, row: usize) -> usize {
@@ -9283,7 +9445,8 @@ struct PrepaintState {
     /// paint can draw them next to the labels.
     alert_icons: Option<markdown_syntax::AlertIcons>,
     /// Per-table hover zones (the grid plus pill reach) — repaint gating.
-    table_zones: Vec<Bounds<Pixels>>,
+    table_zones: Vec<(Bounds<Pixels>, usize)>,
+    table_thumbs: Vec<(TableThumb, Hitbox)>,
     /// Hovered-row / hovered-column border pills + outlines (issue #16).
     row_aff: Option<TableAffordance>,
     col_aff: Option<TableAffordance>,
@@ -10040,7 +10203,8 @@ impl Element for EditorElement {
         // — "+" inserts after it, "−" deletes it. The caret's cell is outlined
         // too. Paint shows/cursors them only while hovered; on_mouse_down
         // hit-tests the committed pill rects.
-        let mut table_zones: Vec<Bounds<Pixels>> = Vec::new();
+        let mut table_zones: Vec<(Bounds<Pixels>, usize)> = Vec::new();
+        let mut table_thumbs: Vec<(TableThumb, Hitbox)> = Vec::new();
         let mut row_aff: Option<TableAffordance> = None;
         let mut col_aff: Option<TableAffordance> = None;
         let mut col_resize_grips: Vec<ColResizeGrip> = Vec::new();
@@ -10070,7 +10234,41 @@ impl Element for EditorElement {
                     point(left - g, top - g),
                     size(width + g * 2., (bottom - top) + g * 2.),
                 );
-                table_zones.push(zone);
+                // Clip to the viewport: a scrolled wide table's CONTENT rect
+                // slides left with its scroll offset, but the visible grid
+                // stays put — hover and the wheel target what's on screen.
+                table_zones.push((zone.intersect(&bounds), tbl_header));
+
+                // The scroll thumb under a wide table: geometry + a
+                // hand-cursor hitbox here; paint draws it and mouse-down
+                // drags it (see `on_mouse_down`).
+                let avail = bounds.size.width - px(TABLE_GUTTER);
+                if width > avail {
+                    let th_w = (avail / f32::from(width) * f32::from(avail)).max(px(24.));
+                    let range = f32::from(width - avail);
+                    let sx = editor.table_sx(tbl_header, width, avail);
+                    // Track left is FIXED (the gutter edge) — `left` is the
+                    // scrolled content edge and would drift the thumb.
+                    let track = bounds.origin.x + px(TABLE_GUTTER);
+                    let th_x = track + (avail - th_w) * (f32::from(sx) / range);
+                    let mut th_c = t.border;
+                    th_c.a = (th_c.a * 1.5).min(0.8);
+                    let rect = Bounds::new(point(th_x, bottom - px(4.)), size(th_w, px(3.)));
+                    let grab = Bounds::new(
+                        rect.origin - point(px(4.), px(6.)),
+                        rect.size + size(px(8.), px(12.)),
+                    );
+                    table_thumbs.push((
+                        TableThumb {
+                            rect,
+                            grab,
+                            header: tbl_header,
+                            factor: range / f32::from(avail - th_w).max(1.),
+                            color: th_c,
+                        },
+                        window.insert_hitbox(grab, HitboxBehavior::Normal),
+                    ));
+                }
 
                 // The caret's cell (this table only), outlined like Cditor's.
                 if let Some((crow, ccell, _)) = caret_pos
@@ -10500,6 +10698,7 @@ impl Element for EditorElement {
                 .as_ref()
                 .and_then(|st| st.alert_icons.clone()),
             table_zones,
+            table_thumbs,
             row_aff,
             col_aff,
             caret_cell,
@@ -10873,7 +11072,6 @@ impl Element for EditorElement {
                 let avail = bounds.size.width - px(TABLE_GUTTER);
                 let tleft = origin.x + px(TABLE_GUTTER);
                 let content_left = self.editor.read(cx).table_left(t, i, &bounds);
-                let sx = tleft - content_left;
                 let g = px(TABLE_GUTTER);
                 let mask = gpui::ContentMask {
                     bounds: Bounds::new(point(tleft, origin.y - g), size(avail, *lh + g * 2.)),
@@ -10929,22 +11127,6 @@ impl Element for EditorElement {
                         cx,
                     );
                 });
-                // A slim track thumb under the last row shows there's more
-                // table to the side (and how far along you are).
-                if t.is_last && table_w > avail {
-                    let th_w = (avail / f32::from(table_w) * f32::from(avail)).max(px(24.));
-                    let range = f32::from(table_w - avail);
-                    let th_x = tleft + (avail - th_w) * (f32::from(sx) / range);
-                    let mut th_c = t.border;
-                    th_c.a = (th_c.a * 1.5).min(0.8);
-                    window.paint_quad(
-                        fill(
-                            Bounds::new(point(th_x, origin.y + *lh - px(4.)), size(th_w, px(3.))),
-                            th_c,
-                        )
-                        .corner_radii(Corners::all(px(1.5))),
-                    );
-                }
             } else if let Some(Block::Image(w)) = prepaint.widgets.get(i).and_then(Option::as_ref) {
                 // Inline image (W4a): paint the decoded image instead of source,
                 // inset to the row's gutter so a list-item image sits past its
@@ -11070,7 +11252,7 @@ impl Element for EditorElement {
         // otherwise only repaints on the caret blink). Zones are committed every
         // frame so on_mouse_move knows where the tables are.
         let mouse = window.mouse_position();
-        let table_hover_zones: Vec<Bounds<Pixels>> = prepaint.table_zones.clone();
+        let table_hover_zones: Vec<(Bounds<Pixels>, usize)> = prepaint.table_zones.clone();
         let mut table_row_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
         let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)> = Vec::new();
         let mut table_row_del = None;
@@ -11120,6 +11302,13 @@ impl Element for EditorElement {
             }
         }
 
+        // Wide-table scroll thumbs (from prepaint): the slim track under a
+        // wide table's last row, with a hand cursor over its grab band —
+        // draggable (see `on_mouse_down`).
+        for (thumb, hb) in &prepaint.table_thumbs {
+            window.paint_quad(fill(thumb.rect, thumb.color).corner_radii(Corners::all(px(1.5))));
+            window.set_cursor_style(CursorStyle::PointingHand, hb);
+        }
         // Gutter drag grip: six muted dots on the hovered line; while a drag
         // is live, a full-width accent bar marks the drop boundary instead.
         {
@@ -11148,18 +11337,24 @@ impl Element for EditorElement {
                     window.set_cursor_style(CursorStyle::ClosedHand, hb);
                 }
             } else if let Some((_, rect)) = prepaint.grip {
-                let d = px(2.5);
+                // Snap each dot to the DEVICE pixel grid: at fractional scale
+                // factors (Windows 100/125/150%) the 2.5px dots otherwise
+                // straddle pixel boundaries at per-dot subpixel phases and
+                // antialias to visibly different sizes (macOS @2x masked it).
+                let scale = window.scale_factor();
+                let snap = |v: Pixels| px((f32::from(v) * scale).round() / scale);
+                let d = snap(px(2.5));
                 let gap = px(4.5);
                 for col in 0..2 {
                     for dr in 0..3 {
                         let dot = Bounds::new(
                             point(
-                                rect.origin.x + px(2.) + gap * col as f32,
-                                rect.origin.y + px(1.) + gap * dr as f32,
+                                snap(rect.origin.x + px(2.) + gap * col as f32),
+                                snap(rect.origin.y + px(1.) + gap * dr as f32),
                             ),
                             size(d, d),
                         );
-                        window.paint_quad(fill(dot, dot_c).corner_radii(Corners::all(px(1.25))));
+                        window.paint_quad(fill(dot, dot_c).corner_radii(Corners::all(d * 0.5)));
                     }
                 }
                 if let Some(hb) = &prepaint.grip_hb {
@@ -11346,6 +11541,7 @@ impl Element for EditorElement {
             editor.prop_pill_rects = prop_pill_rects;
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
+            editor.table_thumbs = prepaint.table_thumbs.iter().map(|(t, _)| *t).collect();
             editor.code_chip_rects = code_chip_rects;
             editor.table_col_resize_rects = table_col_resize_rects;
             editor.code_card_rects = std::mem::take(&mut prepaint.code_card_rects);
@@ -11362,6 +11558,7 @@ impl Element for EditorElement {
             editor.last_paint_gen = editor.content_gen;
             editor.line_height = base_lh;
             editor.font_size = font_size;
+            editor.paint_font = Some(font.clone());
         });
     }
 }

@@ -272,6 +272,8 @@ fn main() {
         cursors::apply();
         // User-added UI fonts (Settings → Appearance → Font) live in the
         // managed fonts/ dir; register them before any window measures text.
+        #[cfg(target_os = "linux")]
+        theme::register_bundled_fonts(cx);
         theme::register_user_fonts(cx);
         // Slash-menu keys (up/down/enter/escape, gated on the menu being open)
         // plus the app-wide shortcuts (new tab/window, close tab, quit, …).
