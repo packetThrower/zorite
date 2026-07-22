@@ -640,10 +640,11 @@ pub struct EditorState {
     /// mouse-down.
     table_row_add_rects: Vec<(Bounds<Pixels>, usize)>,
     table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)>,
-    /// Each table's hover zone (grid + a thin margin), committed every paint so
-    /// `on_mouse_move` can repaint when the pointer's table-affordance region
-    /// changes (the editor otherwise only repaints on the caret blink).
-    table_hover_zones: Vec<Bounds<Pixels>>,
+    /// Each table's hover zone (grid + a thin margin) with its header row,
+    /// committed every paint so `on_mouse_move` can repaint when the pointer's
+    /// table-affordance region changes (the editor otherwise only repaints on
+    /// the caret blink) and `on_scroll_wheel` can hit-test the PAINTED table.
+    table_hover_zones: Vec<(Bounds<Pixels>, usize)>,
     /// The affordance region the pointer was last in — `(table index, 0 = zone /
     /// 1 = below strip / 2 = right strip)` — so the repaint fires only on change.
     table_hover_region: Option<(usize, u8)>,
@@ -4213,7 +4214,7 @@ impl EditorState {
         let i = self
             .table_hover_zones
             .iter()
-            .position(|z| z.contains(&pos))?;
+            .position(|(z, _)| z.contains(&pos))?;
         let strip = if self
             .table_row_add_rects
             .iter()
@@ -4268,20 +4269,37 @@ impl EditorState {
         // Vertical scrolling is the overwhelmingly common case — bail before
         // the O(lines) row walk when there's no horizontal delta.
         let dx = f32::from(event.delta.pixel_delta(px(20.)).x);
+        if std::env::var_os("ZORITE_WHEEL_DEBUG").is_some() {
+            eprintln!("wheel: delta={:?} dx={dx}", event.delta);
+        }
         if dx == 0. {
             return;
         }
+        let dbg = std::env::var_os("ZORITE_WHEEL_DEBUG").is_some();
         let Some(bounds) = self.last_bounds else {
             return;
         };
-        let rel_y = event.position.y - bounds.top();
-        let Some(row) = (0..self.line_tops.len()).find(|&i| {
-            let h = self.line_h(i) * self.row_span(i) as f32;
-            h > px(0.5) && rel_y >= self.line_tops[i] && rel_y < self.line_tops[i] + h
-        }) else {
+        // Hit-test the PAINTED table zone (grid + margin, from the last
+        // paint), not the text row model — table paint runs taller than its
+        // logical rows (top gutter, cell padding), which left the lower rows
+        // of a tall table unresponsive to the wheel.
+        let Some(&(_, header)) = self
+            .table_hover_zones
+            .iter()
+            .find(|(z, _)| z.contains(&event.position))
+        else {
+            if dbg {
+                eprintln!("wheel: not over a table zone");
+            }
             return;
         };
-        let Some(t) = self.table_rows.get(row).and_then(Option::as_ref) else {
+        // A horizontally-dominant wheel over a table belongs to the table —
+        // consume it even at the scroll ends, so leftover deltas don't spill
+        // into the page. Vertical-dominant scrolling keeps feeding the page.
+        if dx.abs() >= f32::from(event.delta.pixel_delta(px(20.)).y).abs() {
+            cx.stop_propagation();
+        }
+        let Some(t) = self.table_rows.get(header).and_then(Option::as_ref) else {
             return;
         };
         if t.col_widths.is_empty() {
@@ -4290,9 +4308,11 @@ impl EditorState {
         let total: Pixels = t.col_widths.iter().copied().sum();
         let avail = bounds.size.width - px(TABLE_GUTTER);
         if total <= avail {
+            if dbg {
+                eprintln!("wheel: fits total={total:?} avail={avail:?}");
+            }
             return;
         }
-        let header = table_header_row(t, row);
         let max = f32::from(total - avail);
         let cur = self.table_scroll_x.get(&header).copied().unwrap_or(0.);
         let new = (cur - dx).clamp(0., max);
@@ -9283,7 +9303,7 @@ struct PrepaintState {
     /// paint can draw them next to the labels.
     alert_icons: Option<markdown_syntax::AlertIcons>,
     /// Per-table hover zones (the grid plus pill reach) — repaint gating.
-    table_zones: Vec<Bounds<Pixels>>,
+    table_zones: Vec<(Bounds<Pixels>, usize)>,
     /// Hovered-row / hovered-column border pills + outlines (issue #16).
     row_aff: Option<TableAffordance>,
     col_aff: Option<TableAffordance>,
@@ -10040,7 +10060,7 @@ impl Element for EditorElement {
         // — "+" inserts after it, "−" deletes it. The caret's cell is outlined
         // too. Paint shows/cursors them only while hovered; on_mouse_down
         // hit-tests the committed pill rects.
-        let mut table_zones: Vec<Bounds<Pixels>> = Vec::new();
+        let mut table_zones: Vec<(Bounds<Pixels>, usize)> = Vec::new();
         let mut row_aff: Option<TableAffordance> = None;
         let mut col_aff: Option<TableAffordance> = None;
         let mut col_resize_grips: Vec<ColResizeGrip> = Vec::new();
@@ -10070,7 +10090,10 @@ impl Element for EditorElement {
                     point(left - g, top - g),
                     size(width + g * 2., (bottom - top) + g * 2.),
                 );
-                table_zones.push(zone);
+                // Clip to the viewport: a scrolled wide table's CONTENT rect
+                // slides left with its scroll offset, but the visible grid
+                // stays put — hover and the wheel target what's on screen.
+                table_zones.push((zone.intersect(&bounds), tbl_header));
 
                 // The caret's cell (this table only), outlined like Cditor's.
                 if let Some((crow, ccell, _)) = caret_pos
@@ -11070,7 +11093,7 @@ impl Element for EditorElement {
         // otherwise only repaints on the caret blink). Zones are committed every
         // frame so on_mouse_move knows where the tables are.
         let mouse = window.mouse_position();
-        let table_hover_zones: Vec<Bounds<Pixels>> = prepaint.table_zones.clone();
+        let table_hover_zones: Vec<(Bounds<Pixels>, usize)> = prepaint.table_zones.clone();
         let mut table_row_add_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
         let mut table_col_add_rects: Vec<(Bounds<Pixels>, usize, usize)> = Vec::new();
         let mut table_row_del = None;
