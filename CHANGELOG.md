@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.10.0] - 2026-07-22
+
+The editing release: a Cditor-inspired WYSIWYG overhaul — markers hidden
+everywhere, Notion-style menus, a full table interaction suite — plus
+Logseq-style `((block references))` end to end, and a large rendering
+performance batch. The Cditor-inspired work is ported from
+[@JYChen-8866](https://github.com/JYChen-8866)'s Cditor editor — thank you!
+
+### Added
+
+- **Block references, Logseq-style** — type `((` and pick any block from the
+  palette; the reference shows the target block's text in both views, clicks
+  jump to the block, and the picked block gets a stable anchor
+  automatically. Notes keep portable Obsidian `[[Page#^id]]` links on disk
+  while you read and edit the Logseq `((id))` form everywhere. A referenced
+  block wears a small superscript count badge — click it for a list of every
+  referencing page, each row jumping straight to the reference. Linked
+  References cards render the referencing block as real markdown and jump to
+  the exact line.
+- **True WYSIWYG** — formatting markers (`**`, `_`, `~~`, backticks,
+  `<mark>`) are hidden everywhere, not just away from the caret; styling is
+  the feedback, the toggles edit it, and deleting across a hidden marker
+  behaves like the marker isn't there. Emphasis nests (`**bold *italic***`)
+  like the reading view.
+- **Table suite** — Cditor-style hover interaction (accent outlines, border
+  pills to insert, red deletes), a table context menu (duplicate, visual
+  styles, copy), drag-to-resize columns persisted into the markdown,
+  double-click a column border to auto-fit it to content (Excel-style), and
+  wide tables scroll horizontally in place — by trackpad, a mouse's side
+  wheel, or dragging the slim scroll thumb — instead of squeezing columns.
+  Ragged tables widen to their longest row like the reading view.
+- **Notion-style chrome** — the slash command palette gets categories and a
+  flyout; context menus get icons, red destructive rows, and a selection
+  format bar; tasks render as filled checkboxes with struck-through text;
+  the journal feed and pages show scrollbars; code cards carry a Copy button
+  and a language picker (both views).
+- **Block drag-reorder** — a six-dot grip in the gutter drags any line (and
+  its indented children) to a new spot, with a drop indicator and a
+  closed-hand cursor for the whole drag; "Turn into" in the right-click menu
+  converts a block between paragraph, headings, lists, tasks, and callouts.
+- **Whiteboard: mindmaps and flowcharts** — adopted from ding-board: bound
+  connectors that follow their boxes, plus mindmap and flowchart tooling.
+- **Collapsible list headings** — a heading inside a bullet or numbered item
+  (`- ### Notes`) gets the fold chevron in both views; folding hides its
+  indented children, outliner-style.
+- **Appearance follows the OS** — the default theme mode is now Auto.
+
+### Fixed
+
+- **Display math** (#54) — a one-line `$$…$$` renders as display math in
+  both views, and prose sharing a line with `$$` fences is split out at
+  paste/typing/load time so formulas always get their own centered row.
+- **Logseq importer: block refs** (#53) — `((uuid))` references now import
+  as real block links with anchors minted on their targets; `title::`
+  overrides and journal-day targets resolve.
+- **Properties render identically in both views** — Logseq's props-under-a-
+  block shape panels in the reader (tolerating CRLF and trailing spaces from
+  real vaults), `- key:: value` props-only blocks panel in WYSIWYG, editing
+  keeps each property's indent/list marker, and the reader's key column is
+  measured like WYSIWYG's instead of fixed-width.
+- **Linux** — bold/italic render (the four core IBM Plex Sans faces are now
+  bundled; gpui's Linux system font resolves to that family, which most
+  distros don't ship), interactive window resize no longer stutters (the
+  bounds save was a synchronous write per resize event), and the post-login
+  blank beat is halved (the password KDF ran twice).
+- **Windows** — the drag-grip dots render evenly at fractional display
+  scales, and Ctrl+Q no longer quits (Alt+F4 is the convention there;
+  ⌘Q / Ctrl+Q stay on macOS and Linux).
+- **Tables** — selection highlights cover full rows without phantom
+  stripes (wrapped cells included), column drags no longer reveal the
+  style-marker line, GFM-escaped `\|` stays cell content, and right-clicking
+  a selection inside a cell keeps it selected and offers Cut/Copy/Paste.
+- **Editor correctness** — CommonMark backtick runs and backslash escapes,
+  CRLF normalized on paste, table-cell pastes stay in their cell, and the
+  caret never loads parked on a hidden marker line.
+
+### Performance
+
+- **Windowed rendering** — offscreen lines skip shaping and painting, and
+  offscreen journal days render as fixed-height spacers, so huge notes and
+  long feeds scroll smoothly in both views.
+- **Cross-frame caches** — per-line styled runs, table column widths and row
+  wrap counts, and the content-structure scans are cached across frames;
+  text shapes once per frame; IME offset mapping is O(distance).
+- **Scroll anchoring** — images and embeds finishing their async render
+  above the viewport no longer jump the feed.
+
 ## [0.9.0] - 2026-07-16
 
 Find anything, anywhere: a find bar for the journal feed (and real find
