@@ -36,6 +36,7 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 | [`heading_scale`](#heading_scale) | fn | `fn heading_scale(depth: u8) -> f32` | Font-size multiplier for h1–h6 | — |
 | [`ordered_marker`](#ordered_marker) | fn | `fn ordered_marker(depth: usize, n: u32) -> String` | Word-style list marker (`1.` → `a.` → `i.`) | — |
 | [`LinkHit`](#enum-linkhit) | enum | `Page(String) \| Url(String)` | What a clicked link-like construct targets | — |
+| [`is_safe_external_url`](#is_safe_external_url) | fn | `fn is_safe_external_url(url: &str) -> bool` | May this URL reach the OS opener? (http/https only) | — |
 | [`wiki_target_display`](#wiki_target_display) | fn | `fn wiki_target_display(inner: &str) -> (&str, &str)` | Split `target\|label` into `(target, display)` | — |
 | [`is_tag_char`](#is_tag_char--is_word_char) | fn | `fn is_tag_char(c: u8) -> bool` | Byte valid inside a `#tag` name | — |
 | [`is_word_char`](#is_tag_char--is_word_char) | fn | `fn is_word_char(c: u8) -> bool` | Word byte for boundary checks | — |
@@ -423,6 +424,39 @@ What a click on a link-like construct targets.
 | --- | --- | --- |
 | `Page` | page title | A `[[wiki-link]]` target or a `#tag` name (Logseq semantics: a tag opens the page of that name) |
 | `Url` | URL/path | An inline `[text](url)` or bare URL — hosts open http(s) externally and resolve file paths themselves |
+
+---
+
+## `is_safe_external_url`
+
+```rust
+pub fn is_safe_external_url(url: &str) -> bool
+```
+
+Whether `url` may be handed to the OS URL opener (`cx.open_url` —
+`NSWorkspace openURL:` on macOS, `ShellExecute` on Windows). Markdown is
+untrusted input (synced notes, imported vaults), and the opener runs whichever
+handler owns the scheme: `file:` launches local content, `smb:` leaks NTLM
+hashes on Windows, `javascript:`/`data:`/app-registered schemes (`ms-msdt:` …)
+run code. So this is an **allowlist**, not a denylist.
+
+**Returns** — `true` only for `http://` and `https://`. The scheme is compared
+case-insensitively (RFC 3986), so `HTTPS://` passes.
+
+**Guarantees & edge cases**
+
+- Whitespace and control characters (`\t`, `\n`, `\r`, NUL, …) **anywhere** in
+  the string are a rejection, not something to trim — openers strip them, so
+  ` javascript:…` and `java\tscript:…` would otherwise walk past a prefix
+  check.
+- Rejected: `javascript:`, `data:`, `file:`, `smb:`, `vbscript:`, `mailto:`,
+  UNC `\\server\share`, scheme-relative `//host/path`, relative paths, and the
+  empty string. A host that resolves local files (Zorite opens them in the PDF
+  viewer) must do so **before** the opener, on its own.
+- Pure, allocation-free, one pass.
+
+Used by the reader's own click handlers, so a `LinkHit::Url` that fails this
+check does nothing at all rather than opening.
 
 ---
 
@@ -1113,7 +1147,9 @@ name** (trimmed):
   kept).
 
 Standard `[text](url)` and reference-style links open externally via
-`cx.open_url` and do **not** go through this handler. Host obligation:
+`cx.open_url` — but only when [`is_safe_external_url`](#is_safe_external_url)
+passes (http/https); anything else is ignored. They do **not** go through this
+handler. Host obligation:
 navigate (Logseq semantics — tags and wiki-links open pages by title); use
 [`split_block_anchor`](#split_block_anchor) /
 [`split_heading_anchor`](#split_heading_anchor) to peel `#^id` / `#Heading`

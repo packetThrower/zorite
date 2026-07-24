@@ -75,8 +75,11 @@ fn scan(root: &Path) -> Result<Vec<SourceFile>, String> {
         let Ok(entries) = std::fs::read_dir(dir) else {
             continue;
         };
+        // An imported graph is untrusted: a symlinked `pages/x.md` would import
+        // whatever it points at (`~/.ssh/id_rsa`) as a page. Real files only.
         let mut paths: Vec<PathBuf> = entries
             .flatten()
+            .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|e| e == "md"))
             .collect();
@@ -218,6 +221,7 @@ fn read_whiteboards(
     };
     let mut paths: Vec<PathBuf> = entries
         .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file())) // no symlinks out of the graph
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "edn"))
         .collect();
@@ -367,7 +371,10 @@ fn decode_data_uri(asset_id: &str, src: &str) -> Option<(String, Vec<u8>)> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(cleaned)
         .ok()?;
-    Some((format!("wb-{asset_id}.{ext}"), bytes))
+    // An imported graph is untrusted and the asset id comes straight out of its
+    // EDN: `../` in it must not escape the managed store when this becomes
+    // `images/<name>` and is joined onto the data dir.
+    Some((format!("wb-{}.{ext}", sanitize_name(asset_id)), bytes))
 }
 
 /// `[x y]` from an EDN vector (missing entries default to 0).
@@ -994,12 +1001,17 @@ impl Converter {
     /// Locate an asset on disk, trying the raw reference and progressively
     /// percent-decoded forms (Logseq stores some names encoded).
     fn find_asset(&self, raw: &str, decoded: &str) -> Option<PathBuf> {
+        // An imported graph is untrusted: decoding turns a `..%2f..%2f` link
+        // into a real `../../`, so a candidate could name any file on disk
+        // (`~/.ssh/id_rsa`) and get copied into the notebook. Both sides are
+        // canonicalized — that resolves `..` and symlinks in assets/ in one go.
+        let base = std::fs::canonicalize(&self.assets_dir).ok()?;
         let mut candidates = vec![raw.to_string(), decoded.to_string()];
         candidates.push(percent_decode(raw));
         candidates.push(percent_decode(&percent_decode(raw)));
         for c in candidates {
             let p = self.assets_dir.join(&c);
-            if p.is_file() {
+            if p.is_file() && std::fs::canonicalize(&p).is_ok_and(|real| real.starts_with(&base)) {
                 return Some(p);
             }
         }
@@ -1187,9 +1199,13 @@ fn next_md_link(s: &str) -> Option<(&str, String, String, &str, bool)> {
 }
 
 /// Make an asset filename safe inside a markdown destination (spaces and
-/// parentheses break `(…)` targets).
+/// parentheses break `(…)` targets). Also the traversal guard for names taken
+/// from an untrusted graph: everything outside the allowlist — `/`, `\`, `:` —
+/// becomes `_`, and the result can never be a path component that means "here"
+/// or "the parent dir".
 fn sanitize_name(name: &str) -> String {
-    name.chars()
+    let out: String = name
+        .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
                 c
@@ -1197,7 +1213,12 @@ fn sanitize_name(name: &str) -> String {
                 '_'
             }
         })
-        .collect()
+        .collect();
+    if matches!(out.as_str(), "" | "." | "..") {
+        "_".to_string()
+    } else {
+        out
+    }
 }
 
 /// Whether a line is, on its own, a single markdown image (`![alt](src)`).
@@ -1724,6 +1745,20 @@ mod tests {
     }
 
     #[test]
+    fn traversal_asset_id_cannot_escape_the_store() {
+        // The asset id is attacker-controlled EDN and lands in a filename.
+        assert_eq!(
+            decode_data_uri("../../evil", "data:image/png;base64,aGVsbG8=").map(|(n, _)| n),
+            Some("wb-.._.._evil.png".to_string())
+        );
+        // …and it can't collapse to a `.`/`..`/empty path component either.
+        assert_eq!(sanitize_name(".."), "_");
+        assert_eq!(sanitize_name("."), "_");
+        assert_eq!(sanitize_name("/"), "_");
+        assert_eq!(sanitize_name(""), "_");
+    }
+
+    #[test]
     fn stems_become_namespaced_titles() {
         assert_eq!(title_from_stem("Budget___2024"), "Budget::2024");
         assert_eq!(
@@ -2063,6 +2098,34 @@ mod tests {
             content,
             "- p3: quoted text [[pdf/x.pdf#p3|↗]]\n- p9: area {green} [[pdf/x.pdf#p9|↗]]"
         );
+    }
+
+    #[test]
+    fn encoded_traversal_asset_ref_does_not_escape() {
+        // `%2F` decodes to `/`, so an imported `..%2F` reference used to walk
+        // out of assets/ and copy any file on disk into the notebook.
+        let root = std::env::temp_dir().join("zorite-test-logseq-escape");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        std::fs::write(root.join("secret.txt"), b"id_rsa").unwrap();
+        std::fs::write(root.join("assets/ok.png"), b"png").unwrap();
+
+        let mut c = Converter::new(&root);
+        // The reference resolves to a real file — it's just not inside assets/.
+        assert!(root.join("assets/../secret.txt").is_file());
+        assert_eq!(c.find_asset("..%2Fsecret.txt", "../secret.txt"), None);
+        assert!(c.find_asset("ok.png", "ok.png").is_some());
+
+        // End to end: the link is still rewritten, but nothing is queued to copy.
+        let out = c.convert_assets("[](../assets/..%2Fsecret.txt)");
+        assert_eq!(out, "[secret.txt](images/secret.txt)");
+        assert!(c.copies.is_empty());
+        assert_eq!(
+            c.warnings,
+            vec!["asset not found: ..%2Fsecret.txt".to_string()]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // -- end to end --

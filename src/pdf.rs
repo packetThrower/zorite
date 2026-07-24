@@ -15,9 +15,18 @@ use crate::paths;
 
 /// Resolve a PDF reference to an existing local file. Cross-platform path resolution
 /// (handling `file://`, absolute, and data-dir-relative refs) lives in
-/// [`crate::paths::resolve_local`]; this just rejects remote (http) PDFs and requires
-/// the file to exist.
+/// [`crate::paths::resolve_local`]; this rejects remote (http) PDFs, requires the
+/// reference to actually name a `.pdf`, and requires the file to exist.
+///
+/// The extension check is a security boundary, not tidiness: a link whose target
+/// isn't a PDF used to open a viewer tab anyway, and the "couldn't parse this —
+/// open externally?" pane then handed that path to the OS launcher. A note (an
+/// imported vault's, say) could ship `evil.command` beside a link to it and get
+/// arbitrary code run in two clicks. Only `.pdf` reaches the viewer now.
 pub fn resolve_path(src: &str) -> Option<PathBuf> {
+    if !is_pdf(src.split('#').next().unwrap_or(src)) {
+        return None;
+    }
     paths::resolve_local(src).filter(|p| p.exists())
 }
 

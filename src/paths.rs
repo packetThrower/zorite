@@ -724,11 +724,29 @@ pub fn resolve_local(src: &str) -> Option<PathBuf> {
         return Url::parse(src).ok().and_then(|u| u.to_file_path().ok());
     }
     let path = Path::new(src);
-    Some(if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        data_dir().join(src)
-    })
+    if path.is_absolute() {
+        // Referencing a file anywhere on disk is a documented feature for
+        // notes you wrote yourself; it stays.
+        return Some(path.to_path_buf());
+    }
+    // A data-dir-relative ref must STAY in the data dir. `Path::join` is
+    // lexical, so `images/../../../x` would otherwise walk out of it — and
+    // note text can arrive from an imported vault, not just from the user.
+    if !is_contained_relative(path) {
+        return None;
+    }
+    Some(data_dir().join(src))
+}
+
+/// Whether `rel` is a relative path that can't climb out of whatever it's
+/// joined onto: no root, no drive prefix, no `..` component. Component-based
+/// on purpose — string matching on `".."` misses platform quirks (`..\` on
+/// Windows, a `..` that's really part of a longer name, percent-encoded forms
+/// callers may have decoded).
+pub(crate) fn is_contained_relative(rel: &Path) -> bool {
+    use std::path::Component;
+    rel.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 #[cfg(test)]

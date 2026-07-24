@@ -648,7 +648,8 @@ Built-in chrome: a header with the filename, page navigation (‹ / ›, a
 click-to-edit page counter you can type a number into), zoom controls (−, %, +), a
 table-of-contents side panel (when the PDF has an outline), clickable link
 annotations overlaid on each page (internal → jump to page, external →
-`cx.open_url`), an overlay scrollbar, and a scroll-to-top button. With `markup`: a
+`cx.open_url`, http(s) only — see [`LinkTarget`](#enum-linktarget)), an overlay
+scrollbar, and a scroll-to-top button. With `markup`: a
 highlight pen + color picker; with `search`: a find bar (🔍).
 
 Keyboard shortcuts (handled when the viewer is focused — it focuses itself on
@@ -1187,6 +1188,13 @@ pub enum LinkTarget {
 
 Where a clickable PDF link points. `Clone + Debug + PartialEq + Eq`.
 
+`Uri` only ever holds an `http://` or `https://` URL (scheme matched
+case-insensitively). A PDF is attacker-authored — including the clickable
+overlay's position and size — and the viewer hands `Uri` to the OS opener, so
+annotations carrying any other scheme (`file:`, `smb:`, `javascript:`,
+`ms-msdt:` …) or embedded whitespace/control characters are dropped at parse
+time and never become a link.
+
 ---
 
 ## `struct PdfLink`
@@ -1264,6 +1272,9 @@ an empty vec (the outer vec always has exactly one entry per page).
 - Handles `/Dest` explicit destination arrays and `/A` actions of type `/URI`
   (external) and `/GoTo` (internal). Other action types, named destinations, and
   empty URIs are skipped.
+- `/URI` actions are **allowlisted to `http(s)`** — see
+  [`LinkTarget`](#enum-linktarget). A rejected URI is skipped like a malformed
+  annotation (logged at `warn`), so no overlay is drawn for it.
 - **Rotated pages return an empty vec** (their annotation rectangles would need
   rotating to line up with the render); so do degenerate (zero-area) crop boxes.
 - `/Rect` is converted from PDF user space (bottom-left origin) to the normalized

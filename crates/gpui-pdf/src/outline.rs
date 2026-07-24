@@ -167,6 +167,28 @@ pub fn page_links(doc: &Pdf) -> Vec<Vec<PdfLink>> {
     out
 }
 
+/// Whether a `/URI` action may reach the OS URL opener (`NSWorkspace openURL:`
+/// / `ShellExecute`). A PDF is entirely attacker-authored — including the
+/// clickable overlay's position and size — so this is an allowlist: only
+/// `http://` and `https://`, schemes compared case-insensitively per RFC 3986.
+/// Everything else is rejected (`file:` launches local content, `smb:` leaks
+/// NTLM hashes on Windows, `javascript:`/`data:`/app-registered schemes like
+/// `ms-msdt:` run handlers). Whitespace and control characters anywhere are a
+/// rejection, not something to trim: openers strip them, so ` javascript:…`
+/// would otherwise walk past the prefix check.
+///
+/// Deliberately duplicated from `gpui_markdown::syntax::is_safe_external_url`
+/// — five lines is cheaper than the cross-crate dependency the crates rule
+/// forbids. Keep the two in step.
+fn is_safe_external_uri(uri: &str) -> bool {
+    !uri.chars().any(|c| c.is_whitespace() || c.is_control())
+        && ["http://", "https://"].iter().any(|scheme| {
+            uri.as_bytes()
+                .get(..scheme.len())
+                .is_some_and(|got| got.eq_ignore_ascii_case(scheme.as_bytes()))
+        })
+}
+
 /// Resolve a `/Link` annotation's target: `/Dest`, or an `/A` action (`/URI` for
 /// external links, `/GoTo` for internal jumps).
 fn link_target(annot: &Dict, page_index: &HashMap<ObjRef, usize>) -> Option<LinkTarget> {
@@ -177,7 +199,13 @@ fn link_target(annot: &Dict, page_index: &HashMap<ObjRef, usize>) -> Option<Link
     match action.get::<Name>("S").as_ref().map(|n| n.as_str()) {
         Some("URI") => {
             let uri = decode_pdf_string(action.get::<PdfString>("URI")?.as_bytes());
-            (!uri.is_empty()).then_some(LinkTarget::Uri(uri))
+            if !is_safe_external_uri(&uri) {
+                // Dropped here rather than at the click: no annotation, no
+                // overlay, so a hostile URI never even reads as clickable.
+                log::warn!("pdf: dropped link annotation with unsupported URI scheme");
+                return None;
+            }
+            Some(LinkTarget::Uri(uri))
         }
         Some("GoTo") => {
             dest_array_page(&action.get::<Array>("D")?, page_index).map(LinkTarget::Page)
@@ -265,5 +293,24 @@ mod tests {
     fn latin1_decodes_and_trims() {
         assert_eq!(decode_pdf_string(b"  Intro  "), "Intro");
         assert_eq!(decode_pdf_string(&[b'C', 0xE9]), "Cé"); // 0xE9 = é in Latin-1
+    }
+
+    #[test]
+    fn only_http_uris_survive() {
+        assert!(is_safe_external_uri("https://example.com"));
+        assert!(is_safe_external_uri("HTTP://EXAMPLE.COM"));
+        for bad in [
+            "file:///etc/passwd",
+            "smb://evil/share",
+            "javascript:alert(1)",
+            "mailto:a@b.c",
+            "//evil.com",
+            r"\\evil\share",
+            " javascript:alert(1)",
+            "java\tscript:x",
+            "",
+        ] {
+            assert!(!is_safe_external_uri(bad), "should reject {bad:?}");
+        }
     }
 }

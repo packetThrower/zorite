@@ -1737,7 +1737,12 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
                             handler(title.clone(), window, cx);
                         }
                     }
-                    Some(LinkTarget::Url(url)) => cx.open_url(url),
+                    // Only http(s) reaches the OS opener — the markdown is
+                    // untrusted, and `open_url` runs the scheme's handler.
+                    Some(LinkTarget::Url(url)) if crate::syntax::is_safe_external_url(url) => {
+                        cx.open_url(url)
+                    }
+                    Some(LinkTarget::Url(_)) => {}
                     None => {}
                 }
             })
@@ -2613,7 +2618,14 @@ fn render_property_table(
                                                 h(format!("#^{id}").into(), window, cx);
                                             }
                                         }
-                                        crate::syntax::LinkHit::Url(u) => cx.open_url(u),
+                                        // Same allowlist as the inline-link
+                                        // click above: property values are
+                                        // untrusted markdown too.
+                                        crate::syntax::LinkHit::Url(u) => {
+                                            if crate::syntax::is_safe_external_url(u) {
+                                                cx.open_url(u);
+                                            }
+                                        }
                                     }
                                 },
                             ),

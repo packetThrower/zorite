@@ -450,9 +450,16 @@ impl Pdf {
         } else {
             let p = Path::new(url);
             if p.is_absolute() {
+                // Absolute refs are a documented app-wide feature
+                // (`paths::resolve_local`) — the reader shows them too.
                 p.to_path_buf()
-            } else {
+            } else if crate::paths::is_contained_relative(p) {
                 base_dir.join(url)
+            } else {
+                // `images/../../../x` would otherwise embed a file the note
+                // has no business reading into a PDF the user then shares.
+                log::warn!("export: refusing image ref outside the base dir: {url}");
+                return;
             }
         };
         let ext = path
@@ -794,6 +801,33 @@ mod tests {
         assert!(math_bytes.len() > 4000, "math len {}", math_bytes.len());
         let _ = std::fs::remove_file(math_out);
         let _ = std::fs::remove_file(out);
+    }
+
+    #[test]
+    fn image_refs_cant_escape_the_data_dir() {
+        let base =
+            std::env::temp_dir().join(format!("zorite-export-esc-pdf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("data");
+        // `images/` must exist or the OS rejects the traversal on its own and
+        // the test proves nothing about the guard.
+        std::fs::create_dir_all(data.join("images")).unwrap();
+        // A real PNG one level above the data dir — embeddable, so the size
+        // difference below is proof the guard (not a decode failure) fired.
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([200, 30, 30, 255]))
+            .save(base.join("victim.png"))
+            .unwrap();
+
+        let out = base.join("t.pdf");
+        export_pdf("T", "![](images/../../victim.png)\n", &data, &out).unwrap();
+        let escaped = std::fs::read(&out).unwrap().len();
+        export_pdf("T", "![](victim.png)\n", &base, &out).unwrap();
+        let embedded = std::fs::read(&out).unwrap().len();
+        assert!(
+            escaped < embedded,
+            "traversal embedded the file: {escaped} vs {embedded}"
+        );
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

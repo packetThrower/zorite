@@ -86,7 +86,7 @@ pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
     // Every non-md file, indexed by lowercase basename, for attachment lookup.
     let mut assets: HashMap<String, PathBuf> = HashMap::new();
     let mut canvas_files: Vec<PathBuf> = Vec::new();
-    walk(root, &mut md_files, &mut canvas_files, &mut assets);
+    walk(root, &mut md_files, &mut canvas_files, &mut assets, 0);
     if md_files.is_empty() {
         return Err(format!(
             "{} doesn't contain any Markdown notes",
@@ -198,7 +198,15 @@ fn walk(
     md: &mut Vec<PathBuf>,
     canvases: &mut Vec<PathBuf>,
     assets: &mut HashMap<String, PathBuf>,
+    depth: usize,
 ) {
+    // An imported vault is untrusted. `is_dir()` follows symlinks, so a link
+    // loop recursed until the import thread's stack overflowed (a hard process
+    // abort) and a link out of the vault imported whatever it pointed at — so
+    // symlinks are skipped outright, and plain nesting is capped as a backstop.
+    if depth > 32 {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -208,8 +216,14 @@ fn walk(
         if name.starts_with('.') {
             continue; // .obsidian, .trash, .git, …
         }
-        if path.is_dir() {
-            walk(&path, md, canvases, assets);
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_symlink() {
+            continue;
+        }
+        if kind.is_dir() {
+            walk(&path, md, canvases, assets, depth + 1);
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             md.push(path);
         } else if path.extension().and_then(|e| e.to_str()) == Some("canvas") {
@@ -1363,6 +1377,33 @@ mod tests {
             c.convert_line("Decision here. ^decision1"),
             "Decision here. ^decision1"
         );
+    }
+
+    #[test]
+    fn walk_skips_symlinks_and_caps_depth() {
+        // An imported vault is untrusted: a symlink loop used to recurse until
+        // the import thread's stack overflowed, and a symlink out of the vault
+        // imported whatever it pointed at.
+        let root = std::env::temp_dir().join("zorite-test-obsidian-walk");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub/note.md"), "hi").unwrap();
+        #[cfg(unix)]
+        {
+            // A loop back to the root, and a note linked from outside the vault.
+            std::os::unix::fs::symlink(&root, root.join("sub/loop")).unwrap();
+            std::os::unix::fs::symlink(root.join("sub/note.md"), root.join("linked.md")).unwrap();
+        }
+        // Nesting past the cap is dropped rather than followed.
+        let deep = (0..40).fold(root.clone(), |p, _| p.join("d"));
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::write(deep.join("deep.md"), "hi").unwrap();
+
+        let (mut md, mut canvases, mut assets) = (Vec::new(), Vec::new(), HashMap::new());
+        walk(&root, &mut md, &mut canvases, &mut assets, 0);
+        assert_eq!(md, vec![root.join("sub/note.md")]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

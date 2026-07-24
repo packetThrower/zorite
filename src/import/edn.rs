@@ -61,13 +61,20 @@ pub fn parse(s: &str) -> Option<Edn> {
     Parser {
         chars: s.chars().collect(),
         pos: 0,
+        depth: 0,
     }
     .value()
 }
 
+/// How deep values may nest before parsing gives up. An imported `.edn` is
+/// untrusted: `[[[[…` (or a `#_#_#_…` chain) would otherwise recurse until the
+/// stack overflows, aborting the process. 128 matches serde_json's default.
+const MAX_DEPTH: usize = 128;
+
 struct Parser {
     chars: Vec<char>,
     pos: usize,
+    depth: usize,
 }
 
 impl Parser {
@@ -100,7 +107,19 @@ impl Parser {
         }
     }
 
+    /// Every recursion in the parser goes through here, so the depth cap on
+    /// untrusted input only has to be enforced in one place.
     fn value(&mut self) -> Option<Edn> {
+        if self.depth >= MAX_DEPTH {
+            return None;
+        }
+        self.depth += 1;
+        let out = self.value_inner();
+        self.depth -= 1;
+        out
+    }
+
+    fn value_inner(&mut self) -> Option<Edn> {
         self.skip_ws();
         match self.peek()? {
             '{' => self.seq('}').map(Edn::map_pairs),
@@ -256,5 +275,17 @@ mod tests {
         assert_eq!(e.get("keep").unwrap(), &Edn::Keyword("real".into())); // #_ skipped :dropped
         assert_eq!(e.get("flag").unwrap(), &Edn::Bool(true));
         assert_eq!(e.get("n").unwrap(), &Edn::Nil);
+    }
+
+    #[test]
+    fn deep_nesting_gives_up_instead_of_overflowing() {
+        // An imported `.edn` is untrusted — these used to recurse until the
+        // process aborted on a stack overflow.
+        assert_eq!(parse(&"[".repeat(10_000)), None);
+        assert_eq!(parse(&"#_".repeat(10_000)), None);
+        // Nesting under the cap still parses, and siblings don't accumulate.
+        let nested = format!("{}{}", "[".repeat(100), "]".repeat(100));
+        assert!(parse(&nested).is_some());
+        assert!(parse(&format!("[{nested} {nested} {nested}]")).is_some());
     }
 }

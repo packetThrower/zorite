@@ -30,6 +30,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::db::ExportPage;
+use crate::paths::is_contained_relative;
 
 /// What [`plan_export`] produces: files to write (export-relative path →
 /// body), asset references to copy (data-dir-relative, e.g. `images/x.png`),
@@ -167,6 +168,14 @@ pub fn write_export(
     }
     let mut copied = 0usize;
     for rel in &plan.assets {
+        // Second gate, at the sink: whatever put this in the plan (a note's
+        // markdown, a whiteboard image node), neither join may escape — the
+        // read side out of `data_dir`, the write side out of `dest`, where
+        // `fs::copy` would truncate a file the user never chose.
+        if !is_contained_relative(Path::new(rel)) {
+            warnings.push(format!("unsafe asset path skipped: {rel}"));
+            continue;
+        }
         let src = data_dir.join(rel);
         if !src.is_file() {
             warnings.push(format!("missing asset: {rel}"));
@@ -478,7 +487,10 @@ fn rewrite_target(inner: &str, targets: &HashMap<String, String>) -> String {
 fn collect_assets(content: &str, out: &mut BTreeSet<String>) {
     for src in gpui_markdown::all_image_srcs(content) {
         let s = src.to_string();
-        if s.starts_with("images/") || s.starts_with("pdf/") {
+        // The prefix alone proves nothing: `images/../../x` starts with it.
+        if (s.starts_with("images/") || s.starts_with("pdf/"))
+            && is_contained_relative(Path::new(&s))
+        {
             out.insert(s);
         }
     }
@@ -495,7 +507,9 @@ fn collect_assets(content: &str, out: &mut BTreeSet<String>) {
             if let gpui_markdown::syntax::LinkHit::Page(t) = hit {
                 // A pdf chip's target may carry a `#pN` page anchor.
                 let t = t.split('#').next().unwrap_or(&t);
-                if t.starts_with("pdf/") || t.starts_with("images/") {
+                if (t.starts_with("pdf/") || t.starts_with("images/"))
+                    && is_contained_relative(Path::new(t))
+                {
                     out.insert(t.to_string());
                 }
             }
@@ -645,6 +659,43 @@ mod tests {
             assets,
             ["images/pic.png", "images/small.jpg", "pdf/doc.pdf"]
         );
+    }
+
+    #[test]
+    fn traversing_asset_refs_are_dropped() {
+        let plan = plan_export(&[page(
+            "Evil",
+            "![](images/../../evil.png)\n[[pdf/../../../etc/passwd]]\n![](images/ok.png)",
+        )]);
+        let assets: Vec<&String> = plan.assets.iter().collect();
+        assert_eq!(assets, ["images/ok.png"]);
+    }
+
+    #[test]
+    fn write_refuses_to_copy_outside_the_destination() {
+        // A poisoned asset can reach the plan from any producer (a whiteboard
+        // image node bypasses `collect_assets`), so the writer must gate too.
+        let base = std::env::temp_dir().join(format!("zorite-export-esc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (data, dest) = (base.join("data"), base.join("dest"));
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&dest).unwrap();
+        let victim = base.join("victim.txt");
+        std::fs::write(&victim, "keep me").unwrap();
+
+        let mut plan = plan_export(&[page("A", "x")]);
+        plan.assets.insert("images/../../victim.txt".into());
+        let summary = write_export(&data, &dest, plan).unwrap();
+
+        assert_eq!(summary.assets, 0);
+        assert!(
+            summary.warnings.iter().any(|w| w.contains("unsafe asset")),
+            "{:?}",
+            summary.warnings
+        );
+        assert_eq!(std::fs::read_to_string(&victim).unwrap(), "keep me");
+        assert!(!dest.join("images").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

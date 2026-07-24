@@ -23,7 +23,7 @@ pub mod logseq;
 pub mod obsidian;
 
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::db::Db;
 
@@ -143,6 +143,12 @@ pub fn write_bundle(
         if !seen.insert(&copy.managed) {
             continue;
         }
+        if !is_contained(&copy.managed) {
+            summary
+                .warnings
+                .push(format!("unsafe asset path, skipped: {}", copy.managed));
+            continue;
+        }
         let dest = data_dir.join(&copy.managed);
         if dest.exists() {
             continue;
@@ -162,6 +168,12 @@ pub fn write_bundle(
     // written from memory rather than copied from a source file.
     for asset in &bundle.asset_bytes {
         if !seen.insert(&asset.managed) {
+            continue;
+        }
+        if !is_contained(&asset.managed) {
+            summary
+                .warnings
+                .push(format!("unsafe asset path, skipped: {}", asset.managed));
             continue;
         }
         let dest = data_dir.join(&asset.managed);
@@ -243,6 +255,18 @@ pub fn write_bundle(
 
     summary.warnings.dedup();
     Ok(summary)
+}
+
+/// Whether a bundle's `managed` destination stays under the data dir. An
+/// imported vault is untrusted and readers build these strings out of its
+/// filenames, so a `..` component (or an absolute path / Windows drive prefix)
+/// must never reach `data_dir.join(…)` — `join` doesn't normalize, and an
+/// absolute path replaces the base outright. Only `Normal`/`CurDir` components
+/// can escape nothing, which also makes `dest.starts_with(data_dir)` a given.
+fn is_contained(managed: &str) -> bool {
+    Path::new(managed)
+        .components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 /// Create-or-append a named page, then refresh its aliases and link index.
@@ -392,6 +416,48 @@ mod tests {
         assert!(page.content.ends_with("\n\nmore"));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn escaping_asset_paths_are_rejected() {
+        // An imported vault is untrusted: a `managed` that climbs out of the
+        // data dir must be warned about, not written.
+        let dir = std::env::temp_dir().join("zorite-test-import-escape/data");
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pic.png"), b"png").unwrap();
+
+        let bundle = ImportBundle {
+            assets: vec![AssetCopy {
+                src: dir.join("pic.png"),
+                managed: "images/../../pwned/x.png".into(),
+            }],
+            asset_bytes: vec![
+                AssetBytes {
+                    bytes: b"x".to_vec(),
+                    managed: "images/wb-../../pwned.png".into(),
+                },
+                AssetBytes {
+                    bytes: b"x".to_vec(),
+                    managed: if cfg!(windows) {
+                        r"C:\pwned.png".into()
+                    } else {
+                        "/tmp/zorite-pwned.png".to_string()
+                    },
+                },
+            ],
+            ..ImportBundle::default()
+        };
+
+        let db = Db::open_in_memory().unwrap();
+        let summary = write_bundle(&db, &dir, bundle, |_, _| {}).unwrap();
+        assert_eq!(summary.assets_copied, 0);
+        assert_eq!(summary.warnings.len(), 3);
+        assert!(summary.warnings.iter().all(|w| w.starts_with("unsafe")));
+        // `images/../../pwned/…` would have landed beside the data dir.
+        assert!(!dir.parent().unwrap().join("pwned").exists());
+
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
     }
 
     #[test]

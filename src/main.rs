@@ -358,6 +358,10 @@ pub(crate) fn lock_now(cx: &mut App) {
         return;
     }
     security::set_session_key(None);
+    // A verify that never got consumed (e.g. a password change abandoned at
+    // the confirm step) leaves a keyed, open connection stashed. Locking must
+    // drop it too, or the derived key outlives the lock it's protecting.
+    db::clear_verified();
     // Snapshot first, open the unlock window, THEN close the app windows —
     // the count must never hit zero (Windows exits on the last close).
     let doomed = cx.windows();

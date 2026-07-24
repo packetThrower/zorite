@@ -295,6 +295,37 @@ pub enum LinkHit {
     BlockRef(String),
 }
 
+/// Whether `url` may be handed to the OS URL opener (`cx.open_url` —
+/// `NSWorkspace openURL:` on macOS, `ShellExecute` on Windows).
+///
+/// Link targets are *attacker-authorable*: a synced note, an imported vault, a
+/// PDF's `/URI` annotation. The OS opener runs whichever handler owns the
+/// scheme, so `smb://` leaks NTLM hashes on Windows, `file://` launches local
+/// content, and app-registered schemes (`ms-msdt:` …) are reachable. Hence an
+/// allowlist, never a denylist: only `http://`, `https://`, and `mailto:`
+/// pass. Schemes are case-insensitive per RFC 3986, so `HTTP://` passes too.
+///
+/// `mailto:` is on the list because `[write us](mailto:x@y.com)` is ordinary
+/// markdown and dropping it would break real notes. It opens a compose window
+/// rather than running anything, and the mail client — not us — owns parsing
+/// its query (a percent-encoded `%0D%0A` can't be neutralized here, and
+/// clients have long restricted which headers a `mailto:` may set).
+///
+/// Whitespace and control characters anywhere are a rejection rather than
+/// something to trim — openers strip them, so ` javascript:…` and
+/// `java\tscript:…` would otherwise walk past a prefix check. Everything else
+/// is rejected: `javascript:`, `data:`, `file:`, `smb:`, UNC
+/// `\\server\share`, scheme-relative `//host/path`, and bare relative paths.
+/// A host that wants to resolve local files does so itself, before the opener.
+pub fn is_safe_external_url(url: &str) -> bool {
+    !url.chars().any(|c| c.is_whitespace() || c.is_control())
+        && ["http://", "https://", "mailto:"].iter().any(|scheme| {
+            url.as_bytes()
+                .get(..scheme.len())
+                .is_some_and(|got| got.eq_ignore_ascii_case(scheme.as_bytes()))
+        })
+}
+
 /// Split a wiki-link's inner text into `(target, display)`:
 /// `target|label` shows `label` (falling back to the target when the label is
 /// empty); `name` shows itself. Both sides trimmed.
@@ -865,6 +896,42 @@ mod tests {
             normalize_math_fences("$$y$$"),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn only_http_reaches_the_os_opener() {
+        for ok in [
+            "http://example.com",
+            "https://example.com/a?b=c#d",
+            "HTTPS://EXAMPLE.COM",
+            "HtTp://example.com",
+            // Ordinary markdown — an email link opens a compose window.
+            "mailto:a@b.c",
+            "MAILTO:a@b.c",
+        ] {
+            assert!(is_safe_external_url(ok), "should allow {ok:?}");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "data:text/html,<script>x</script>",
+            "file:///etc/passwd",
+            "smb://evil/share",
+            "vbscript:msgbox",
+            "ms-msdt:/id",
+            "//evil.com/path",
+            r"\\evil\share",
+            "/local/path",
+            "example.com",
+            " javascript:alert(1)",
+            "\tjavascript:alert(1)",
+            "java\tscript:alert(1)",
+            "http\n://example.com",
+            "https://exa\u{0}mple.com",
+            "https://example.com\r\nHost: evil",
+            "",
+        ] {
+            assert!(!is_safe_external_url(bad), "should reject {bad:?}");
+        }
     }
 
     #[test]

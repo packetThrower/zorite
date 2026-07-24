@@ -1093,10 +1093,11 @@ impl SettingsView {
                         .text_size(px(12.0))
                         .text_color(theme::text_tertiary())
                         .child(
-                            "Encrypts your entire database. If you forget this \
-                             password, your notes are unrecoverable. Earlier plaintext \
-                             backups in the data folder stay readable until you delete \
-                             them.",
+                            "Encrypts the note database. If you forget this \
+                             password, your notes are unrecoverable. Images and \
+                             PDFs stay as ordinary files in the data folder — \
+                             they are not encrypted — and earlier plaintext \
+                             backups there stay readable until you delete them.",
                         ),
                 );
             }
@@ -2401,7 +2402,15 @@ impl Render for SettingsView {
 }
 
 /// Open a URL in the user's default browser (the "View release" button).
+///
+/// The URL comes from the GitHub release JSON, so it's only as trustworthy as
+/// that response — and it's handed to `open`/`explorer`, which happily take a
+/// local path or a leading `-` as a flag. Require https before spawning.
 fn open_url(url: &str) {
+    if !gpui_markdown::syntax::is_safe_external_url(url) {
+        log::warn!("refusing to open non-https url from release metadata");
+        return;
+    }
     #[cfg(target_os = "macos")]
     let cmd = "open";
     #[cfg(target_os = "windows")]

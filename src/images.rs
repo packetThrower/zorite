@@ -249,9 +249,28 @@ pub fn decode_scaled(path: &Path) -> Option<Arc<RenderImage>> {
     // full `image::open`; the first to yield a bitmap wins, any miss falls through.
     let img = decode_jpeg_reduced(path)
         .or_else(|| decode_heif(path))
-        .or_else(|| image::open(path).ok())?;
+        .or_else(|| decode_limited(path))?;
     let buf = scale_and_bgra(img);
     Some(Arc::new(RenderImage::new(vec![Frame::new(buf)])))
+}
+
+/// `image::open` with allocation limits. The default decoder has none, so a
+/// "decompression bomb" — a tiny PNG/GIF/WebP whose header claims 40000×40000 —
+/// asks for multiple gigabytes in one go. This crate builds with
+/// `panic = "abort"`, so that allocation failing takes the whole app down (and
+/// any autosave that hadn't flushed) rather than just failing one image. The
+/// cap is generous next to [`MAX_IMAGE_EDGE`] (images are thumbnailed right
+/// after) but bounded; over it, the note shows a placeholder.
+fn decode_limited(path: &Path) -> Option<image::DynamicImage> {
+    /// Ceiling on a single decoded bitmap. 512 MB fits any real photo or scan
+    /// while refusing the pathological headers.
+    const MAX_DECODE_BYTES: u64 = 512 * 1024 * 1024;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    let file = std::io::BufReader::new(std::fs::File::open(path).ok()?);
+    let mut reader = image::ImageReader::new(file).with_guessed_format().ok()?;
+    reader.limits(limits);
+    reader.decode().ok()
 }
 
 /// Decode a JPEG **downscaled at the decoder** (DCT scaling to ~[`MAX_IMAGE_EDGE`]

@@ -166,27 +166,59 @@ thread_local! {
     /// A just-verified (key-derived) connection, handed from the unlock
     /// screen's `verify_key` to the main window's `open` so the deliberately
     /// slow SQLCipher KDF runs once, not twice. Main-thread only — both ends
-    /// run there. Keyed by path so a test/sandbox verify can't leak into a
-    /// different open.
-    static VERIFIED: std::cell::RefCell<Option<(PathBuf, Connection)>> =
+    /// run there. Keyed by path AND by the key it was derived with: a
+    /// connection is only ever reused for an open asking for that same key.
+    /// Without the key half, `set_encryption`'s reopen — which asks for the
+    /// NEW password right after the unlock screen verified the OLD one —
+    /// silently got the old connection, left pointing at the file the swap
+    /// had already replaced, and every later write went to a deleted inode.
+    static VERIFIED: std::cell::RefCell<Option<(PathBuf, Option<String>, Connection)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-fn stash_verified(path: &Path, conn: Connection) {
-    VERIFIED.with(|v| *v.borrow_mut() = Some((path.to_path_buf(), conn)));
+fn stash_verified(path: &Path, key: Option<&str>, conn: Connection) {
+    VERIFIED.with(|v| {
+        *v.borrow_mut() = Some((path.to_path_buf(), key.map(str::to_string), conn));
+    });
 }
 
-fn take_verified(path: &Path) -> Option<Connection> {
+/// The stashed connection for `path`, but only when it was derived with the
+/// same `key` the caller wants. A mismatch leaves the stash in place (a
+/// later, matching open can still use it) and makes the caller derive fresh.
+fn take_verified(path: &Path, key: Option<&str>) -> Option<Connection> {
     VERIFIED.with(|v| {
         let mut slot = v.borrow_mut();
         match slot.take() {
-            Some((p, conn)) if p == path => Some(conn),
+            Some((p, k, conn)) if p == path && k.as_deref() == key => Some(conn),
             other => {
                 *slot = other;
                 None
             }
         }
     })
+}
+
+/// Tighten `path` to owner-only access. Unix-only and best-effort: a missing
+/// file (the WAL before first checkpoint) or a filesystem without POSIX modes
+/// is not an error. Windows inherits the user-profile ACL, which is already
+/// per-user, so there's nothing to do there.
+#[cfg(unix)]
+fn restrict_to_owner(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    if path.exists() {
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+}
+
+#[cfg(not(unix))]
+fn restrict_to_owner(_path: &Path, _mode: u32) {}
+
+/// Drop any stashed connection — it holds a derived key in memory and an open
+/// handle to the database. Called when the database file is replaced
+/// (`set_encryption`) and when the app locks, so a stale or no-longer-wanted
+/// connection can't be handed to a later open.
+pub fn clear_verified() {
+    VERIFIED.with(|v| *v.borrow_mut() = None);
 }
 
 impl Db {
@@ -198,15 +230,26 @@ impl Db {
         let path = paths::db_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
+            restrict_to_owner(parent, 0o700);
         }
-        Self::open_at(&path, key)
+        let db = Self::open_at(&path, key)?;
+        // The notebook (and its WAL, which holds recent pages in the clear
+        // until checkpoint) is owner-only. Default umask leaves these 0644,
+        // which exposes every note to other local accounts whenever the data
+        // directory isn't itself private — e.g. a user-relocated data dir on
+        // a shared or removable volume.
+        restrict_to_owner(&path, 0o600);
+        for ext in ["db-wal", "db-shm"] {
+            restrict_to_owner(&path.with_extension(ext), 0o600);
+        }
+        Ok(db)
     }
 
     fn open_at(path: &Path, key: Option<&str>) -> Result<Self, OpenError> {
         // Reuse the connection the unlock screen just verified: SQLCipher's
         // key derivation is deliberately slow, and paying it a SECOND time
         // here doubled the blank-window beat between login and first paint.
-        let mut conn = match take_verified(path) {
+        let mut conn = match take_verified(path, key) {
             Some(conn) => conn,
             None => {
                 let conn = Connection::open(path).map_err(OpenError::bare)?;
@@ -266,21 +309,33 @@ impl Db {
             .query_row("SELECT sqlcipher_export('reenc')", [], |_| Ok(()));
         // sqlcipher_export copies schema + data but NOT user_version; without
         // it the reopen below would re-run every migration on a full DB.
-        let version: i64 = self
-            .conn
-            .query_row("PRAGMA main.user_version", [], |r| r.get(0))?;
-        let set_version = self
-            .conn
-            .execute_batch(&format!("PRAGMA reenc.user_version = {version};"));
+        let version: rusqlite::Result<i64> =
+            self.conn
+                .query_row("PRAGMA main.user_version", [], |r| r.get(0));
+        let set_version = version.and_then(|v| {
+            self.conn
+                .execute_batch(&format!("PRAGMA reenc.user_version = {v};"))
+        });
         let detach = self.conn.execute("DETACH DATABASE reenc", []);
+        // Any failure above leaves `tmp` behind — and when `new_key` is None
+        // that file is a COMPLETE PLAINTEXT COPY of the notebook sitting next
+        // to the encrypted one. Remove it before returning the error.
+        if export.is_err() || set_version.is_err() || detach.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
         export?;
         set_version?;
         detach?;
         // Swap: release the file (SQLite holds it open), move the new one in,
-        // and clear stale WAL/SHM siblings from the old incarnation.
+        // and clear stale WAL/SHM siblings from the old incarnation. Any
+        // stashed connection is about to point at the REPLACED file, so drop
+        // it here — reusing it would send every later write to a deleted
+        // inode (silent data loss) instead of the database on disk.
+        clear_verified();
         let placeholder = Connection::open_in_memory()?;
         drop(std::mem::replace(&mut self.conn, placeholder));
         std::fs::rename(&tmp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
             rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
                 Some(format!("swap re-encrypted database: {e}")),
@@ -312,8 +367,9 @@ impl Db {
                 .is_ok();
         if ok {
             // Keep the derived connection for the main window's `open` —
-            // the KDF already ran; no need to pay it twice.
-            stash_verified(path, conn);
+            // the KDF already ran; no need to pay it twice. Stashed WITH the
+            // key, so only an open asking for this same key reuses it.
+            stash_verified(path, Some(key), conn);
         }
         ok
     }
@@ -1689,6 +1745,46 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n2, 1, "trigram is case-insensitive");
+    }
+
+    /// The Settings order — verify the CURRENT password, then change it —
+    /// used to leave `set_encryption`'s reopen holding the connection the
+    /// verify had stashed, which pointed at the file the swap replaced. The
+    /// database re-encrypted correctly, but every later write in that session
+    /// went to the deleted inode and vanished on exit.
+    #[test]
+    fn password_change_after_verify_keeps_writing_to_disk() {
+        let dir = std::env::temp_dir().join(format!("zorite-pwchg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pwchg.db");
+        let _ = std::fs::remove_file(&path);
+
+        let mut db = Db::open_file(&path, None).unwrap();
+        let page = db.get_or_create_page("Secret").unwrap();
+        db.set_page_content(page.id, "original").unwrap();
+        db.set_encryption(Some("old-pw")).unwrap();
+        drop(db);
+
+        // Exactly what Settings does: verify the old password (which stashes a
+        // connection), then re-key.
+        let mut db = Db::open_file(&path, Some("old-pw")).unwrap();
+        assert!(Db::verify_key_at(&path, "old-pw"));
+        db.set_encryption(Some("new-pw")).unwrap();
+        // A write after the change — an autosave, in the app.
+        db.set_page_content(page.id, "written-after-change")
+            .unwrap();
+        drop(db);
+
+        // The new password opens the file, the old one doesn't, and the
+        // post-change write is actually on disk.
+        assert!(Db::open_file(&path, Some("old-pw")).is_err());
+        let db = Db::open_file(&path, Some("new-pw")).unwrap();
+        assert_eq!(
+            db.get_page(page.id).unwrap().unwrap().content,
+            "written-after-change"
+        );
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
