@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.10.1] - 2026-07-24
+
+A security release, from a four-domain audit of the codebase. **If you use a
+password on your notebook, update before changing that password** — see the
+first item.
+
+### Fixed
+
+- **Edits made after a password change could be lost** (introduced in 0.10.0).
+  Changing or removing your database password left the app writing to the
+  database file it had just replaced, so anything you wrote afterwards was
+  gone at quit. Your notes on disk were always correctly encrypted and
+  intact — only that session's later edits were affected. Also fixes the
+  password staying in memory after locking.
+- **A note could no longer trick the app into launching a file.** A link to a
+  non-PDF opened the PDF viewer anyway, and its "open externally" button then
+  handed the file to the OS — so a shared or imported note could get an
+  executable run in two clicks. Only real PDFs open the viewer now.
+- **Imports and exports stay inside their folders.** Crafted references in an
+  imported vault could write outside the notebook, read files from elsewhere
+  on your disk, or — on the next export — overwrite files outside the folder
+  you picked. Every one of those paths is now checked. Symlinks are no longer
+  followed into or out of a vault, and malformed vault files can no longer
+  crash the app mid-import.
+- **Links only open the web.** Clicking a link in reading view handed any
+  address to the operating system, including ones that reach Windows file
+  shares or launch other apps. Now `http`, `https`, and `mailto` open;
+  everything else is ignored — matching what editing view already did. The
+  same applies to links inside PDFs.
+- Oversized or malformed images fail on their own instead of taking the app
+  down with them.
+- The notebook database and data folder are created private to your user
+  account (Linux and macOS).
+- A failed encrypt/decrypt no longer leaves a scratch copy of the notebook in
+  the data folder.
+
+### Changed
+
+- The set-password dialog now says plainly that images and PDFs are stored as
+  ordinary files and are **not** encrypted — only the note database is.
+
 ## [0.10.0] - 2026-07-22
 
 The editing release: a Cditor-inspired WYSIWYG overhaul — markers hidden
