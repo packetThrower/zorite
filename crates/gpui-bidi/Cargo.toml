@@ -1,0 +1,17 @@
+[package]
+name = "gpui-bidi"
+version = "0.1.0"
+edition = "2024"
+description = "Bidirectional-text index↔x mapping for gpui shaped lines. The platform shapers already reorder RTL glyphs correctly; gpui's own LineLayout lookups assume byte index and x rise together, which is false for RTL. This reads the reordered glyph table properly so a caret, a selection, and a click land where the reader expects."
+license = "GPL-3.0-or-later"
+repository = "https://github.com/packetThrower/zorite"
+homepage = "https://packetthrower.github.io/zorite/reference/crates/gpui-bidi/"
+keywords = ["bidi", "rtl", "gpui", "text", "unicode"]
+categories = ["text-processing", "gui"]
+
+# The core (`VisualMap`) is deliberately gpui-free: it works on plain
+# `(logical byte index, x)` glyph pairs, so every rule is unit-testable
+# without a window or a GPU. gpui is needed only for the thin adapter that
+# reads those pairs out of a `ShapedLine`.
+[dependencies]
+gpui.workspace = true
