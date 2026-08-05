@@ -326,6 +326,67 @@ pub fn is_safe_external_url(url: &str) -> bool {
         })
 }
 
+/// A block's base writing direction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Direction {
+    #[default]
+    Ltr,
+    Rtl,
+}
+
+impl Direction {
+    pub fn is_rtl(self) -> bool {
+        self == Direction::Rtl
+    }
+}
+
+/// The base direction of `text`, by the first *strong* directional character
+/// (Unicode UAX #9 rules P2/P3 — the same rule Logseq and browsers' `dir=auto`
+/// use). Neutral characters (digits, punctuation, whitespace, markdown
+/// markers) are skipped, so `- سلام` and `## سلام` detect as RTL; text with no
+/// strong character at all is LTR.
+///
+/// Ranges rather than a full Unicode table: the strong-RTL blocks are
+/// contiguous and stable (Hebrew, Arabic and its supplements, Syriac, Thaana,
+/// N'Ko, Samaritan, Mandaic, plus the Arabic presentation forms), and pulling
+/// a bidi-class table in for one predicate isn't worth the dependency.
+pub fn base_direction(text: &str) -> Direction {
+    for c in text.chars() {
+        if is_strong_rtl(c) {
+            return Direction::Rtl;
+        }
+        if is_strong_ltr(c) {
+            return Direction::Ltr;
+        }
+    }
+    Direction::Ltr
+}
+
+/// Strong right-to-left: Hebrew through Arabic-script languages.
+fn is_strong_rtl(c: char) -> bool {
+    matches!(c,
+        '\u{0590}'..='\u{05FF}'   // Hebrew
+        | '\u{0600}'..='\u{06FF}' // Arabic (incl. Persian, Urdu)
+        | '\u{0700}'..='\u{074F}' // Syriac
+        | '\u{0750}'..='\u{077F}' // Arabic Supplement
+        | '\u{0780}'..='\u{07BF}' // Thaana
+        | '\u{07C0}'..='\u{07FF}' // N'Ko
+        | '\u{0800}'..='\u{083F}' // Samaritan
+        | '\u{0840}'..='\u{085F}' // Mandaic
+        | '\u{08A0}'..='\u{08FF}' // Arabic Extended-A
+        | '\u{FB1D}'..='\u{FDFF}' // Hebrew/Arabic presentation forms
+        | '\u{FE70}'..='\u{FEFF}' // Arabic presentation forms-B
+    )
+}
+
+/// Strong left-to-right — Latin/Greek/Cyrillic and the CJK/Indic scripts.
+/// Deliberately approximate in the same direction as [`is_strong_rtl`]: what
+/// matters is that a strong LTR character stops the scan, and every alphabetic
+/// character that isn't strong-RTL does.
+fn is_strong_ltr(c: char) -> bool {
+    c.is_alphabetic() && !is_strong_rtl(c)
+}
+
 /// Split a wiki-link's inner text into `(target, display)`:
 /// `target|label` shows `label` (falling back to the target when the label is
 /// empty); `name` shows itself. Both sides trimmed.
@@ -896,6 +957,33 @@ mod tests {
             normalize_math_fences("$$y$$"),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn base_direction_follows_the_first_strong_character() {
+        use Direction::*;
+        // Plain cases.
+        assert_eq!(base_direction("hello"), Ltr);
+        assert_eq!(base_direction("سلام دنیا"), Rtl); // Persian
+        assert_eq!(base_direction("שלום עולם"), Rtl); // Hebrew
+        // Neutrals lead — markdown markers, digits, punctuation, whitespace
+        // are all skipped, which is what makes list items and headings work.
+        assert_eq!(base_direction("- سلام"), Rtl);
+        assert_eq!(base_direction("## سلام"), Rtl);
+        assert_eq!(base_direction("> «سلام»"), Rtl);
+        assert_eq!(base_direction("  \t123 — سلام"), Rtl);
+        assert_eq!(base_direction("- hello"), Ltr);
+        // The FIRST strong character decides, not the majority: a line opening
+        // in English stays LTR however much Persian follows (and vice versa).
+        assert_eq!(base_direction("Rust سلام دنیا و بیشتر"), Ltr);
+        assert_eq!(base_direction("سلام Rust and more English"), Rtl);
+        // No strong character anywhere → LTR.
+        assert_eq!(base_direction(""), Ltr);
+        assert_eq!(base_direction("123 — !?"), Ltr);
+        // Other scripts are LTR.
+        assert_eq!(base_direction("日本語"), Ltr);
+        assert_eq!(base_direction("Привет"), Ltr);
+        assert!(Direction::Rtl.is_rtl() && !Direction::Ltr.is_rtl());
     }
 
     #[test]

@@ -36,7 +36,9 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 | [`heading_scale`](#heading_scale) | fn | `fn heading_scale(depth: u8) -> f32` | Font-size multiplier for h1–h6 | — |
 | [`ordered_marker`](#ordered_marker) | fn | `fn ordered_marker(depth: usize, n: u32) -> String` | Word-style list marker (`1.` → `a.` → `i.`) | — |
 | [`LinkHit`](#enum-linkhit) | enum | `Page(String) \| Url(String)` | What a clicked link-like construct targets | — |
-| [`is_safe_external_url`](#is_safe_external_url) | fn | `fn is_safe_external_url(url: &str) -> bool` | May this URL reach the OS opener? (http/https only) | — |
+| [`is_safe_external_url`](#is_safe_external_url) | fn | `fn is_safe_external_url(url: &str) -> bool` | May this URL reach the OS opener? (http/https/mailto only) | — |
+| [`Direction`](#base_direction) | enum | `Ltr \| Rtl` | A block's base writing direction | — |
+| [`base_direction`](#base_direction) | fn | `fn base_direction(text: &str) -> Direction` | First-strong-character direction (UAX #9 P2/P3) | — |
 | [`wiki_target_display`](#wiki_target_display) | fn | `fn wiki_target_display(inner: &str) -> (&str, &str)` | Split `target\|label` into `(target, display)` | — |
 | [`is_tag_char`](#is_tag_char--is_word_char) | fn | `fn is_tag_char(c: u8) -> bool` | Byte valid inside a `#tag` name | — |
 | [`is_word_char`](#is_tag_char--is_word_char) | fn | `fn is_word_char(c: u8) -> bool` | Word byte for boundary checks | — |
@@ -427,6 +429,47 @@ What a click on a link-like construct targets.
 
 ---
 
+## `base_direction`
+
+```rust
+pub enum Direction { Ltr, Rtl }
+impl Direction { pub fn is_rtl(self) -> bool }
+
+pub fn base_direction(text: &str) -> Direction
+```
+
+A block's base writing direction, decided by its first **strong** directional
+character — Unicode UAX #9 rules P2/P3, the same rule browsers' `dir=auto` and
+Logseq use. Hosts apply it per block: the reader right-aligns RTL prose and
+flips the list-marker side.
+
+**Returns** — `Rtl` if the first strong character is Hebrew, Arabic (including
+Persian and Urdu), Syriac, Thaana, N'Ko, Samaritan, Mandaic, or an Arabic
+presentation form; `Ltr` otherwise, including for text with no strong
+character at all.
+
+**Guarantees & edge cases**
+
+- Neutrals are skipped, which is what makes it usable on raw markdown: list
+  markers, heading `#`s, quote `>`s, digits, punctuation, and whitespace all
+  pass through, so `- سلام` and `## سلام` both detect as `Rtl`.
+- The FIRST strong character wins, not the majority — `Rust سلام دنیا` is
+  `Ltr` and `سلام Rust` is `Rtl`. That's the rule that lets a mixed note put
+  each line in its own direction.
+- Empty or neutral-only text (`""`, `"123 — !?"`) is `Ltr`.
+- CJK, Cyrillic, Greek, and Indic scripts are `Ltr` (strong-LTR is
+  "alphabetic and not strong-RTL").
+- Script ranges, not a bidi-class table: the strong-RTL blocks are contiguous
+  and stable, and this predicate isn't worth a Unicode-table dependency.
+
+**Not** a bidi implementation. It gives a *paragraph* direction only. Mixed
+runs inside a line are reordered by the platform shaper (CoreText,
+cosmic-text), which already handles them correctly — but note that gpui's
+`LineLayout` index↔x mapping does not, so this is safe for read-only rendering
+and not sufficient for a text editor's caret.
+
+---
+
 ## `is_safe_external_url`
 
 ```rust
@@ -440,8 +483,11 @@ handler owns the scheme: `file:` launches local content, `smb:` leaks NTLM
 hashes on Windows, `javascript:`/`data:`/app-registered schemes (`ms-msdt:` …)
 run code. So this is an **allowlist**, not a denylist.
 
-**Returns** — `true` only for `http://` and `https://`. The scheme is compared
-case-insensitively (RFC 3986), so `HTTPS://` passes.
+**Returns** — `true` only for `http://`, `https://`, and `mailto:`. The scheme
+is compared case-insensitively (RFC 3986), so `HTTPS://` passes. `mailto:` is
+allowed because `[write us](mailto:x@y.com)` is ordinary markdown and it opens
+a compose window rather than running anything; the mail client owns parsing
+its query.
 
 **Guarantees & edge cases**
 

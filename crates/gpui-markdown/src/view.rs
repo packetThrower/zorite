@@ -1647,10 +1647,20 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
         } else {
             marker_el.into_any_element()
         };
+        // An RTL item puts its bullet/number on the right (#66). Direction
+        // comes from the item's SOURCE slice — the list marker, digits and
+        // whitespace are all neutral under UAX #9, so `- سلام` reads RTL and
+        // `- hello` reads LTR.
+        let item_rtl = li
+            .position
+            .as_ref()
+            .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+            .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
         col = col.child(
             div()
                 .flex()
-                .flex_row()
+                .when(item_rtl, |d| d.flex_row_reverse())
+                .when(!item_rtl, |d| d.flex_row())
                 .gap(px(8.0))
                 .child(marker_col)
                 .child(div().flex_1().min_w_0().child(content)),
@@ -1741,6 +1751,27 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         inl.highlights
     };
 
+    // Writing direction for this block (#66). Detected from the RENDERED text
+    // — what the reader actually sees, markers already stripped — so a
+    // `- سلام` item and a `## سلام` heading both come out RTL. Every block
+    // that shows prose funnels through here (paragraphs, headings, list-item
+    // content, quotes, table cells), so this is the one place it's decided.
+    //
+    // Reader-only by design: the platform shapers already reorder RTL glyphs
+    // correctly, so alignment is all that's missing here. The EDITOR needs a
+    // logical↔visual index map before it can do the same — gpui's
+    // `x_for_index` collapses every caret offset in an RTL line onto x=0 (see
+    // the bidi note in TODO.md), and a right-aligned line with a broken caret
+    // would be worse than none.
+    let dir = crate::syntax::base_direction(&inl.text);
+    let align = move |el: AnyElement| -> AnyElement {
+        if dir.is_rtl() {
+            div().w_full().text_right().child(el).into_any_element()
+        } else {
+            el
+        }
+    };
+
     let math = std::mem::take(&mut inl.math);
     let styled = StyledText::new(inl.text).with_highlights(highlights);
     // Capture the text layout (a shared handle, populated on paint) so a click can
@@ -1828,14 +1859,14 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         }
     };
     if math.is_empty() {
-        return el;
+        return align(el);
     }
     // A paragraph with inline formulas: paint each raster over its spacer via a canvas painted
     // AFTER the text (so the text layout is populated + gives the spacer's window position), and
     // grow the line height so a tall formula (a fraction) doesn't overlap the neighbouring line.
     let tallest = math.iter().fold(0f32, |a, &(_, _, _, h, _)| a.max(h));
     let line_h = px((f32::from(ctx.style.text_size) * 1.4).max(tallest + 6.0));
-    div()
+    let with_math = div()
         .relative()
         .line_height(line_h)
         .child(el)
@@ -1862,7 +1893,8 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
             .absolute()
             .inset_0(),
         )
-        .into_any_element()
+        .into_any_element();
+    align(with_math)
 }
 
 fn build_inline(
