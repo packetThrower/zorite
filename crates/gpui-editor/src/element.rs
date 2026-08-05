@@ -31,6 +31,9 @@ pub(crate) struct PrepaintState {
     maps: Vec<Option<std::rc::Rc<Vec<usize>>>>,
     /// Per-line gutter decoration (blockquote / list / checkbox).
     marks: Vec<Option<LineMark>>,
+    /// Per-line right-to-left geometry (#66); `None` on LTR rows. Committed to
+    /// [`EditorState::rtl_rows`] in paint, like `line_insets`.
+    rtl: Vec<Option<RtlRow>>,
     /// Per-line inline `$…$` formulas (image + display offset + source range), painted over
     /// their spacers in the shaped text.
     inline_maths: Vec<Vec<InlineMath>>,
@@ -452,6 +455,65 @@ impl Element for EditorElement {
             y += *lh * wrap_rows[idx] as f32 + bot_pad;
         }
 
+        // Right-to-left rows (#66): direction from the SOURCE line — the same
+        // `base_direction` the reader uses, so the two views can never disagree
+        // about which lines are RTL (markdown markers, digits and whitespace
+        // are neutral under UAX #9, so `- سلام` reads RTL). Only plain text
+        // rows qualify: a code block is LTR by convention, and a table/image
+        // widget row paints its own geometry (flipping those is a follow-up).
+        // An all-LTR document leaves every entry `None` and pays nothing.
+        let rtl: Vec<Option<RtlRow>> = {
+            // One split, not `line_end(i)` per row — that rebuilds the whole
+            // line-start table each call.
+            let src_lines: Vec<&str> = editor.content.split('\n').collect();
+            wrapped
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let plain = backgrounds.get(i).copied().flatten().is_none()
+                        && widgets.get(i).and_then(Option::as_ref).is_none()
+                        && tables.get(i).and_then(Option::as_ref).is_none();
+                    let src = src_lines.get(i).copied().unwrap_or("");
+                    if !plain || !gpui_markdown::syntax::base_direction(src).is_rtl() {
+                        return None;
+                    }
+                    // A `VisualMap`'s x's are positions along the single
+                    // *pre-wrap* line, so it only describes a row that IS one
+                    // visual row. Splitting one per wrap row means reasoning
+                    // about a bidi run straddling a boundary (gpui wraps in
+                    // visual order) — a follow-up, not a guess; until then a
+                    // wrapped RTL row is left exactly as it was, which also
+                    // keeps its gutter markers on the side its text is on.
+                    let map = line
+                        .wrap_boundaries()
+                        .is_empty()
+                        .then(|| gpui_bidi::shaped::map_of_wrapped(line, line.len()))
+                        .filter(gpui_bidi::VisualMap::is_bidi)?;
+                    let inset = row_inset(
+                        backgrounds.get(i).copied().flatten(),
+                        marks.get(i).copied().flatten(),
+                    );
+                    Some(RtlRow {
+                        shift: rtl_shift(bounds.size.width, inset, line.width()),
+                        map,
+                    })
+                })
+                .collect()
+        };
+        // Row text origin, this frame: the row's inset plus its RTL shift.
+        // Fresh-data twin of `EditorState::row_origin_x` (the committed state
+        // lags a frame — see `disp_col` below).
+        let row_x = |row: usize| {
+            row_inset(
+                backgrounds.get(row).copied().flatten(),
+                marks.get(row).copied().flatten(),
+            ) + rtl
+                .get(row)
+                .and_then(Option::as_ref)
+                .map_or(px(0.), |r| r.shift)
+        };
+        let bidi = |row: usize| rtl.get(row).and_then(Option::as_ref).map(|r| &r.map);
+
         // Corner-grip hitboxes for each inline image, in `widgets` order (matching
         // the order paint walks them) — hitboxes must be inserted during prepaint,
         // but the resize cursor is set during paint via these. Mirrors the paint's
@@ -490,7 +552,8 @@ impl Element for EditorElement {
             if let Some(LineMark::Check { bullet_x, .. }) = marks.get(i).copied().flatten() {
                 let sz = font_size * CHECKBOX_SCALE;
                 let pad = px(4.);
-                let bx = bounds.origin.x + bullet_x;
+                let is_rtl = rtl.get(i).and_then(Option::as_ref).is_some();
+                let bx = bounds.origin.x + checkbox_x(bullet_x, sz, bounds.size.width, is_rtl);
                 let by = bounds.origin.y + line_tops[i] + (*lh - sz) / 2.;
                 let hit = Bounds::new(
                     point(bx - pad, by - pad),
@@ -701,10 +764,7 @@ impl Element for EditorElement {
                     continue;
                 };
                 let line = &editor.content[start..editor.line_end(i)];
-                let inset = row_inset(
-                    backgrounds.get(i).copied().flatten(),
-                    marks.get(i).copied().flatten(),
-                );
+                let inset = row_x(i);
                 // The reference-count badge over a hidden ` ^id` anchor is
                 // clickable too (skipped on the caret's line, where the raw
                 // anchor is revealed for editing).
@@ -727,8 +787,8 @@ impl Element for EditorElement {
                     let d1 = display_col_in(map, range.start);
                     let d2 = display_col_in(map, range.end);
                     let (Some(p1), Some(p2)) = (
-                        line_shaped.position_for_index(d1, *lh),
-                        line_shaped.position_for_index(d2, *lh),
+                        line_pos(line_shaped, bidi(i), d1, *lh),
+                        line_pos(line_shaped, bidi(i), d2, *lh),
                     ) else {
                         continue;
                     };
@@ -737,9 +797,11 @@ impl Element for EditorElement {
                     }
                     let origin = point(bounds.origin.x + inset, bounds.origin.y + line_tops[i]);
                     if p1.y == p2.y {
+                        // An RTL link ends to the LEFT of where it starts, so
+                        // the box spans min→max x rather than p1→p2.
                         let hit = Bounds::new(
-                            point(origin.x + p1.x, origin.y + p1.y),
-                            size(p2.x - p1.x, *lh),
+                            point(origin.x + p1.x.min(p2.x), origin.y + p1.y),
+                            size((p2.x - p1.x).abs(), *lh),
                         );
                         link_grips.push(window.insert_hitbox(hit, HitboxBehavior::Normal));
                     } else {
@@ -876,9 +938,13 @@ impl Element for EditorElement {
                     let range = f32::from(width - avail);
                     let sx = editor.table_sx(tbl_header, width, avail);
                     // Track left is FIXED (the gutter edge) — `left` is the
-                    // scrolled content edge and would drift the thumb.
-                    let track = bounds.origin.x + px(TABLE_GUTTER);
-                    let th_x = track + (avail - th_w) * (f32::from(sx) / range);
+                    // scrolled content edge and would drift the thumb. An RTL
+                    // table's band sits on the other side and its scroll runs
+                    // the other way, so the thumb starts at the track's right.
+                    let (track, _) = table_visible_band(bounds.origin.x, bounds.size.width, t.rtl);
+                    let frac = f32::from(sx) / range;
+                    let frac = if t.rtl { 1. - frac } else { frac };
+                    let th_x = track + (avail - th_w) * frac;
                     let mut th_c = t.border;
                     th_c.a = (th_c.a * 1.5).min(0.8);
                     let rect = Bounds::new(point(th_x, bottom - px(4.)), size(th_w, px(3.)));
@@ -891,7 +957,11 @@ impl Element for EditorElement {
                             rect,
                             grab,
                             header: tbl_header,
-                            factor: range / f32::from(avail - th_w).max(1.),
+                            // Negative on RTL: the thumb runs against the
+                            // scroll offset there (see `frac` above), so a
+                            // drag right must decrease it.
+                            factor: range / f32::from(avail - th_w).max(1.)
+                                * if t.rtl { -1. } else { 1. },
                             color: th_c,
                         },
                         window.insert_hitbox(grab, HitboxBehavior::Normal),
@@ -940,7 +1010,11 @@ impl Element for EditorElement {
                     }
                 }
                 if zone.contains(&mouse) {
-                    // Hovered BODY row → outline + a vertical pill on its left border.
+                    // Hovered BODY row → outline + a vertical pill on the border
+                    // the reserved gutter is on: the left one, or an RTL
+                    // table's right one (#66) — the pill must land in empty
+                    // gutter, not over the note column's edge.
+                    let pill_x = if t.rtl { left + width } else { left };
                     for line in tbl_header..=i {
                         let Some(rt) = tables.get(line).and_then(Option::as_ref) else {
                             continue;
@@ -953,7 +1027,7 @@ impl Element for EditorElement {
                         if mouse.y >= rtop && mouse.y < rtop + rh {
                             let ph = px(PILL_ALONG).min(rh - px(2.));
                             let py0 = rtop + (rh - ph) / 2.;
-                            let pill = Bounds::new(point(left - g / 2., py0), size(g, ph));
+                            let pill = Bounds::new(point(pill_x - g / 2., py0), size(g, ph));
                             let plus = Bounds::new(pill.origin, size(g, ph / 2.));
                             let minus =
                                 Bounds::new(point(pill.origin.x, py0 + ph / 2.), size(g, ph / 2.));
@@ -1025,12 +1099,6 @@ impl Element for EditorElement {
         // that hides/reveals markers).
         let disp_col =
             |row: usize, sc: usize| display_col_in(maps.get(row).and_then(Option::as_ref), sc);
-        let code_inset = |row: usize| {
-            row_inset(
-                backgrounds.get(row).copied().flatten(),
-                marks.get(row).copied().flatten(),
-            )
-        };
 
         // Quads covering source range `s..e`, one per wrap row — the
         // selection's multi-row geometry, shared with the find-match
@@ -1071,8 +1139,8 @@ impl Element for EditorElement {
                         // Clamp to the table's visible band — a wide
                         // (scrolling) table's cells extend past the
                         // viewport, but its highlight must not.
-                        let vis_l = bounds.left() + px(TABLE_GUTTER);
-                        let vis_r = bounds.left() + bounds.size.width;
+                        let (vis_l, vis_r) =
+                            table_visible_band(bounds.left(), bounds.size.width, t.rtl);
                         let mut band = |lo: Pixels, hi: Pixels, y: Pixels, h: Pixels| {
                             let (lo, hi) = (lo.max(vis_l), hi.min(vis_r));
                             if hi > lo {
@@ -1137,20 +1205,23 @@ impl Element for EditorElement {
                         }
                         continue;
                     }
-                    let inset = code_inset(row);
-                    let pa = line
-                        .position_for_index(disp_col(row, a), lh)
-                        .unwrap_or_default();
-                    let pb = line
-                        .position_for_index(disp_col(row, b), lh)
-                        .unwrap_or_default();
+                    let inset = row_x(row);
+                    let pa = line_pos(line, bidi(row), disp_col(row, a), lh).unwrap_or_default();
+                    let pb = line_pos(line, bidi(row), disp_col(row, b), lh).unwrap_or_default();
                     let pa = point(pa.x + inset, pa.y);
                     let pb = point(pb.x + inset, pb.y);
                     if pa.y == pb.y {
+                        // On an RTL row the range's END sits to the LEFT of its
+                        // start, so order the corners by x. One rect per row is
+                        // still all this paints: a selection spanning a
+                        // direction change is visually split (see
+                        // `VisualMap::rects_for_range`) and needs N — a
+                        // follow-up.
+                        let (x0, x1) = (pa.x.min(pb.x), pa.x.max(pb.x));
                         sels.push(fill(
                             Bounds::from_corners(
-                                to_screen(top, pa),
-                                to_screen(top, point(pb.x.max(pa.x + px(2.)), pb.y + lh)),
+                                to_screen(top, point(x0, pa.y)),
+                                to_screen(top, point(x1.max(x0 + px(2.)), pb.y + lh)),
                             ),
                             color,
                         ));
@@ -1221,7 +1292,7 @@ impl Element for EditorElement {
             // — before the picture at the line's start, after it anywhere else —
             // instead of a text caret placed by the hidden source glyphs.
             if let Some(Block::Image(img)) = widgets.get(row).and_then(Option::as_ref) {
-                let inset = code_inset(row);
+                let inset = row_x(row);
                 let (img_w, img_h) = image_display_size(img, image_resize, row);
                 let x = bounds.left() + inset + if col == 0 { px(-3.) } else { img_w + px(3.) };
                 let c = fill(
@@ -1252,9 +1323,9 @@ impl Element for EditorElement {
             } else {
                 let p = wrapped
                     .get(row)
-                    .and_then(|l| l.position_for_index(disp_col(row, col), lh))
+                    .and_then(|l| line_pos(l, bidi(row), disp_col(row, col), lh))
                     .unwrap_or_default();
-                let inset = code_inset(row);
+                let inset = row_x(row);
                 // A row can be taller than its text — grown to fit an inline
                 // formula, or breathing like a list item (LIST_ROW_GAP) — with
                 // the glyphs centered in it. The caret matches the TEXT height
@@ -1308,6 +1379,7 @@ impl Element for EditorElement {
             tables,
             maps,
             marks,
+            rtl,
             inline_maths,
             image_grips,
             checkbox_grips,
@@ -1413,6 +1485,12 @@ impl Element for EditorElement {
             .enumerate()
         {
             let origin = point(bounds.origin.x, bounds.origin.y + *top);
+            // Right-to-left row (#66): its text right-aligns by `shift`, and
+            // every gutter decoration mirrors to the other side so the markers
+            // sit where the text now starts — matching the reader.
+            let rtl = prepaint.rtl.get(i).and_then(Option::as_ref);
+            let shift = rtl.map_or(px(0.), |r| r.shift);
+            let content_w = bounds.size.width;
             // Nesting guides for a list/task row: a thin vertical line at each
             // ancestor bullet's x, spanning this row (contiguous rows stack into a
             // continuous guide).
@@ -1431,8 +1509,14 @@ impl Element for EditorElement {
                         ..color
                     };
                     for &gx in &outline {
+                        let g = gx + px(3.);
+                        let g = if rtl.is_some() {
+                            rtl_marker_x(content_w, g, px(1.))
+                        } else {
+                            g
+                        };
                         window.paint_quad(fill(
-                            Bounds::new(point(origin.x + gx + px(3.), origin.y), size(px(1.), *lh)),
+                            Bounds::new(point(origin.x + g, origin.y), size(px(1.), *lh)),
                             guide,
                         ));
                     }
@@ -1472,7 +1556,13 @@ impl Element for EditorElement {
             // Blockquote: a muted 2px left border down the line (the body is inset
             // past it by QUOTE_INSET).
             if let Some(LineMark::Quote { bar, .. }) = prepaint.marks.get(i).copied().flatten() {
-                window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), bar));
+                // RTL: the rule belongs on the right, where the text starts —
+                // the reader's `border_r_2` (see `gpui-markdown`'s blockquote).
+                let bx = origin.x + rtl.map_or(px(0.), |_| content_w - px(2.));
+                window.paint_quad(fill(
+                    Bounds::new(point(bx, origin.y), size(px(2.), *lh)),
+                    bar,
+                ));
             }
             // Heading fold chevron (hovered or folded headings only): painted
             // past the heading text, muted; clicking toggles the fold (rects
@@ -1637,8 +1727,13 @@ impl Element for EditorElement {
                 let shaped = window
                     .text_system()
                     .shape_line(glyph, font_size, &[run], None);
+                let bx = if rtl.is_some() {
+                    rtl_marker_x(content_w, bullet_x, shaped.width())
+                } else {
+                    bullet_x
+                };
                 let _ = shaped.paint(
-                    point(origin.x + bullet_x, origin.y),
+                    point(origin.x + bx, origin.y),
                     *lh,
                     gpui::TextAlign::Left,
                     None,
@@ -1657,7 +1752,7 @@ impl Element for EditorElement {
             }) = prepaint.marks.get(i).copied().flatten()
             {
                 let sz = font_size * CHECKBOX_SCALE;
-                let bx = origin.x + bullet_x;
+                let bx = origin.x + checkbox_x(bullet_x, sz, content_w, rtl.is_some());
                 let by = origin.y + (*lh - sz) / 2.; // vertically centered on the line
                 let box_bounds = Bounds::new(point(bx, by), size(sz, sz));
                 checkbox_rects.push((i, box_bounds));
@@ -1698,7 +1793,8 @@ impl Element for EditorElement {
                 // clipped to the viewport — rows paint shifted under a mask.
                 let table_w: Pixels = t.col_widths.iter().copied().sum();
                 let avail = bounds.size.width - px(TABLE_GUTTER);
-                let tleft = origin.x + px(TABLE_GUTTER);
+                // The clip band, on the side this table's gutter ISN'T (#66).
+                let (tleft, _) = table_visible_band(origin.x, bounds.size.width, t.rtl);
                 let content_left = self.editor.read(cx).table_left(t, i, &bounds);
                 let g = px(TABLE_GUTTER);
                 let mask = gpui::ContentMask {
@@ -1834,7 +1930,7 @@ impl Element for EditorElement {
                     prepaint.backgrounds.get(i).copied().flatten(),
                     prepaint.marks.get(i).copied().flatten(),
                 );
-                let text_origin = point(origin.x + inset, origin.y);
+                let text_origin = point(origin.x + inset + shift, origin.y);
                 // Run backgrounds (the inline-code highlight) paint separately from
                 // the glyphs — `paint` alone wouldn't show them.
                 let _ = line.paint_background(
@@ -1849,7 +1945,10 @@ impl Element for EditorElement {
                 // Inline `$…$` formulas: paint each typeset raster over its spacer, centered on
                 // the text row. `position_for_index` gives the spacer's x + wrap-row offset.
                 // Record each formula's window bounds for click-to-edit; the one being edited
-                // shows the seated editor instead of its raster.
+                // shows the seated editor instead of its raster. (Deliberately NOT bidi-mapped:
+                // a raster needs its spacer's *left* edge, which on an RTL run is the caret x of
+                // the offset one past it — a formula inside RTL prose is a follow-up. It still
+                // rides the row's shift, so it stays with the text.)
                 for im in prepaint.inline_maths.get(i).into_iter().flatten() {
                     if let Some(p) = line.position_for_index(im.display_off, *lh) {
                         let x = text_origin.x + p.x;
@@ -2163,6 +2262,7 @@ impl Element for EditorElement {
             editor.offset_maps = offset_maps;
             editor.chip_rows = chip_rows;
             editor.line_insets = line_insets;
+            editor.rtl_rows = std::mem::take(&mut prepaint.rtl);
             editor.table_rows = table_rows;
             editor.image_rects = image_rects;
             editor.inline_math_rects = inline_math_rects;
@@ -3062,6 +3162,7 @@ fn shape_document(
                     style: r.style,
                     border: md.map_or(base_color, |m| m.marker),
                     shade: md.map_or(hsla(0., 0., 0., 0.), |m| m.code_bg),
+                    rtl: r.rtl,
                 }
             });
 

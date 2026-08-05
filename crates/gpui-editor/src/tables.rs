@@ -36,12 +36,12 @@ impl EditorState {
     /// hit-tests, caret, selection, affordances).
     pub(crate) fn table_left(&self, t: &TableRow, row: usize, bounds: &Bounds<Pixels>) -> Pixels {
         let total: Pixels = t.col_widths.iter().copied().sum();
-        bounds.origin.x + px(TABLE_GUTTER)
-            - self.table_sx(
-                table_header_row(t, row),
-                total,
-                bounds.size.width - px(TABLE_GUTTER),
-            )
+        let sx = self.table_sx(
+            table_header_row(t, row),
+            total,
+            bounds.size.width - px(TABLE_GUTTER),
+        );
+        table_left_x(bounds.origin.x, bounds.size.width, total, sx, t.rtl)
     }
 
     /// The clamped horizontal scroll of the table headed at `header_row`.
@@ -112,7 +112,9 @@ impl EditorState {
         }
         let max = f32::from(total - avail);
         let cur = self.table_scroll_x.get(&header).copied().unwrap_or(0.);
-        let new = (cur - dx).clamp(0., max);
+        // An RTL table's scroll offset runs the other way (see `table_left_x`),
+        // so the same physical swipe moves its content the same physical way.
+        let new = if t.rtl { cur + dx } else { cur - dx }.clamp(0., max);
         if new != cur {
             self.table_scroll_x.insert(header, new);
             cx.notify();
@@ -1108,6 +1110,44 @@ pub(crate) struct TableThumb {
     /// Content px scrolled per px of thumb travel.
     pub(crate) factor: f32,
     pub(crate) color: Hsla,
+}
+
+/// The table content's LEFT x, given the note column's `origin`/`width`, the
+/// table's `total` width and its already-clamped horizontal scroll `sx`.
+///
+/// LTR sits `TABLE_GUTTER` in from the left edge (the row handles live in that
+/// gutter) and scrolls leftward. An RTL table mirrors it (#66): the grid hugs
+/// the RIGHT edge with the gutter on the other side — the reader's
+/// `.mr(22).ml_auto()` — and its scroll reveals content to the left. Either
+/// way the visible band is `TABLE_GUTTER` narrower than the note column, so
+/// [`EditorState::table_sx`]'s clamp is direction-agnostic.
+///
+/// The single source for every x on a table: paint, hit-tests, the caret,
+/// the resize bands and the add/delete affordances all derive from it, so
+/// they cannot drift apart.
+pub(crate) fn table_left_x(
+    origin: Pixels,
+    width: Pixels,
+    total: Pixels,
+    sx: Pixels,
+    rtl: bool,
+) -> Pixels {
+    if rtl {
+        origin + width - px(TABLE_GUTTER) - total + sx
+    } else {
+        origin + px(TABLE_GUTTER) - sx
+    }
+}
+
+/// The x band a table is visible in: the note column less its gutter, on the
+/// side [`table_left_x`] put the gutter. Clamps the scroll thumb's track and a
+/// wide table's selection highlight.
+pub(crate) fn table_visible_band(origin: Pixels, width: Pixels, rtl: bool) -> (Pixels, Pixels) {
+    if rtl {
+        (origin, origin + width - px(TABLE_GUTTER))
+    } else {
+        (origin + px(TABLE_GUTTER), origin + width)
+    }
 }
 
 /// The header row of the table that `t` (the grid row at line `row`) belongs
