@@ -1788,6 +1788,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Does an abrupt termination with an uncheckpointed WAL lose data? The
+    /// sandbox DB emptied out after a SIGTERM + external sqlite3 open, and
+    /// v0.10.1 newly chmods the -wal/-shm siblings — so pin both here.
+    #[test]
+    fn wal_survives_an_unclean_close() {
+        let dir = std::env::temp_dir().join(format!("zorite-wal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wal.db");
+        let _ = std::fs::remove_file(&path);
+
+        let db = Db::open_file(&path, None).unwrap();
+        let mut ids = Vec::new();
+        for i in 0..25 {
+            let p = db.get_or_create_page(&format!("Page {i}")).unwrap();
+            db.set_page_content(p.id, &format!("body {i}")).unwrap();
+            ids.push(p.id);
+        }
+        // Mimic v0.10.1's new permission tightening on the live siblings.
+        restrict_to_owner(&path, 0o600);
+        for ext in ["db-wal", "db-shm"] {
+            restrict_to_owner(&path.with_extension(ext), 0o600);
+        }
+        let wal = path.with_extension("db-wal");
+        let wal_len = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+        eprintln!("WALREPRO: wal bytes before unclean close = {wal_len}");
+
+        // No clean close: leak the handle so nothing checkpoints or unlinks,
+        // the way a killed process leaves it.
+        std::mem::forget(db);
+
+        let db2 = Db::open_file(&path, None).unwrap();
+        let n: i64 = db2
+            .conn
+            .query_row("SELECT count(*) FROM pages", [], |r| r.get(0))
+            .unwrap();
+        eprintln!("WALREPRO: pages after reopen = {n} (expected 25)");
+        assert_eq!(n, 25, "pages lost across an unclean close");
+        for (i, id) in ids.iter().enumerate() {
+            assert_eq!(
+                db2.get_page(*id).unwrap().unwrap().content,
+                format!("body {i}")
+            );
+        }
+        drop(db2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn encryption_round_trip() {
         let dir = std::env::temp_dir().join(format!("zorite-enc-test-{}", std::process::id()));

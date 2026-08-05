@@ -1034,7 +1034,21 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     _ => 6.0,
                 })
             };
+            // An RTL heading right-aligns like any other block (#66), and its
+            // fold chevron moves to the left so it stays on the text's
+            // trailing edge.
+            let h_rtl = h
+                .position
+                .as_ref()
+                .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+                .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
             let text = div()
+                // Full width, else `inline_element`'s right-alignment has
+                // nothing to align WITHIN: a content-sized div sits left
+                // whatever its text alignment says.
+                .w_full()
+                .flex_1()
+                .min_w_0()
                 .text_size(size)
                 .text_color(color)
                 .font_weight(FontWeight::BOLD)
@@ -1071,7 +1085,8 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                         .group(group)
                         .mt(top)
                         .flex()
-                        .flex_row()
+                        .when(h_rtl, |d| d.flex_row_reverse())
+                        .when(!h_rtl, |d| d.flex_row())
                         .items_center()
                         .gap(px(8.0))
                         .child(text)
@@ -1300,10 +1315,18 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                 return Some(q.into_any_element());
             }
             let muted = ctx.style.muted_color;
+            // An RTL quote's rule belongs on the right, where the text starts
+            // (#66) — direction from the quote's source, so the `>` markers
+            // and whitespace (neutral under UAX #9) don't skew it.
+            let rtl = b
+                .position
+                .as_ref()
+                .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+                .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
             let mut q = div()
-                .border_l_2()
                 .border_color(muted)
-                .pl(px(12.0))
+                .when(rtl, |d| d.border_r_2().pr(px(12.0)))
+                .when(!rtl, |d| d.border_l_2().pl(px(12.0)))
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
@@ -2770,6 +2793,14 @@ fn render_table(
         .max()
         .unwrap_or(1)
         .max(1);
+    // An RTL table reads right-to-left: the first column sits on the RIGHT
+    // (#66). Direction from the table's source — pipes, dashes and digits are
+    // neutral under UAX #9, so the first strong character in a cell decides.
+    let rtl = table
+        .position
+        .as_ref()
+        .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+        .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
     let base_font = window.text_style().font();
     let mut widths = vec![px(0.0); ncols];
     for (ri, row) in table.children.iter().enumerate() {
@@ -2840,7 +2871,12 @@ fn render_table(
         // The mdast table has no separator child: row 0 is the header, row 1 the
         // first body row (body_index 0).
         let body_index = ri.checked_sub(1);
-        let mut row_el = div().flex().flex_row();
+        // Reversing the row lays column 0 at the right without touching the
+        // width/alignment bookkeeping, which stays keyed by logical index.
+        let mut row_el = div()
+            .flex()
+            .when(rtl, |d| d.flex_row_reverse())
+            .when(!rtl, |d| d.flex_row());
         // Top divider: under every row (Grid), just under the header
         // (Striped/Minimal → the first body row's top), or never (Header).
         let top_divider = if row_lines {
@@ -2872,7 +2908,16 @@ fn render_table(
                 .min_h(px(f32::from(ctx.style.text_size) * 1.45 + 12.0))
                 .flex()
                 .items_center();
-            if vlines && ci + 1 < r.children.len() {
+            // Column separators sit between adjacent cells. Reversed, cell `i`
+            // is drawn LEFT of cell `i-1`, so the divider belongs on every
+            // cell except index 0 (the rightmost) — mirroring the LTR rule of
+            // "every cell except the last".
+            let needs_divider = if rtl {
+                ci > 0
+            } else {
+                ci + 1 < r.children.len()
+            };
+            if vlines && needs_divider {
                 cell_el = cell_el.border_r_1().border_color(border);
             }
             // Honor the column's GFM alignment (`:---:` / `---:`).
@@ -2896,7 +2941,10 @@ fn render_table(
         .id(("md-table", ctx.counter))
         // WYSIWYG indents tables into a 22px gutter (its row handles live
         // there); mirror it so the grid sits at the same x in both views.
-        .ml(px(22.0))
+        // An RTL table takes that gutter on its other side and hugs the right
+        // edge, where the rest of an RTL block starts.
+        .when(rtl, |d| d.mr(px(22.0)).ml_auto())
+        .when(!rtl, |d| d.ml(px(22.0)))
         .max_w_full()
         .overflow_x_scroll()
         .child(grid)
