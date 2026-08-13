@@ -277,6 +277,14 @@ fn main() {
         // the sidecar pre-move and shows native cursors once — self-heals.
         #[cfg(not(target_os = "linux"))]
         cursors::apply();
+        // UI language, before anything builds a label. Read straight from the
+        // database file rather than waiting for `AppView`: on a locked
+        // notebook there is no app handle yet, and the unlock screen has to be
+        // in the user's language too. `AppView` re-applies the same choice at
+        // construction, so this is only about being early enough.
+        i18n::apply_locale(
+            &db::read_language(&paths::db_path()).unwrap_or_else(|| "auto".to_string()),
+        );
         // User-added UI fonts (Settings → Appearance → Font) live in the
         // managed fonts/ dir; register them before any window measures text.
         #[cfg(target_os = "linux")]
