@@ -4972,10 +4972,10 @@ impl WhiteboardView {
                 // Inserting `key_char` here duplicates IME composition: pinyin is
                 // inserted by keydown, then the committed Chinese text is inserted
                 // by the input handler. Keep keydown for navigation/deletion only.
-                if !ks
+                if ks
                     .key_char
                     .as_deref()
-                    .is_some_and(|c| c.chars().next().is_some_and(|ch| !ch.is_control()))
+                    .is_none_or(|c| c.chars().next().is_none_or(|ch| ch.is_control()))
                 {
                     cx.propagate();
                 }

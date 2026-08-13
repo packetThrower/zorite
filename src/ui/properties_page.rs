@@ -5,7 +5,7 @@
 //! for a key you haven't used yet, and rename a key across every page.
 
 use gpui::{
-    AppContext, ClickEvent, Entity, InteractiveElement, IntoElement, ParentElement,
+    AppContext, ClickEvent, Entity, InteractiveElement, IntoElement, ParentElement, SharedString,
     StatefulInteractiveElement, Styled, Window, div, px, svg,
 };
 use gpui_component::Sizable;
@@ -15,6 +15,7 @@ use gpui_component::tooltip::Tooltip;
 use crate::app::AppView;
 use crate::db::PropKeyInfo;
 use crate::theme;
+use rust_i18n::t;
 
 pub struct PropsPageState {
     /// The vault-wide index (key → values → pages), rebuilt on activation.
@@ -42,8 +43,12 @@ impl PropsPageState {
         window: &mut Window,
         cx: &mut gpui::Context<AppView>,
     ) -> Self {
-        let rename_input = cx.new(|cx| InputState::new(window, cx).placeholder("new name"));
-        let new_key_input = cx.new(|cx| InputState::new(window, cx).placeholder("key…"));
+        let rename_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("properties_page.placeholder_rename"))
+        });
+        let new_key_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("properties_page.placeholder_key"))
+        });
         let rename_sub = cx.subscribe_in(
             &rename_input,
             window,
@@ -103,13 +108,13 @@ pub fn render(app: &AppView, cx: &mut gpui::Context<AppView>) -> impl IntoElemen
             div()
                 .text_size(px(22.0))
                 .font_weight(gpui::FontWeight::BOLD)
-                .child("Properties"),
+                .child(t!("properties_page.title")),
         )
         .child(
             div()
                 .text_size(px(12.0))
                 .text_color(theme::text_tertiary())
-                .child(format!("{count} keys in use")),
+                .child(format!("{} {}", count, t!("properties_page.keys_in_use"))),
         );
 
     // Column header, matching the All pages table style.
@@ -122,9 +127,19 @@ pub fn render(app: &AppView, cx: &mut gpui::Context<AppView>) -> impl IntoElemen
         .text_size(px(11.0))
         .text_color(theme::text_tertiary())
         .child(div().w(px(20.0)).flex_shrink_0())
-        .child(div().w(px(160.0)).flex_shrink_0().child("Key"))
-        .child(div().w(px(70.0)).flex_shrink_0().child("Pages"))
-        .child(div().flex_1().child("Values"))
+        .child(
+            div()
+                .w(px(160.0))
+                .flex_shrink_0()
+                .child(t!("properties_page.col_key")),
+        )
+        .child(
+            div()
+                .w(px(70.0))
+                .flex_shrink_0()
+                .child(t!("properties_page.col_pages")),
+        )
+        .child(div().flex_1().child(t!("properties_page.col_values")))
         .child(div().w(px(120.0)).flex_shrink_0());
 
     let mut list = div().flex().flex_col();
@@ -171,7 +186,7 @@ pub fn render(app: &AppView, cx: &mut gpui::Context<AppView>) -> impl IntoElemen
             div()
                 .text_size(px(12.0))
                 .text_color(theme::text_tertiary())
-                .child("Map a key before first use:"),
+                .child(t!("properties_page.map_first")),
         )
         .child(
             div()
@@ -243,7 +258,7 @@ fn key_row(
         .join(", ");
     let more = info.values.len().saturating_sub(4);
     let preview = if info.page_count == 0 {
-        "mapped — not used on any page yet".to_string()
+        t!("properties_page.mapped_unused").into_owned()
     } else if more > 0 {
         format!("{preview}, +{more} more")
     } else {
@@ -265,14 +280,14 @@ fn key_row(
             )
             .child(action_chip(
                 ("props-rename-ok", i),
-                "OK",
+                t!("properties_page.ok"),
                 cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
                     this.commit_prop_rename(window, cx);
                 }),
             ))
             .child(action_chip(
                 ("props-rename-cancel", i),
-                "Cancel",
+                t!("properties_page.cancel"),
                 cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
                     if let Some(s) = &mut this.props_page {
                         s.clear_rename();
@@ -358,7 +373,7 @@ fn key_row(
                 .gap(px(4.0))
                 .child(action_chip(
                     ("props-rename", i),
-                    "Rename",
+                    t!("properties_page.rename"),
                     cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
                         if let Some(s) = &mut this.props_page {
                             s.rename = Some(rename_key.clone());
@@ -470,7 +485,7 @@ fn icon_button(
             .text_color(theme::text_secondary())
             .hover(|s| s.bg(theme::hover()).text_color(theme::text_primary()))
             .cursor_pointer()
-            .child("Icon ▾")
+            .child(t!("properties_page.icon"))
             .on_click(
                 cx.listener(move |this: &mut AppView, ev: &ClickEvent, window, cx| {
                     // The row's own click toggles expansion — keep it out.
@@ -536,13 +551,10 @@ fn icon_button(
                     .text_color(theme::text_secondary())
                     .cursor_pointer()
                     .hover(|s| s.bg(theme::hover()))
-                    .child("Default (built-in)")
+                    .child(t!("properties_page.default_builtin"))
                     .tooltip(|window, cx| {
-                        Tooltip::new(
-                            "Remove this key's custom icon. A key that isn't used on \
-                             any page yet loses its row here too.",
-                        )
-                        .build(window, cx)
+                        Tooltip::new(SharedString::from(t!("properties_page.reset_icon_tip")))
+                            .build(window, cx)
                     })
                     .on_click({
                         let key = key.clone();
@@ -636,9 +648,10 @@ fn icon_button(
 /// A small text action button (Rename / OK / Cancel).
 fn action_chip(
     id: impl Into<gpui::ElementId>,
-    label: &'static str,
+    label: impl Into<SharedString>,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut gpui::App) + 'static,
 ) -> gpui::AnyElement {
+    let label = label.into();
     div()
         .id(id.into())
         .px(px(8.0))

@@ -10,6 +10,7 @@ use gpui::{
 
 use crate::app::AppView;
 use crate::theme;
+use rust_i18n::t;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let (year, month) = app.calendar_month();
@@ -57,7 +58,16 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .justify_center()
                 .text_size(px(10.0))
                 .text_color(theme::text_tertiary())
-                .child(w)
+                .child(match w {
+                    "Su" => t!("month_cal.su").to_string(),
+                    "Mo" => t!("month_cal.mo").to_string(),
+                    "Tu" => t!("month_cal.tu").to_string(),
+                    "We" => t!("month_cal.we").to_string(),
+                    "Th" => t!("month_cal.th").to_string(),
+                    "Fr" => t!("month_cal.fr").to_string(),
+                    "Sa" => t!("month_cal.sa").to_string(),
+                    _ => w.to_string(),
+                })
         }),
     ));
     let mut day: u8 = 1;

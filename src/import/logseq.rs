@@ -29,6 +29,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
+use rust_i18n::t;
 
 use gpui_whiteboard::{
     BoxGeom, Element, ElementKind, ImageGeom, Scene, SegGeom, SegmentStyle, Stroke, TextGeom,
@@ -65,10 +66,7 @@ fn scan(root: &Path) -> Result<Vec<SourceFile>, String> {
     let pages_dir = root.join("pages");
     let journals_dir = root.join("journals");
     if !pages_dir.is_dir() && !journals_dir.is_dir() {
-        return Err(format!(
-            "{} doesn't look like a Logseq graph (no pages/ or journals/ folder)",
-            root.display()
-        ));
+        return Err(t!("import_err.logseq_no_folders", path = root.display()).into_owned());
     }
     let mut files = Vec::new();
     for dir in [&journals_dir, &pages_dir] {
@@ -233,11 +231,11 @@ fn read_whiteboards(
             continue;
         };
         let Some(parsed) = edn::parse(&text) else {
-            warnings.push(format!("whiteboard {}: unreadable", path.display()));
+            warnings.push(t!("import_err.wb_unreadable", path = path.display()).into_owned());
             continue;
         };
         let Some(blocks) = parsed.get("blocks").and_then(Edn::as_seq) else {
-            warnings.push(format!("whiteboard {}: unreadable", path.display()));
+            warnings.push(t!("import_err.wb_unreadable", path = path.display()).into_owned());
             continue;
         };
 
@@ -270,7 +268,7 @@ fn read_whiteboards(
             })
             .map(str::to_string)
             .or_else(|| path.file_stem().map(|s| s.to_string_lossy().into_owned()))
-            .unwrap_or_else(|| "Imported Whiteboard".to_string());
+            .unwrap_or_else(|| t!("import_err.imported_whiteboard").into_owned());
 
         let mut elements = Vec::new();
         let mut skipped = 0usize;
@@ -294,9 +292,14 @@ fn read_whiteboards(
             }
         }
         if skipped > 0 {
-            warnings.push(format!(
-                "whiteboard \"{title}\": {skipped} shape(s) skipped (embeds / portals / unsupported)"
-            ));
+            warnings.push(
+                t!(
+                    "import_err.wb_shapes_skipped",
+                    title = title,
+                    skipped = skipped
+                )
+                .into_owned(),
+            );
         }
         let scene = Scene {
             elements,
@@ -983,7 +986,9 @@ impl Converter {
             };
             match src {
                 Some(src) => self.copies.push((src, managed.clone())),
-                None => self.warnings.push(format!("asset not found: {rel}")),
+                None => self
+                    .warnings
+                    .push(t!("import_err.asset_not_found", rel = rel).into_owned()),
             }
             if ext == "pdf" {
                 out.push_str(&format!("[[{managed}]]"));
@@ -1355,7 +1360,9 @@ fn convert_highlights(conv: &mut Converter, blocks: &[Block]) -> Option<(String,
     let name = sanitize_name(decoded.rsplit('/').next().unwrap_or(&decoded));
     match conv.find_asset(&rel, &decoded) {
         Some(src) => conv.copies.push((src, format!("pdf/{name}"))),
-        None => conv.warnings.push(format!("asset not found: {rel}")),
+        None => conv
+            .warnings
+            .push(t!("import_err.asset_not_found", rel = rel).into_owned()),
     }
     let title = crate::pdf::highlights_title(Path::new(&name));
     let mut lines = Vec::new();

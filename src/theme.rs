@@ -395,15 +395,6 @@ impl Mode {
             _ => Mode::Auto,
         }
     }
-
-    /// A human label for the settings UI / quick toggle.
-    pub fn label(self) -> &'static str {
-        match self {
-            Mode::Light => "Light",
-            Mode::Dark => "Dark",
-            Mode::Auto => "Auto",
-        }
-    }
 }
 
 /// Resolve `mode` (+ the OS appearance, for `Auto`) to dark/light, swap

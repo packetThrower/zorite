@@ -10,6 +10,12 @@
     windows_subsystem = "windows"
 )]
 
+// Embed the locale catalogs (`locales/en.yml`, `locales/zh-CN.yml`) at compile
+// time and set English as the fallback (so tests asserting English output and
+// any unmigrated string render unchanged). The active locale is pushed in at
+// boot from the persisted Settings choice (see `i18n::apply_locale`).
+rust_i18n::i18n!("locales", fallback = "en");
+
 mod actions;
 mod app;
 mod clipboard;
@@ -20,6 +26,7 @@ mod export;
 mod export_md;
 mod hierarchy;
 mod highlight;
+mod i18n;
 mod images;
 mod import;
 mod math;

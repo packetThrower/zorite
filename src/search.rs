@@ -13,6 +13,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use rust_i18n::t;
+
 use crate::db::Db;
 
 /// How the results are narrowed by kind — set by a search-box prefix or a chip.
@@ -168,7 +170,7 @@ fn whiteboard_hits(db: &Db, needle: &str) -> Vec<Hit> {
         .map(|w| Hit {
             kind: Kind::Whiteboard,
             title: w.title,
-            subtitle: "Whiteboard".into(),
+            subtitle: t!("search.subtitle_whiteboard").into(),
             target: Target::Page(w.id),
         })
         .collect()
@@ -201,7 +203,7 @@ fn collect(db: &Db, term: &str) -> Vec<Hit> {
                 hits.push(Hit {
                     kind: Kind::Pdf,
                     title: name,
-                    subtitle: format!("PDF · in {title}"),
+                    subtitle: t!("search.pdf_in", title = title).into_owned(),
                     target: Target::Pdf(abs),
                 });
             }
@@ -219,7 +221,7 @@ fn collect(db: &Db, term: &str) -> Vec<Hit> {
                 hits.push(Hit {
                     kind: Kind::Image,
                     title: if alt.trim().is_empty() { name } else { alt },
-                    subtitle: format!("Image · in {title}"),
+                    subtitle: t!("search.image_in", title = title).into_owned(),
                     target: Target::Image {
                         src,
                         in_page: Some(*id),
@@ -282,13 +284,13 @@ fn all_files(kind: Kind) -> Vec<Hit> {
                 Kind::Pdf if name.to_lowercase().ends_with(".pdf") => Some(Hit {
                     kind,
                     title: name,
-                    subtitle: "PDF".into(),
+                    subtitle: t!("search.subtitle_pdf").into(),
                     target: Target::Pdf(e.path()),
                 }),
                 Kind::Image => Some(Hit {
                     kind,
                     title: name.clone(),
-                    subtitle: "Image".into(),
+                    subtitle: t!("search.subtitle_image").into(),
                     target: Target::Image {
                         src: format!("images/{name}"),
                         in_page: None,

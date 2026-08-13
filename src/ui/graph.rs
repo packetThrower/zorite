@@ -23,6 +23,7 @@ use gpui_component::switch::Switch;
 use crate::app::AppView;
 use crate::models::Page;
 use crate::theme;
+use rust_i18n::t;
 
 /// Trackpad scroll lines → px, matching the whiteboard's feel.
 const LINE_PX: f32 = 40.0;
@@ -765,9 +766,9 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
             .text_size(px(11.0))
             .text_color(theme::text_tertiary())
             .child(if empty {
-                "No linked pages yet — [[wiki-links]] and #tags build the graph."
+                t!("graph.empty")
             } else {
-                "Drag to pan or move a node · pinch or ⌘-scroll to zoom · click a node to open"
+                t!("graph.hint")
             }),
     )
     .into_any_element()
@@ -825,26 +826,30 @@ fn panel(
 
     let mut legend = div().flex().flex_col().gap(px(5.0)).child(legend_row(
         dot(Kind::Page.color()),
-        "Pages",
+        t!("graph.filter_pages"),
         pages.to_string(),
     ));
     if boards > 0 {
         legend = legend.child(legend_row(
             dot(Kind::Board.color()),
-            "Whiteboards",
+            t!("graph.filter_whiteboards"),
             boards.to_string(),
         ));
     }
     if journals > 0 {
         legend = legend.child(legend_row(
             dot(Kind::Journal.color()),
-            "Journals",
+            t!("graph.filter_journals"),
             journals.to_string(),
         ));
     }
     legend = legend
-        .child(legend_row(dash, "Links", state.edges.len().to_string()))
-        .child(legend_row(ring, "Orphans", orphans));
+        .child(legend_row(
+            dash,
+            t!("graph.filter_links"),
+            state.edges.len().to_string(),
+        ))
+        .child(legend_row(ring, t!("graph.filter_orphans"), orphans));
 
     div()
         .id("graph-panel")
@@ -872,13 +877,13 @@ fn panel(
                         .text_size(px(13.0))
                         .font_weight(gpui::FontWeight::BOLD)
                         .text_color(theme::text_primary())
-                        .child("Nodes"),
+                        .child(t!("graph.nodes")),
                 )
                 .child(
                     div()
                         .text_size(px(11.0))
                         .text_color(theme::text_tertiary())
-                        .child(format!("{} shown", state.nodes.len())),
+                        .child(format!("{} {}", state.nodes.len(), t!("graph.shown"))),
                 ),
         )
         .children(search.map(|input| Input::new(&input).small().text_size(px(12.0))))
@@ -887,23 +892,23 @@ fn panel(
                 .text_size(px(11.0))
                 .text_color(theme::text_tertiary())
                 .child(match n {
-                    0 => "No matches".to_string(),
-                    1 => "1 match".to_string(),
-                    n => format!("{n} matches"),
+                    0 => t!("graph.no_matches").into_owned(),
+                    1 => format!("1 {}", t!("graph.match")),
+                    n => format!("{n} {}", t!("graph.matches")),
                 })
         }))
         .child(legend)
         .child(div().h(px(1.0)).bg(theme::divider()))
         .child(toggle_row(
-            "Journals",
+            t!("graph.filter_journals"),
             toggle("graph-journals", f.journals, |f, v| f.journals = v),
         ))
         .child(toggle_row(
-            "Orphan pages",
+            t!("graph.legend_orphans"),
             toggle("graph-orphans", f.orphans, |f, v| f.orphans = v),
         ))
         .child(toggle_row(
-            "Whiteboards",
+            t!("graph.filter_whiteboards"),
             toggle("graph-boards", f.whiteboards, |f, v| f.whiteboards = v),
         ))
         .child(
@@ -918,12 +923,17 @@ fn panel(
                     this.rebuild_graph();
                     cx.notify();
                 }))
-                .child("Reset graph"),
+                .child(t!("graph.reset")),
         )
 }
 
 /// One legend line: a color mark, the kind, and its count.
-fn legend_row(mark: gpui::AnyElement, label: &'static str, count: String) -> impl IntoElement {
+fn legend_row(
+    mark: gpui::AnyElement,
+    label: impl Into<SharedString>,
+    count: String,
+) -> impl IntoElement {
+    let label = label.into();
     div()
         .flex()
         .flex_row()
@@ -944,7 +954,8 @@ fn legend_row(mark: gpui::AnyElement, label: &'static str, count: String) -> imp
 }
 
 /// One filter line: the label left, its switch right.
-fn toggle_row(label: &'static str, switch: Switch) -> impl IntoElement {
+fn toggle_row(label: impl Into<SharedString>, switch: Switch) -> impl IntoElement {
+    let label = label.into();
     div()
         .flex()
         .flex_row()

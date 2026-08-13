@@ -73,7 +73,7 @@ impl AppView {
                         content.trim_end()
                     ));
                 }
-                ("Journal".to_string(), out)
+                (t!("importing.journal_label").into_owned(), out)
             }
             TabKind::Pdf(_)
             | TabKind::Whiteboard(_)
@@ -124,7 +124,7 @@ impl AppView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Import".into()),
+            prompt: Some(t!("importing.import_button").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -151,7 +151,7 @@ impl AppView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Import".into()),
+            prompt: Some(t!("importing.import_button").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -179,7 +179,7 @@ impl AppView {
             let (root_ns, root_flat, root_ok) = (root.clone(), root.clone(), root.clone());
             let (weak_ns, weak_flat, weak_ok) = (weak.clone(), weak.clone(), weak.clone());
             dialog
-                .title("Import from Obsidian")
+                .title(t!("importing.title_obsidian"))
                 .w(px(500.0))
                 // Enter runs the primary action (namespaces), like the button.
                 .on_ok(move |_, window, cx| {
@@ -198,34 +198,35 @@ impl AppView {
                         .child(
                             div()
                                 .font_weight(gpui::FontWeight::MEDIUM)
-                                .child(format!("Importing \u{201c}{}\u{201d}.", root.display())),
+                                .child(t!("importing.importing_named", name = root.display())),
                         )
-                        .child(div().text_color(theme::text_secondary()).child(
-                            "Obsidian folders can become Zorite namespaces. \u{201c}Preserve \
-                             folders\u{201d} turns Projects/Tasks.md into the page \
-                             Projects::Tasks (links resolve to it); \u{201c}Flatten\u{201d} \
-                             uses just the note name.",
-                        ))
+                        .child(
+                            div()
+                                .text_color(theme::text_secondary())
+                                .child(t!("importing.obsidian_explain")),
+                        )
                         .child(
                             DialogFooter::new()
                                 .child(
                                     Button::new("ob-import-cancel")
-                                        .label("Cancel")
+                                        .label(t!("importing.cancel"))
                                         .on_click(|_, window, cx| window.close_dialog(cx)),
                                 )
-                                .child(Button::new("ob-import-flat").label("Flatten").on_click(
-                                    move |_, window, cx| {
-                                        window.close_dialog(cx);
-                                        let root = root_flat.clone();
-                                        let _ = weak_flat.update(cx, |this, cx| {
-                                            this.run_obsidian_import(root, false, window, cx)
-                                        });
-                                    },
-                                ))
+                                .child(
+                                    Button::new("ob-import-flat")
+                                        .label(t!("importing.flatten"))
+                                        .on_click(move |_, window, cx| {
+                                            window.close_dialog(cx);
+                                            let root = root_flat.clone();
+                                            let _ = weak_flat.update(cx, |this, cx| {
+                                                this.run_obsidian_import(root, false, window, cx)
+                                            });
+                                        }),
+                                )
                                 .child(
                                     Button::new("ob-import-ns")
                                         .primary()
-                                        .label("Preserve folders")
+                                        .label(t!("importing.preserve_folders"))
                                         .on_click(move |_, window, cx| {
                                             window.close_dialog(cx);
                                             let root = root_ns.clone();
@@ -251,7 +252,7 @@ impl AppView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Export here".into()),
+            prompt: Some(t!("importing.export_here").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -297,17 +298,20 @@ impl AppView {
             let dialog = dialog.w(px(460.0)).on_ok(|_, _, _| true);
             match &result {
                 Ok(s) => {
-                    let mut lines = vec![format!(
-                        "{} pages, {} journal days, {} whiteboard{}, and {} asset file{} written.",
-                        s.pages,
-                        s.days,
-                        s.boards,
-                        if s.boards == 1 { "" } else { "s" },
-                        s.assets,
-                        if s.assets == 1 { "" } else { "s" }
-                    )];
+                    let mut lines = vec![
+                        t!(
+                            "importing.export_counts",
+                            pages = s.pages,
+                            days = s.days,
+                            boards = s.boards,
+                            board_s = if s.boards == 1 { "" } else { "s" },
+                            assets = s.assets,
+                            asset_s = if s.assets == 1 { "" } else { "s" }
+                        )
+                        .into_owned(),
+                    ];
                     lines.extend(s.warnings.iter().cloned());
-                    dialog.title("Export complete").child(
+                    dialog.title(t!("importing.complete")).child(
                         div()
                             .flex()
                             .flex_col()
@@ -317,7 +321,7 @@ impl AppView {
                     )
                 }
                 Err(e) => dialog
-                    .title("Export failed")
+                    .title(t!("importing.failed"))
                     .child(div().text_color(theme::text_secondary()).child(e.clone())),
             }
         });
@@ -332,12 +336,12 @@ impl AppView {
     ) {
         window.open_dialog(cx, |dialog, _window, _cx| {
             dialog
-                .title("Importing from Obsidian\u{2026}")
+                .title(t!("importing.obsidian_progress"))
                 .w(px(400.0))
                 .child(
                     div()
                         .text_color(theme::text_secondary())
-                        .child("Copying notes and assets \u{2014} this may take a minute."),
+                        .child(t!("importing.obsidian_busy")),
                 )
                 .on_ok(|_, _window, _cx| false)
                 .on_cancel(|_, _window, _cx| true)
@@ -370,7 +374,7 @@ impl AppView {
             let (root_flat, root_list, root_ok) = (root.clone(), root.clone(), root.clone());
             let (weak_flat, weak_list, weak_ok) = (weak.clone(), weak.clone(), weak.clone());
             dialog
-                .title("Import from Logseq")
+                .title(t!("importing.title_logseq"))
                 .w(px(500.0))
                 // Enter runs the primary action (Flatten outline), like the button.
                 .on_ok(move |_, window, cx| {
@@ -389,26 +393,24 @@ impl AppView {
                         .child(
                             div()
                                 .text_color(theme::text_secondary())
-                                .child(format!("Importing “{}”.", root.display())),
+                                .child(t!("importing.importing_named", name = root.display())),
                         )
-                        .child(div().text_color(theme::text_secondary()).child(
-                            "Logseq makes every line a bullet. “Flatten outline” turns each \
-                             top-level bullet into a paragraph or heading (nested bullets stay \
-                             lists) so pages read like Zorite pages; “Keep bullets” preserves \
-                             the outline exactly. Existing pages keep their content — imported \
-                             text is appended below it.",
-                        )),
+                        .child(
+                            div()
+                                .text_color(theme::text_secondary())
+                                .child(t!("importing.logseq_explain")),
+                        ),
                 )
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("ls-import-cancel")
-                                .label("Cancel")
+                                .label(t!("importing.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("ls-import-bullets")
-                                .label("Keep bullets")
+                                .label(t!("importing.keep_bullets"))
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
                                     let root = root_list.clone();
@@ -420,7 +422,7 @@ impl AppView {
                         .child(
                             Button::new("ls-import-flatten")
                                 .primary()
-                                .label("Flatten outline")
+                                .label(t!("importing.flatten_outline"))
                                 .on_click(move |_, window, cx| {
                                     window.close_dialog(cx);
                                     let root = root_flat.clone();
@@ -445,12 +447,12 @@ impl AppView {
     ) {
         window.open_dialog(cx, |dialog, _window, _cx| {
             dialog
-                .title("Importing from Logseq…")
+                .title(t!("importing.logseq_progress"))
                 .w(px(400.0))
                 .child(
                     div()
                         .text_color(theme::text_secondary())
-                        .child("Copying notes and assets — this may take a minute."),
+                        .child(t!("importing.logseq_busy")),
                 )
                 // A progress indicator has no confirm action — Enter shouldn't
                 // dismiss it (Escape still cancels).
@@ -491,35 +493,45 @@ impl AppView {
         fn sample(list: &[String], n: usize) -> String {
             let mut s = list.iter().take(n).cloned().collect::<Vec<_>>().join(", ");
             if list.len() > n {
-                s.push_str(&format!(" — and {} more", list.len() - n));
+                s.push_str(&t!("importing.and_more", n = list.len() - n));
             }
             s
         }
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let (title, lines) = match &result {
                 Ok(s) => {
-                    let mut lines = vec![format!(
-                        "{} pages, {} journal days, {} PDF-highlight pages, \
-                         {} whiteboards; {} assets copied; {} favorites.",
-                        s.pages,
-                        s.journals,
-                        s.highlight_pages,
-                        s.whiteboards,
-                        s.assets_copied,
-                        s.favorites
-                    )];
+                    let mut lines = vec![
+                        t!(
+                            "importing.summary_counts",
+                            pages = s.pages,
+                            journals = s.journals,
+                            highlight = s.highlight_pages,
+                            boards = s.whiteboards,
+                            assets = s.assets_copied,
+                            favorites = s.favorites
+                        )
+                        .into_owned(),
+                    ];
                     if !s.appended.is_empty() {
-                        lines.push(format!(
-                            "Appended below existing content: {}.",
-                            sample(&s.appended, 6)
-                        ));
+                        lines.push(
+                            t!("importing.appended_below", names = sample(&s.appended, 6))
+                                .into_owned(),
+                        );
                     }
                     if !s.warnings.is_empty() {
-                        lines.push(format!("Warnings: {}", sample(&s.warnings, 6)));
+                        lines.push(
+                            t!("importing.warnings", names = sample(&s.warnings, 6)).into_owned(),
+                        );
                     }
-                    (format!("{source} import complete"), lines)
+                    (
+                        t!("importing.complete_title", source = source).into_owned(),
+                        lines,
+                    )
                 }
-                Err(e) => (format!("{source} import failed"), vec![e.clone()]),
+                Err(e) => (
+                    t!("importing.failed_title", source = source).into_owned(),
+                    vec![e.clone()],
+                ),
             };
             dialog
                 .title(title)
@@ -535,7 +547,7 @@ impl AppView {
                     DialogFooter::new().child(
                         Button::new("ls-import-done")
                             .primary()
-                            .label("Done")
+                            .label(t!("importing.done"))
                             .on_click(|_, window, cx| window.close_dialog(cx)),
                     ),
                 )

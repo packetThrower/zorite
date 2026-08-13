@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use rust_i18n::t;
 use url::Url;
 
 /// The OS-default data directory, ignoring any user override. Platform
@@ -261,16 +262,13 @@ pub fn plan_relocation(target: &Path) -> Relocation {
         return Relocation::NoOp;
     }
     if !target.is_dir() {
-        return Relocation::Invalid("That isn't a folder.".to_string());
+        return Relocation::Invalid(t!("paths.not_a_folder").to_string());
     }
     if target.starts_with(&current) || current.starts_with(target) {
-        return Relocation::Invalid(
-            "Pick a folder that's neither inside nor the parent of the current data folder."
-                .to_string(),
-        );
+        return Relocation::Invalid(t!("paths.nested_or_parent").to_string());
     }
     if !is_writable(target) {
-        return Relocation::Invalid("That folder isn't writable.".to_string());
+        return Relocation::Invalid(t!("paths.not_writable").to_string());
     }
     if target.join("zorite.db").exists() {
         Relocation::Switch
@@ -364,7 +362,7 @@ pub fn active_notebook_name() -> Option<String> {
 /// than one is registered.
 pub fn window_title() -> String {
     match active_notebook_name() {
-        Some(name) => format!("Zorite — {name}"),
+        Some(name) => t!("paths.app_title", name = name).into_owned(),
         None => "Zorite".to_string(),
     }
 }
@@ -376,14 +374,11 @@ pub fn window_title() -> String {
 pub fn register_dir(dir: &Path) -> Result<Notebook, String> {
     let current = data_dir();
     if *dir != current && (dir.starts_with(&current) || current.starts_with(dir)) {
-        return Err(
-            "Pick a folder that's neither inside nor the parent of the current data folder."
-                .to_string(),
-        );
+        return Err(t!("paths.nested_or_parent").to_string());
     }
     let name = saved_notebook_name(dir).unwrap_or_else(|| {
         dir.file_name().map_or_else(
-            || "Notebook".to_string(),
+            || t!("paths.default_notebook").to_string(),
             |n| n.to_string_lossy().into_owned(),
         )
     });

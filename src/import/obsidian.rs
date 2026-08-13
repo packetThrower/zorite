@@ -39,6 +39,7 @@ use std::path::{Path, PathBuf};
 use gpui_whiteboard::{
     BoxGeom, Element, ElementKind, EmbedGeom, ImageGeom, Scene, SegGeom, SegmentStyle, TextGeom,
 };
+use rust_i18n::t;
 
 use super::{AssetCopy, ImportBundle, ImportDay, ImportPage};
 
@@ -79,7 +80,7 @@ struct Note {
 /// [`super::write_bundle`]).
 pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
     if !root.is_dir() {
-        return Err(format!("{} is not a folder", root.display()));
+        return Err(t!("import_err.obsidian_no_md", path = root.display()).into_owned());
     }
     let daily = daily_config(root);
     let mut md_files: Vec<PathBuf> = Vec::new();
@@ -88,10 +89,7 @@ pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
     let mut canvas_files: Vec<PathBuf> = Vec::new();
     walk(root, &mut md_files, &mut canvas_files, &mut assets, 0);
     if md_files.is_empty() {
-        return Err(format!(
-            "{} doesn't contain any Markdown notes",
-            root.display()
-        ));
+        return Err(t!("import_err.obsidian_no_md", path = root.display()).into_owned());
     }
 
     // Build the notes list + the link-resolution maps.
@@ -138,7 +136,14 @@ pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
         let raw = match std::fs::read_to_string(&n.path) {
             Ok(t) => t,
             Err(e) => {
-                conv.warnings.push(format!("{}: {e}", n.path.display()));
+                conv.warnings.push(
+                    t!(
+                        "import_err.file_conv_err",
+                        path = n.path.display(),
+                        e = e.to_string()
+                    )
+                    .into_owned(),
+                );
                 continue;
             }
         };
@@ -176,10 +181,9 @@ pub fn read_vault(root: &Path, opts: &Options) -> Result<ImportBundle, String> {
             Some(scene_json) => bundle
                 .whiteboards
                 .push(super::ImportWhiteboard { title, scene_json }),
-            None => conv.warnings.push(format!(
-                "canvas {}: malformed JSON, skipped",
-                path.display()
-            )),
+            None => conv
+                .warnings
+                .push(t!("import_err.canvas_malformed", path = path.display()).into_owned()),
         }
     }
     bundle.assets = conv
@@ -500,7 +504,8 @@ impl Converter<'_> {
             if let Some(managed) = self.copy_asset(name, "pdf") {
                 return format!("[[{managed}]]");
             }
-            self.warnings.push(format!("missing embedded PDF: {name}"));
+            self.warnings
+                .push(t!("import_err.missing_pdf", name = name).into_owned());
             return format!("[[{name}]]");
         }
         // A note transclusion → a Zorite embed (promoted onto its own line
@@ -783,9 +788,14 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
             }
             other => {
                 skipped += 1;
-                conv.warnings.push(format!(
-                    "canvas \"{title}\": unsupported node type '{other}'"
-                ));
+                conv.warnings.push(
+                    t!(
+                        "import_err.canvas_unsupported_node",
+                        title = title,
+                        node = other
+                    )
+                    .into_owned(),
+                );
             }
         }
     }
@@ -866,9 +876,14 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
     }
 
     if skipped > 0 {
-        conv.warnings.push(format!(
-            "canvas \"{title}\": {skipped} item(s) downgraded or skipped"
-        ));
+        conv.warnings.push(
+            t!(
+                "import_err.canvas_downgraded",
+                title = title,
+                count = skipped
+            )
+            .into_owned(),
+        );
     }
     let mut elements = groups;
     elements.extend(edges);

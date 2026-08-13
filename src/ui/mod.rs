@@ -33,6 +33,7 @@ use crate::actions::{
     OpenInNewTab, OpenInNewWindow, RenamePage, ToggleFavorite,
 };
 use crate::app::AppView;
+use rust_i18n::t;
 
 /// A bundled Lucide face (served by the app's `Assets`) as a menu-row icon.
 pub(crate) fn menu_icon(name: &str) -> Icon {
@@ -51,9 +52,9 @@ pub(crate) fn with_page_menu(
     cx: &mut Context<AppView>,
 ) -> AnyElement {
     let fav_label = if is_fav {
-        "Remove from favorites"
+        SharedString::from(t!("page_ctx.remove_favorite"))
     } else {
-        "Add to favorites"
+        SharedString::from(t!("page_ctx.add_favorite"))
     };
     row.on_mouse_down(
         MouseButton::Right,
@@ -68,44 +69,56 @@ pub(crate) fn with_page_menu(
         } else {
             Icon::from(IconName::Star)
         };
-        menu.menu_with_icon(fav_label, fav_icon, Box::new(ToggleFavorite))
+        menu.menu_with_icon(fav_label.clone(), fav_icon, Box::new(ToggleFavorite))
             .separator()
             .menu_with_icon(
-                "Open in new tab",
+                t!("page_ctx.open_new_tab"),
                 menu_icon("arrow-up-right"),
                 Box::new(OpenInNewTab),
             )
             .menu_with_icon(
-                "Open in new window",
+                t!("page_ctx.open_new_window"),
                 menu_icon("app-window"),
                 Box::new(OpenInNewWindow),
             )
             .separator()
-            .menu_with_icon("Copy link", menu_icon("link"), Box::new(CopyPageLink))
-            .menu_with_icon("Copy contents", IconName::Copy, Box::new(CopyPageContents))
             .menu_with_icon(
-                "Copy contents as Markdown",
+                t!("page_ctx.copy_link"),
+                menu_icon("link"),
+                Box::new(CopyPageLink),
+            )
+            .menu_with_icon(
+                t!("page_ctx.copy_contents"),
+                IconName::Copy,
+                Box::new(CopyPageContents),
+            )
+            .menu_with_icon(
+                t!("page_ctx.copy_contents_md"),
                 menu_icon("file-text"),
                 Box::new(CopyPageContentsMarkdown),
             )
             .separator()
             .menu_with_icon(
-                "Export as PDF…",
+                t!("page_ctx.export_pdf"),
                 menu_icon("file-down"),
                 Box::new(ExportPdf),
             )
             .separator()
             .menu_with_icon(
-                "New sub-page",
+                t!("page_ctx.new_sub_page"),
                 menu_icon("sticky-note-plus"),
                 Box::new(NewSubPage),
             )
-            .menu_with_icon("Rename page", menu_icon("pencil"), Box::new(RenamePage))
+            .menu_with_icon(
+                t!("page_ctx.rename_page"),
+                menu_icon("pencil"),
+                Box::new(RenamePage),
+            )
             // Destructive: red label + red icon (Cditor-style).
             .menu_element_with_icon(
                 menu_icon("trash-2").text_color(danger),
                 Box::new(DeletePage),
-                move |_, _| div().text_color(danger).child("Delete page"),
+                move |_, _| div().text_color(danger).child(t!("page_ctx.delete_page")),
             )
     })
     .into_any_element()

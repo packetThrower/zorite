@@ -15,6 +15,7 @@ use crate::hierarchy;
 use crate::models::{Backlink, Page};
 use crate::slash::SlashTarget;
 use crate::theme;
+use rust_i18n::t;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let Some(pe) = app.page_editor.as_ref() else {
@@ -318,7 +319,7 @@ fn alias_row(pe: &PageEditor) -> impl IntoElement {
         .gap_1()
         .text_size(px(12.0))
         .text_color(theme::text_tertiary())
-        .child("alias::")
+        .child(t!("page_view.alias_prefix"))
         .child(
             div().flex_1().min_w_0().child(
                 Input::new(&pe.alias_state)
@@ -340,7 +341,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         div()
             .text_size(app.text_size())
             .text_color(theme::text_tertiary())
-            .child("Empty — click to write")
+            .child(t!("page_view.empty").to_string())
             .into_any_element()
     } else {
         let weak = cx.entity().downgrade();
@@ -353,6 +354,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         let embeds = app.build_embed_map(&content);
         let fold_page_id = pe.id;
         let mut md = gpui_markdown::MarkdownView::new("page-md", content)
+            .set_labels(crate::i18n::reader_labels())
             .style({
                 let mut st = theme::markdown_style(app.list_indent(), app.text_size());
                 st.block_label = Some(app.block_label_resolver());
@@ -462,7 +464,7 @@ fn find_bar(pf: &PageFind, cx: &mut Context<AppView>) -> impl IntoElement {
     let status = if pf.query.is_empty() {
         String::new()
     } else if pf.count == 0 {
-        "No matches".to_string()
+        t!("page_view.no_matches").into_owned()
     } else {
         format!("{} / {}", pf.current + 1, pf.count)
     };
@@ -570,7 +572,7 @@ fn sub_pages_section(
                 .pb_1()
                 .text_size(px(11.0))
                 .text_color(theme::text_tertiary())
-                .child(format!("SUB-PAGES ({})", children.len())),
+                .child(t!("page_view.sub_pages", count = children.len())),
         )
         .child(
             // One wrapping line of `Leaf, Leaf, Leaf`, each name clickable.
@@ -650,7 +652,7 @@ fn backlinks_section(
                 .pb_1()
                 .text_size(px(11.0))
                 .text_color(theme::text_tertiary())
-                .child(format!("LINKED REFERENCES ({})", backlinks.len())),
+                .child(t!("page_view.linked_refs", count = backlinks.len())),
         )
         .children(
             backlinks
@@ -677,7 +679,7 @@ fn unlinked_section(unlinked: &[Backlink], cx: &mut Context<AppView>) -> impl In
                 .pb_1()
                 .text_size(px(11.0))
                 .text_color(theme::text_tertiary())
-                .child(format!("UNLINKED REFERENCES ({})", unlinked.len())),
+                .child(t!("page_view.unlinked_refs", count = unlinked.len())),
         )
         .children(
             unlinked
@@ -740,7 +742,7 @@ fn unlinked_row(i: usize, bl: &Backlink, cx: &mut Context<AppView>) -> impl Into
                         this.link_unlinked_mentions(page_id, cx);
                     }),
                 )
-                .child("Link"),
+                .child(t!("page_view.link")),
         )
         .on_click(
             cx.listener(move |this: &mut AppView, _: &ClickEvent, window, cx| {
@@ -768,6 +770,7 @@ fn backlink_row(
             .text_color(theme::text_secondary())
             .child(
                 gpui_markdown::MarkdownView::new(format!("bl-md-{i}"), bl.snippet.clone())
+                    .set_labels(crate::i18n::reader_labels())
                     .style(st),
             )
     };

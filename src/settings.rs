@@ -26,6 +26,7 @@ use gpui_component::{
 
 use crate::app::AppView;
 use crate::theme::{self, Mode};
+use rust_i18n::t;
 
 /// One choice in a `Select`: `id` is the stored value, `title` the label.
 #[derive(Clone)]
@@ -98,7 +99,11 @@ fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>
             .find(|s| s.id == a.active_skin_id())
             .and_then(|s| s.font.clone())
     });
-    let default_label = format!("Default ({})", default_font.as_deref().unwrap_or("System"));
+    let default_name = default_font
+        .as_deref()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| t!("settings.opt.system").to_string());
+    let default_label = t!("settings.opt.font_default", name = default_name).to_string();
     let mut opts = vec![Opt::new("", &default_label)];
     opts.extend(names.iter().map(|n| Opt::new(n, n)));
     let current = app
@@ -112,8 +117,11 @@ fn font_opts(app: &WeakEntity<AppView>, cx: &Context<SettingsView>) -> (Vec<Opt>
 /// user-added pack on disk (see `cursors::available`).
 fn cursor_opts() -> (Vec<Opt>, String) {
     let mut opts = vec![
-        Opt::new("", "System (default)"),
-        Opt::new(crate::cursors::THEME_PACK, "Bibata (match theme)"),
+        Opt::new("", &t!("settings.opt.cursor_system")),
+        Opt::new(
+            crate::cursors::THEME_PACK,
+            &t!("settings.opt.cursor_bibata"),
+        ),
     ];
     opts.extend(crate::cursors::available().iter().map(|n| Opt::new(n, n)));
     // User packs with SVG sources render theme-reactively as a second entry.
@@ -124,6 +132,24 @@ fn cursor_opts() -> (Vec<Opt>, String) {
         )
     }));
     (opts, crate::cursors::selected().unwrap_or_default())
+}
+
+/// Language-picker choices: Auto (its label is itself localized, so the
+/// dropdown reads "自动" / "Auto" with the active locale) plus each offered
+/// locale shown in its own script. The persisted ids come from
+/// [`crate::i18n::LANGUAGE_OPTS`].
+fn language_opts() -> Vec<Opt> {
+    crate::i18n::LANGUAGE_OPTS
+        .iter()
+        .map(|(id, name)| {
+            let title = if *id == "auto" {
+                rust_i18n::t!("settings.language.auto").to_string()
+            } else {
+                (*name).to_string()
+            };
+            Opt::new(id, &title)
+        })
+        .collect()
 }
 
 /// Which settings category the left nav has selected.
@@ -150,139 +176,154 @@ enum PwMode {
 /// Every settings card: `(tab, card title, extra search keywords)`. Drives the
 /// header filter — `section_matches` / `tab_has_matches` look cards up here, so
 /// the titles MUST stay in sync with the `card(…)` / `card_list(…)` calls in
-/// `render`. Keywords (lowercase) add synonyms a user might type for a setting
-/// that aren't already in its title.
+/// `render`. The title is an i18n key (`settings.section.*`); the rendered
+/// nav/card titles call `t!(key)`. Keywords (lowercase) add synonyms a user
+/// might type for a setting that aren't already in its title - kept in
+/// English so an English-typed synonym still finds a card in any locale.
 const SECTIONS: &[(Tab, &str, &str)] = &[
     (
         Tab::Notebooks,
-        "Notebooks",
+        "settings.section.notebooks",
         "vault workspace switch add remove rename folder data set",
     ),
     (
         Tab::Notebooks,
-        "Data location",
+        "settings.section.data_location",
         "folder path database directory move attachments notebook vault",
     ),
     (
         Tab::General,
-        "Unused images",
+        "settings.section.unused_images",
         "cleanup delete orphan gc attachments storage space free",
     ),
     (
         Tab::General,
-        "Remember window",
+        "settings.section.language",
+        "language locale i18n chinese english 中文 简体",
+    ),
+    (
+        Tab::General,
+        "settings.section.remember_window",
         "bounds size resize reopen restore placement screen monitor position tabs session",
     ),
     (
         Tab::General,
-        "Date format",
+        "settings.section.date_format",
         "iso us european calendar day month year /date",
     ),
-    (Tab::General, "Time format", "24 hour 12 clock am pm /time"),
+    (
+        Tab::General,
+        "settings.section.time_format",
+        "24 hour 12 clock am pm /time",
+    ),
     (
         Tab::Appearance,
-        "App Theme",
+        "settings.section.app_theme",
         "skin colors palette built-in custom",
     ),
     (
         Tab::Appearance,
-        "Appearance",
+        "settings.section.appearance",
         "light dark auto system mode variant",
     ),
     (
         Tab::Appearance,
-        "Font",
+        "settings.section.font",
         "typeface family typography text ttf otf custom",
     ),
     (
         Tab::Appearance,
-        "Text size",
+        "settings.section.text_size",
         "font size zoom bigger smaller larger scale px",
     ),
     (
         Tab::Appearance,
-        "Line numbers",
+        "settings.section.line_numbers",
         "gutter source rows numbering count editor",
     ),
     (
         Tab::Appearance,
-        "Mouse cursor",
+        "settings.section.mouse_cursor",
         "pointer arrow theme pack xcursor bibata custom",
     ),
     (
         Tab::Appearance,
-        "Installed themes",
+        "settings.section.installed_themes",
         "custom user json reload reveal folder",
     ),
     (
         Tab::Pdf,
-        "PDF render quality",
+        "settings.section.pdf_quality",
         "dpi resolution sharpness speed scale render",
     ),
     (
         Tab::Markdown,
-        "WYSIWYG editing",
+        "settings.section.wysiwyg",
         "live preview inline formatting bold heading links",
     ),
     (
         Tab::Markdown,
-        "List indentation",
+        "settings.section.list_indent",
         "spaces tab nesting indent bullet",
     ),
     (
         Tab::Markdown,
-        "Auto-link page titles",
+        "settings.section.autolink",
         "wiki link automatic typing wrap unlinked references",
     ),
     (
         Tab::Keyboard,
-        "Application",
+        "settings.section.application",
         "shortcuts keys tab window quit settings find search",
     ),
     (
         Tab::Keyboard,
-        "Editing",
+        "settings.section.editing",
         "shortcuts keys slash menu copy paste undo redo indent",
     ),
     (
         Tab::Keyboard,
-        "Whiteboard tools",
+        "settings.section.wb_tools",
         "shortcuts keys pen shape rectangle ellipse text image",
     ),
     (
         Tab::Keyboard,
-        "Whiteboard editing",
+        "settings.section.wb_editing",
         "shortcuts keys z-order delete copy paste",
     ),
-    (Tab::Keyboard, "PDF viewer", "shortcuts keys page zoom find"),
+    (
+        Tab::Keyboard,
+        "settings.section.pdf_viewer",
+        "shortcuts keys page zoom find",
+    ),
     (
         Tab::Security,
-        "Password",
+        "settings.section.password",
         "encrypt encryption lock database sqlcipher passphrase secure",
     ),
     (
         Tab::Security,
-        "Remember on this device",
+        "settings.section.remember_device",
         "keychain credential manager auto unlock remember password",
     ),
     (
         Tab::Security,
-        "Auto-lock",
+        "settings.section.autolock",
         "idle timeout lock minutes away inactivity",
     ),
     (
         Tab::Updates,
-        "Software updates",
+        "settings.section.updates",
         "version release github check download",
     ),
     (
         Tab::Updates,
-        "Automatically check for updates",
+        "settings.section.auto_check",
         "startup auto version",
     ),
     (
         Tab::Updates,
-        "Include pre-releases",
+        "settings.section.prereleases",
         "beta prerelease pre-release unstable",
     ),
 ];
@@ -298,6 +339,11 @@ pub struct SettingsView {
     indent_select: Entity<SelectState<Vec<Opt>>>,
     date_format_select: Entity<SelectState<Vec<Opt>>>,
     time_format_select: Entity<SelectState<Vec<Opt>>>,
+    /// Settings -> General -> Language picker. Its options are rebuilt when the
+    /// active locale changes (the "Auto" entry is itself localized), so a live
+    /// language switch updates the dropdown without reopening Settings.
+    language_select: Entity<SelectState<Vec<Opt>>>,
+    lang_select_locale: String,
     /// Header filter box + its current (trimmed, lowercased) text. Empty = no
     /// filter; non-empty dims the cards + nav tabs that don't match.
     filter_input: Entity<InputState>,
@@ -329,9 +375,9 @@ impl SettingsView {
             .map(|a| a.read(cx).theme_mode())
             .unwrap_or_default();
         let a_opts = vec![
-            Opt::new("light", "Light"),
-            Opt::new("dark", "Dark"),
-            Opt::new("auto", "Auto (follow system)"),
+            Opt::new("light", &t!("settings.opt.light")),
+            Opt::new("dark", &t!("settings.opt.dark")),
+            Opt::new("auto", &t!("settings.opt.auto_appearance")),
         ];
 
         let theme_select = make_select(t_opts, &active_skin, window, cx);
@@ -347,9 +393,9 @@ impl SettingsView {
             .map(|&s| {
                 let id = format!("{s}");
                 let label = if s == 16.0 {
-                    format!("{s} px (default)")
+                    t!("settings.opt.size_px_default", size = s).to_string()
                 } else {
-                    format!("{s} px")
+                    t!("settings.opt.size_px", size = s).to_string()
                 };
                 Opt::new(&id, &label)
             })
@@ -423,9 +469,9 @@ impl SettingsView {
             .unwrap_or_else(|| "4".to_string());
         let indent_select = make_select(
             vec![
-                Opt::new("2", "2 spaces"),
-                Opt::new("4", "4 spaces"),
-                Opt::new("8", "8 spaces"),
+                Opt::new("2", &t!("settings.opt.indent_2")),
+                Opt::new("4", &t!("settings.opt.indent_4")),
+                Opt::new("8", &t!("settings.opt.indent_8")),
             ],
             &cur_indent,
             window,
@@ -449,7 +495,7 @@ impl SettingsView {
         // and the {{date}} / {{time}} template placeholders.
         let date_opts: Vec<Opt> = crate::dates::DATE_FORMATS
             .iter()
-            .map(|&id| Opt::new(id, crate::dates::date_format_label(id)))
+            .map(|&id| Opt::new(id, &crate::dates::date_format_label(id)))
             .collect();
         let date_format_select = make_select(date_opts, &crate::dates::date_format(), window, cx);
         subs.push(cx.subscribe_in(
@@ -468,7 +514,7 @@ impl SettingsView {
 
         let time_opts: Vec<Opt> = crate::dates::TIME_FORMATS
             .iter()
-            .map(|&id| Opt::new(id, crate::dates::time_format_label(id)))
+            .map(|&id| Opt::new(id, &crate::dates::time_format_label(id)))
             .collect();
         let time_format_select = make_select(time_opts, &crate::dates::time_format(), window, cx);
         subs.push(cx.subscribe_in(
@@ -485,17 +531,41 @@ impl SettingsView {
             },
         ));
 
+        // Settings -> General -> Language. Options: Auto (localized) + each
+        // offered locale shown in its own script. Confirming pushes the choice
+        // into `AppView::set_language`, which switches the locale live.
+        let lang_opts = language_opts();
+        let cur_language = app
+            .upgrade()
+            .map(|a| a.read(cx).language().to_string())
+            .unwrap_or_else(|| "auto".to_string());
+        let language_select = make_select(lang_opts, &cur_language, window, cx);
+        subs.push(cx.subscribe_in(
+            &language_select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Some(app) = this.app.upgrade()
+                {
+                    let id = id.clone();
+                    app.update(cx, |a, cx| a.set_language(&id, cx));
+                    cx.notify();
+                }
+            },
+        ));
+
         // Header filter box — dims the cards + nav tabs that don't match as the
         // user types (Baudrun's Settings filter). Subscribed on every keystroke
         // (`Change`) so the dim updates live; the value drives `self.filter`.
-        let filter_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter settings…"));
+        let filter_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("settings.filter_placeholder")));
         let masked = |ph: &str, window: &mut Window, cx: &mut Context<Self>| {
             let ph = ph.to_string();
             cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(ph))
         };
-        let sec_current = masked("Current password", window, cx);
-        let sec_new = masked("New password", window, cx);
-        let sec_confirm = masked("Confirm new password", window, cx);
+        let sec_current = masked(&t!("settings.label.current_password"), window, cx);
+        let sec_new = masked(&t!("settings.label.new_password"), window, cx);
+        let sec_confirm = masked(&t!("settings.label.confirm_password"), window, cx);
         subs.push(cx.subscribe(
             &filter_input,
             |this: &mut SettingsView, input, ev: &InputEvent, cx| {
@@ -522,6 +592,8 @@ impl SettingsView {
             indent_select,
             date_format_select,
             time_format_select,
+            language_select,
+            lang_select_locale: rust_i18n::locale().to_string(),
             filter_input,
             filter: String::new(),
             tab: Tab::Appearance,
@@ -555,30 +627,37 @@ impl SettingsView {
             return;
         }
         let fresh = !std::path::Path::new(&nb.dir).join("zorite.db").exists();
-        let (title, body): (&'static str, String) = if fresh {
+        let (title, body): (SharedString, String) = if fresh {
             (
-                "Create notebook",
-                format!(
-                    "Zorite will relaunch with a fresh, empty notebook “{}” in:\n{}",
-                    nb.name, nb.dir
-                ),
+                t!("settings.dlg.create_notebook_title").into(),
+                t!(
+                    "settings.dlg.create_notebook_body",
+                    name = nb.name.as_str(),
+                    dir = nb.dir.as_str()
+                )
+                .into_owned(),
             )
         } else {
             (
-                "Switch notebook",
-                format!("Zorite will relaunch into “{}”:\n{}", nb.name, nb.dir),
+                t!("settings.dlg.switch_notebook_title").into(),
+                t!(
+                    "settings.dlg.switch_notebook_body",
+                    name = nb.name.as_str(),
+                    dir = nb.dir.as_str()
+                )
+                .into_owned(),
             )
         };
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let nb = nb.clone();
             let body = body.clone();
             dialog
-                .title(title)
+                .title(title.clone())
                 .description(SharedString::from(body))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Relaunch")
-                        .cancel_text("Cancel")
+                        .ok_text(t!("settings.btn.relaunch"))
+                        .cancel_text(t!("common.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, _window, cx| {
@@ -598,7 +677,7 @@ impl SettingsView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Use folder".into()),
+            prompt: Some(t!("settings.dlg.use_folder").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -614,7 +693,7 @@ impl SettingsView {
                         cx.notify();
                         this.switch_notebook(nb, window, cx);
                     }
-                    Err(e) => this.alert("Can’t use that folder", e, window, cx),
+                    Err(e) => this.alert(t!("settings.alert.cant_use_folder"), e, window, cx),
                 }
             });
         })
@@ -641,24 +720,27 @@ impl SettingsView {
             let weak_btn = weak.clone();
             let weak_key = weak.clone();
             dialog
-                .title("Rename notebook")
+                .title(t!("settings.dlg.rename_notebook_title"))
                 .w(px(420.0))
                 .child(Input::new(&input_body))
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("nb-rn-cancel")
-                                .label("Cancel")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("nb-rn-ok").primary().label("Rename").on_click(
-                            move |_, window, cx| {
-                                let name = input_btn.read(cx).value().to_string();
-                                let _ =
-                                    weak_btn.update(cx, |this, cx| this.commit_nb_rename(name, cx));
-                                window.close_dialog(cx);
-                            },
-                        )),
+                        .child(
+                            Button::new("nb-rn-ok")
+                                .primary()
+                                .label(t!("common.rename"))
+                                .on_click(move |_, window, cx| {
+                                    let name = input_btn.read(cx).value().to_string();
+                                    let _ = weak_btn
+                                        .update(cx, |this, cx| this.commit_nb_rename(name, cx));
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                 )
                 .on_ok(move |_, _window, cx| {
                     let name = input_key.read(cx).value().to_string();
@@ -722,12 +804,12 @@ impl SettingsView {
                     .bg(theme::accent_tint())
                     .text_size(px(11.0))
                     .text_color(theme::accent())
-                    .child("current"),
+                    .child(t!("settings.label.current").to_string()),
             );
         } else {
             actions = actions.child(nb_button(
                 SharedString::from(format!("nb-switch:{}", nb.dir)),
-                "Switch",
+                &t!("settings.nb.switch"),
                 cx,
                 move |this, window, cx| this.switch_notebook(nb_switch.clone(), window, cx),
             ));
@@ -735,13 +817,13 @@ impl SettingsView {
         actions = actions
             .child(nb_button(
                 SharedString::from(format!("nb-rename:{}", nb.dir)),
-                "Rename",
+                &t!("settings.nb.rename"),
                 cx,
                 move |this, window, cx| this.rename_notebook(nb_rename.clone(), window, cx),
             ))
             .child(nb_button(
                 SharedString::from(format!("nb-reveal:{}", nb.dir)),
-                "Reveal",
+                &t!("settings.nb.reveal"),
                 cx,
                 move |_this, _window, _cx| {
                     crate::app::AppView::reveal_folder(&reveal_dir);
@@ -750,7 +832,7 @@ impl SettingsView {
         if !active {
             actions = actions.child(nb_button(
                 SharedString::from(format!("nb-forget:{}", nb.dir)),
-                "Remove",
+                &t!("settings.nb.remove"),
                 cx,
                 move |this, _window, cx| this.forget_notebook(nb_forget.clone(), cx),
             ));
@@ -846,7 +928,7 @@ impl SettingsView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Use font".into()),
+            prompt: Some(t!("settings.dlg.use_font").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -872,6 +954,33 @@ impl SettingsView {
         let select = make_select(opts, &current, window, cx);
         self._subs.push(Self::on_font_select(&select, window, cx));
         self.font_select = select;
+        cx.notify();
+    }
+
+    /// Rebuild the Language picker options after a live locale switch (the
+    /// "Auto" entry's label is itself localized). The selected id is unchanged.
+    fn rebuild_language_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current = self
+            .app
+            .upgrade()
+            .map(|a| a.read(cx).language().to_string())
+            .unwrap_or_else(|| "auto".to_string());
+        let select = make_select(language_opts(), &current, window, cx);
+        self._subs.push(cx.subscribe_in(
+            &select,
+            window,
+            |this: &mut SettingsView, _, ev: &SelectEvent<Vec<Opt>>, _window, cx| {
+                if let SelectEvent::Confirm(Some(id)) = ev
+                    && let Some(app) = this.app.upgrade()
+                {
+                    let id = id.clone();
+                    app.update(cx, |a, cx| a.set_language(&id, cx));
+                    cx.notify();
+                }
+            },
+        ));
+        self.language_select = select;
+        self.lang_select_locale = rust_i18n::locale().to_string();
         cx.notify();
     }
 
@@ -902,7 +1011,7 @@ impl SettingsView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Use theme".into()),
+            prompt: Some(t!("settings.dlg.use_theme").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -976,7 +1085,7 @@ impl SettingsView {
             files: false,
             directories: true,
             multiple: false,
-            prompt: Some("Choose".into()),
+            prompt: Some(t!("settings.dlg.choose").into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else {
@@ -1000,7 +1109,7 @@ impl SettingsView {
         };
         let orphans = app.read(cx).orphan_images();
         if orphans.is_empty() {
-            self.image_gc_result = Some("No unused images found.".to_string());
+            self.image_gc_result = Some(t!("settings.status.no_unused").into_owned());
             cx.notify();
             return;
         }
@@ -1012,21 +1121,31 @@ impl SettingsView {
             .map(|(n, s)| format!("•  {n}  ({})", fmt_size(*s)))
             .collect();
         if orphans.len() > SHOWN {
-            listing.push(format!("…and {} more", orphans.len() - SHOWN));
+            listing.push(format!(
+                "{}",
+                t!(
+                    "settings.status.and_more",
+                    n = (orphans.len() - SHOWN) as i64
+                )
+            ));
         }
-        let body = format!(
-            "{} file{} ({}) in the images folder {} referenced by any note, \
-             whiteboard, or template. They'll be moved to the system trash.\n\n{}",
-            orphans.len(),
-            if orphans.len() == 1 { "" } else { "s" },
-            fmt_size(total),
-            if orphans.len() == 1 {
-                "isn't"
-            } else {
-                "aren't"
-            },
-            listing.join("\n"),
-        );
+        let body = if orphans.len() == 1 {
+            t!(
+                "settings.dlg.image_gc_body_one",
+                count = orphans.len() as i64,
+                size = fmt_size(total),
+                listing = listing.join("\n")
+            )
+            .into_owned()
+        } else {
+            t!(
+                "settings.dlg.image_gc_body_many",
+                count = orphans.len() as i64,
+                size = fmt_size(total),
+                listing = listing.join("\n")
+            )
+            .into_owned()
+        };
         let weak_app = self.app.clone();
         let this = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
@@ -1034,12 +1153,12 @@ impl SettingsView {
             let weak_app = weak_app.clone();
             let this = this.clone();
             dialog
-                .title("Move unused images to the trash?")
+                .title(t!("settings.dlg.image_gc_title"))
                 .description(SharedString::from(body.clone()))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Move to Trash")
-                        .cancel_text("Cancel")
+                        .ok_text(t!("settings.btn.move_to_trash"))
+                        .cancel_text(t!("common.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, _window, cx| {
@@ -1048,11 +1167,21 @@ impl SettingsView {
                     };
                     let (removed, freed) = app.read(cx).remove_orphan_images(&orphans);
                     let _ = this.update(cx, |s, cx| {
-                        s.image_gc_result = Some(format!(
-                            "Moved {removed} file{} ({}) to the trash.",
-                            if removed == 1 { "" } else { "s" },
-                            fmt_size(freed),
-                        ));
+                        s.image_gc_result = Some(if removed == 1 {
+                            t!(
+                                "settings.status.moved_one",
+                                n = removed as i64,
+                                size = fmt_size(freed)
+                            )
+                            .into_owned()
+                        } else {
+                            t!(
+                                "settings.status.moved_many",
+                                n = removed as i64,
+                                size = fmt_size(freed)
+                            )
+                            .into_owned()
+                        });
                         cx.notify();
                     });
                     true
@@ -1066,10 +1195,19 @@ impl SettingsView {
         for input in [&self.sec_current, &self.sec_new, &self.sec_confirm] {
             input.update(cx, |s, cx| s.set_value("", window, cx));
         }
-        let (title, ok_label) = match mode {
-            PwMode::Set => ("Set a password", "Encrypt"),
-            PwMode::Change => ("Change password", "Change"),
-            PwMode::Remove => ("Remove password", "Decrypt"),
+        let (title, ok_label): (SharedString, SharedString) = match mode {
+            PwMode::Set => (
+                t!("settings.dlg.set_pw_title").into(),
+                t!("settings.btn.encrypt").into(),
+            ),
+            PwMode::Change => (
+                t!("settings.dlg.change_pw_title").into(),
+                t!("settings.btn.change").into(),
+            ),
+            PwMode::Remove => (
+                t!("settings.dlg.remove_pw_title").into(),
+                t!("settings.btn.decrypt").into(),
+            ),
         };
         let current = self.sec_current.clone();
         let newpw = self.sec_new.clone();
@@ -1092,41 +1230,42 @@ impl SettingsView {
                     div()
                         .text_size(px(12.0))
                         .text_color(theme::text_tertiary())
-                        .child(
-                            "Encrypts the note database. If you forget this \
-                             password, your notes are unrecoverable. Images and \
-                             PDFs stay as ordinary files in the data folder — \
-                             they are not encrypted — and earlier plaintext \
-                             backups there stay readable until you delete them.",
-                        ),
+                        .child(t!("settings.dlg.set_pw_note").to_string()),
                 );
             }
             dialog
-                .title(title)
+                .title(title.clone())
                 .w(px(440.0))
                 .child(body)
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("pw-cancel")
-                                .label("Cancel")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("pw-ok").primary().label(ok_label).on_click({
-                            let current_i = current_i.clone();
-                            let new_i = new_i.clone();
-                            let confirm_i = confirm_i.clone();
-                            let weak = weak.clone();
-                            move |_, window, cx| {
-                                let cur = current_i.read(cx).value().to_string();
-                                let new = new_i.read(cx).value().to_string();
-                                let conf = confirm_i.read(cx).value().to_string();
-                                window.close_dialog(cx);
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.apply_password_change(mode, cur, new, conf, window, cx);
-                                });
-                            }
-                        })),
+                        .child(
+                            Button::new("pw-ok")
+                                .primary()
+                                .label(ok_label.clone())
+                                .on_click({
+                                    let current_i = current_i.clone();
+                                    let new_i = new_i.clone();
+                                    let confirm_i = confirm_i.clone();
+                                    let weak = weak.clone();
+                                    move |_, window, cx| {
+                                        let cur = current_i.read(cx).value().to_string();
+                                        let new = new_i.read(cx).value().to_string();
+                                        let conf = confirm_i.read(cx).value().to_string();
+                                        window.close_dialog(cx);
+                                        let _ = weak.update(cx, |this, cx| {
+                                            this.apply_password_change(
+                                                mode, cur, new, conf, window, cx,
+                                            );
+                                        });
+                                    }
+                                }),
+                        ),
                 )
                 .on_ok(move |_, window, cx| {
                     let cur = current_i.read(cx).value().to_string();
@@ -1160,8 +1299,8 @@ impl SettingsView {
     ) {
         if mode != PwMode::Set && !crate::db::Db::verify_key(&current) {
             self.alert(
-                "Wrong password",
-                "The current password doesn't match.".into(),
+                t!("settings.alert.wrong_password"),
+                t!("settings.alert.wrong_password_body").into_owned(),
                 window,
                 cx,
             );
@@ -1172,8 +1311,8 @@ impl SettingsView {
             _ => {
                 if new.is_empty() {
                     self.alert(
-                        "No password",
-                        "The new password is empty.".into(),
+                        t!("settings.alert.no_password"),
+                        t!("settings.alert.no_password_body").into_owned(),
                         window,
                         cx,
                     );
@@ -1181,8 +1320,8 @@ impl SettingsView {
                 }
                 if new != confirm {
                     self.alert(
-                        "Passwords don't match",
-                        "The two entries differ — try again.".into(),
+                        t!("settings.alert.pw_mismatch"),
+                        t!("settings.alert.pw_mismatch_body").into_owned(),
                         window,
                         cx,
                     );
@@ -1196,10 +1335,10 @@ impl SettingsView {
         };
         let result = app.update(cx, |a, _| a.set_db_password(new_key.as_deref()));
         self.security_status = Some(match (&result, mode) {
-            (Ok(()), PwMode::Set) => "Database encrypted.".to_string(),
-            (Ok(()), PwMode::Change) => "Password changed.".to_string(),
-            (Ok(()), PwMode::Remove) => "Password removed — database decrypted.".to_string(),
-            (Err(e), _) => format!("Failed: {e}"),
+            (Ok(()), PwMode::Set) => t!("settings.status.db_encrypted").into_owned(),
+            (Ok(()), PwMode::Change) => t!("settings.status.pw_changed").into_owned(),
+            (Ok(()), PwMode::Remove) => t!("settings.status.pw_removed").into_owned(),
+            (Err(e), _) => t!("settings.status.failed", err = e.to_string()).into_owned(),
         });
         cx.notify();
     }
@@ -1210,47 +1349,46 @@ impl SettingsView {
     /// sidebar switcher, not a silent repoint from here.
     fn confirm_relocation(&mut self, target: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         use crate::paths::Relocation;
-        let (title, body, ok): (&'static str, String, &'static str) =
+        let (title, body, ok): (SharedString, String, SharedString) =
             match crate::paths::plan_relocation(&target) {
                 Relocation::NoOp => return,
                 Relocation::Invalid(reason) => {
-                    self.alert("Can’t use that folder", reason, window, cx);
+                    self.alert(t!("settings.alert.cant_use_folder"), reason, window, cx);
                     return;
                 }
                 Relocation::Switch => {
                     self.alert(
-                        "That folder is already a notebook",
-                        format!(
-                            "“{}” already contains a Zorite database.\n\nAdd it from the \
-                             notebook switcher at the bottom of the sidebar, then switch to \
-                             it there.",
-                            target.display(),
-                        ),
+                        t!("settings.dlg.that_folder_notebook_title"),
+                        t!(
+                            "settings.dlg.that_folder_notebook_body",
+                            name = target.display().to_string()
+                        )
+                        .into_owned(),
                         window,
                         cx,
                     );
                     return;
                 }
                 Relocation::Move => (
-                    "Move data location",
-                    format!(
-                        "Zorite will move this notebook's notes, settings, and attachments \
-                         to:\n{}\n\nThe change takes effect the next time you open Zorite.",
-                        target.display(),
-                    ),
-                    "Move & Quit",
+                    t!("settings.dlg.move_data_title").into(),
+                    t!(
+                        "settings.dlg.move_data_body",
+                        path = target.display().to_string()
+                    )
+                    .into_owned(),
+                    t!("settings.btn.move_quit").into(),
                 ),
             };
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let target = target.clone();
             let body = body.clone();
             dialog
-                .title(title)
+                .title(title.clone())
                 .description(SharedString::from(body))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text(ok)
-                        .cancel_text("Cancel")
+                        .ok_text(ok.clone())
+                        .cancel_text(t!("common.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, _window, cx| {
@@ -1272,16 +1410,18 @@ impl SettingsView {
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let default = default.clone();
             dialog
-                .title("Reset data location")
-                .description(SharedString::from(format!(
-                    "Zorite will move your data back to the default location:\n{}\n\nThe change \
-                     takes effect the next time you open Zorite.",
-                    default.display(),
-                )))
+                .title(t!("settings.dlg.reset_data_title"))
+                .description(SharedString::from(
+                    t!(
+                        "settings.dlg.reset_data_body",
+                        path = default.display().to_string()
+                    )
+                    .into_owned(),
+                ))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Reset & Quit")
-                        .cancel_text("Cancel")
+                        .ok_text(t!("settings.btn.reset_quit"))
+                        .cancel_text(t!("common.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, _window, cx| {
@@ -1297,19 +1437,20 @@ impl SettingsView {
     /// A simple message dialog with a single OK button (no action).
     fn alert(
         &self,
-        title: &'static str,
+        title: impl Into<SharedString>,
         body: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let title: SharedString = title.into();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let body = body.clone();
             dialog
-                .title(title)
+                .title(title.clone())
                 .description(SharedString::from(body))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("OK")
+                        .ok_text(t!("common.ok"))
                         .show_cancel(false),
                 )
                 .on_ok(|_, _window, _cx| true)
@@ -1319,58 +1460,59 @@ impl SettingsView {
     // ---- Header filter (Baudrun-style): dim cards + tabs that don't match ----
 
     /// A settings card that fades when it doesn't match the current filter. It
-    /// stays interactive — the user can change a dimmed setting without first
+    /// stays interactive - the user can change a dimmed setting without first
     /// clearing the filter.
     fn section_card(
         &self,
-        title: &'static str,
-        desc: &str,
+        title_key: &str,
+        desc_key: &str,
         control: impl IntoElement,
     ) -> gpui::Div {
-        card(title, desc, control).opacity(self.filter_opacity(title))
+        card(&t!(title_key), &t!(desc_key), control).opacity(self.filter_opacity(title_key))
     }
 
     /// Filter-aware wrapper for the shortcut-list cards on the Keyboard pane.
     fn section_list(
         &self,
-        title: &'static str,
-        desc: &str,
-        rows: Vec<(&str, Vec<&str>)>,
+        title_key: &str,
+        desc_key: &str,
+        rows: Vec<(String, Vec<&str>)>,
     ) -> gpui::Div {
-        card_list(title, desc, rows).opacity(self.filter_opacity(title))
+        card_list(&t!(title_key), &t!(desc_key), rows).opacity(self.filter_opacity(title_key))
     }
 
-    fn filter_opacity(&self, title: &str) -> f32 {
-        if self.section_matches(title) {
+    fn filter_opacity(&self, title_key: &str) -> f32 {
+        if self.section_matches(title_key) {
             1.0
         } else {
             0.3
         }
     }
 
-    /// Whether `title`'s card matches the filter: an empty filter matches all;
-    /// otherwise the title or its `SECTIONS` keywords must contain the text.
-    fn section_matches(&self, title: &str) -> bool {
+    /// Whether `title_key`'s card matches the filter: an empty filter matches
+    /// all; otherwise the localized title or its `SECTIONS` keywords must
+    /// contain the text.
+    fn section_matches(&self, title_key: &str) -> bool {
         if self.filter.is_empty() {
             return true;
         }
-        if title.to_lowercase().contains(self.filter.as_str()) {
+        if t!(title_key).to_lowercase().contains(self.filter.as_str()) {
             return true;
         }
         SECTIONS
             .iter()
-            .find(|(_, t, _)| *t == title)
+            .find(|(_, t, _)| *t == title_key)
             .is_some_and(|(_, _, kw)| kw.contains(self.filter.as_str()))
     }
 
-    /// Whether `tab` has at least one matching card — drives the rail dim.
+    /// Whether `tab` has at least one matching card - drives the rail dim.
     fn tab_has_matches(&self, tab: Tab) -> bool {
         if self.filter.is_empty() {
             return true;
         }
-        SECTIONS.iter().any(|(t, title, kw)| {
-            *t == tab
-                && (title.to_lowercase().contains(self.filter.as_str())
+        SECTIONS.iter().copied().any(|(t, title_key, kw)| {
+            t == tab
+                && (t!(title_key).to_lowercase().contains(self.filter.as_str())
                     || kw.contains(self.filter.as_str()))
         })
     }
@@ -1389,7 +1531,7 @@ impl SettingsView {
             .gap(px(2.0))
             .child(nav_item(
                 "nav-general",
-                "General",
+                &t!("settings.nav.general"),
                 Tab::General,
                 active,
                 !self.tab_has_matches(Tab::General),
@@ -1397,7 +1539,7 @@ impl SettingsView {
             ))
             .child(nav_item(
                 "nav-notebooks",
-                "Notebooks",
+                &t!("settings.nav.notebooks"),
                 Tab::Notebooks,
                 active,
                 !self.tab_has_matches(Tab::Notebooks),
@@ -1405,7 +1547,7 @@ impl SettingsView {
             ))
             .child(nav_item(
                 "nav-appearance",
-                "Appearance",
+                &t!("settings.nav.appearance"),
                 Tab::Appearance,
                 active,
                 !self.tab_has_matches(Tab::Appearance),
@@ -1413,7 +1555,7 @@ impl SettingsView {
             ))
             .child(nav_item(
                 "nav-pdf",
-                "PDF",
+                &t!("settings.nav.pdf"),
                 Tab::Pdf,
                 active,
                 !self.tab_has_matches(Tab::Pdf),
@@ -1421,7 +1563,7 @@ impl SettingsView {
             ))
             .child(nav_item(
                 "nav-markdown",
-                "Markdown",
+                &t!("settings.nav.markdown"),
                 Tab::Markdown,
                 active,
                 !self.tab_has_matches(Tab::Markdown),
@@ -1429,7 +1571,7 @@ impl SettingsView {
             ))
             .child(nav_item(
                 "nav-keyboard",
-                "Keyboard",
+                &t!("settings.nav.keyboard"),
                 Tab::Keyboard,
                 active,
                 !self.tab_has_matches(Tab::Keyboard),
@@ -1437,7 +1579,7 @@ impl SettingsView {
             ))
             .child(nav_item(
                 "nav-security",
-                "Security",
+                &t!("settings.nav.security"),
                 Tab::Security,
                 active,
                 !self.tab_has_matches(Tab::Security),
@@ -1445,7 +1587,7 @@ impl SettingsView {
             ))
             .child(nav_item(
                 "nav-updates",
-                "Updates",
+                &t!("settings.nav.updates"),
                 Tab::Updates,
                 active,
                 !self.tab_has_matches(Tab::Updates),
@@ -1500,6 +1642,14 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A live language switch (this window or another) changes rust-i18n's
+        // global locale; rebuild the Language picker so its "Auto" label and
+        // the resolved selection track the new locale.
+        let cur_locale = rust_i18n::locale();
+        if self.lang_select_locale != *cur_locale {
+            self.rebuild_language_select(window, cx);
+        }
+
         let user_names = self.user_theme_names(cx);
 
         let qpct = self
@@ -1608,7 +1758,7 @@ impl Render for SettingsView {
             .child(Select::new(&self.font_select).small().w_full())
             .child(div().flex().flex_row().child(text_button(
                 "font-add",
-                "Add font file…",
+                &t!("settings.btn.add_font"),
                 cx,
                 |this, w, cx| this.choose_font_file(w, cx),
             )));
@@ -1628,13 +1778,13 @@ impl Render for SettingsView {
                     .gap(px(8.0))
                     .child(text_button(
                         "cursor-add",
-                        "Add cursor theme…",
+                        &t!("settings.btn.add_cursor"),
                         cx,
                         |this, w, cx| this.choose_cursor_theme(w, cx),
                     ))
                     .child(text_button(
                         "cursor-reveal",
-                        "Reveal cursors folder",
+                        &t!("settings.btn.reveal_cursors"),
                         cx,
                         |_this, _w, _cx| {
                             let dir = crate::cursors::cursors_dir();
@@ -1655,7 +1805,7 @@ impl Render for SettingsView {
                 div()
                     .text_size(px(12.0))
                     .text_color(theme::text_tertiary())
-                    .child("Cursor changes take effect after a relaunch."),
+                    .child(t!("settings.note.cursor_relaunch").to_string()),
             );
         }
 
@@ -1666,7 +1816,7 @@ impl Render for SettingsView {
             .gap(px(8.0))
             .child(text_button(
                 "reveal-themes",
-                "Reveal themes folder",
+                &t!("settings.btn.reveal_themes"),
                 cx,
                 |this, _w, cx| {
                     if let Some(app) = this.app.upgrade() {
@@ -1674,15 +1824,18 @@ impl Render for SettingsView {
                     }
                 },
             ))
-            .child(text_button("reload-themes", "Reload", cx, |this, w, cx| {
-                this.reload_skins(w, cx)
-            }));
+            .child(text_button(
+                "reload-themes",
+                &t!("settings.btn.reload"),
+                cx,
+                |this, w, cx| this.reload_skins(w, cx),
+            ));
 
         let list = if user_names.is_empty() {
             div()
                 .text_size(px(13.0))
                 .text_color(theme::text_tertiary())
-                .child("No custom themes installed. Drop a .json file in the folder and Reload.")
+                .child(t!("settings.note.no_custom_themes").to_string())
                 .into_any_element()
         } else {
             let mut col = div().flex().flex_col().gap(px(4.0));
@@ -1716,7 +1869,7 @@ impl Render for SettingsView {
             .gap(px(10.0))
             .child(div().flex().flex_row().child(text_button(
                 "image-gc",
-                "Clean up now",
+                &t!("settings.btn.cleanup"),
                 cx,
                 |this, window, cx| this.confirm_image_gc(window, cx),
             )))
@@ -1809,10 +1962,13 @@ impl Render for SettingsView {
             .flex_col()
             .gap(px(10.0))
             .child(labeled_row(
-                "Window size and position",
+                &t!("settings.label.window_size_pos"),
                 window_bounds_switch,
             ))
-            .child(labeled_row("Open tabs", open_tabs_switch));
+            .child(labeled_row(
+                &t!("settings.label.open_tabs"),
+                open_tabs_switch,
+            ));
 
         // Security cards: the password state drives which actions show.
         let encrypted = crate::db::db_is_encrypted();
@@ -1822,7 +1978,7 @@ impl Render for SettingsView {
                 row = row
                     .child(text_button(
                         "sec-change",
-                        "Change password…",
+                        &t!("settings.btn.change_password"),
                         cx,
                         |this, w, cx| {
                             this.open_password_dialog(PwMode::Change, w, cx);
@@ -1830,20 +1986,25 @@ impl Render for SettingsView {
                     ))
                     .child(text_button(
                         "sec-remove",
-                        "Remove password…",
+                        &t!("settings.btn.remove_password"),
                         cx,
                         |this, w, cx| {
                             this.open_password_dialog(PwMode::Remove, w, cx);
                         },
                     ))
-                    .child(text_button("sec-lock", "Lock now", cx, |_this, _w, cx| {
-                        // Deferred: locking closes this window mid-handler.
-                        cx.defer(crate::lock_now);
-                    }));
+                    .child(text_button(
+                        "sec-lock",
+                        &t!("settings.btn.lock_now"),
+                        cx,
+                        |_this, _w, cx| {
+                            // Deferred: locking closes this window mid-handler.
+                            cx.defer(crate::lock_now);
+                        },
+                    ));
             } else {
                 row = row.child(text_button(
                     "sec-set",
-                    "Set password…",
+                    &t!("settings.btn.set_password"),
                     cx,
                     |this, w, cx| {
                         this.open_password_dialog(PwMode::Set, w, cx);
@@ -1888,18 +2049,18 @@ impl Render for SettingsView {
                     div()
                         .text_size(px(12.0))
                         .text_color(theme::text_tertiary())
-                        .child("Set a password first.")
+                        .child(t!("settings.note.set_password_first").to_string())
                 }))
         };
         let auto_lock_control = {
             let current = crate::security::auto_lock_minutes();
             let mut row = div().flex().flex_row().flex_wrap().gap(px(6.0));
             for (label, mins) in [
-                ("Off", 0u64),
-                ("5 min", 5),
-                ("15 min", 15),
-                ("30 min", 30),
-                ("1 hour", 60),
+                (t!("settings.autolock.off").to_string(), 0u64),
+                (t!("settings.autolock.5min").to_string(), 5),
+                (t!("settings.autolock.15min").to_string(), 15),
+                (t!("settings.autolock.30min").to_string(), 30),
+                (t!("settings.autolock.1hour").to_string(), 60),
             ] {
                 let app = self.app.clone();
                 let mut chip = div()
@@ -1936,7 +2097,7 @@ impl Render for SettingsView {
                     div()
                         .text_size(px(12.0))
                         .text_color(theme::text_tertiary())
-                        .child("Set a password first.")
+                        .child(t!("settings.note.set_password_first").to_string())
                 }))
         };
 
@@ -1949,7 +2110,7 @@ impl Render for SettingsView {
             }
             col.child(div().flex().flex_row().mt(px(2.0)).child(text_button(
                 "nb-add",
-                "Add notebook…",
+                &t!("settings.btn.add_notebook"),
                 cx,
                 |this, w, cx| this.add_notebook(w, cx),
             )))
@@ -1980,12 +2141,15 @@ impl Render for SettingsView {
                     .flex()
                     .flex_row()
                     .gap(px(8.0))
-                    .child(text_button("data-move", "Move…", cx, |this, w, cx| {
-                        this.choose_data_location(w, cx)
-                    }))
+                    .child(text_button(
+                        "data-move",
+                        &t!("settings.btn.move"),
+                        cx,
+                        |this, w, cx| this.choose_data_location(w, cx),
+                    ))
                     .child(text_button(
                         "data-reveal",
-                        "Reveal",
+                        &t!("settings.btn.reveal"),
                         cx,
                         |_this, _w, _cx| {
                             crate::app::AppView::reveal_folder(&crate::paths::data_dir());
@@ -1994,7 +2158,7 @@ impl Render for SettingsView {
                     .when(!at_default, |row| {
                         row.child(text_button(
                             "data-reset",
-                            "Reset to default",
+                            &t!("settings.btn.reset_default"),
                             cx,
                             |this, w, cx| this.confirm_reset_data_location(w, cx),
                         ))
@@ -2012,7 +2176,7 @@ impl Render for SettingsView {
                 div()
                     .text_size(px(13.0))
                     .text_color(theme::text_secondary())
-                    .child(format!("Current version: v{cur_version}")),
+                    .child(t!("settings.status.current_version", ver = cur_version).to_string()),
             );
             if let Some(a) = &available {
                 let url = a.html_url.clone();
@@ -2021,7 +2185,7 @@ impl Render for SettingsView {
                         .text_size(px(14.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(theme::accent())
-                        .child(format!("Update available: v{}", a.version)),
+                        .child(t!("settings.status.update_available", ver = a.version).to_string()),
                 );
                 // A short preview of the release notes; the full notes are on the
                 // release page behind "View release".
@@ -2045,13 +2209,13 @@ impl Render for SettingsView {
                         .gap(px(8.0))
                         .child(text_button(
                             "updates-view",
-                            "View release",
+                            &t!("settings.btn.view_release"),
                             cx,
                             move |_this, _w, _cx| open_url(&url),
                         ))
                         .child(text_button(
                             "updates-check",
-                            "Check now",
+                            &t!("settings.btn.check_now"),
                             cx,
                             |this, _w, cx| this.check_for_updates(cx),
                         )),
@@ -2062,11 +2226,11 @@ impl Render for SettingsView {
                         div()
                             .text_size(px(13.0))
                             .text_color(theme::text_tertiary())
-                            .child("You're on the latest version."),
+                            .child(t!("settings.note.latest_version").to_string()),
                     )
                     .child(text_button(
                         "updates-check",
-                        "Check now",
+                        &t!("settings.btn.check_now"),
                         cx,
                         |this, _w, cx| this.check_for_updates(cx),
                     ));
@@ -2095,7 +2259,7 @@ impl Render for SettingsView {
                         div()
                             .text_size(px(26.0))
                             .font_weight(FontWeight::BOLD)
-                            .child("Settings"),
+                            .child(t!("settings.title").to_string()),
                     )
                     .child(version_chip())
                     .child(div().flex_1())
@@ -2122,273 +2286,294 @@ impl Render for SettingsView {
                         match self.tab {
                             Tab::Notebooks => content
                                 .child(self.section_card(
-                                    "Notebooks",
-                                    "Each notebook is a self-contained folder — its own \
-                                         database, settings, and attachments. Switching \
-                                         relaunches Zorite into the picked notebook; \
-                                         removing one only forgets it here, never touching \
-                                         its files. The chip at the bottom of the sidebar is \
-                                         the quick switcher.",
+                                    "settings.section.notebooks",
+                                    "settings.desc.notebooks",
                                     notebooks_control,
                                 ))
                                 .child(self.section_card(
-                                    "Data location",
-                                    "Where the current notebook keeps its database, \
-                                         settings, and attachments. Moving relocates the \
-                                         data to the new folder, then reopens Zorite.",
+                                    "settings.section.data_location",
+                                    "settings.desc.data_location",
                                     location_control,
                                 )),
                             Tab::General => content
                                 .child(self.section_card(
-                                    "Remember window",
-                                    "Reopen Zorite the way you left it: the window's size \
-                                         and position (centered if its display is gone), and \
-                                         optionally the tabs you had open.",
+                                    "settings.section.language",
+                                    "settings.desc.language",
+                                    Select::new(&self.language_select).small().w_full(),
+                                ))
+                                .child(self.section_card(
+                                    "settings.section.remember_window",
+                                    "settings.desc.remember_window",
                                     remember_window_control,
                                 ))
                                 .child(self.section_card(
-                                    "Unused images",
-                                    "Delete images in the managed store that no note, \
-                                         whiteboard, or template references. Files added in \
-                                         the last hour are kept.",
+                                    "settings.section.unused_images",
+                                    "settings.desc.unused_images",
                                     image_gc_control,
                                 ))
                                 .child(self.section_card(
-                                    "Date format",
-                                    "How /date and the {{date}} template placeholder are \
-                                         inserted. Journal day headers are unaffected.",
+                                    "settings.section.date_format",
+                                    "settings.desc.date_format",
                                     Select::new(&self.date_format_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
-                                    "Time format",
-                                    "How /time and the {{time}} template placeholder are \
-                                         inserted.",
+                                    "settings.section.time_format",
+                                    "settings.desc.time_format",
                                     Select::new(&self.time_format_select).small().w_full(),
                                 )),
                             Tab::Appearance => content
                                 .child(self.section_card(
-                                    "App Theme",
-                                    "Pick a built-in theme or one of your own.",
+                                    "settings.section.app_theme",
+                                    "settings.desc.app_theme",
                                     Select::new(&self.theme_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
-                                    "Appearance",
-                                    "Light or dark variant of the active theme. Auto follows \
-                                         your system.",
+                                    "settings.section.appearance",
+                                    "settings.desc.appearance",
                                     Select::new(&self.appearance_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
-                                    "Font",
-                                    "The typeface for the app and your notes. Default follows \
-                                         the active theme's font, if it names one. Add a .ttf or \
-                                         .otf file to use a font that isn't installed on your \
-                                         system.",
+                                    "settings.section.font",
+                                    "settings.desc.font",
                                     font_control,
                                 ))
                                 .child(self.section_card(
-                                    "Text size",
-                                    "Size of note text when editing and reading. Headings and \
-                                         inline math scale with it.",
+                                    "settings.section.text_size",
+                                    "settings.desc.text_size",
                                     Select::new(&self.text_size_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
-                                    "Line numbers",
-                                    "Show a numbered gutter beside the editor on pages and \
-                                     journal days — logical source lines, wrapped text counts \
-                                     once. The reading view stays clean.",
+                                    "settings.section.line_numbers",
+                                    "settings.desc.line_numbers",
                                     line_numbers_switch,
                                 ))
                                 .child(self.section_card(
-                                    "Mouse cursor",
-                                    "The pointer inside Zorite. Add any XCursor theme folder \
-                                         (the Linux cursor-theme format) to use your own.",
+                                    "settings.section.mouse_cursor",
+                                    "settings.desc.mouse_cursor",
                                     cursor_control,
                                 ))
                                 .child(self.section_card(
-                                    "Installed themes",
-                                    "Drop .json theme files in your themes folder, then Reload. \
-                                         Any color you omit falls back to the base palette.",
+                                    "settings.section.installed_themes",
+                                    "settings.desc.installed_themes",
                                     installed,
                                 )),
                             Tab::Pdf => content.child(self.section_card(
-                                "PDF render quality",
-                                "Higher is sharper but slower; lower speeds up rendering on \
-                                     slower machines. 100% = your display's native resolution.",
+                                "settings.section.pdf_quality",
+                                "settings.desc.pdf_quality",
                                 quality_control,
                             )),
                             Tab::Markdown => content
                                 .child(self.section_card(
-                                    "WYSIWYG editing",
-                                    "On shows formatting (bold, headings, links) inline as you \
-                                     type. Off edits plain Markdown and shows the rendered page \
-                                     on Esc.",
+                                    "settings.section.wysiwyg",
+                                    "settings.desc.wysiwyg",
                                     wysiwyg_switch,
                                 ))
                                 .child(self.section_card(
-                                    "List indentation",
-                                    "Spaces per nesting level for Tab and bullet nesting. Editing \
-                                     and the rendered view use the same width, so they line up.",
+                                    "settings.section.list_indent",
+                                    "settings.desc.list_indent",
                                     Select::new(&self.indent_select).small().w_full(),
                                 ))
                                 .child(self.section_card(
-                                    "Auto-link page titles",
-                                    "Typing a word or phrase that matches an existing page's \
-                                     title wraps it as a [[wiki-link]] when you finish the word. \
-                                     Undo reverts a wrap.",
+                                    "settings.section.autolink",
+                                    "settings.desc.autolink",
                                     auto_link_switch,
                                 )),
                             Tab::Keyboard => {
-                                let app_rows: Vec<(&str, Vec<&str>)> = vec![
-                                    ("New tab (new page)", vec![keys::MOD, "T"]),
-                                    ("New window", vec![keys::MOD, "N"]),
-                                    ("Close tab", vec![keys::MOD, "W"]),
-                                    ("Next tab", vec![keys::CTRL, "Tab"]),
-                                    ("Previous tab", vec![keys::CTRL, keys::SHIFT, "Tab"]),
-                                    ("Find in page", vec![keys::MOD, "F"]),
-                                    ("Search all notes", vec![keys::MOD, keys::SHIFT, "F"]),
+                                let app_rows: Vec<(String, Vec<&str>)> = vec![
+                                    (t!("settings.kb.new_tab").to_string(), vec![keys::MOD, "T"]),
                                     (
-                                        "Fit oversized images to view",
+                                        t!("settings.kb.new_window").to_string(),
+                                        vec![keys::MOD, "N"],
+                                    ),
+                                    (
+                                        t!("settings.kb.close_tab").to_string(),
+                                        vec![keys::MOD, "W"],
+                                    ),
+                                    (
+                                        t!("settings.kb.next_tab").to_string(),
+                                        vec![keys::CTRL, "Tab"],
+                                    ),
+                                    (
+                                        t!("settings.kb.prev_tab").to_string(),
+                                        vec![keys::CTRL, keys::SHIFT, "Tab"],
+                                    ),
+                                    (
+                                        t!("settings.kb.find_in_page").to_string(),
+                                        vec![keys::MOD, "F"],
+                                    ),
+                                    (
+                                        t!("settings.kb.search_all").to_string(),
+                                        vec![keys::MOD, keys::SHIFT, "F"],
+                                    ),
+                                    (
+                                        t!("settings.kb.fit_images").to_string(),
                                         vec![keys::MOD, keys::SHIFT, "I"],
                                     ),
-                                    ("Export active tab as PDF", vec![keys::MOD, "P"]),
-                                    ("Open settings", vec![keys::MOD, ","]),
+                                    (
+                                        t!("settings.kb.export_pdf").to_string(),
+                                        vec![keys::MOD, "P"],
+                                    ),
+                                    (
+                                        t!("settings.kb.open_settings").to_string(),
+                                        vec![keys::MOD, ","],
+                                    ),
                                     // Windows quits with the OS convention.
                                     #[cfg(target_os = "windows")]
-                                    ("Quit", vec!["Alt", "F4"]),
+                                    (t!("settings.kb.quit").to_string(), vec!["Alt", "F4"]),
                                     #[cfg(not(target_os = "windows"))]
-                                    ("Quit", vec![keys::MOD, "Q"]),
+                                    (t!("settings.kb.quit").to_string(), vec![keys::MOD, "Q"]),
                                 ];
-                                let edit_rows: Vec<(&str, Vec<&str>)> = vec![
-                                    ("Open the slash command menu", vec!["/"]),
-                                    ("Move up / down in the menu", vec!["↑", "↓"]),
-                                    ("Insert the selected item", vec!["Enter"]),
-                                    ("Close the slash menu", vec!["Esc"]),
-                                    ("Indent / nest list item", vec!["Tab"]),
-                                    ("Outdent", vec![keys::SHIFT, "Tab"]),
-                                    ("Copy", vec![keys::MOD, "C"]),
-                                    ("Cut", vec![keys::MOD, "X"]),
-                                    ("Paste", vec![keys::MOD, "V"]),
-                                    ("Undo", vec![keys::MOD, "Z"]),
-                                    ("Redo", keys::redo()),
-                                    ("Select all", vec![keys::MOD, "A"]),
+                                let edit_rows: Vec<(String, Vec<&str>)> = vec![
+                                    (t!("settings.kb.slash_menu").to_string(), vec!["/"]),
+                                    (t!("settings.kb.menu_nav").to_string(), vec!["↑", "↓"]),
+                                    (t!("settings.kb.menu_insert").to_string(), vec!["Enter"]),
+                                    (t!("settings.kb.menu_close").to_string(), vec!["Esc"]),
+                                    (t!("settings.kb.indent").to_string(), vec!["Tab"]),
+                                    (
+                                        t!("settings.kb.outdent").to_string(),
+                                        vec![keys::SHIFT, "Tab"],
+                                    ),
+                                    (t!("settings.kb.copy").to_string(), vec![keys::MOD, "C"]),
+                                    (t!("settings.kb.cut").to_string(), vec![keys::MOD, "X"]),
+                                    (t!("settings.kb.paste").to_string(), vec![keys::MOD, "V"]),
+                                    (t!("settings.kb.undo").to_string(), vec![keys::MOD, "Z"]),
+                                    (t!("settings.kb.redo").to_string(), keys::redo()),
+                                    (
+                                        t!("settings.kb.select_all").to_string(),
+                                        vec![keys::MOD, "A"],
+                                    ),
                                 ];
-                                let wb_tool_rows: Vec<(&str, Vec<&str>)> = vec![
-                                    ("Select", vec!["V"]),
-                                    ("Pan", vec!["H"]),
-                                    ("Pen", vec!["P"]),
-                                    ("Rectangle", vec!["R"]),
-                                    ("Ellipse", vec!["O"]),
-                                    ("Diamond", vec!["D"]),
-                                    ("Triangle", vec!["G"]),
-                                    ("Rounded rectangle", vec!["U"]),
-                                    ("Star", vec!["S"]),
-                                    ("Hexagon", vec!["X"]),
-                                    ("Line", vec!["L"]),
-                                    ("Arrow", vec!["A"]),
-                                    ("Text", vec!["T"]),
-                                    ("Image", vec!["I"]),
+                                let wb_tool_rows: Vec<(String, Vec<&str>)> = vec![
+                                    (t!("settings.kb.select").to_string(), vec!["V"]),
+                                    (t!("settings.kb.pan").to_string(), vec!["H"]),
+                                    (t!("settings.kb.pen").to_string(), vec!["P"]),
+                                    (t!("settings.kb.rectangle").to_string(), vec!["R"]),
+                                    (t!("settings.kb.ellipse").to_string(), vec!["O"]),
+                                    (t!("settings.kb.diamond").to_string(), vec!["D"]),
+                                    (t!("settings.kb.triangle").to_string(), vec!["G"]),
+                                    (t!("settings.kb.rounded_rect").to_string(), vec!["U"]),
+                                    (t!("settings.kb.star").to_string(), vec!["S"]),
+                                    (t!("settings.kb.hexagon").to_string(), vec!["X"]),
+                                    (t!("settings.kb.line").to_string(), vec!["L"]),
+                                    (t!("settings.kb.arrow").to_string(), vec!["A"]),
+                                    (t!("settings.kb.text").to_string(), vec!["T"]),
+                                    (t!("settings.kb.image").to_string(), vec!["I"]),
                                 ];
-                                let wb_edit_rows: Vec<(&str, Vec<&str>)> = vec![
-                                    ("Undo", vec![keys::MOD, "Z"]),
-                                    ("Redo", keys::redo()),
-                                    ("Copy", vec![keys::MOD, "C"]),
-                                    ("Cut", vec![keys::MOD, "X"]),
-                                    ("Paste", vec![keys::MOD, "V"]),
-                                    ("Bring forward", vec![keys::MOD, "]"]),
-                                    ("Bring to front", vec![keys::MOD, keys::SHIFT, "]"]),
-                                    ("Send backward", vec![keys::MOD, "["]),
-                                    ("Send to back", vec![keys::MOD, keys::SHIFT, "["]),
-                                    ("Delete selection", vec!["Delete"]),
-                                    ("Deselect", vec!["Esc"]),
+                                let wb_edit_rows: Vec<(String, Vec<&str>)> = vec![
+                                    (t!("settings.kb.undo").to_string(), vec![keys::MOD, "Z"]),
+                                    (t!("settings.kb.redo").to_string(), keys::redo()),
+                                    (t!("settings.kb.copy").to_string(), vec![keys::MOD, "C"]),
+                                    (t!("settings.kb.cut").to_string(), vec![keys::MOD, "X"]),
+                                    (t!("settings.kb.paste").to_string(), vec![keys::MOD, "V"]),
+                                    (
+                                        t!("settings.kb.bring_forward").to_string(),
+                                        vec![keys::MOD, "]"],
+                                    ),
+                                    (
+                                        t!("settings.kb.bring_front").to_string(),
+                                        vec![keys::MOD, keys::SHIFT, "]"],
+                                    ),
+                                    (
+                                        t!("settings.kb.send_backward").to_string(),
+                                        vec![keys::MOD, "["],
+                                    ),
+                                    (
+                                        t!("settings.kb.send_back").to_string(),
+                                        vec![keys::MOD, keys::SHIFT, "["],
+                                    ),
+                                    (t!("settings.kb.delete_sel").to_string(), vec!["Delete"]),
+                                    (t!("settings.kb.deselect").to_string(), vec!["Esc"]),
                                 ];
-                                let pdf_rows: Vec<(&str, Vec<&str>)> = vec![
-                                    ("Next page", vec!["PageDown"]),
-                                    ("Previous page", vec!["PageUp"]),
-                                    ("First page", vec!["Home"]),
-                                    ("Last page", vec!["End"]),
-                                    ("Zoom in", vec![keys::MOD, "="]),
-                                    ("Zoom out", vec![keys::MOD, "−"]),
-                                    ("Reset zoom", vec![keys::MOD, "0"]),
-                                    ("Find", vec![keys::MOD, "F"]),
-                                    ("Next match", vec![keys::MOD, "G"]),
-                                    ("Previous match", vec![keys::MOD, keys::SHIFT, "G"]),
-                                    ("Toggle highlight mode", vec![keys::MOD, keys::SHIFT, "H"]),
-                                    ("Go to page", vec![keys::MOD, keys::ALT, "G"]),
+                                let pdf_rows: Vec<(String, Vec<&str>)> = vec![
+                                    (t!("settings.kb.next_page").to_string(), vec!["PageDown"]),
+                                    (t!("settings.kb.prev_page").to_string(), vec!["PageUp"]),
+                                    (t!("settings.kb.first_page").to_string(), vec!["Home"]),
+                                    (t!("settings.kb.last_page").to_string(), vec!["End"]),
+                                    (t!("settings.kb.zoom_in").to_string(), vec![keys::MOD, "="]),
+                                    (t!("settings.kb.zoom_out").to_string(), vec![keys::MOD, "−"]),
+                                    (
+                                        t!("settings.kb.reset_zoom").to_string(),
+                                        vec![keys::MOD, "0"],
+                                    ),
+                                    (t!("settings.kb.find").to_string(), vec![keys::MOD, "F"]),
+                                    (
+                                        t!("settings.kb.next_match").to_string(),
+                                        vec![keys::MOD, "G"],
+                                    ),
+                                    (
+                                        t!("settings.kb.prev_match").to_string(),
+                                        vec![keys::MOD, keys::SHIFT, "G"],
+                                    ),
+                                    (
+                                        t!("settings.kb.toggle_highlight").to_string(),
+                                        vec![keys::MOD, keys::SHIFT, "H"],
+                                    ),
+                                    (
+                                        t!("settings.kb.go_to_page").to_string(),
+                                        vec![keys::MOD, keys::ALT, "G"],
+                                    ),
                                 ];
                                 content
                                     .child(self.section_list(
-                                        "Application",
-                                        "App-wide commands — they work anywhere. ⌘ on macOS, \
-                                             Ctrl on Windows and Linux.",
+                                        "settings.section.application",
+                                        "settings.desc.application",
                                         app_rows,
                                     ))
                                     .child(self.section_list(
-                                        "Editing",
-                                        "The slash menu and text shortcuts, while a note is \
-                                             focused.",
+                                        "settings.section.editing",
+                                        "settings.desc.editing",
                                         edit_rows,
                                     ))
                                     .child(self.section_list(
-                                        "Whiteboard tools",
-                                        "Press a letter to pick a tool while a board is focused.",
+                                        "settings.section.wb_tools",
+                                        "settings.desc.wb_tools",
                                         wb_tool_rows,
                                     ))
                                     .child(self.section_list(
-                                        "Whiteboard editing",
-                                        "Acting on the selection while a board is focused.",
+                                        "settings.section.wb_editing",
+                                        "settings.desc.wb_editing",
                                         wb_edit_rows,
                                     ))
                                     .child(self.section_list(
-                                        "PDF viewer",
-                                        "While a PDF tab is focused.",
+                                        "settings.section.pdf_viewer",
+                                        "settings.desc.pdf_viewer",
                                         pdf_rows,
                                     ))
                             }
                             Tab::Security => content
                                 .child(self.section_card(
-                                    "Password",
-                                    "Encrypt the database with a password (SQLCipher). Zorite \
-                                         asks for it at launch; without it the file on disk is \
-                                         unreadable. A forgotten password is unrecoverable.",
+                                    "settings.section.password",
+                                    "settings.desc.password",
                                     password_control,
                                 ))
                                 .child(self.section_card(
-                                    "Remember on this device",
+                                    "settings.section.remember_device",
                                     if cfg!(target_os = "linux") {
-                                        "Keep the password in the kernel keyring and unlock \
-                                         automatically at launch. On Linux this lasts until \
-                                         reboot; the idle auto-lock always requires typing it \
-                                         again."
+                                        "settings.desc.remember_device_linux"
                                     } else {
-                                        "Keep the password in the system keychain and unlock \
-                                         automatically at launch. The idle auto-lock always \
-                                         requires typing it again."
+                                        "settings.desc.remember_device"
                                     },
                                     remember_control,
                                 ))
                                 .child(self.section_card(
-                                    "Auto-lock",
-                                    "Lock Zorite after this much inactivity, requiring the \
-                                         password to continue.",
+                                    "settings.section.autolock",
+                                    "settings.desc.autolock",
                                     auto_lock_control,
                                 )),
                             Tab::Updates => content
                                 .child(self.section_card(
-                                    "Software updates",
-                                    "Zorite checks GitHub for newer releases at startup. It never \
-                                         installs automatically — you review and download from the \
-                                         release page.",
+                                    "settings.section.updates",
+                                    "settings.desc.updates",
                                     updates_control,
                                 ))
                                 .child(self.section_card(
-                                    "Automatically check for updates",
-                                    "Check for a newer version each time Zorite starts.",
+                                    "settings.section.auto_check",
+                                    "settings.desc.auto_check",
                                     check_updates_switch,
                                 ))
                                 .child(self.section_card(
-                                    "Include pre-releases",
-                                    "Also offer beta builds (vX.Y.Z-beta.N), not just stable \
-                                         releases.",
+                                    "settings.section.prereleases",
+                                    "settings.desc.prereleases",
                                     prerelease_switch,
                                 )),
                         }
@@ -2423,7 +2608,7 @@ fn open_url(url: &str) {
 /// One left-nav category. Highlights when active; clicking switches the pane.
 fn nav_item(
     id: &'static str,
-    label: &'static str,
+    label: &str,
     tab: Tab,
     active: Tab,
     dimmed: bool,
@@ -2444,7 +2629,7 @@ fn nav_item(
             d.text_color(theme::text_secondary())
                 .hover(|h| h.bg(theme::hover()))
         })
-        .child(label)
+        .child(label.to_string())
         .on_click(cx.listener(move |this, _, _window, cx| {
             this.tab = tab;
             cx.notify();
@@ -2515,10 +2700,10 @@ mod keys {
 }
 
 /// A settings card whose body is a list of `(label, key combo)` shortcut rows.
-fn card_list(title: &str, desc: &str, rows: Vec<(&str, Vec<&str>)>) -> gpui::Div {
+fn card_list(title: &str, desc: &str, rows: Vec<(String, Vec<&str>)>) -> gpui::Div {
     let mut list = div().flex().flex_col().gap(px(2.0));
     for (label, combo) in rows {
-        list = list.child(shortcut_row(label, &combo));
+        list = list.child(shortcut_row(&label, &combo));
     }
     card(title, desc, list)
 }
@@ -2575,7 +2760,7 @@ fn fmt_size(bytes: u64) -> String {
 /// per notebook) and tighter padding.
 fn nb_button(
     id: SharedString,
-    label: &'static str,
+    label: &str,
     cx: &mut Context<SettingsView>,
     on: impl Fn(&mut SettingsView, &mut Window, &mut Context<SettingsView>) + 'static,
 ) -> impl IntoElement {
@@ -2594,7 +2779,7 @@ fn nb_button(
             h.bg(theme::glass_strong())
                 .text_color(theme::text_primary())
         })
-        .child(label)
+        .child(label.to_string())
         .on_click(cx.listener(move |this, _, window, cx| on(this, window, cx)))
 }
 

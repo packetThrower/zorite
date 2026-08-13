@@ -9,40 +9,44 @@
 
 use std::cell::RefCell;
 
+use rust_i18n::t;
+
 /// Local now, falling back to UTC when the offset can't be determined.
 pub fn now_local() -> time::OffsetDateTime {
     time::OffsetDateTime::now_local().unwrap_or_else(|_| time::OffsetDateTime::now_utc())
 }
 
-pub fn weekday_name(w: time::Weekday) -> &'static str {
+pub fn weekday_name(w: time::Weekday) -> String {
     use time::Weekday::*;
     match w {
-        Monday => "Monday",
-        Tuesday => "Tuesday",
-        Wednesday => "Wednesday",
-        Thursday => "Thursday",
-        Friday => "Friday",
-        Saturday => "Saturday",
-        Sunday => "Sunday",
+        Monday => t!("dates.weekday.mon"),
+        Tuesday => t!("dates.weekday.tue"),
+        Wednesday => t!("dates.weekday.wed"),
+        Thursday => t!("dates.weekday.thu"),
+        Friday => t!("dates.weekday.fri"),
+        Saturday => t!("dates.weekday.sat"),
+        Sunday => t!("dates.weekday.sun"),
     }
+    .into_owned()
 }
 
-pub fn month_name(m: time::Month) -> &'static str {
+pub fn month_name(m: time::Month) -> String {
     use time::Month::*;
     match m {
-        January => "January",
-        February => "February",
-        March => "March",
-        April => "April",
-        May => "May",
-        June => "June",
-        July => "July",
-        August => "August",
-        September => "September",
-        October => "October",
-        November => "November",
-        December => "December",
+        January => t!("dates.month.jan"),
+        February => t!("dates.month.feb"),
+        March => t!("dates.month.mar"),
+        April => t!("dates.month.apr"),
+        May => t!("dates.month.may"),
+        June => t!("dates.month.jun"),
+        July => t!("dates.month.jul"),
+        August => t!("dates.month.aug"),
+        September => t!("dates.month.sep"),
+        October => t!("dates.month.oct"),
+        November => t!("dates.month.nov"),
+        December => t!("dates.month.dec"),
     }
+    .into_owned()
 }
 
 /// Selectable format ids, in the order Settings offers them. The first of each
@@ -151,23 +155,25 @@ pub fn system_time_local_date(t: std::time::SystemTime) -> String {
 }
 
 /// Human label for a date-format id, for the Settings dropdown.
-pub fn date_format_label(id: &str) -> &'static str {
+pub fn date_format_label(id: &str) -> String {
     match id {
-        "us" => "US — MM/DD/YYYY",
-        "eu" => "European — DD/MM/YYYY",
-        "long" => "Long — Month D, YYYY",
-        "long_weekday" => "Long with weekday",
-        "dmy" => "Day Month Year",
-        _ => "ISO — YYYY-MM-DD",
+        "us" => t!("dates.format.us"),
+        "eu" => t!("dates.format.eu"),
+        "long" => t!("dates.format.long"),
+        "long_weekday" => t!("dates.format.long_weekday"),
+        "dmy" => t!("dates.format.dmy"),
+        _ => t!("dates.format.iso"),
     }
+    .into_owned()
 }
 
 /// Human label for a time-format id, for the Settings dropdown.
-pub fn time_format_label(id: &str) -> &'static str {
+pub fn time_format_label(id: &str) -> String {
     match id {
-        "12h" => "12-hour — 2:30 PM",
-        _ => "24-hour — 14:30",
+        "12h" => t!("dates.format.time_12h"),
+        _ => t!("dates.format.time_24h"),
     }
+    .into_owned()
 }
 
 #[cfg(test)]
@@ -225,5 +231,29 @@ mod tests {
         for id in TIME_FORMATS {
             assert!(!time_format_label(id).is_empty());
         }
+    }
+
+    /// The `t!(…, locale = …)` form reads a locale **without** mutating the
+    /// global, so these spot-checks don't race with the English-asserting
+    /// tests above (which rely on the default "en" locale never changing).
+    #[test]
+    fn locale_overrides_read_without_mutating_global() {
+        // zh-CN translations render when asked for directly.
+        assert_eq!(rust_i18n::t!("dates.month.jun", locale = "zh-CN"), "六月");
+        assert_eq!(rust_i18n::t!("dates.weekday.mon", locale = "zh-CN"), "周一");
+        assert_eq!(
+            rust_i18n::t!("dates.format.long", locale = "zh-CN"),
+            "长格式 - 月 D, YYYY"
+        );
+        // English values are byte-identical to the pre-i18n hardcoded strings.
+        assert_eq!(rust_i18n::t!("dates.month.jun", locale = "en"), "June");
+        assert_eq!(rust_i18n::t!("dates.weekday.mon", locale = "en"), "Monday");
+        assert_eq!(
+            rust_i18n::t!("dates.format.iso", locale = "en"),
+            "ISO - YYYY-MM-DD"
+        );
+        // The global stayed "en" (no set_locale call above), so the live
+        // formatters still produce English - the assertion above still holds.
+        assert_eq!(month_name(time::Month::June), "June");
     }
 }

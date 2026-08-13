@@ -71,7 +71,8 @@ impl AppView {
             pf.input.update(cx, |s, cx| s.focus(window, cx));
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in page…"));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("find.placeholder_page")));
         let sub = cx.subscribe_in(
             &input,
             window,
@@ -220,7 +221,8 @@ impl AppView {
             ff.input.update(cx, |s, cx| s.focus(window, cx));
             return;
         }
-        let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in journal…"));
+        let input =
+            cx.new(|cx| InputState::new(window, cx).placeholder(t!("find.placeholder_journal")));
         let sub = cx.subscribe_in(
             &input,
             window,

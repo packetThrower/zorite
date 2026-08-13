@@ -18,6 +18,7 @@ use gpui::{
 
 use crate::app::AppView;
 use crate::theme;
+use rust_i18n::t;
 
 /// Logical world size; the canvas letterboxes it to fit.
 pub const W: f32 = 800.0;
@@ -660,10 +661,10 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                     );
                     // Phase banner.
                     let msg = match phase {
-                        Phase::Ready => Some("← → move · Space launches · P pauses · Esc leaves"),
-                        Phase::Paused => Some("paused — P or Space resumes"),
-                        Phase::Over => Some("game over — Space to try again"),
-                        Phase::Won => Some("level cleared — Space for the next (+1 life)"),
+                        Phase::Ready => Some(t!("game.controls").into_owned()),
+                        Phase::Paused => Some(t!("game.paused").into_owned()),
+                        Phase::Over => Some(t!("game.game_over").into_owned()),
+                        Phase::Won => Some(t!("game.level_cleared").into_owned()),
                         Phase::Running => None,
                     };
                     if let Some(msg) = msg {
@@ -676,7 +677,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> gpui::AnyElement {
                             strikethrough: None,
                         };
                         let shaped = window.text_system().shape_line(
-                            SharedString::from(msg),
+                            SharedString::from(&msg),
                             px(14.0 * scale),
                             &[run],
                             None,
