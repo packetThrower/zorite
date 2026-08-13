@@ -453,11 +453,35 @@ pub type TaskToggleHandler = Rc<dyn Fn(usize, &mut Window, &mut App)>;
 pub type HeadingToggleHandler = Rc<dyn Fn(&str, &mut Window, &mut App)>;
 
 /// A rendered markdown document element — the reader view of a note.
+///
+/// Host-injectable UI labels the reader renders (the code-card `Copy`
+/// button). The crate stays host-agnostic so it never calls `t!()`; the app
+/// passes localized strings via [`MarkdownView::set_labels`]. The default is
+/// English, keeping the crate usable standalone.
+#[derive(Clone)]
+pub struct Labels {
+    /// The code-card `Copy` button.
+    pub code_copy: SharedString,
+}
+
+impl Default for Labels {
+    fn default() -> Self {
+        Self {
+            code_copy: "Copy".into(),
+        }
+    }
+}
+
+/// A rendered markdown document element — the reader view of a note.
 #[derive(IntoElement)]
 pub struct MarkdownView {
     id_base: SharedString,
     source: SharedString,
     style: MarkdownStyle,
+    /// Host-injectable UI labels (the code-card `Copy` button); English by
+    /// default, localized through [`Self::set_labels`] — the crate stays
+    /// host-agnostic so it never calls `t!()`.
+    labels: Labels,
     on_wiki_link: Option<WikiLinkHandler>,
     on_image: Option<ImageRenderer>,
     on_mermaid: Option<MermaidRenderer>,
@@ -511,7 +535,14 @@ impl MarkdownView {
             on_embed_image: None,
             folded_headings: HashSet::new(),
             on_heading_toggle: None,
+            labels: Labels::default(),
         }
+    }
+
+    /// Set the host-localized labels (code-card `Copy` etc.).
+    pub fn set_labels(mut self, labels: Labels) -> Self {
+        self.labels = labels;
+        self
     }
 
     pub fn style(mut self, style: MarkdownStyle) -> Self {
@@ -787,6 +818,7 @@ impl RenderOnce for MarkdownView {
             on_embed_image: self.on_embed_image,
             folded_headings: self.folded_headings,
             on_heading_toggle: self.on_heading_toggle,
+            code_copy: self.labels.code_copy,
             suppress_heading_top: false,
             strike_done: false,
             embed_depth: 0,
@@ -892,6 +924,8 @@ struct Ctx {
     /// Fold chevron click → the host toggles the key. `None` = no chevrons
     /// (embeds, read-only surfaces).
     on_heading_toggle: Option<HeadingToggleHandler>,
+    /// The code-card `Copy` button label, injected by the host.
+    code_copy: SharedString,
     /// Set while rendering a list item's first block: drops a leading heading's
     /// top margin so the bullet marker lines up with the heading text instead of
     /// floating above it.
@@ -1141,7 +1175,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                                 ));
                             }
                         })
-                        .child("Copy"),
+                        .child(ctx.code_copy.clone()),
                 );
             Some(
                 div()

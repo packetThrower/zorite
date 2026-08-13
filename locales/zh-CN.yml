@@ -1,0 +1,716 @@
+common:
+  ok: 确定
+  cancel: 取消
+  save: 保存
+  close: 关闭
+  delete: 删除
+  rename: 重命名
+  done: 完成
+  yes: 是
+  no: 否
+  add: 添加
+  remove: 移除
+  apply: 应用
+  retry: 重试
+  open: 打开
+  new: 新建
+  edit: 编辑
+  search: 搜索
+  loading: 加载中…
+  error: 错误
+  insert: 插入
+  create: 创建
+  quit: 退出
+dates:
+  weekday:
+    mon: 周一
+    tue: 周二
+    wed: 周三
+    thu: 周四
+    fri: 周五
+    sat: 周六
+    sun: 周日
+  month:
+    jan: 一月
+    feb: 二月
+    mar: 三月
+    apr: 四月
+    may: 五月
+    jun: 六月
+    jul: 七月
+    aug: 八月
+    sep: 九月
+    oct: 十月
+    nov: 十一月
+    dec: 十二月
+  format:
+    iso: "ISO - YYYY-MM-DD"
+    us: "美国 - MM/DD/YYYY"
+    eu: "欧洲 - DD/MM/YYYY"
+    long: "长格式 - 月 D, YYYY"
+    long_weekday: "长格式含星期"
+    dmy: "日月年"
+    time_24h: "24 小时制 - 14:30"
+    time_12h: "12 小时制 - 2:30 PM"
+slash:
+  cat:
+    markdown: Markdown
+    templates: 模板
+  property: 属性
+  date: 日期
+  time: 时间
+  blockdown: "▸ Blockdown"
+  create: 创建
+  label:
+    h1: 一级标题
+    h2: 二级标题
+    h3: 三级标题
+    bullet: 无序列表
+    numbered: 有序列表
+    todo: 待办
+    quote: 引用
+    note_alert: 提示框
+    tip_alert: 小贴士框
+    important_alert: 重要提示框
+    warning_alert: 警告框
+    caution_alert: 注意框
+    code: 代码块
+    mermaid: Mermaid 图表
+    math: 数学公式
+    table: 表格
+    divider: 分隔线
+    bold: 粗体
+    italic: 斜体
+    strikethrough: 删除线
+    inline_code: 行内代码
+    inline_math: 行内公式
+    highlight: 高亮
+    underline: 下划线
+    link: 链接
+    wiki_link: Wiki 链接
+    image: 图片
+settings:
+  title: 设置
+  filter_placeholder: "筛选设置…"
+  nav:
+    general: 通用
+    notebooks: 笔记本
+    appearance: 外观
+    pdf: PDF
+    markdown: Markdown
+    security: 安全
+    keyboard: 键盘
+    updates: 更新
+  language:
+    auto: 自动
+  section:
+    notebooks: 笔记本
+    data_location: 数据位置
+    unused_images: 未使用的图片
+    language: 语言
+    remember_window: 记住窗口
+    date_format: 日期格式
+    time_format: 时间格式
+    app_theme: 应用主题
+    appearance: 外观
+    font: 字体
+    text_size: 字号
+    line_numbers: 行号
+    mouse_cursor: 鼠标指针
+    installed_themes: 已安装主题
+    pdf_quality: PDF 渲染质量
+    wysiwyg: WYSIWYG 编辑
+    list_indent: 列表缩进
+    autolink: 自动链接页面标题
+    application: 应用程序
+    editing: 编辑
+    wb_tools: 白板工具
+    wb_editing: 白板编辑
+    pdf_viewer: PDF 查看器
+    password: 密码
+    remember_device: 在此设备上记住
+    autolock: 自动锁定
+    updates: 软件更新
+    auto_check: 自动检查更新
+    prereleases: 包含预发布版本
+  desc:
+    notebooks: "每个笔记本是一个独立的文件夹——拥有自己的数据库、设置和附件。切换会重启 Zorite 进入所选笔记本；移除只是在此处取消记忆，不会触碰其文件。侧边栏底部的芯片是快速切换器。"
+    data_location: "当前笔记本存放数据库、设置和附件的位置。移动会将数据迁移到新文件夹，然后重新打开 Zorite。"
+    unused_images: "删除托管存储中没有被任何笔记、白板或模板引用的图片。最近一小时添加的文件会保留。"
+    language: "界面语言。自动跟随您的系统区域设置；英语始终可用。"
+    remember_window: "按您离开时的样子重新打开 Zorite：窗口的大小和位置（若其显示器已不存在则居中），以及可选地恢复您打开的标签页。"
+    date_format: "控制 /date 和 {{date}} 模板占位符的插入方式。日志日期标题不受影响。"
+    time_format: "控制 /time 和 {{time}} 模板占位符的插入方式。"
+    app_theme: "选择一个内置主题或您自己的主题。"
+    appearance: "当前主题的浅色或深色变体。自动跟随您的系统。"
+    font: "应用程序和笔记使用的字体。默认跟随当前主题指定的字体（如果有）。添加 .ttf 或 .otf 文件以使用系统未安装的字体。"
+    text_size: "编辑和阅读时笔记文字的大小。标题和行内公式会随之缩放。"
+    line_numbers: "在页面和日志日期的编辑器旁显示带编号的行号槽——按逻辑源码行计数，换行文本只计一次。阅读视图保持简洁。"
+    mouse_cursor: "Zorite 内的指针。添加任意 XCursor 主题文件夹（Linux 光标主题格式）以使用您自己的指针。"
+    installed_themes: "将 .json 主题文件放入您的主题文件夹，然后重新加载。省略的任何颜色会回退到基础调色板。"
+    pdf_quality: "越高越清晰但越慢；越低在较慢的机器上渲染更快。100% = 您显示器的原生分辨率。"
+    wysiwyg: "开启时在输入时内联显示格式（粗体、标题、链接）。关闭时编辑纯 Markdown 并在按 Esc 时显示渲染后的页面。"
+    list_indent: "Tab 和项目符号嵌套每级缩进的空格数。编辑和渲染视图使用相同宽度，因此它们会对齐。"
+    autolink: "输入与现有页面标题匹配的词或短语时，会在您完成输入后将其包裹为 [[wiki-link]]。撤销可还原包裹。"
+    application: "应用全局命令——可在任何地方使用。macOS 上为 ⌘，Windows 和 Linux 上为 Ctrl。"
+    editing: "在笔记获得焦点时的斜杠菜单和文本快捷键。"
+    wb_tools: "在白板获得焦点时按字母键选择工具。"
+    wb_editing: "在白板获得焦点时对选区执行操作。"
+    pdf_viewer: "在 PDF 标签页获得焦点时。"
+    password: "用密码加密数据库（SQLCipher）。Zorite 在启动时要求输入；没有它磁盘上的文件不可读。遗忘的密码无法恢复。"
+    remember_device: "将密码保存在系统钥匙串中并在启动时自动解锁。空闲自动锁定始终要求重新输入密码。"
+    remember_device_linux: "将密码保存在内核密钥环中并在启动时自动解锁。在 Linux 上这会持续到重启；空闲自动锁定始终要求重新输入密码。"
+    autolock: "在这么多不活动时间后锁定 Zorite，需要密码才能继续。"
+    updates: "Zorite 在启动时检查 GitHub 上的新版本。它从不自动安装——您从发布页面查看并下载。"
+    auto_check: "每次 Zorite 启动时检查新版本。"
+    prereleases: "同时提供测试版构建（vX.Y.Z-beta.N），而不仅是稳定版本。"
+  opt:
+    light: 浅色
+    dark: 深色
+    auto_appearance: "自动（跟随系统）"
+    indent_2: 2 空格
+    indent_4: 4 空格
+    indent_8: 8 空格
+    cursor_system: "系统（默认）"
+    cursor_bibata: "Bibata（匹配主题）"
+    system: 系统
+    font_default: "默认（%{name}）"
+    size_px: "%{size} px"
+    size_px_default: "%{size} px（默认）"
+  btn:
+    add_font: "添加字体文件…"
+    add_cursor: "添加光标主题…"
+    reveal_cursors: "显示光标文件夹"
+    reveal_themes: "显示主题文件夹"
+    reload: 重新加载
+    cleanup: "立即清理"
+    set_password: "设置密码…"
+    change_password: "修改密码…"
+    remove_password: "移除密码…"
+    lock_now: "立即锁定"
+    add_notebook: "添加笔记本…"
+    move: "移动…"
+    reveal: "显示"
+    reset_default: "重置为默认"
+    view_release: "查看发布"
+    check_now: "立即检查"
+    switch: 切换
+    move_to_trash: "移到废纸篓"
+    relaunch: 重新启动
+    move_quit: "移动并退出"
+    reset_quit: "重置并退出"
+    encrypt: 加密
+    change: 修改
+    decrypt: 解密
+  label:
+    window_size_pos: "窗口大小和位置"
+    open_tabs: "打开的标签页"
+    current: 当前
+    current_password: "当前密码"
+    new_password: "新密码"
+    confirm_password: "确认新密码"
+  note:
+    set_password_first: "请先设置密码。"
+    cursor_relaunch: "光标更改将在重新启动后生效。"
+    no_custom_themes: "未安装自定义主题。将 .json 文件放入文件夹并重新加载。"
+    latest_version: "您已是最新版本。"
+  autolock:
+    off: "关闭"
+    5min: "5 分钟"
+    15min: "15 分钟"
+    30min: "30 分钟"
+    1hour: "1 小时"
+  status:
+    current_version: "当前版本：v%{ver}"
+    update_available: "有可用更新：v%{ver}"
+    no_unused: "未发现未使用的图片。"
+    moved_one: "已将 %{n} 个文件（%{size}）移到废纸篓。"
+    moved_many: "已将 %{n} 个文件（%{size}）移到废纸篓。"
+    and_more: "…还有 %{n} 个"
+    db_encrypted: "数据库已加密。"
+    pw_changed: "密码已更改。"
+    pw_removed: "密码已移除——数据库已解密。"
+    failed: "失败：%{err}"
+  dlg:
+    image_gc_title: "将未使用的图片移到废纸篓？"
+    image_gc_body_one: "图片文件夹中有 %{count} 个文件（%{size}）没有被任何笔记、白板或模板引用。它们将被移到系统废纸篓。\n\n%{listing}"
+    image_gc_body_many: "图片文件夹中有 %{count} 个文件（%{size}）没有被任何笔记、白板或模板引用。它们将被移到系统废纸篓。\n\n%{listing}"
+    create_notebook_title: "创建笔记本"
+    create_notebook_body: "Zorite 将重新启动并使用一个新的空笔记本“%{name}”，位于：\n%{dir}"
+    switch_notebook_title: "切换笔记本"
+    switch_notebook_body: "Zorite 将重新启动进入“%{name}”：\n%{dir}"
+    rename_notebook_title: "重命名笔记本"
+    use_folder: "使用文件夹"
+    use_font: "使用字体"
+    use_theme: "使用主题"
+    choose: "选择"
+    that_folder_notebook_title: "该文件夹已经是笔记本"
+    that_folder_notebook_body: "“%{name}”已包含 Zorite 数据库。\n\n请从侧边栏底部的笔记本切换器添加，然后在那里切换。"
+    move_data_title: "移动数据位置"
+    move_data_body: "Zorite 会将此笔记本的笔记、设置和附件移动到：\n%{path}\n\n更改在下次打开 Zorite 时生效。"
+    reset_data_title: "重置数据位置"
+    reset_data_body: "Zorite 会将您的数据移回默认位置：\n%{path}\n\n更改在下次打开 Zorite 时生效。"
+    set_pw_title: "设置密码"
+    change_pw_title: "修改密码"
+    remove_pw_title: "移除密码"
+    set_pw_note: "加密笔记数据库。如果您忘记此密码，您的笔记将无法恢复。图片和 PDF 作为普通文件保留在数据文件夹中——它们不会被加密——其中较早的明文备份在您删除之前仍然可读。"
+  alert:
+    cant_use_folder: "无法使用该文件夹"
+    wrong_password: "密码错误"
+    wrong_password_body: "当前密码不匹配。"
+    no_password: "无密码"
+    no_password_body: "新密码为空。"
+    pw_mismatch: "密码不匹配"
+    pw_mismatch_body: "两次输入不一致——请重试。"
+  kb:
+    new_tab: "新建标签页（新页面）"
+    new_window: "新建窗口"
+    close_tab: "关闭标签页"
+    next_tab: "下一个标签页"
+    prev_tab: "上一个标签页"
+    find_in_page: "在页面中查找"
+    search_all: "搜索所有笔记"
+    fit_images: "使超大图片适应视图"
+    export_pdf: "将当前标签页导出为 PDF"
+    open_settings: "打开设置"
+    quit: "退出"
+    slash_menu: "打开斜杠命令菜单"
+    menu_nav: "在菜单中上/下移动"
+    menu_insert: "插入所选项目"
+    menu_close: "关闭斜杠菜单"
+    indent: "缩进/嵌套列表项"
+    outdent: "减少缩进"
+    copy: "复制"
+    cut: "剪切"
+    paste: "粘贴"
+    undo: "撤销"
+    redo: "重做"
+    select_all: "全选"
+    select: "选择"
+    pan: "平移"
+    pen: "钢笔"
+    rectangle: "矩形"
+    ellipse: "椭圆"
+    diamond: "菱形"
+    triangle: "三角形"
+    rounded_rect: "圆角矩形"
+    star: "星形"
+    hexagon: "六边形"
+    line: "直线"
+    arrow: "箭头"
+    text: "文本"
+    image: "图片"
+    bring_forward: "上移一层"
+    bring_front: "置于顶层"
+    send_backward: "下移一层"
+    send_back: "置于底层"
+    delete_sel: "删除选区"
+    deselect: "取消选择"
+    next_page: "下一页"
+    prev_page: "上一页"
+    first_page: "第一页"
+    last_page: "最后一页"
+    zoom_in: "放大"
+    zoom_out: "缩小"
+    reset_zoom: "重置缩放"
+    find: "查找"
+    next_match: "下一个匹配"
+    prev_match: "上一个匹配"
+    toggle_highlight: "切换高亮模式"
+    go_to_page: "转到页码"
+unlock:
+  placeholder: 密码
+  title: "Zorite 已锁定"
+  body: "您的笔记已加密。请输入密码以打开它们。"
+  remember_label: "在此设备上记住"
+  unlock_btn: 解锁
+  wrong_pw: "密码错误——请重试。"
+  window_title: "Zorite — 已锁定"
+dialogs:
+  insert_card_title: "插入页面卡片"
+  save_template_title: "另存为模板"
+  template_default_name: "未命名模板"
+  delete_template_title: "删除模板？"
+  delete_template_body: "“%{name}” 将被永久删除。此操作无法撤销。"
+  delete_template_fallback: "此模板"
+  db_error_title: "无法打开您的笔记数据库"
+  db_error_body: "Zorite 打开了一个临时的空白工作区，因为数据库无法被打开或升级。此处的更改不会被保存。"
+  db_error_recovery_backup: "您的笔记已在更新前备份并且是安全的——从 %{path} 恢复它们"
+  db_error_recovery_no_backup: "您磁盘上的笔记保持不变，位于 %{path}"
+  reveal_backup: "显示备份"
+  delete_page_title: "删除页面？"
+  delete_page_body: "“%{title}” 将被永久删除。此操作无法撤销。"
+  delete_page_failed: "无法删除页面"
+  rename_page_title: "重命名页面"
+  title_collision: "已存在名为 “%{name}” 的页面。"
+  rename_failed: "重命名失败"
+  rename_failed_fmt: "重命名失败：%{err}"
+  cant_rename: "无法重命名"
+
+app_err:
+  page_title_placeholder: "页面名称…"
+  search_placeholder: "搜索…"
+  journal_tab: 日志
+  yes: 是
+  off: 关
+  save_pdf_field_failed: "无法保存该字段"
+  pdf_form_refused: "无法保存该字段"
+  add_image_failed: "无法添加该图片"
+  import_image_failed: "无法添加该图片"
+  font_not_usable: "不是可用的字体：{}"
+  import_font_failed: "导入字体失败"
+  copy_page_failed: "无法复制"
+  new_page: "新建页面"
+  new_sub_page: "新建子页面"
+  pdf_locked: "🔒 此 PDF 受密码保护"
+  pdf_wrong_password: "密码错误——请重试。"
+  pdf_unlock: 解锁
+  cant_use_folder: "无法使用该文件夹"
+  settings_title: "设置 · Zorite"
+  paste_image_failed: "粘贴图片失败"
+  drop_import_failed: "导入拖入的文件失败"
+  math_copy_latex: "复制 LaTeX"
+  math_export_png: "导出 PNG…"
+  math_export_svg: "导出 SVG…"
+  math_align_left: "左对齐"
+  math_align_center: "居中"
+  math_align_right: "右对齐"
+  math_edit: 编辑
+  save_hint: "{}  —  ⏎ 保存 · esc 取消 · ⇥ 下一项"
+  grid: 网格
+  striped: 条纹
+  header: 表头
+  minimal: 极简
+  table_striped_marker: "<!-- table:striped -->"
+  table_header_marker: "<!-- table:header -->"
+  table_minimal_marker: "<!-- table:minimal -->"
+  db_open_failed: "打开磁盘上的数据库失败：{}；使用临时内存存储"
+  db_init_memory: "初始化内存数据库"
+  search_nodes_placeholder: "搜索节点…"
+  graph_tab: 图谱
+  properties_tab: 属性
+  blockdown: Blockdown
+  place: 放置
+  alias_hint: "别名 1、别名 2、…"
+  table_rows: 行
+  table_cols: 列
+  not_found: "未找到"
+  relaunch_failed: "重启失败：fork 失败：{}"
+  relaunch_exe_failed: "重启失败：获取当前可执行文件失败：{}"
+  all_pages: "所有页面"
+  untitled_whiteboard: "未命名白板"
+  create_notebook: "创建笔记本"
+  create_notebook_body: "Zorite 将重新启动并使用新的空笔记本\u201c%{name}\u201d，位于：\n%{dir}"
+  switch_notebook: "切换笔记本"
+  switch_notebook_body: "Zorite 将重新启动并进入\u201c%{name}\u201d：\n%{dir}"
+  relaunch: 重新启动
+  pdf_read_failed: "读取 PDF 失败：%{e}"
+  pdf_write_rejected: "PDF 拒绝写入\u201c%{name}\u201d（它可能是只读的）。"
+  pdf_write_failed: "写入 PDF 失败：%{e}"
+  import_image_failed_fmt: "导入 %{path} 失败：%{e}"
+  today_label: "今天 \u00b7 %{label}"
+  yesterday_label: "昨天 \u00b7 %{label}"
+find:
+  placeholder_page: "在页面中查找…"
+  placeholder_journal: "在日志中查找…"
+importing:
+  journal_label: 日志
+  importing_named: "正在导入 %{name}"
+  obsidian_explain: "Obsidian 文件夹可以成为 Zorite 命名空间。\u201c保留文件夹\u201d会把 Projects/Tasks.md 变成页面 Projects::Tasks（链接可解析到它）；\u201c扁平化\u201d只使用笔记名称。"
+  logseq_explain: "Logseq 把每一行都变成项目符号。\u201c折叠大纲\u201d会把每个顶级项目符号变成段落或标题（嵌套项目符号仍是列表），使页面读起来像 Zorite 页面；\u201c保留项目符号\u201d则完全保留大纲。已有页面会保留其内容——导入的文本会附加在其下方。"
+  summary_counts: "%{pages} 个页面、%{journals} 个日记天、%{highlight} 个 PDF 高亮页面、%{boards} 个白板；%{assets} 个资源已复制；%{favorites} 个收藏。"
+  export_counts: "%{pages} 个页面、%{days} 个日记天、%{boards} 个白板%{board_s}、%{assets} 个资源文件%{asset_s}已写入。"
+  warnings: "警告：%{names}"
+  complete_title: "%{source} 导入完成"
+  failed_title: "%{source} 导入失败"
+  import_button: 导入
+  title_obsidian: "从 Obsidian 导入"
+  cancel: 取消
+  flatten: 展平
+  preserve_folders: "保留文件夹结构"
+  export_here: "导出到这里"
+  complete: "导出完成"
+  failed: "导出失败"
+  obsidian: Obsidian
+  obsidian_progress: "正在从 Obsidian 导入…"
+  obsidian_busy: "正在复制笔记和资源——可能需要一分钟。"
+  logseq: Logseq
+  title_logseq: "从 Logseq 导入"
+  keep_bullets: "保留项目符号"
+  flatten_outline: "展平大纲"
+  logseq_progress: "正在从 Logseq 导入…"
+  logseq_busy: "正在复制笔记和资源——可能需要一分钟。"
+  appended_below: "已追加到现有内容之下：%{names}。"
+  and_more: "——还有 %{n} 项"
+  done: 完成
+math:
+  error: "该公式未能渲染"
+  export_failed: "导出失败"
+all_pages:
+  letter_all: All
+  title: "所有页面"
+  filter_all: "所有类型"
+  filter_pages: 页面
+  filter_whiteboards: 白板
+  filter_pdfs: PDF
+  col_title: 标题
+  col_created: 创建时间
+  col_updated: 修改时间
+  col_type: 类型
+  type_page: 页面
+  type_whiteboard: 白板
+  type_pdf: PDF
+  empty: "没有符合此筛选的内容。"
+  shown: "已显示 %{count} 项"
+  properties: 属性
+  graph: 图谱
+game:
+  controls: "← → 移动 · 空格发射 · P 暂停 · Esc 退出"
+  paused: "已暂停——P 或空格继续"
+  game_over: "游戏结束——空格再试一次"
+  level_cleared: "关卡已清除——空格进入下一关（+1 命）"
+graph:
+  empty: "尚无链接的页面——[[wiki 链接]] 和 #标签 可构建图谱。"
+  hint: "拖动以平移或移动节点 · 双指或 ⌘-滚轮缩放 · 点击节点打开"
+  filter_pages: 页面
+  filter_whiteboards: 白板
+  filter_journals: 日志
+  filter_links: 链接
+  filter_orphans: 孤立
+  nodes: 节点
+  no_matches: "无匹配"
+  legend_journals: 日志
+  legend_orphans: "孤立页面"
+  legend_whiteboards: 白板
+  shown: 已显示
+  match: 个匹配
+  matches: 个匹配
+  reset: "重置图谱"
+image:
+  unresolved: "🖼 图片（路径未解析）"
+journal:
+  empty: "空白——点击以书写"
+  load_older: "加载更早的日期"
+render:
+  math_typesetting: "排版中…"
+  mermaid_rendering: "正在渲染图表…"
+  math_failed: "该公式未能渲染"
+  mermaid_failed: "图表渲染失败"
+page_view:
+  empty: "空白——点击以书写"
+  no_matches: "无匹配"
+  link: 链接
+  alias_prefix: "别名::"
+  sub_pages: "子页面（%{count}）"
+  linked_refs: "链接引用（%{count}）"
+  unlinked_refs: "未链接引用（%{count}）"
+  linked_refs_panel: "链接引用（%{count}）"
+ctx:
+  cut: 剪切
+  copy: 复制
+  copy_as_markdown: "复制为 Markdown"
+  paste: 粘贴
+  code_copy: 复制
+  math_copy: 复制
+  turn_into: "转换为"
+  text: 文本
+  heading_1: "标题 1"
+  heading_2: "标题 2"
+  heading_3: "标题 3"
+  bulleted_list: "无序列表"
+  numbered_list: "有序列表"
+  todo: "任务"
+  quote: 引用
+  callout: 提示框
+  code_block: "代码块"
+  math_block: "数学公式"
+  insert_row_above: "在上方插入行"
+  insert_row_below: "在下方插入行"
+  duplicate_row: "复制行"
+  insert_column_left: "在左侧插入列"
+  insert_column_right: "在右侧插入列"
+  align_left: "左对齐"
+  align_center: "居中"
+  align_right: "右对齐"
+  grid_style: "网格样式"
+  striped_style: "条纹样式"
+  header_style: "表头样式"
+  minimal_style: "极简样式"
+  delete_row: "删除行"
+  delete_column: "删除列"
+  delete_table: "删除表格"
+  edit_properties: "编辑属性"
+  delete_property: "删除属性"
+  delete_image: "删除图片"
+page_ctx:
+  remove_favorite: "从收藏中移除"
+  add_favorite: "添加到收藏"
+  open_new_tab: "在新标签页中打开"
+  open_new_window: "在新窗口中打开"
+  copy_link: "复制链接"
+  copy_contents: "复制内容"
+  copy_contents_md: "复制内容为 Markdown"
+  export_pdf: "导出为 PDF…"
+  new_sub_page: "新建子页面"
+  rename_page: "重命名页面"
+  delete_page: "删除页面"
+month_cal:
+  su: 日
+  mo: 一
+  tu: 二
+  we: 三
+  th: 四
+  fr: 五
+  sa: 六
+properties_page:
+  title: 属性
+  col_key: 键
+  col_pages: 页面
+  col_values: 值
+  map_first: "首次使用前请先映射一个键："
+  keys_in_use: "个键正在使用"
+  mapped_unused: "已映射——尚未在任何页面使用"
+  ok: 确定
+  cancel: 取消
+  rename: 重命名
+  icon: "图标 ▾"
+  default_builtin: "默认（内置）"
+  reset_icon_tip: "移除该键的自定义图标。尚未在任何页面上使用的键也会在此处丢失其行。"
+  placeholder_rename: "新名称"
+  placeholder_key: "键…"
+
+property_editor:
+  add_property: "+ 添加属性"
+search:
+  subtitle_whiteboard: 白板
+  subtitle_pdf: PDF
+  subtitle_image: 图片
+  pdf_in: "PDF · 在 %{title} 中"
+  image_in: "图片 · 在 %{title} 中"
+  no_matches: "无匹配"
+  filter_all: 全部
+  filter_pages: 页面
+  filter_whiteboards: "▦ 白板"
+  filter_pdfs: PDF
+  filter_images: 图片
+sidebar:
+  favorites: 收藏
+  whiteboards: 白板
+  recent: 最近
+  no_pages: "尚无页面——在下方右键添加"
+  no_recent: "无最近页面"
+  new_page: "新建页面"
+  main: 主页
+  add_notebook: "添加笔记本…"
+  rename: 重命名
+  reveal_folder: "显示文件夹"
+  remove_from_list: "从列表中移除（保留文件）"
+  new_whiteboard: "新建白板"
+  journal: 日志
+  all_pages: "所有页面"
+  properties: 属性
+  graph: 图谱
+slash_menu:
+  h1_desc: "大章节标题。"
+  h2_desc: "中等章节标题。"
+  h3_desc: "小章节标题。"
+  bullet_desc: "一个简单的无序列表。"
+  numbered_desc: "一个带编号的列表。"
+  todo_desc: "用复选框跟踪任务。"
+  quote_desc: "记录一段引文。"
+  note_desc: "标注——值得记录的内容。"
+  tip_desc: "标注——一个有用的小贴士。"
+  important_desc: "标注——关键信息。"
+  warning_desc: "标注——需要注意。"
+  caution_desc: "标注——可能造成风险后果。"
+  code_desc: "记录一段代码片段。"
+  mermaid_desc: "用文本绘制图表。"
+  math_desc: "排版一个显示公式。"
+  table_desc: "选择一个 行 × 列 的尺寸。"
+  divider_desc: "将页面进行视觉分隔。"
+  bold_desc: "加粗文本。"
+  italic_desc: "斜体文本。"
+  strikethrough_desc: "带删除线的文本。"
+  inline_code_desc: "句子内的代码。"
+  inline_math_desc: "句子内的公式。"
+  highlight_desc: "高亮文本。"
+  underline_desc: "下划线文本。"
+  link_desc: "一个网页链接。"
+  property_desc: "添加一个 key:: value 属性。"
+  markdown_desc: "所有 markdown 块。"
+  templates_desc: "插入您的一个模板。"
+  date_desc: "插入今天的日期。"
+  time_desc: "插入当前时间。"
+  no_commands: "无命令"
+tab_bar:
+  remove_favorite: "从收藏中移除"
+  add_favorite: "添加到收藏"
+  open_new_window: "在新窗口中打开"
+  export_pdf: "导出为 PDF…"
+  copy_link: "复制链接"
+  copy_contents: "复制内容"
+  copy_contents_md: "复制内容为 Markdown"
+  new_sub_page: "新建子页面"
+  rename_page: "重命名页面"
+  delete_page: "删除页面"
+table_picker:
+  title: "插入表格"
+  insert: 插入
+import_err:
+  logseq_no_folders: "%{path} 不像 Logseq 图谱（缺少 pages/ 或 journals/ 文件夹）"
+  imported_whiteboard: "已导入白板"
+  obsidian_no_md: "%{path} 不包含任何 Markdown 笔记"
+  canvas_malformed: "画布 %{path}：JSON 格式错误，已跳过"
+  canvas_unsupported_node: '画布 "%{title}"：不支持的节点类型 ''%{node}'''
+  canvas_downgraded: '画布 "%{title}"：已降级或跳过 %{count} 项'
+  embed_expected: "应为嵌入卡片，收到 %{kind}"
+  favorite_err: "收藏 %{title}：%{e}"
+  save_favorites_err: "保存收藏：%{e}"
+  file_conv_err: "%{path}：%{e}"
+  missing_pdf: "缺少嵌入的 PDF：%{name}"
+  embed_dup: "%{name} 的嵌入重复：%{e}"
+  loop_embed: "嵌入循环：%{name}"
+  wb_unreadable: "白板 %{path}：无法读取"
+  wb_shapes_skipped: "白板 %{title}：跳过了 %{skipped} 个形状（嵌入 / 门户 / 不支持）"
+  wb_geom_err: "白板 %{path}：%{e}"
+  asset_not_found: "找不到资源：%{rel}"
+migration:
+  moving_data: "正在移动数据…"
+menu:
+  app_name: Zorite
+  settings: "设置…"
+  quit: "退出 Zorite"
+  file: 文件
+  edit: 编辑
+  view: 视图
+  new_tab: "新建标签页"
+  new_whiteboard: "新建白板"
+  new_window: "新建窗口"
+  import_logseq: "从 Logseq 导入…"
+  import_obsidian: "从 Obsidian 导入…"
+  export_notebook: "将笔记本导出为 Markdown…"
+  export_pdf: "导出为 PDF…"
+  close_tab: "关闭标签页"
+  undo: 撤销
+  redo: 重做
+  cut: 剪切
+  copy: 复制
+  paste: 粘贴
+  select_all: "全选"
+  find_in_page: "在页面中查找"
+  search_all_notes: "搜索所有笔记"
+  fit_images: "将图像适应到视图"
+  next_tab: "下一个标签页"
+  prev_tab: "上一个标签页"
+paths:
+  not_a_folder: "这不是一个文件夹。"
+  nested_or_parent: "请选择既不在当前数据文件夹内、也不是其父级的文件夹。"
+  not_writable: "该文件夹不可写。"
+  default_notebook: 笔记本
+  app_title: "Zorite — %{name}"
+export_md:
+  not_a_folder: "所选目标不是文件夹。"
+  not_empty: "目标文件夹不为空——请选择（或新建）一个空文件夹。"
+  read_dest_failed: "读取目标位置失败：%{e}"
+cursors:
+  pick_folder: "请选择主题文件夹。"

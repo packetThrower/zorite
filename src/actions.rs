@@ -14,6 +14,7 @@
 //! context menus (sidebar pages and tabs) and handled on `AppView`.
 
 use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+use rust_i18n::t;
 
 actions!(
     zorite,
@@ -169,52 +170,52 @@ fn build_app_menus() -> Vec<Menu> {
     use gpui_component::input;
     vec![
         Menu {
-            name: "Zorite".into(),
+            name: t!("menu.app_name").into(),
             items: vec![
-                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::action(t!("menu.settings"), OpenSettings),
                 MenuItem::separator(),
-                MenuItem::action("Quit Zorite", Quit),
+                MenuItem::action(t!("menu.quit"), Quit),
             ],
             disabled: false,
         },
         Menu {
-            name: "File".into(),
+            name: t!("menu.file").into(),
             items: vec![
-                MenuItem::action("New Tab", NewPage),
-                MenuItem::action("New Whiteboard", NewWhiteboard),
-                MenuItem::action("New Window", NewWindow),
+                MenuItem::action(t!("menu.new_tab"), NewPage),
+                MenuItem::action(t!("menu.new_whiteboard"), NewWhiteboard),
+                MenuItem::action(t!("menu.new_window"), NewWindow),
                 MenuItem::separator(),
-                MenuItem::action("Import from Logseq…", ImportLogseq),
-                MenuItem::action("Import from Obsidian…", ImportObsidian),
-                MenuItem::action("Export Notebook as Markdown…", ExportNotebook),
-                MenuItem::action("Export as PDF…", ExportActivePdf),
+                MenuItem::action(t!("menu.import_logseq"), ImportLogseq),
+                MenuItem::action(t!("menu.import_obsidian"), ImportObsidian),
+                MenuItem::action(t!("menu.export_notebook"), ExportNotebook),
+                MenuItem::action(t!("menu.export_pdf"), ExportActivePdf),
                 MenuItem::separator(),
-                MenuItem::action("Close Tab", CloseTab),
+                MenuItem::action(t!("menu.close_tab"), CloseTab),
             ],
             disabled: false,
         },
         Menu {
-            name: "Edit".into(),
+            name: t!("menu.edit").into(),
             items: vec![
-                MenuItem::action("Undo", input::Undo),
-                MenuItem::action("Redo", input::Redo),
+                MenuItem::action(t!("menu.undo"), input::Undo),
+                MenuItem::action(t!("menu.redo"), input::Redo),
                 MenuItem::separator(),
-                MenuItem::action("Cut", input::Cut),
-                MenuItem::action("Copy", input::Copy),
-                MenuItem::action("Paste", input::Paste),
-                MenuItem::action("Select All", input::SelectAll),
+                MenuItem::action(t!("menu.cut"), input::Cut),
+                MenuItem::action(t!("menu.copy"), input::Copy),
+                MenuItem::action(t!("menu.paste"), input::Paste),
+                MenuItem::action(t!("menu.select_all"), input::SelectAll),
                 MenuItem::separator(),
-                MenuItem::action("Find in Page", FindInPage),
-                MenuItem::action("Search All Notes", GlobalSearch),
-                MenuItem::action("Fit Images to View", FitImages),
+                MenuItem::action(t!("menu.find_in_page"), FindInPage),
+                MenuItem::action(t!("menu.search_all_notes"), GlobalSearch),
+                MenuItem::action(t!("menu.fit_images"), FitImages),
             ],
             disabled: false,
         },
         Menu {
-            name: "View".into(),
+            name: t!("menu.view").into(),
             items: vec![
-                MenuItem::action("Next Tab", NextTab),
-                MenuItem::action("Previous Tab", PrevTab),
+                MenuItem::action(t!("menu.next_tab"), NextTab),
+                MenuItem::action(t!("menu.prev_tab"), PrevTab),
             ],
             disabled: false,
         },

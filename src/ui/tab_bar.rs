@@ -18,6 +18,7 @@ use crate::actions::{
 };
 use crate::app::{AppView, DraggingTab, GlobalDraggingTab, TabDrag, TabKind};
 use crate::theme;
+use rust_i18n::t;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let weak = cx.entity().downgrade();
@@ -40,9 +41,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         let is_page = matches!(tab.kind, TabKind::Page(_));
         let is_fav = matches!(&tab.kind, TabKind::Page(pid) if app.is_favorite(*pid));
         let fav_label = if is_fav {
-            "Remove from favorites"
+            SharedString::from(t!("tab_bar.remove_favorite"))
         } else {
-            "Add to favorites"
+            SharedString::from(t!("tab_bar.add_favorite"))
         };
         // Cap the label: a long name (e.g. a PDF filename) is ellipsized, with the
         // full title in a tooltip. A "(highlights)" tab keeps that suffix visible.
@@ -81,12 +82,12 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             let danger = cx.theme().danger;
             let menu = menu
                 .menu_with_icon(
-                    "Open in new window",
+                    t!("tab_bar.open_new_window"),
                     menu_icon("app-window"),
                     Box::new(OpenInNewWindow),
                 )
                 .menu_with_icon(
-                    "Export as PDF…",
+                    t!("tab_bar.export_pdf"),
                     menu_icon("file-down"),
                     Box::new(crate::actions::ExportPdf),
                 );
@@ -101,27 +102,39 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 Icon::from(IconName::Star)
             };
             menu.separator()
-                .menu_with_icon("Copy link", menu_icon("link"), Box::new(CopyPageLink))
-                .menu_with_icon("Copy contents", IconName::Copy, Box::new(CopyPageContents))
                 .menu_with_icon(
-                    "Copy contents as Markdown",
+                    t!("tab_bar.copy_link"),
+                    menu_icon("link"),
+                    Box::new(CopyPageLink),
+                )
+                .menu_with_icon(
+                    t!("tab_bar.copy_contents"),
+                    IconName::Copy,
+                    Box::new(CopyPageContents),
+                )
+                .menu_with_icon(
+                    t!("tab_bar.copy_contents_md"),
                     menu_icon("file-text"),
                     Box::new(CopyPageContentsMarkdown),
                 )
                 .separator()
-                .menu_with_icon(fav_label, fav_icon, Box::new(ToggleFavorite))
+                .menu_with_icon(fav_label.clone(), fav_icon, Box::new(ToggleFavorite))
                 .separator()
                 .menu_with_icon(
-                    "New sub-page",
+                    t!("tab_bar.new_sub_page"),
                     menu_icon("sticky-note-plus"),
                     Box::new(NewSubPage),
                 )
-                .menu_with_icon("Rename page", menu_icon("pencil"), Box::new(RenamePage))
+                .menu_with_icon(
+                    t!("tab_bar.rename_page"),
+                    menu_icon("pencil"),
+                    Box::new(RenamePage),
+                )
                 // Destructive: red label + red icon (Cditor-style).
                 .menu_element_with_icon(
                     menu_icon("trash-2").text_color(danger),
                     Box::new(DeletePage),
-                    move |_, _| div().text_color(danger).child("Delete page"),
+                    move |_, _| div().text_color(danger).child(t!("tab_bar.delete_page")),
                 )
         });
         let mut t = Tab::new()

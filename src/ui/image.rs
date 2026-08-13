@@ -18,6 +18,7 @@ use crate::app::AppView;
 use crate::images::ImageStore;
 use crate::slash::SlashTarget;
 use crate::theme;
+use rust_i18n::t;
 
 /// Build the image renderer handed to `MarkdownView::on_image` for `target`'s
 /// editor. Captures the live drag (for width preview), the shared width map
@@ -341,7 +342,7 @@ fn loading_placeholder(info: &ImageInfo, weak: &WeakEntity<AppView>) -> AnyEleme
 
 fn fallback(info: &ImageInfo) -> AnyElement {
     let label = if info.alt.is_empty() {
-        "🖼 image (unresolved path)".to_string()
+        t!("image.unresolved").into_owned()
     } else {
         format!("🖼 {}", info.alt)
     };

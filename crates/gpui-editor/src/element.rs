@@ -604,7 +604,7 @@ impl Element for EditorElement {
                 } else {
                     format!("{lang} ▾").into()
                 };
-                let copy_text: SharedString = "Copy".into();
+                let copy_text: SharedString = editor.labels.code_copy.clone();
                 let lang_w = shape(window, &lang_text, st.quote) + px(12.);
                 let copy_w = shape(window, &copy_text, st.quote) + px(12.);
                 let right = bounds.origin.x + cb.width - px(6.);
@@ -618,6 +618,7 @@ impl Element for EditorElement {
                 let copy_hb = window.insert_hitbox(copy_bounds, HitboxBehavior::Normal);
                 code_chips.push(CodeChip {
                     lang_text,
+                    copy_text,
                     lang_bounds,
                     copy_bounds,
                     fence_row,
@@ -2099,7 +2100,7 @@ impl Element for EditorElement {
         for chip in &prepaint.code_chips {
             for (bounds_, text, hb) in [
                 (chip.lang_bounds, &chip.lang_text, &chip.lang_hb),
-                (chip.copy_bounds, &SharedString::from("Copy"), &chip.copy_hb),
+                (chip.copy_bounds, &chip.copy_text, &chip.copy_hb),
             ] {
                 let hovered = hb.is_hovered(window);
                 window.paint_quad(PaintQuad {

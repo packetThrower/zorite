@@ -10,6 +10,7 @@ use gpui::{
 use crate::app::AppView;
 use crate::search::{Filter, Hit, Kind, Target};
 use crate::theme;
+use rust_i18n::t;
 
 pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     let hits = &app.search.hits;
@@ -44,7 +45,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 div()
                                     .pt_2()
                                     .text_color(theme::text_tertiary())
-                                    .child("No matches"),
+                                    .child(t!("search.no_matches").to_string()),
                             )
                         })
                         .children(rows),
@@ -63,17 +64,41 @@ fn filter_chips(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .flex_wrap()
         .gap_2()
         .pb_2()
-        .child(chip("All", Filter::All, c.total(), active, cx))
-        .child(chip("Pages", Filter::Page, c.page, active, cx))
         .child(chip(
-            "▦ Whiteboards",
+            &t!("search.filter_all"),
+            Filter::All,
+            c.total(),
+            active,
+            cx,
+        ))
+        .child(chip(
+            &t!("search.filter_pages"),
+            Filter::Page,
+            c.page,
+            active,
+            cx,
+        ))
+        .child(chip(
+            &t!("search.filter_whiteboards"),
             Filter::Whiteboard,
             c.whiteboard,
             active,
             cx,
         ))
-        .child(chip("PDFs", Filter::Pdf, c.pdf, active, cx))
-        .child(chip("Images", Filter::Image, c.image, active, cx))
+        .child(chip(
+            &t!("search.filter_pdfs"),
+            Filter::Pdf,
+            c.pdf,
+            active,
+            cx,
+        ))
+        .child(chip(
+            &t!("search.filter_images"),
+            Filter::Image,
+            c.image,
+            active,
+            cx,
+        ))
 }
 
 fn chip(

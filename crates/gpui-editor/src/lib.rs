@@ -298,19 +298,19 @@ impl TurnKind {
         TurnKind::Math,
     ];
 
-    fn label(self) -> &'static str {
+    fn label(self, labels: &Labels) -> SharedString {
         match self {
-            TurnKind::Text => "Text",
-            TurnKind::H1 => "Heading 1",
-            TurnKind::H2 => "Heading 2",
-            TurnKind::H3 => "Heading 3",
-            TurnKind::Bullet => "Bulleted list",
-            TurnKind::Numbered => "Numbered list",
-            TurnKind::Todo => "To-do",
-            TurnKind::Quote => "Quote",
-            TurnKind::Callout => "Callout",
-            TurnKind::Code => "Code block",
-            TurnKind::Math => "Math block",
+            TurnKind::Text => labels.text.clone(),
+            TurnKind::H1 => labels.heading_1.clone(),
+            TurnKind::H2 => labels.heading_2.clone(),
+            TurnKind::H3 => labels.heading_3.clone(),
+            TurnKind::Bullet => labels.bulleted_list.clone(),
+            TurnKind::Numbered => labels.numbered_list.clone(),
+            TurnKind::Todo => labels.todo.clone(),
+            TurnKind::Quote => labels.quote.clone(),
+            TurnKind::Callout => labels.callout.clone(),
+            TurnKind::Code => labels.code_block.clone(),
+            TurnKind::Math => labels.math_block.clone(),
         }
     }
 }
@@ -608,6 +608,101 @@ pub fn inline_math_sources(content: &str) -> Vec<SharedString> {
 /// cached layout (the wrapped lines from the last paint) for hit-testing + IME.
 /// Renders the WYSIWYG view when a markdown [`SyntaxStyle`] is installed, the
 /// raw-markdown view otherwise.
+/// Host-injectable UI labels the editor renders in its context menus and
+/// chrome (right-click menu items, the code-block / math `Copy` chips, the
+/// table / "Turn into" menus). The crate stays host-agnostic so it never
+/// calls `t!()`; the app passes localized strings here via
+/// [`EditorState::set_labels`]. The default is English, keeping the crate
+/// usable standalone (and existing tests' expectations intact).
+#[derive(Clone)]
+pub struct Labels {
+    /// Text-selection right-click menu.
+    pub cut: SharedString,
+    pub copy: SharedString,
+    pub copy_as_markdown: SharedString,
+    pub paste: SharedString,
+    /// Code-block / formula chrome.
+    pub code_copy: SharedString,
+    pub math_copy: SharedString,
+    /// "Turn into" block-conversion menu.
+    pub turn_into: SharedString,
+    pub text: SharedString,
+    pub heading_1: SharedString,
+    pub heading_2: SharedString,
+    pub heading_3: SharedString,
+    pub bulleted_list: SharedString,
+    pub numbered_list: SharedString,
+    pub todo: SharedString,
+    pub quote: SharedString,
+    pub callout: SharedString,
+    pub code_block: SharedString,
+    pub math_block: SharedString,
+    /// Table right-click menu.
+    pub insert_row_above: SharedString,
+    pub insert_row_below: SharedString,
+    pub duplicate_row: SharedString,
+    pub insert_column_left: SharedString,
+    pub insert_column_right: SharedString,
+    pub align_left: SharedString,
+    pub align_center: SharedString,
+    pub align_right: SharedString,
+    pub grid_style: SharedString,
+    pub striped_style: SharedString,
+    pub header_style: SharedString,
+    pub minimal_style: SharedString,
+    pub delete_row: SharedString,
+    pub delete_column: SharedString,
+    pub delete_table: SharedString,
+    /// Property-panel menu.
+    pub edit_properties: SharedString,
+    pub delete_property: SharedString,
+    /// Image menu.
+    pub delete_image: SharedString,
+}
+
+impl Default for Labels {
+    fn default() -> Self {
+        Self {
+            cut: "Cut".into(),
+            copy: "Copy".into(),
+            copy_as_markdown: "Copy as Markdown".into(),
+            paste: "Paste".into(),
+            code_copy: "Copy".into(),
+            math_copy: "Copy".into(),
+            turn_into: "Turn into".into(),
+            text: "Text".into(),
+            heading_1: "Heading 1".into(),
+            heading_2: "Heading 2".into(),
+            heading_3: "Heading 3".into(),
+            bulleted_list: "Bulleted list".into(),
+            numbered_list: "Numbered list".into(),
+            todo: "To-do".into(),
+            quote: "Quote".into(),
+            callout: "Callout".into(),
+            code_block: "Code block".into(),
+            math_block: "Math block".into(),
+            insert_row_above: "Insert row above".into(),
+            insert_row_below: "Insert row below".into(),
+            duplicate_row: "Duplicate row".into(),
+            insert_column_left: "Insert column left".into(),
+            insert_column_right: "Insert column right".into(),
+            align_left: "Align left".into(),
+            align_center: "Align center".into(),
+            align_right: "Align right".into(),
+            grid_style: "Grid style".into(),
+            striped_style: "Striped style".into(),
+            header_style: "Header style".into(),
+            minimal_style: "Minimal style".into(),
+            delete_row: "Delete row".into(),
+            delete_column: "Delete column".into(),
+            delete_table: "Delete table".into(),
+            edit_properties: "Edit properties".into(),
+            delete_property: "Delete property".into(),
+            delete_image: "Delete image".into(),
+        }
+    }
+}
+
 pub struct EditorState {
     focus_handle: FocusHandle,
     /// The whole document, newline-separated. Byte offsets index into this.
@@ -705,6 +800,9 @@ pub struct EditorState {
     /// view (W1), `None` = the raw view (plain text). Set by the host via
     /// [`Self::set_markdown_style`].
     markdown_style: Option<SyntaxStyle>,
+    /// Host-injectable UI labels for context menus / chrome; English by
+    /// default, localized through [`Self::set_labels`].
+    labels: Labels,
     /// The open right-click suggestions menu, if any.
     menu: Option<DiagMenu>,
     /// The open table right-click menu's anchor (window space), if any. Its actions
@@ -934,6 +1032,7 @@ impl EditorState {
             goal_x: None,
             diagnostics: Vec::new(),
             markdown_style: None,
+            labels: Labels::default(),
             menu: None,
             table_menu: None,
             table_menu_scroll: ScrollHandle::new(),
@@ -1090,6 +1189,13 @@ impl EditorState {
 
     pub fn set_markdown_style(&mut self, style: SyntaxStyle, cx: &mut Context<Self>) {
         self.markdown_style = Some(style);
+        cx.notify();
+    }
+
+    /// Set the host-localized labels for the context menus / chrome. Replace
+    /// on every language switch so the current editors pick it up.
+    pub fn set_labels(&mut self, labels: Labels, cx: &mut Context<Self>) {
+        self.labels = labels;
         cx.notify();
     }
 
@@ -4801,7 +4907,7 @@ impl Render for EditorState {
                 // Cut / Copy need a selection; Paste always applies (the caret
                 // was seated at the click when it landed outside the selection).
                 let has_sel = !self.selected_range.is_empty();
-                let clip_item = |id: &'static str, label: &'static str| {
+                let clip_item = |id: &'static str, label: SharedString| {
                     div()
                         .id(id)
                         .flex_shrink_0()
@@ -4813,42 +4919,51 @@ impl Render for EditorState {
                 let mut clipboard = div().flex().flex_col().py(px(4.));
                 if has_sel {
                     clipboard = clipboard
-                        .child(clip_item("menu-cut", "Cut").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|editor, _: &MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                editor.menu = None;
-                                editor.cut(&Cut, window, cx);
-                            }),
-                        ))
-                        .child(clip_item("menu-copy", "Copy").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|editor, _: &MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                editor.menu = None;
-                                editor.copy(&Copy, window, cx);
-                            }),
-                        ))
+                        .child(
+                            clip_item("menu-cut", self.labels.cut.clone()).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    editor.menu = None;
+                                    editor.cut(&Cut, window, cx);
+                                }),
+                            ),
+                        )
+                        .child(
+                            clip_item("menu-copy", self.labels.copy.clone()).on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                    cx.stop_propagation();
+                                    editor.menu = None;
+                                    editor.copy(&Copy, window, cx);
+                                }),
+                            ),
+                        )
                         // Plain-only: the raw markdown with no host flavors —
                         // for pasting literal source into rich surfaces
                         // (email, chat) where Copy's HTML flavor would win.
-                        .child(clip_item("menu-copy-md", "Copy as Markdown").on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|editor, _: &MouseDownEvent, window, cx| {
-                                cx.stop_propagation();
-                                editor.menu = None;
-                                editor.copy_plain(window, cx);
-                            }),
-                        ));
+                        .child(
+                            clip_item("menu-copy-md", self.labels.copy_as_markdown.clone())
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                                        cx.stop_propagation();
+                                        editor.menu = None;
+                                        editor.copy_plain(window, cx);
+                                    }),
+                                ),
+                        );
                 }
-                let clipboard = clipboard.child(clip_item("menu-paste", "Paste").on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|editor, _: &MouseDownEvent, window, cx| {
-                        cx.stop_propagation();
-                        editor.menu = None;
-                        editor.paste(&Paste, window, cx);
-                    }),
-                ));
+                let clipboard = clipboard.child(
+                    clip_item("menu-paste", self.labels.paste.clone()).on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            editor.menu = None;
+                            editor.paste(&Paste, window, cx);
+                        }),
+                    ),
+                );
 
                 // Inline-format bar (Cditor-style): with a selection, a strip of
                 // B / I / S / <> buttons across the menu's top — each toggles its
@@ -4960,7 +5075,7 @@ impl Render for EditorState {
                     .items_center()
                     .justify_between()
                     .gap(px(16.))
-                    .child("Turn into")
+                    .child(self.labels.turn_into.clone())
                     .child(div().text_size(px(10.)).child("\u{25b8}"))
                     .on_hover(cx.listener(|editor, hovered: &bool, _, cx| {
                         if *hovered
@@ -4971,6 +5086,7 @@ impl Render for EditorState {
                             cx.notify();
                         }
                     }));
+                let turn_labels = self.labels.clone();
                 let turn_flyout = menu_turn_into.then(|| {
                     let rows: Vec<_> = TurnKind::ALL
                         .iter()
@@ -4992,7 +5108,7 @@ impl Render for EditorState {
                                 } else {
                                     ""
                                 }))
-                                .child(k.label())
+                                .child(k.label(&turn_labels))
                                 .on_mouse_down(
                                     MouseButton::Left,
                                     cx.listener(move |editor, _: &MouseDownEvent, window, cx| {
@@ -5109,7 +5225,7 @@ impl Render for EditorState {
                     Div,
                     Item {
                         glyph: &'static str,
-                        label: &'static str,
+                        label: SharedString,
                         action: TableMenuAction,
                         red: bool,
                         checked: bool,
@@ -5123,30 +5239,50 @@ impl Render for EditorState {
                     checked: false,
                 };
                 let specs = [
-                    item("↑", "Insert row above", TableMenuAction::InsertRowAbove),
-                    item("↓", "Insert row below", TableMenuAction::InsertRowBelow),
-                    item("⧉", "Duplicate row", TableMenuAction::DuplicateRow),
+                    item(
+                        "↑",
+                        self.labels.insert_row_above.clone(),
+                        TableMenuAction::InsertRowAbove,
+                    ),
+                    item(
+                        "↓",
+                        self.labels.insert_row_below.clone(),
+                        TableMenuAction::InsertRowBelow,
+                    ),
+                    item(
+                        "⧉",
+                        self.labels.duplicate_row.clone(),
+                        TableMenuAction::DuplicateRow,
+                    ),
                     Row::Div,
-                    item("←", "Insert column left", TableMenuAction::InsertColLeft),
-                    item("→", "Insert column right", TableMenuAction::InsertColRight),
+                    item(
+                        "←",
+                        self.labels.insert_column_left.clone(),
+                        TableMenuAction::InsertColLeft,
+                    ),
+                    item(
+                        "→",
+                        self.labels.insert_column_right.clone(),
+                        TableMenuAction::InsertColRight,
+                    ),
                     Row::Div,
                     Row::Item {
                         glyph: "",
-                        label: "Align left",
+                        label: self.labels.align_left.clone(),
                         action: TableMenuAction::AlignLeft,
                         red: false,
                         checked: cur_align == Some(CellAlign::Left),
                     },
                     Row::Item {
                         glyph: "",
-                        label: "Align center",
+                        label: self.labels.align_center.clone(),
                         action: TableMenuAction::AlignCenter,
                         red: false,
                         checked: cur_align == Some(CellAlign::Center),
                     },
                     Row::Item {
                         glyph: "",
-                        label: "Align right",
+                        label: self.labels.align_right.clone(),
                         action: TableMenuAction::AlignRight,
                         red: false,
                         checked: cur_align == Some(CellAlign::Right),
@@ -5154,52 +5290,56 @@ impl Render for EditorState {
                     Row::Div,
                     Row::Item {
                         glyph: "▦",
-                        label: "Grid style",
+                        label: self.labels.grid_style.clone(),
                         action: TableMenuAction::SetStyle(None),
                         red: false,
                         checked: cur_style == TS::Grid,
                     },
                     Row::Item {
                         glyph: "▤",
-                        label: "Striped style",
+                        label: self.labels.striped_style.clone(),
                         action: TableMenuAction::SetStyle(Some("striped")),
                         red: false,
                         checked: cur_style == TS::Striped,
                     },
                     Row::Item {
                         glyph: "▥",
-                        label: "Header style",
+                        label: self.labels.header_style.clone(),
                         action: TableMenuAction::SetStyle(Some("header")),
                         red: false,
                         checked: cur_style == TS::Header,
                     },
                     Row::Item {
                         glyph: "─",
-                        label: "Minimal style",
+                        label: self.labels.minimal_style.clone(),
                         action: TableMenuAction::SetStyle(Some("minimal")),
                         red: false,
                         checked: cur_style == TS::Minimal,
                     },
                     Row::Div,
-                    item("⊞", "Copy as Markdown", TableMenuAction::CopyTable),
+                    item(
+                        "⊞",
+                        self.labels.copy_as_markdown.clone(),
+                        TableMenuAction::CopyTable,
+                    ),
                     Row::Div,
                     Row::Item {
                         glyph: "✕",
-                        label: "Delete row",
+                        label: self.labels.delete_row.clone(),
                         action: TableMenuAction::DeleteRow,
                         red: true,
                         checked: false,
                     },
                     Row::Item {
                         glyph: "✕",
-                        label: "Delete column",
+                        label: self.labels.delete_column.clone(),
                         action: TableMenuAction::DeleteColumn,
                         red: true,
                         checked: false,
                     },
                     Row::Item {
                         glyph: "✕",
-                        label: "Delete table",
+                        label: self.labels.delete_table.clone(),
                         action: TableMenuAction::DeleteTable,
                         red: true,
                         checked: false,
@@ -5251,7 +5391,7 @@ impl Render for EditorState {
                                             .text_color(glyph_c)
                                             .child(glyph),
                                     )
-                                    .child(div().flex_1().child(SharedString::from(label)))
+                                    .child(div().flex_1().child(label))
                                     .children(checked.then(|| div().text_color(glyph_c).child("✓")))
                                     .on_mouse_down(
                                         MouseButton::Left,
@@ -5329,7 +5469,7 @@ impl Render for EditorState {
                 let menu_border = st.map_or(rgb(0x45454c).into(), |s| s.popover_border);
                 let menu_fg = st.map_or(rgb(0xe6e6e6).into(), |s| s.popover_fg);
                 let hover = st.map_or(rgba(0x2f6fd628).into(), |s| s.popover_hover);
-                let item = |id: &'static str, label: &'static str| {
+                let item = |id: &'static str, label: SharedString| {
                     div()
                         .id(id)
                         .px(px(10.))
@@ -5356,30 +5496,38 @@ impl Render for EditorState {
                                 editor.prop_menu = None;
                                 cx.notify();
                             }))
-                            .child(item("prop-menu-edit", "Edit properties").on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    editor.prop_menu = None;
-                                    if let Some((range, source)) = editor.property_block_at(row) {
-                                        let block_row = row - editor.row_col(range.start).0;
-                                        cx.emit(EditorEvent::EditProperties {
-                                            range,
-                                            source,
-                                            at_end: false,
-                                            row: Some(block_row),
-                                        });
-                                    }
-                                }),
-                            ))
-                            .child(item("prop-menu-delete", "Delete property").on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    editor.prop_menu = None;
-                                    editor.delete_property_row(row, cx);
-                                }),
-                            )),
+                            .child(
+                                item("prop-menu-edit", self.labels.edit_properties.clone())
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            editor.prop_menu = None;
+                                            if let Some((range, source)) =
+                                                editor.property_block_at(row)
+                                            {
+                                                let block_row = row - editor.row_col(range.start).0;
+                                                cx.emit(EditorEvent::EditProperties {
+                                                    range,
+                                                    source,
+                                                    at_end: false,
+                                                    row: Some(block_row),
+                                                });
+                                            }
+                                        }),
+                                    ),
+                            )
+                            .child(
+                                item("prop-menu-delete", self.labels.delete_property.clone())
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                                            cx.stop_propagation();
+                                            editor.prop_menu = None;
+                                            editor.delete_property_row(row, cx);
+                                        }),
+                                    ),
+                            ),
                     ),
                 )
             }))
@@ -5414,7 +5562,7 @@ impl Render for EditorState {
                                     .px(px(10.))
                                     .py(px(3.))
                                     .hover(move |s| s.bg(hover))
-                                    .child("Delete image")
+                                    .child(self.labels.delete_image.clone())
                                     .on_mouse_down(
                                         MouseButton::Left,
                                         cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
@@ -5684,6 +5832,7 @@ struct CodeChipHit {
 /// draws at these bounds and the hitboxes flip the cursor.
 struct CodeChip {
     lang_text: SharedString,
+    copy_text: SharedString,
     lang_bounds: Bounds<Pixels>,
     copy_bounds: Bounds<Pixels>,
     fence_row: usize,

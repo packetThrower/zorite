@@ -1,0 +1,719 @@
+common:
+  ok: OK
+  cancel: Cancel
+  save: Save
+  close: Close
+  delete: Delete
+  rename: Rename
+  done: Done
+  yes: Yes
+  no: No
+  add: Add
+  remove: Remove
+  apply: Apply
+  retry: Retry
+  open: Open
+  new: New
+  edit: Edit
+  search: Search
+  loading: Loading…
+  error: Error
+  insert: Insert
+  create: Create
+  quit: Quit
+dates:
+  weekday:
+    mon: Monday
+    tue: Tuesday
+    wed: Wednesday
+    thu: Thursday
+    fri: Friday
+    sat: Saturday
+    sun: Sunday
+  month:
+    jan: January
+    feb: February
+    mar: March
+    apr: April
+    may: May
+    jun: June
+    jul: July
+    aug: August
+    sep: September
+    oct: October
+    nov: November
+    dec: December
+  format:
+    iso: "ISO - YYYY-MM-DD"
+    us: "US - MM/DD/YYYY"
+    eu: "European - DD/MM/YYYY"
+    long: "Long - Month D, YYYY"
+    long_weekday: "Long with weekday"
+    dmy: "Day Month Year"
+    time_24h: "24-hour - 14:30"
+    time_12h: "12-hour - 2:30 PM"
+slash:
+  cat:
+    markdown: Markdown
+    templates: Templates
+  property: Property
+  date: Date
+  time: Time
+  blockdown: "▸ Blockdown"
+  create: Create
+  label:
+    h1: Heading 1
+    h2: Heading 2
+    h3: Heading 3
+    bullet: Bullet list
+    numbered: Numbered list
+    todo: To-do
+    quote: Quote
+    note_alert: Note alert
+    tip_alert: Tip alert
+    important_alert: Important alert
+    warning_alert: Warning alert
+    caution_alert: Caution alert
+    code: Code block
+    mermaid: Mermaid diagram
+    math: Math
+    table: Table
+    divider: Divider
+    bold: Bold
+    italic: Italic
+    strikethrough: Strikethrough
+    inline_code: Inline code
+    inline_math: Inline math
+    highlight: Highlight
+    underline: Underline
+    link: Link
+    wiki_link: Wiki link
+    image: Image
+settings:
+  title: Settings
+  filter_placeholder: "Filter settings…"
+  nav:
+    general: General
+    notebooks: Notebooks
+    appearance: Appearance
+    pdf: PDF
+    markdown: Markdown
+    security: Security
+    keyboard: Keyboard
+    updates: Updates
+  language:
+    auto: Auto
+  section:
+    notebooks: Notebooks
+    data_location: Data location
+    unused_images: Unused images
+    language: Language
+    remember_window: Remember window
+    date_format: Date format
+    time_format: Time format
+    app_theme: App Theme
+    appearance: Appearance
+    font: Font
+    text_size: Text size
+    line_numbers: Line numbers
+    mouse_cursor: Mouse cursor
+    installed_themes: Installed themes
+    pdf_quality: PDF render quality
+    wysiwyg: WYSIWYG editing
+    list_indent: List indentation
+    autolink: Auto-link page titles
+    application: Application
+    editing: Editing
+    wb_tools: Whiteboard tools
+    wb_editing: Whiteboard editing
+    pdf_viewer: PDF viewer
+    password: Password
+    remember_device: Remember on this device
+    autolock: Auto-lock
+    updates: Software updates
+    auto_check: Automatically check for updates
+    prereleases: Include pre-releases
+  desc:
+    notebooks: "Each notebook is a self-contained folder - its own database, settings, and attachments. Switching relaunches Zorite into the picked notebook; removing one only forgets it here, never touching its files. The chip at the bottom of the sidebar is the quick switcher."
+    data_location: "Where the current notebook keeps its database, settings, and attachments. Moving relocates the data to the new folder, then reopens Zorite."
+    unused_images: "Delete images in the managed store that no note, whiteboard, or template references. Files added in the last hour are kept."
+    language: "The interface language. Auto follows your system locale; English is always available."
+    remember_window: "Reopen Zorite the way you left it: the window's size and position (centered if its display is gone), and optionally the tabs you had open."
+    date_format: "How /date and the {{date}} template placeholder are inserted. Journal day headers are unaffected."
+    time_format: "How /time and the {{time}} template placeholder are inserted."
+    app_theme: "Pick a built-in theme or one of your own."
+    appearance: "Light or dark variant of the active theme. Auto follows your system."
+    font: "The typeface for the app and your notes. Default follows the active theme's font, if it names one. Add a .ttf or .otf file to use a font that isn't installed on your system."
+    text_size: "Size of note text when editing and reading. Headings and inline math scale with it."
+    line_numbers: "Show a numbered gutter beside the editor on pages and journal days - logical source lines, wrapped text counts once. The reading view stays clean."
+    mouse_cursor: "The pointer inside Zorite. Add any XCursor theme folder (the Linux cursor-theme format) to use your own."
+    installed_themes: "Drop .json theme files in your themes folder, then Reload. Any color you omit falls back to the base palette."
+    pdf_quality: "Higher is sharper but slower; lower speeds up rendering on slower machines. 100% = your display's native resolution."
+    wysiwyg: "On shows formatting (bold, headings, links) inline as you type. Off edits plain Markdown and shows the rendered page on Esc."
+    list_indent: "Spaces per nesting level for Tab and bullet nesting. Editing and the rendered view use the same width, so they line up."
+    autolink: "Typing a word or phrase that matches an existing page's title wraps it as a [[wiki-link]] when you finish the word. Undo reverts a wrap."
+    application: "App-wide commands - they work anywhere. ⌘ on macOS, Ctrl on Windows and Linux."
+    editing: "The slash menu and text shortcuts, while a note is focused."
+    wb_tools: "Press a letter to pick a tool while a board is focused."
+    wb_editing: "Acting on the selection while a board is focused."
+    pdf_viewer: "While a PDF tab is focused."
+    password: "Encrypt the database with a password (SQLCipher). Zorite asks for it at launch; without it the file on disk is unreadable. A forgotten password is unrecoverable."
+    remember_device: "Keep the password in the system keychain and unlock automatically at launch. The idle auto-lock always requires typing it again."
+    remember_device_linux: "Keep the password in the kernel keyring and unlock automatically at launch. On Linux this lasts until reboot; the idle auto-lock always requires typing it again."
+    autolock: "Lock Zorite after this much inactivity, requiring the password to continue."
+    updates: "Zorite checks GitHub for newer releases at startup. It never installs automatically - you review and download from the release page."
+    auto_check: "Check for a newer version each time Zorite starts."
+    prereleases: "Also offer beta builds (vX.Y.Z-beta.N), not just stable releases."
+  opt:
+    light: Light
+    dark: Dark
+    auto_appearance: "Auto (follow system)"
+    indent_2: 2 spaces
+    indent_4: 4 spaces
+    indent_8: 8 spaces
+    cursor_system: "System (default)"
+    cursor_bibata: "Bibata (match theme)"
+    system: System
+    font_default: "Default (%{name})"
+    size_px: "%{size} px"
+    size_px_default: "%{size} px (default)"
+  btn:
+    add_font: "Add font file…"
+    add_cursor: "Add cursor theme…"
+    reveal_cursors: "Reveal cursors folder"
+    reveal_themes: "Reveal themes folder"
+    reload: Reload
+    cleanup: "Clean up now"
+    set_password: "Set password…"
+    change_password: "Change password…"
+    remove_password: "Remove password…"
+    lock_now: "Lock now"
+    add_notebook: "Add notebook…"
+    move: "Move…"
+    reveal: Reveal
+    reset_default: "Reset to default"
+    view_release: "View release"
+    check_now: "Check now"
+    switch: Switch
+    move_to_trash: "Move to Trash"
+    relaunch: Relaunch
+    move_quit: "Move & Quit"
+    reset_quit: "Reset & Quit"
+    encrypt: Encrypt
+    change: Change
+    decrypt: Decrypt
+  label:
+    window_size_pos: "Window size and position"
+    open_tabs: "Open tabs"
+    current: current
+    current_password: "Current password"
+    new_password: "New password"
+    confirm_password: "Confirm new password"
+  note:
+    set_password_first: "Set a password first."
+    cursor_relaunch: "Cursor changes take effect after a relaunch."
+    no_custom_themes: "No custom themes installed. Drop a .json file in the folder and Reload."
+    latest_version: "You're on the latest version."
+  autolock:
+    off: "Off"
+    5min: "5 min"
+    15min: "15 min"
+    30min: "30 min"
+    1hour: "1 hour"
+  status:
+    current_version: "Current version: v%{ver}"
+    update_available: "Update available: v%{ver}"
+    no_unused: "No unused images found."
+    moved_one: "Moved %{n} file (%{size}) to the trash."
+    moved_many: "Moved %{n} files (%{size}) to the trash."
+    and_more: "…and %{n} more"
+    db_encrypted: "Database encrypted."
+    pw_changed: "Password changed."
+    pw_removed: "Password removed - database decrypted."
+    failed: "Failed: %{err}"
+  dlg:
+    image_gc_title: "Move unused images to the trash?"
+    image_gc_body_one: "%{count} file (%{size}) in the images folder isn't referenced by any note, whiteboard, or template. They'll be moved to the system trash.\n\n%{listing}"
+    image_gc_body_many: "%{count} files (%{size}) in the images folder aren't referenced by any note, whiteboard, or template. They'll be moved to the system trash.\n\n%{listing}"
+    create_notebook_title: "Create notebook"
+    create_notebook_body: "Zorite will relaunch with a fresh, empty notebook “%{name}” in:\n%{dir}"
+    switch_notebook_title: "Switch notebook"
+    switch_notebook_body: "Zorite will relaunch into “%{name}”:\n%{dir}"
+    rename_notebook_title: "Rename notebook"
+    use_folder: "Use folder"
+    use_font: "Use font"
+    use_theme: "Use theme"
+    choose: "Choose"
+    that_folder_notebook_title: "That folder is already a notebook"
+    that_folder_notebook_body: "“%{name}” already contains a Zorite database.\n\nAdd it from the notebook switcher at the bottom of the sidebar, then switch to it there."
+    move_data_title: "Move data location"
+    move_data_body: "Zorite will move this notebook's notes, settings, and attachments to:\n%{path}\n\nThe change takes effect the next time you open Zorite."
+    reset_data_title: "Reset data location"
+    reset_data_body: "Zorite will move your data back to the default location:\n%{path}\n\nThe change takes effect the next time you open Zorite."
+    set_pw_title: "Set a password"
+    change_pw_title: "Change password"
+    remove_pw_title: "Remove password"
+    set_pw_note: "Encrypts the note database. If you forget this password, your notes are unrecoverable. Images and PDFs stay as ordinary files in the data folder - they are not encrypted - and earlier plaintext backups there stay readable until you delete them."
+  alert:
+    cant_use_folder: "Can’t use that folder"
+    wrong_password: "Wrong password"
+    wrong_password_body: "The current password doesn't match."
+    no_password: "No password"
+    no_password_body: "The new password is empty."
+    pw_mismatch: "Passwords don't match"
+    pw_mismatch_body: "The two entries differ - try again."
+  kb:
+    new_tab: "New tab (new page)"
+    new_window: "New window"
+    close_tab: "Close tab"
+    next_tab: "Next tab"
+    prev_tab: "Previous tab"
+    find_in_page: "Find in page"
+    search_all: "Search all notes"
+    fit_images: "Fit oversized images to view"
+    export_pdf: "Export active tab as PDF"
+    open_settings: "Open settings"
+    quit: "Quit"
+    slash_menu: "Open the slash command menu"
+    menu_nav: "Move up / down in the menu"
+    menu_insert: "Insert the selected item"
+    menu_close: "Close the slash menu"
+    indent: "Indent / nest list item"
+    outdent: "Outdent"
+    copy: "Copy"
+    cut: "Cut"
+    paste: "Paste"
+    undo: "Undo"
+    redo: "Redo"
+    select_all: "Select all"
+    select: "Select"
+    pan: "Pan"
+    pen: "Pen"
+    rectangle: "Rectangle"
+    ellipse: "Ellipse"
+    diamond: "Diamond"
+    triangle: "Triangle"
+    rounded_rect: "Rounded rectangle"
+    star: "Star"
+    hexagon: "Hexagon"
+    line: "Line"
+    arrow: "Arrow"
+    text: "Text"
+    image: "Image"
+    bring_forward: "Bring forward"
+    bring_front: "Bring to front"
+    send_backward: "Send backward"
+    send_back: "Send to back"
+    delete_sel: "Delete selection"
+    deselect: "Deselect"
+    next_page: "Next page"
+    prev_page: "Previous page"
+    first_page: "First page"
+    last_page: "Last page"
+    zoom_in: "Zoom in"
+    zoom_out: "Zoom out"
+    reset_zoom: "Reset zoom"
+    find: "Find"
+    next_match: "Next match"
+    prev_match: "Previous match"
+    toggle_highlight: "Toggle highlight mode"
+    go_to_page: "Go to page"
+unlock:
+  placeholder: Password
+  title: "Zorite is locked"
+  body: "Your notes are encrypted. Enter your password to open them."
+  remember_label: "Remember on this device"
+  unlock_btn: Unlock
+  wrong_pw: "Wrong password — try again."
+  window_title: "Zorite — locked"
+dialogs:
+  insert_card_title: "Insert page card"
+  save_template_title: "Save as template"
+  template_default_name: "Untitled template"
+  delete_template_title: "Delete template?"
+  delete_template_body: "“%{name}” will be permanently deleted. This can't be undone."
+  delete_template_fallback: "this template"
+  db_error_title: "Couldn't open your notes database"
+  db_error_body: "Zorite opened a temporary, empty workspace because the database couldn't be opened or upgraded. Changes here won't be saved."
+  db_error_recovery_backup: "Your notes were backed up before the update and are safe — restore them from %{path}"
+  db_error_recovery_no_backup: "Your notes on disk are unchanged, in %{path}"
+  reveal_backup: "Reveal Backup"
+  delete_page_title: "Delete page?"
+  delete_page_body: "“%{title}” will be permanently deleted. This can't be undone."
+  delete_page_failed: "Couldn’t delete the page"
+  rename_page_title: "Rename page"
+  title_collision: "A page named “%{name}” already exists."
+  rename_failed: "Rename failed"
+  rename_failed_fmt: "Rename failed: %{err}"
+  cant_rename: "Can’t rename"
+
+app_err:
+  page_title_placeholder: "Page name…"
+  search_placeholder: "Search…"
+  journal_tab: Journal
+  yes: Yes
+  off: Off
+  save_pdf_field_failed: "Couldn’t save the field"
+  pdf_form_refused: "Couldn’t save the field"
+  add_image_failed: "Couldn’t add the image"
+  import_image_failed: "Couldn’t add the image"
+  font_not_usable: "not a usable font: %{font}"
+  import_font_failed: "import font failed"
+  copy_page_failed: "Couldn’t copy"
+  new_page: "New page"
+  new_sub_page: "New sub-page"
+  pdf_locked: "🔒 This PDF is password protected"
+  pdf_wrong_password: "Incorrect password — try again."
+  pdf_unlock: Unlock
+  cant_use_folder: "Can’t use that folder"
+  settings_title: "Settings · Zorite"
+  paste_image_failed: "Failed to paste image"
+  drop_import_failed: "Failed to import dropped file"
+  math_copy_latex: "Copy LaTeX"
+  math_export_png: "Export PNG…"
+  math_export_svg: "Export SVG…"
+  math_align_left: "Align left"
+  math_align_center: "Align center"
+  math_align_right: "Align right"
+  math_edit: Edit
+  save_hint: "%{name}  —  ⏎ save · esc cancel · ⇥ next"
+  grid: Grid
+  striped: Striped
+  header: Header
+  minimal: Minimal
+  table_striped_marker: "<!-- table:striped -->"
+  table_header_marker: "<!-- table:header -->"
+  table_minimal_marker: "<!-- table:minimal -->"
+  db_open_failed: "open database on disk failed: {}; using a temporary in-memory store"
+  db_init_memory: "initialize in-memory database"
+  search_nodes_placeholder: "Search nodes…"
+  graph_tab: Graph
+  properties_tab: Properties
+  blockdown: Blockdown
+  place: Place
+  alias_hint: "alias1, alias2, …"
+  table_rows: rows
+  table_cols: cols
+  table_rows: rows
+  table_cols: cols
+  not_found: "not found"
+  relaunch_failed: "relaunch: spawn failed: {}"
+  relaunch_exe_failed: "relaunch: current_exe: {}"
+  all_pages: "All pages"
+  untitled_whiteboard: "Untitled Whiteboard"
+  create_notebook: "Create notebook"
+  create_notebook_body: "Zorite will relaunch with a fresh, empty notebook \u201c%{name}\u201d in:\n%{dir}"
+  switch_notebook: "Switch notebook"
+  switch_notebook_body: "Zorite will relaunch into \u201c%{name}\u201d:\n%{dir}"
+  relaunch: Relaunch
+  pdf_read_failed: "Reading the PDF failed: %{e}"
+  pdf_write_rejected: "The PDF rejected a write to \u201c%{name}\u201d (it may be read-only)."
+  pdf_write_failed: "Writing the PDF failed: %{e}"
+  import_image_failed_fmt: "Importing %{path} failed: %{e}"
+  today_label: "Today \u00b7 %{label}"
+  yesterday_label: "Yesterday \u00b7 %{label}"
+find:
+  placeholder_page: "Find in page…"
+  placeholder_journal: "Find in journal…"
+importing:
+  journal_label: Journal
+  import_button: Import
+  importing_named: "Importing %{name}"
+  obsidian_explain: "Obsidian folders can become Zorite namespaces. \u201cPreserve folders\u201d turns Projects/Tasks.md into the page Projects::Tasks (links resolve to it); \u201cFlatten\u201d uses just the note name."
+  logseq_explain: "Logseq makes every line a bullet. \u201cFlatten outline\u201d turns each top-level bullet into a paragraph or heading (nested bullets stay lists) so pages read like Zorite pages; \u201cKeep bullets\u201d preserves the outline exactly. Existing pages keep their content — imported text is appended below it."
+  summary_counts: "%{pages} pages, %{journals} journal days, %{highlight} PDF-highlight pages, %{boards} whiteboards; %{assets} assets copied; %{favorites} favorites."
+  export_counts: "%{pages} pages, %{days} journal days, %{boards} whiteboard%{board_s}, and %{assets} asset file%{asset_s} written."
+  warnings: "Warnings: %{names}"
+  complete_title: "%{source} import complete"
+  failed_title: "%{source} import failed"
+  title_obsidian: "Import from Obsidian"
+  cancel: Cancel
+  flatten: Flatten
+  preserve_folders: "Preserve folders"
+  export_here: "Export here"
+  complete: "Export complete"
+  failed: "Export failed"
+  obsidian: Obsidian
+  obsidian_progress: "Importing from Obsidian…"
+  obsidian_busy: "Copying notes and assets — this may take a minute."
+  logseq: Logseq
+  title_logseq: "Import from Logseq"
+  keep_bullets: "Keep bullets"
+  flatten_outline: "Flatten outline"
+  logseq_progress: "Importing from Logseq…"
+  logseq_busy: "Copying notes and assets — this may take a minute."
+  appended_below: "Appended below existing content: %{names}."
+  and_more: " — and %{n} more"
+  done: Done
+math:
+  error: "the formula didn’t render"
+  export_failed: "Export failed"
+all_pages:
+  letter_all: All
+  title: "All pages"
+  filter_all: "All types"
+  filter_pages: Pages
+  filter_whiteboards: Whiteboards
+  filter_pdfs: PDFs
+  col_title: Title
+  col_created: Created
+  col_updated: Updated
+  col_type: Type
+  type_page: Page
+  type_whiteboard: Whiteboard
+  type_pdf: PDF
+  empty: "Nothing matches this filter."
+  shown: "%{count} shown"
+  shown: "%{count} shown"
+  properties: Properties
+  graph: Graph
+game:
+  controls: "← → move · Space launches · P pauses · Esc leaves"
+  paused: "paused — P or Space resumes"
+  game_over: "game over — Space to try again"
+  level_cleared: "level cleared — Space for the next (+1 life)"
+graph:
+  empty: "No linked pages yet — [[wiki-links]] and #tags build the graph."
+  hint: "Drag to pan or move a node · pinch or ⌘-scroll to zoom · click a node to open"
+  filter_pages: Pages
+  filter_whiteboards: Whiteboards
+  filter_journals: Journals
+  filter_links: Links
+  filter_orphans: Orphans
+  nodes: Nodes
+  no_matches: "No matches"
+  legend_journals: Journals
+  legend_orphans: "Orphan pages"
+  legend_whiteboards: Whiteboards
+  shown: shown
+  match: match
+  matches: matches
+  reset: "Reset graph"
+image:
+  unresolved: "🖼 image (unresolved path)"
+journal:
+  empty: "Empty — click to write"
+  load_older: "Load older days"
+render:
+  math_typesetting: "Typesetting…"
+  mermaid_rendering: "Rendering diagram…"
+  math_failed: "the formula didn’t render"
+  mermaid_failed: "the diagram didn’t render"
+page_view:
+  empty: "Empty — click to write"
+  no_matches: "No matches"
+  link: Link
+  alias_prefix: "alias::"
+  sub_pages: "SUB-PAGES (%{count})"
+  linked_refs: "LINKED REFERENCES (%{count})"
+  unlinked_refs: "UNLINKED REFERENCES (%{count})"
+  linked_refs_panel: "Linked references (%{count})"
+ctx:
+  cut: Cut
+  copy: Copy
+  copy_as_markdown: "Copy as Markdown"
+  paste: Paste
+  code_copy: Copy
+  math_copy: Copy
+  turn_into: "Turn into"
+  text: Text
+  heading_1: "Heading 1"
+  heading_2: "Heading 2"
+  heading_3: "Heading 3"
+  bulleted_list: "Bulleted list"
+  numbered_list: "Numbered list"
+  todo: "To-do"
+  quote: Quote
+  callout: Callout
+  code_block: "Code block"
+  math_block: "Math block"
+  insert_row_above: "Insert row above"
+  insert_row_below: "Insert row below"
+  duplicate_row: "Duplicate row"
+  insert_column_left: "Insert column left"
+  insert_column_right: "Insert column right"
+  align_left: "Align left"
+  align_center: "Align center"
+  align_right: "Align right"
+  grid_style: "Grid style"
+  striped_style: "Striped style"
+  header_style: "Header style"
+  minimal_style: "Minimal style"
+  delete_row: "Delete row"
+  delete_column: "Delete column"
+  delete_table: "Delete table"
+  edit_properties: "Edit properties"
+  delete_property: "Delete property"
+  delete_image: "Delete image"
+page_ctx:
+  remove_favorite: "Remove from favorites"
+  add_favorite: "Add to favorites"
+  open_new_tab: "Open in new tab"
+  open_new_window: "Open in new window"
+  copy_link: "Copy link"
+  copy_contents: "Copy contents"
+  copy_contents_md: "Copy contents as Markdown"
+  export_pdf: "Export as PDF…"
+  new_sub_page: "New sub-page"
+  rename_page: "Rename page"
+  delete_page: "Delete page"
+month_cal:
+  su: Su
+  mo: Mo
+  tu: Tu
+  we: We
+  th: Th
+  fr: Fr
+  sa: Sa
+properties_page:
+  title: Properties
+  col_key: Key
+  col_pages: Pages
+  col_values: Values
+  keys_in_use: "keys in use"
+  map_first: "Map a key before first use:"
+  mapped_unused: "mapped — not used on any page yet"
+  ok: OK
+  cancel: Cancel
+  rename: Rename
+  icon: "Icon ▾"
+  default_builtin: "Default (built-in)"
+  reset_icon_tip: "Remove this key's custom icon. A key that isn't used on any page yet loses its row here too."
+  placeholder_rename: "new name"
+  placeholder_key: "key…"
+
+property_editor:
+  add_property: "+ Add property"
+search:
+  subtitle_whiteboard: Whiteboard
+  subtitle_pdf: PDF
+  subtitle_image: Image
+  pdf_in: "PDF · in %{title}"
+  image_in: "Image · in %{title}"
+  no_matches: "No matches"
+  filter_all: All
+  filter_pages: Pages
+  filter_whiteboards: "▦ Whiteboards"
+  filter_pdfs: PDFs
+  filter_images: Images
+sidebar:
+  favorites: Favorites
+  whiteboards: Whiteboards
+  recent: Recent
+  no_pages: "No pages yet — right-click below to add one"
+  no_recent: "No recent pages"
+  new_page: "New page"
+  main: Main
+  add_notebook: "Add notebook…"
+  rename: Rename
+  reveal_folder: "Reveal folder"
+  remove_from_list: "Remove from list (keeps the files)"
+  new_whiteboard: "New whiteboard"
+  journal: Journal
+  all_pages: "All pages"
+  properties: Properties
+  graph: Graph
+slash_menu:
+  h1_desc: "Big section heading."
+  h2_desc: "Medium section heading."
+  h3_desc: "Small section heading."
+  bullet_desc: "A simple bulleted list."
+  numbered_desc: "A list with numbering."
+  todo_desc: "Track a task with a checkbox."
+  quote_desc: "Capture a quote."
+  note_desc: "Callout — something worth noting."
+  tip_desc: "Callout — a helpful tip."
+  important_desc: "Callout — key information."
+  warning_desc: "Callout — needs attention."
+  caution_desc: "Callout — risky consequences."
+  code_desc: "Capture a code snippet."
+  mermaid_desc: "Draw a diagram from text."
+  math_desc: "Typeset a display formula."
+  table_desc: "Pick a rows × columns size."
+  divider_desc: "Visually divide the page."
+  bold_desc: "Bold text."
+  italic_desc: "Italic text."
+  strikethrough_desc: "Struck-through text."
+  inline_code_desc: "Code within a sentence."
+  inline_math_desc: "A formula within a sentence."
+  highlight_desc: "Highlighted text."
+  underline_desc: "Underlined text."
+  link_desc: "A web link."
+  property_desc: "Add a key:: value property."
+  markdown_desc: "All markdown blocks."
+  templates_desc: "Insert one of your templates."
+  date_desc: "Insert today's date."
+  time_desc: "Insert the current time."
+  no_commands: "No commands"
+tab_bar:
+  remove_favorite: "Remove from favorites"
+  add_favorite: "Add to favorites"
+  open_new_window: "Open in new window"
+  export_pdf: "Export as PDF…"
+  copy_link: "Copy link"
+  copy_contents: "Copy contents"
+  copy_contents_md: "Copy contents as Markdown"
+  new_sub_page: "New sub-page"
+  rename_page: "Rename page"
+  delete_page: "Delete page"
+table_picker:
+  title: "Insert table"
+  insert: Insert
+import_err:
+  logseq_no_folders: "%{path} doesn't look like a Logseq graph (no pages/ or journals/ folder)"
+  imported_whiteboard: "Imported Whiteboard"
+  obsidian_no_md: "%{path} doesn't contain any Markdown notes"
+  canvas_malformed: "canvas %{path}: malformed JSON, skipped"
+  canvas_unsupported_node: 'canvas "%{title}": unsupported node type ''%{node}'''
+  canvas_downgraded: 'canvas "%{title}": %{count} item(s) downgraded or skipped'
+  embed_expected: "expected an Embed card, got %{kind}"
+  favorite_err: "favorite %{title}: %{e}"
+  save_favorites_err: "save favorites: %{e}"
+  file_conv_err: "%{path}: %{e}"
+  missing_pdf: "missing embedded PDF: %{name}"
+  embed_dup: "duplicate embed of %{name}: %{e}"
+  loop_embed: "embedding loop at %{name}"
+  wb_unreadable: "whiteboard %{path}: unreadable"
+  wb_shapes_skipped: "whiteboard %{title}: %{skipped} shape(s) skipped (embeds / portals / unsupported)"
+  wb_geom_err: "whiteboard %{path}: %{e}"
+  asset_not_found: "asset not found: %{rel}"
+migration:
+  moving_data: "Moving your data…"
+menu:
+  app_name: Zorite
+  settings: "Settings…"
+  quit: "Quit Zorite"
+  file: File
+  edit: Edit
+  view: View
+  new_tab: "New Tab"
+  new_whiteboard: "New Whiteboard"
+  new_window: "New Window"
+  import_logseq: "Import from Logseq…"
+  import_obsidian: "Import from Obsidian…"
+  export_notebook: "Export Notebook as Markdown…"
+  export_pdf: "Export as PDF…"
+  close_tab: "Close Tab"
+  undo: Undo
+  redo: Redo
+  cut: Cut
+  copy: Copy
+  paste: Paste
+  select_all: "Select All"
+  find_in_page: "Find in Page"
+  search_all_notes: "Search All Notes"
+  fit_images: "Fit Images to View"
+  next_tab: "Next Tab"
+  prev_tab: "Previous Tab"
+paths:
+  not_a_folder: "That isn't a folder."
+  nested_or_parent: "Pick a folder that's neither inside nor the parent of the current data folder."
+  not_writable: "That folder isn't writable."
+  default_notebook: Notebook
+  app_title: "Zorite — %{name}"
+export_md:
+  not_a_folder: "The chosen destination isn't a folder."
+  not_empty: "The destination folder isn't empty — pick (or create) an empty one."
+  read_dest_failed: "read destination: %{e}"
+cursors:
+  pick_folder: "Pick the theme's folder."

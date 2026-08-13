@@ -9,6 +9,7 @@ use gpui::{
     Context, FontWeight, IntoElement, ParentElement, Render, SharedString, Styled, Window, div, px,
 };
 use gpui_component::{TitleBar, progress::Progress};
+use rust_i18n::t;
 
 use crate::paths::MigrationProgress;
 use crate::theme;
@@ -53,7 +54,7 @@ impl Render for MigrationView {
                         div()
                             .text_size(px(18.0))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .child("Moving your data…"),
+                            .child(t!("migration.moving_data")),
                     )
                     .child(
                         div()

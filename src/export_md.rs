@@ -29,6 +29,8 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use rust_i18n::t;
+
 use crate::db::ExportPage;
 use crate::paths::is_contained_relative;
 
@@ -148,14 +150,14 @@ pub fn write_export(
     plan: ExportPlan,
 ) -> Result<ExportSummary, String> {
     if !dest.is_dir() {
-        return Err("The chosen destination isn't a folder.".into());
+        return Err(t!("export_md.not_a_folder").into());
     }
     let occupied = std::fs::read_dir(dest)
-        .map_err(|e| format!("read destination: {e}"))?
+        .map_err(|e| t!("export_md.read_dest_failed", e = e.to_string()))?
         .filter_map(|e| e.ok())
         .any(|e| e.file_name().to_string_lossy() != ".DS_Store");
     if occupied {
-        return Err("The destination folder isn't empty — pick (or create) an empty one.".into());
+        return Err(t!("export_md.not_empty").into());
     }
 
     let mut warnings = plan.warnings;

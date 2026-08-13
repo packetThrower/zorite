@@ -17,6 +17,7 @@ use gpui_markdown::MathRenderer;
 use crate::app::AppView;
 use crate::math::MathStore;
 use crate::theme;
+use rust_i18n::t;
 
 /// Build the renderer handed to `MarkdownView::on_math`. Captures the formula cache and a
 /// weak `AppView` to drive the off-thread render.
@@ -115,7 +116,7 @@ fn loading_placeholder(source: SharedString, weak: WeakEntity<AppView>) -> AnyEl
                         .items_center()
                         .justify_center()
                         .text_color(theme::text_tertiary())
-                        .child("Typesetting…"),
+                        .child(t!("render.math_typesetting").to_string()),
                 )
                 .child(trigger),
         )

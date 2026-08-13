@@ -21,6 +21,7 @@ use gpui::{
 };
 
 use crate::theme;
+use rust_i18n::t;
 
 /// Emitted when the user exits the form from the keyboard (Enter, or the last
 /// Escape) — the host commits and seats the note caret after the block.
@@ -483,7 +484,7 @@ impl Render for PropertyEditor {
                     .text_color(theme::accent())
                     .cursor_pointer()
                     .hover(|s| s.text_color(theme::text_primary()))
-                    .child("+ Add property")
+                    .child(t!("property_editor.add_property"))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this: &mut PropertyEditor, _: &MouseDownEvent, _w, cx| {

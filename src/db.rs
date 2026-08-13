@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
+use rust_i18n::t;
 
 use crate::models::{Backlink, Page};
 use crate::paths;
@@ -644,7 +645,7 @@ impl Db {
     }
 
     pub fn create_whiteboard(&self) -> rusqlite::Result<Page> {
-        let base = "Untitled Whiteboard";
+        let base = t!("app_err.untitled_whiteboard");
         let mut title = base.to_string();
         let mut n = 2;
         while self.get_page_by_title(&title)?.is_some() {

@@ -126,11 +126,11 @@ impl AppView {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             let result = ratex_gpui::render::render_latex_to_png(&source, 48.0, 4.0)
-                .ok_or_else(|| "the formula didn’t render".to_string())
+                .ok_or_else(|| t!("math.error").into_owned())
                 .and_then(|png| std::fs::write(&path, png).map_err(|e| e.to_string()));
             if let Err(e) = result {
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.show_error_dialog("Export failed", e, window, cx);
+                    this.show_error_dialog(t!("math.export_failed"), e, window, cx);
                 });
             }
         })
@@ -146,11 +146,11 @@ impl AppView {
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = rx.await else { return };
             let result = ratex_gpui::render::render_latex_to_svg(&source, 48.0)
-                .ok_or_else(|| "the formula didn’t render".to_string())
+                .ok_or_else(|| t!("math.error").into_owned())
                 .and_then(|svg| std::fs::write(&path, svg).map_err(|e| e.to_string()));
             if let Err(e) = result {
                 let _ = this.update_in(cx, |this, window, cx| {
-                    this.show_error_dialog("Export failed", e, window, cx);
+                    this.show_error_dialog(t!("math.export_failed"), e, window, cx);
                 });
             }
         })

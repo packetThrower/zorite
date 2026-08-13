@@ -6,10 +6,12 @@ use gpui::{
     Context, InteractiveElement, IntoElement, MouseButton, ParentElement,
     StatefulInteractiveElement, Styled, div, prelude::FluentBuilder as _, px, relative,
 };
+use std::borrow::Cow;
 
 use crate::app::AppView;
-use crate::slash::{ItemKind, PaletteItem, Slash, Trigger};
+use crate::slash::{ItemKind, PaletteItem, Slash, SlashLevel, Trigger};
 use crate::theme;
+use rust_i18n::t;
 
 /// Fixed row heights (px) — rows are exactly this tall (`.h(item_h(..))`), so
 /// the keyboard scroll-into-view (`AppView::scroll_slash_into_view`) and the
@@ -56,40 +58,51 @@ pub fn panel_height(trigger: Trigger, n_items: usize) -> f32 {
 }
 
 /// Icon-box glyph + one-line description for the `/` palette's known entries.
-/// Dynamic rows (dates, templates, pages) match on their label's stable
-/// prefix; anything unknown falls back to a bare "+" box, no description.
-fn meta(label: &str) -> (&'static str, Option<&'static str>) {
-    match label {
-        "Heading 1" => ("H1", Some("Big section heading.")),
-        "Heading 2" => ("H2", Some("Medium section heading.")),
-        "Heading 3" => ("H3", Some("Small section heading.")),
-        "Bullet list" => ("•", Some("A simple bulleted list.")),
-        "Numbered list" => ("1.", Some("A list with numbering.")),
-        "To-do" => ("☐", Some("Track a task with a checkbox.")),
-        "Quote" => ("❝", Some("Capture a quote.")),
-        "Note alert" => ("!", Some("Callout — something worth noting.")),
-        "Tip alert" => ("!", Some("Callout — a helpful tip.")),
-        "Important alert" => ("!", Some("Callout — key information.")),
-        "Warning alert" => ("!", Some("Callout — needs attention.")),
-        "Caution alert" => ("!", Some("Callout — risky consequences.")),
-        "Code block" => ("</>", Some("Capture a code snippet.")),
-        "Mermaid diagram" => ("◇", Some("Draw a diagram from text.")),
-        "Math" => ("Σ", Some("Typeset a display formula.")),
-        "Table" => ("⊞", Some("Pick a rows × columns size.")),
-        "Divider" => ("—", Some("Visually divide the page.")),
-        "Bold" => ("B", Some("Bold text.")),
-        "Italic" => ("I", Some("Italic text.")),
-        "Strikethrough" => ("S", Some("Struck-through text.")),
-        "Inline code" => ("<>", Some("Code within a sentence.")),
-        "Inline math" => ("$", Some("A formula within a sentence.")),
-        "Highlight" => ("==", Some("Highlighted text.")),
-        "Underline" => ("U", Some("Underlined text.")),
-        "Link" => ("↗", Some("A web link.")),
-        "Property" => ("::", Some("Add a key:: value property.")),
-        "Markdown" => ("≡", Some("All markdown blocks.")),
-        "Templates" => ("⧉", Some("Insert one of your templates.")),
-        _ if label.starts_with("Date (") => ("@", Some("Insert today's date.")),
-        _ if label.starts_with("Time (") => ("@", Some("Insert the current time.")),
+/// Keyed on the item's stable kind/snippet — the visible label is localized,
+/// so matching on it would lose the glyph+desc under a non-English locale.
+/// Rows with no built-in mapping (templates, `[[` completions) fall back to
+/// a bare "+" box, no description.
+fn meta(item: &PaletteItem) -> (&'static str, Option<Cow<'static, str>>) {
+    let desc = |key: &'static str| Some(t!(key));
+    let date = t!("slash.date");
+    let time = t!("slash.time");
+    match &item.kind {
+        ItemKind::Category(SlashLevel::Markdown) => ("≡", desc("slash_menu.markdown_desc")),
+        ItemKind::Category(SlashLevel::Templates) => ("⧉", desc("slash_menu.templates_desc")),
+        ItemKind::TablePicker => ("⊞", desc("slash_menu.table_desc")),
+        ItemKind::Property => ("::", desc("slash_menu.property_desc")),
+        ItemKind::Insert { snippet, .. } => match snippet.as_str() {
+            "# " => ("H1", desc("slash_menu.h1_desc")),
+            "## " => ("H2", desc("slash_menu.h2_desc")),
+            "### " => ("H3", desc("slash_menu.h3_desc")),
+            "- " => ("•", desc("slash_menu.bullet_desc")),
+            "1. " => ("1.", desc("slash_menu.numbered_desc")),
+            "- [ ] " => ("☐", desc("slash_menu.todo_desc")),
+            "> " => ("❝", desc("slash_menu.quote_desc")),
+            "> [!NOTE] " => ("!", desc("slash_menu.note_desc")),
+            "> [!TIP] " => ("!", desc("slash_menu.tip_desc")),
+            "> [!IMPORTANT] " => ("!", desc("slash_menu.important_desc")),
+            "> [!WARNING] " => ("!", desc("slash_menu.warning_desc")),
+            "> [!CAUTION] " => ("!", desc("slash_menu.caution_desc")),
+            "```\n\n```" => ("</>", desc("slash_menu.code_desc")),
+            "```mermaid\n\n```" => ("◇", desc("slash_menu.mermaid_desc")),
+            "$$\n\n$$" => ("Σ", desc("slash_menu.math_desc")),
+            "|  |  |\n| --- | --- |\n|  |  |\n" => ("⊞", desc("slash_menu.table_desc")),
+            "---\n" => ("—", desc("slash_menu.divider_desc")),
+            "****" => ("B", desc("slash_menu.bold_desc")),
+            "**" => ("I", desc("slash_menu.italic_desc")),
+            "~~~~" => ("S", desc("slash_menu.strikethrough_desc")),
+            "``" => ("<>", desc("slash_menu.inline_code_desc")),
+            "$$" => ("$", desc("slash_menu.inline_math_desc")),
+            "<mark></mark>" => ("==", desc("slash_menu.highlight_desc")),
+            "<u></u>" => ("U", desc("slash_menu.underline_desc")),
+            "[]()" => ("↗", desc("slash_menu.link_desc")),
+            // `/date` and `/time` rows: the label is the localized name plus
+            // the value in parens, so prefix-match on the localized name.
+            _ if item.label.starts_with(date.as_ref()) => ("@", desc("slash_menu.date_desc")),
+            _ if item.label.starts_with(time.as_ref()) => ("@", desc("slash_menu.time_desc")),
+            _ => ("+", None),
+        },
         _ => ("+", None),
     }
 }
@@ -134,7 +147,7 @@ pub fn render(
                 .py_1()
                 .text_size(px(13.0))
                 .text_color(theme::text_tertiary())
-                .child("No commands"),
+                .child(t!("slash_menu.no_commands")),
         );
     } else {
         for (i, item) in items.iter().enumerate() {
@@ -171,7 +184,7 @@ pub fn render(
             col = col.child(if rich {
                 // Notion-style row (Cditor-inspired): a boxed glyph, the title,
                 // and a muted one-line description under it.
-                let (icon, desc) = meta(&item.label);
+                let (icon, desc) = meta(item);
                 row.child(
                     div()
                         .flex_none()
@@ -269,7 +282,7 @@ pub fn render(
             .py(px(PAD));
         for (i, item) in fly_items.iter().enumerate() {
             let selected = slash.flyout == Some(i);
-            let (icon, desc) = meta(&item.label);
+            let (icon, desc) = meta(item);
             fcol = fcol.child(
                 div()
                     .px_3()

@@ -6,12 +6,51 @@
 
 use gpui::{Bounds, Pixels};
 use gpui_markdown::SNIPPETS;
+use rust_i18n::t;
 
 use crate::models::Page;
 
 /// The reserved page whose content defines templates. Each template is a
 /// line `!name` followed by its body (until the next `!name` or EOF).
 pub const TEMPLATES_PAGE: &str = "Templates";
+
+/// Localized display label for a [`gpui_markdown::SNIPPETS`] entry, keyed on
+/// its English `&'static str` label (the stable identifier - the `Table`
+/// detection and any future lookup keep using the English label). Unknown
+/// labels pass through unchanged.
+fn slash_label(en: &str) -> String {
+    let key = match en {
+        "Heading 1" => "slash.label.h1",
+        "Heading 2" => "slash.label.h2",
+        "Heading 3" => "slash.label.h3",
+        "Bullet list" => "slash.label.bullet",
+        "Numbered list" => "slash.label.numbered",
+        "To-do" => "slash.label.todo",
+        "Quote" => "slash.label.quote",
+        "Note alert" => "slash.label.note_alert",
+        "Tip alert" => "slash.label.tip_alert",
+        "Important alert" => "slash.label.important_alert",
+        "Warning alert" => "slash.label.warning_alert",
+        "Caution alert" => "slash.label.caution_alert",
+        "Code block" => "slash.label.code",
+        "Mermaid diagram" => "slash.label.mermaid",
+        "Math" => "slash.label.math",
+        "Table" => "slash.label.table",
+        "Divider" => "slash.label.divider",
+        "Bold" => "slash.label.bold",
+        "Italic" => "slash.label.italic",
+        "Strikethrough" => "slash.label.strikethrough",
+        "Inline code" => "slash.label.inline_code",
+        "Inline math" => "slash.label.inline_math",
+        "Highlight" => "slash.label.highlight",
+        "Underline" => "slash.label.underline",
+        "Link" => "slash.label.link",
+        "Wiki link" => "slash.label.wiki_link",
+        "Image" => "slash.label.image",
+        _ => return en.to_string(),
+    };
+    t!(key).into_owned()
+}
 
 /// Menu level: the root (two categories) or a submenu.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -254,23 +293,23 @@ pub fn build_slash_items(
     match level {
         SlashLevel::Root if q.is_empty() => {
             out.push(PaletteItem {
-                label: "Markdown".to_string(),
+                label: t!("slash.cat.markdown").into_owned(),
                 kind: ItemKind::Category(SlashLevel::Markdown),
             });
             if !templates.is_empty() {
                 out.push(PaletteItem {
-                    label: "Templates".to_string(),
+                    label: t!("slash.cat.templates").into_owned(),
                     kind: ItemKind::Category(SlashLevel::Templates),
                 });
             }
             datetime_items(&q, &mut out);
         }
         SlashLevel::Root => {
-            // The easter egg: never listed, never filtered into view —
+            // The easter egg: never listed, never filtered into view -
             // exactly `/play` summons it.
             if q == "play" {
                 out.push(PaletteItem {
-                    label: "▸ Blockdown".to_string(),
+                    label: t!("slash.blockdown").into_owned(),
                     kind: ItemKind::Game,
                 });
             }
@@ -286,8 +325,12 @@ pub fn build_slash_items(
 
 fn markdown_items(q: &str, out: &mut Vec<PaletteItem>) {
     for s in SNIPPETS {
-        if q.is_empty() || s.label.to_lowercase().contains(q) {
-            // "Table" opens the rows×cols picker; everything else inserts directly.
+        // Display the localized label; search matches the localized label OR
+        // the original English label (so typing English still finds an entry in
+        // zh-CN). `Table` detection stays keyed on the English identifier.
+        let label = slash_label(s.label);
+        let en_lower = s.label.to_lowercase();
+        if q.is_empty() || label.to_lowercase().contains(q) || en_lower.contains(q) {
             let kind = if s.label == "Table" {
                 ItemKind::TablePicker
             } else {
@@ -296,17 +339,15 @@ fn markdown_items(q: &str, out: &mut Vec<PaletteItem>) {
                     caret: s.caret,
                 }
             };
-            out.push(PaletteItem {
-                label: s.label.to_string(),
-                kind,
-            });
+            out.push(PaletteItem { label, kind });
         }
     }
     // Properties are app-level (the form is the host's), not a gpui-markdown
-    // snippet — appended after the shared list.
-    if q.is_empty() || "property".contains(q) {
+    // snippet - appended after the shared list.
+    let prop_label = t!("slash.property").into_owned();
+    if q.is_empty() || prop_label.to_lowercase().contains(q) || "property".contains(q) {
         out.push(PaletteItem {
-            label: "Property".to_string(),
+            label: prop_label,
             kind: ItemKind::Property,
         });
     }
@@ -328,11 +369,15 @@ fn template_items(q: &str, templates: &[Template], title: &str, out: &mut Vec<Pa
 /// from the `{{date}}` / `{{time}}` template placeholders, which only expand
 /// inside a template body. The value to be inserted is shown in the label.
 fn datetime_items(q: &str, out: &mut Vec<PaletteItem>) {
-    for (label, value) in [
-        ("Date", crate::dates::current_date()),
-        ("Time", crate::dates::current_time()),
+    // The display label is localized ("日期" / "Date"); the inserted value is
+    // the raw date/time string (user data, not localized). Search matches the
+    // localized label OR the English "date"/"time" alias.
+    for (en, key, value) in [
+        ("date", "slash.date", crate::dates::current_date()),
+        ("time", "slash.time", crate::dates::current_time()),
     ] {
-        if q.is_empty() || label.to_lowercase().contains(q) {
+        let label = t!(key).into_owned();
+        if q.is_empty() || label.to_lowercase().contains(q) || en.contains(q) {
             out.push(insert_item(format!("{label} ({value})"), value));
         }
     }
@@ -388,7 +433,7 @@ pub fn build_link_items(
     let trimmed = query.trim();
     if !trimmed.is_empty() && !exact {
         out.push(insert_item(
-            format!("Create \"{trimmed}\""),
+            format!("{} \"{trimmed}\"", t!("slash.create")),
             format!("[[{trimmed}]]"),
         ));
     }
@@ -408,7 +453,7 @@ pub fn build_tag_items(query: &str, pages: &[Page]) -> Vec<PaletteItem> {
     let trimmed = query.trim();
     if !trimmed.is_empty() && is_valid_tag(trimmed) && !exact {
         out.push(insert_item(
-            format!("Create #{trimmed}"),
+            format!("{} #{trimmed}", t!("slash.create")),
             format!("#{trimmed}"),
         ));
     }

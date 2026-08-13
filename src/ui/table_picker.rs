@@ -10,6 +10,7 @@ use gpui_component::{Sizable, input::Input};
 
 use crate::app::{AppView, TableDesign, TablePicker};
 use crate::theme;
+use rust_i18n::t;
 
 const MAX_COLS: usize = 8;
 const MAX_ROWS: usize = 8;
@@ -19,7 +20,7 @@ pub fn render(picker: &TablePicker, cx: &mut Context<AppView>) -> impl IntoEleme
     let label = if hr > 0 && hc > 0 {
         format!("{hc} × {hr}")
     } else {
-        "Insert table".to_string()
+        t!("table_picker.title").into_owned()
     };
 
     let mut grid = div().flex().flex_col().gap(px(3.0));
@@ -144,7 +145,7 @@ pub fn render(picker: &TablePicker, cx: &mut Context<AppView>) -> impl IntoEleme
                         .bg(theme::glass())
                         .text_size(px(12.0))
                         .text_color(theme::text_secondary())
-                        .child("Insert")
+                        .child(t!("table_picker.insert"))
                         .on_mouse_down(
                             MouseButton::Left,
                             cx.listener(|this: &mut AppView, _: &MouseDownEvent, _, cx| {

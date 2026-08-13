@@ -5,14 +5,15 @@
 
 use gpui::{
     App, AppContext, Bounds, Context, Entity, FontWeight, InteractiveElement, IntoElement,
-    ParentElement, Render, StatefulInteractiveElement, Styled, Subscription, TitlebarOptions,
-    Window, WindowAppearance, WindowBounds, WindowOptions, div, px, size,
+    ParentElement, Render, SharedString, StatefulInteractiveElement, Styled, Subscription,
+    TitlebarOptions, Window, WindowAppearance, WindowBounds, WindowOptions, div, px, size,
 };
 use gpui_component::checkbox::Checkbox;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{Root, TitleBar};
 
 use crate::theme;
+use rust_i18n::t;
 
 pub struct UnlockView {
     input: Entity<InputState>,
@@ -26,7 +27,7 @@ impl UnlockView {
         let input = cx.new(|cx| {
             InputState::new(window, cx)
                 .masked(true)
-                .placeholder("Password")
+                .placeholder(t!("unlock.placeholder"))
         });
         let sub = cx.subscribe_in(
             &input,
@@ -94,19 +95,19 @@ impl Render for UnlockView {
                     .text_size(px(20.0))
                     .font_weight(FontWeight::BOLD)
                     .text_color(theme::text_primary())
-                    .child("Zorite is locked"),
+                    .child(t!("unlock.title")),
             )
             .child(
                 div()
                     .text_size(px(12.0))
                     .text_color(theme::text_tertiary())
-                    .child("Your notes are encrypted. Enter your password to open them."),
+                    .child(t!("unlock.body")),
             )
             .child(div().w(px(280.0)).child(Input::new(&self.input)))
             .child(
                 div().w(px(280.0)).child(
                     Checkbox::new("unlock-remember")
-                        .label("Remember on this device")
+                        .label(SharedString::from(t!("unlock.remember_label")))
                         .checked(remember)
                         .on_click(cx.listener(|this: &mut UnlockView, on: &bool, _w, cx| {
                             this.remember = *on;
@@ -133,13 +134,13 @@ impl Render for UnlockView {
                             this.try_unlock(w, cx);
                         }),
                     )
-                    .child("Unlock"),
+                    .child(t!("unlock.unlock_btn")),
             )
             .children(self.error.then(|| {
                 div()
                     .text_size(px(12.0))
                     .text_color(gpui::hsla(0.0, 0.7, 0.5, 1.0))
-                    .child("Wrong password — try again.")
+                    .child(t!("unlock.wrong_pw"))
             }))
     }
 }
@@ -151,7 +152,7 @@ pub fn open_unlock_window(cx: &mut App) {
         WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(TitlebarOptions {
-                title: Some("Zorite — locked".into()),
+                title: Some(t!("unlock.window_title").into()),
                 ..TitleBar::title_bar_options()
             }),
             app_id: Some("zorite".into()),

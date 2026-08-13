@@ -75,6 +75,7 @@ impl Render for EmbedView {
             format!("embed-{}", self.nav_target),
             self.content.clone(),
         )
+        .set_labels(crate::i18n::reader_labels())
         .style(theme::markdown_style(self.list_indent, self.text_size))
         .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
             let _ = wiki_app.update(cx, |this, cx| this.open_page_title(&title, window, cx));

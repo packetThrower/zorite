@@ -22,6 +22,7 @@ mod edn;
 pub mod logseq;
 pub mod obsidian;
 
+use rust_i18n::t;
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 
@@ -240,7 +241,9 @@ pub fn write_bundle(
                 Ok(None) => summary
                     .warnings
                     .push(format!("favorite not imported, skipped: {title}")),
-                Err(e) => summary.warnings.push(format!("favorite {title}: {e}")),
+                Err(e) => summary.warnings.push(
+                    t!("import_err.favorite_err", title = title, e = e.to_string()).into_owned(),
+                ),
             }
         }
         let csv = ids
@@ -249,7 +252,9 @@ pub fn write_bundle(
             .collect::<Vec<_>>()
             .join(",");
         if let Err(e) = db.set_setting("favorites", &csv) {
-            summary.warnings.push(format!("save favorites: {e}"));
+            summary
+                .warnings
+                .push(t!("import_err.save_favorites_err", e = e.to_string()).into_owned());
         }
     }
 

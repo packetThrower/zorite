@@ -3,6 +3,7 @@
 //! DB-error modal) and their submit helpers — split from `app.rs`.
 
 use super::*;
+use rust_i18n::t;
 
 impl AppView {
     /// Open the "insert page card" dialog, then place the chosen page as a card
@@ -23,7 +24,7 @@ impl AppView {
             let weak_ok = weak.clone();
             let weak_btn = weak.clone();
             dialog
-                .title("Insert page card")
+                .title(t!("dialogs.insert_card_title"))
                 .w(px(420.0))
                 // Enter inserts (the dialog binds enter → ConfirmDialog → on_ok).
                 .on_ok(move |_, _window, cx| {
@@ -37,13 +38,13 @@ impl AppView {
                     DialogFooter::new()
                         .child(
                             Button::new("embed-cancel")
-                                .label("Cancel")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("embed-insert")
                                 .primary()
-                                .label("Insert")
+                                .label(t!("common.insert"))
                                 .on_click(move |_, window, cx| {
                                     let _ = weak_btn.update(cx, |this, cx| {
                                         this.insert_embed_from_input(board_id, x, y, cx)
@@ -105,7 +106,7 @@ impl AppView {
             let weak_btn = weak.clone();
             let json_btn = json.clone();
             dialog
-                .title("Save as template")
+                .title(t!("dialogs.save_template_title"))
                 .w(px(420.0))
                 // The dialog binds `enter` → ConfirmDialog → `on_ok`; without
                 // this, Enter closes the dialog without saving (looks like
@@ -119,16 +120,20 @@ impl AppView {
                     DialogFooter::new()
                         .child(
                             Button::new("tmpl-cancel")
-                                .label("Cancel")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("tmpl-save").primary().label("Save").on_click(
-                            move |_, window, cx| {
-                                let _ = weak_btn
-                                    .update(cx, |this, cx| this.save_template_named(&json_btn, cx));
-                                window.close_dialog(cx);
-                            },
-                        )),
+                        .child(
+                            Button::new("tmpl-save")
+                                .primary()
+                                .label(t!("common.save"))
+                                .on_click(move |_, window, cx| {
+                                    let _ = weak_btn.update(cx, |this, cx| {
+                                        this.save_template_named(&json_btn, cx)
+                                    });
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                 )
         });
     }
@@ -138,7 +143,7 @@ impl AppView {
     fn save_template_named(&mut self, json: &str, cx: &mut Context<Self>) {
         let name = self.new_page_input.read(cx).value().trim().to_string();
         let name = if name.is_empty() {
-            "Untitled template".to_string()
+            t!("dialogs.template_default_name").into_owned()
         } else {
             name
         };
@@ -167,20 +172,20 @@ impl AppView {
             .into_iter()
             .find(|(id, ..)| *id == tid)
             .map(|(_, name, _)| name)
-            .unwrap_or_else(|| "this template".to_string());
+            .unwrap_or_else(|| t!("dialogs.delete_template_fallback").into_owned());
         let weak = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let weak = weak.clone();
             dialog
-                .title("Delete template?")
-                .description(SharedString::from(format!(
-                    "“{name}” will be permanently deleted. This can't be undone."
-                )))
+                .title(t!("dialogs.delete_template_title"))
+                .description(SharedString::from(
+                    t!("dialogs.delete_template_body", name = name).into_owned(),
+                ))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Delete")
+                        .ok_text(t!("common.delete"))
                         .ok_variant(ButtonVariant::Danger)
-                        .cancel_text("Cancel")
+                        .cancel_text(t!("common.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, _window, cx| {
@@ -216,16 +221,21 @@ impl AppView {
             .take(200)
             .collect();
         let recovery = match &err.backup {
-            Some(b) => format!(
-                "Your notes were backed up before the update and are safe — restore them from {}",
-                b.display()
-            ),
-            None => format!("Your notes on disk are unchanged, in {}", folder.display()),
+            Some(b) => t!(
+                "dialogs.db_error_recovery_backup",
+                path = b.display().to_string()
+            )
+            .into_owned(),
+            None => t!(
+                "dialogs.db_error_recovery_no_backup",
+                path = folder.display().to_string()
+            )
+            .into_owned(),
         };
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let folder = folder.clone();
             dialog
-                .title("Couldn't open your notes database")
+                .title(t!("dialogs.db_error_title"))
                 .w(px(480.0))
                 // Enter triggers the primary action (Quit); the temporary
                 // workspace isn't saved, so there's nothing to lose.
@@ -238,10 +248,11 @@ impl AppView {
                         .flex()
                         .flex_col()
                         .gap(px(10.0))
-                        .child(div().text_color(theme::text_secondary()).child(
-                            "Zorite opened a temporary, empty workspace because the database \
-                                 couldn't be opened or upgraded. Changes here won't be saved.",
-                        ))
+                        .child(
+                            div()
+                                .text_color(theme::text_secondary())
+                                .child(t!("dialogs.db_error_body").to_string()),
+                        )
                         .child(
                             div()
                                 .text_size(px(12.0))
@@ -254,13 +265,13 @@ impl AppView {
                     DialogFooter::new()
                         .child(
                             Button::new("db-error-reveal")
-                                .label("Reveal Backup")
+                                .label(t!("dialogs.reveal_backup"))
                                 .on_click(move |_, _window, _cx| AppView::reveal_folder(&folder)),
                         )
                         .child(
                             Button::new("db-error-quit")
                                 .primary()
-                                .label("Quit")
+                                .label(t!("common.quit"))
                                 .on_click(|_, _window, cx| cx.quit()),
                         ),
                 )
@@ -281,15 +292,15 @@ impl AppView {
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let weak = weak.clone();
             dialog
-                .title("Delete page?")
-                .description(SharedString::from(format!(
-                    "“{title}” will be permanently deleted. This can't be undone."
-                )))
+                .title(t!("dialogs.delete_page_title"))
+                .description(SharedString::from(
+                    t!("dialogs.delete_page_body", title = title).into_owned(),
+                ))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("Delete")
+                        .ok_text(t!("common.delete"))
                         .ok_variant(ButtonVariant::Danger)
-                        .cancel_text("Cancel")
+                        .cancel_text(t!("common.cancel"))
                         .show_cancel(true),
                 )
                 .on_ok(move |_, window, cx| {
@@ -305,19 +316,20 @@ impl AppView {
     /// copy when the branches merge.
     pub(super) fn show_error_dialog(
         &mut self,
-        title: &'static str,
+        title: impl Into<SharedString>,
         body: String,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let title: SharedString = title.into();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let body = body.clone();
             dialog
-                .title(title)
+                .title(title.clone())
                 .description(SharedString::from(body))
                 .button_props(
                     DialogButtonProps::default()
-                        .ok_text("OK")
+                        .ok_text(t!("common.ok"))
                         .show_cancel(false),
                 )
                 .on_ok(|_, _window, _cx| true)
@@ -352,14 +364,14 @@ impl AppView {
             Ok(false) => {}
             Err(e) => {
                 log::error!("delete page {id}: {e}");
-                self.show_error_dialog("Couldn’t delete the page", e.to_string(), window, cx);
+                self.show_error_dialog(t!("dialogs.delete_page_failed"), e.to_string(), window, cx);
             }
         }
     }
 
     pub(super) fn open_new_page_dialog(
         &mut self,
-        dialog_title: &'static str,
+        dialog_title: impl Into<SharedString>,
         prefill: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -368,6 +380,7 @@ impl AppView {
             .update(cx, |s, cx| s.set_value(prefill, window, cx));
         let input = self.new_page_input.clone();
         let weak = cx.entity().downgrade();
+        let dialog_title: SharedString = dialog_title.into();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let input_body = input.clone();
             let input_btn = input.clone();
@@ -375,20 +388,20 @@ impl AppView {
             let weak_btn = weak.clone();
             let weak_key = weak.clone();
             dialog
-                .title(dialog_title)
+                .title(dialog_title.clone())
                 .w(px(420.0))
                 .child(Input::new(&input_body))
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("new-page-cancel")
-                                .label("Cancel")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("new-page-create")
                                 .primary()
-                                .label("Create")
+                                .label(t!("common.create"))
                                 .on_click(move |_, window, cx| {
                                     let title = input_btn.read(cx).value().trim().to_string();
                                     if !title.is_empty() {
@@ -447,7 +460,7 @@ impl AppView {
             // the dialog stack and read as "nothing happened".
             let error = err.borrow().clone();
             dialog
-                .title("Rename page")
+                .title(t!("dialogs.rename_page_title"))
                 .w(px(420.0))
                 .child(Input::new(&input_body))
                 .children(error.map(|e| {
@@ -461,20 +474,25 @@ impl AppView {
                     DialogFooter::new()
                         .child(
                             Button::new("rename-cancel")
-                                .label("Cancel")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("rename-ok").primary().label("Rename").on_click(
-                            move |_, window, cx| {
-                                let title = input_btn.read(cx).value().to_string();
-                                let done = weak_btn
-                                    .update(cx, |this, cx| this.commit_rename(title, window, cx))
-                                    .unwrap_or(true);
-                                if done {
-                                    window.close_dialog(cx);
-                                }
-                            },
-                        )),
+                        .child(
+                            Button::new("rename-ok")
+                                .primary()
+                                .label(t!("common.rename"))
+                                .on_click(move |_, window, cx| {
+                                    let title = input_btn.read(cx).value().to_string();
+                                    let done = weak_btn
+                                        .update(cx, |this, cx| {
+                                            this.commit_rename(title, window, cx)
+                                        })
+                                        .unwrap_or(true);
+                                    if done {
+                                        window.close_dialog(cx);
+                                    }
+                                }),
+                        ),
                 )
                 .on_ok(move |_, window, cx| {
                     let title = input_key.read(cx).value().to_string();
@@ -523,7 +541,7 @@ impl AppView {
                 let t = new_title.trim().to_string();
                 if !t.is_empty() && self.title_collides(id, &t) {
                     *self.rename_error.borrow_mut() =
-                        Some(format!("A page named “{t}” already exists.").into());
+                        Some(t!("dialogs.title_collision", name = t).into_owned().into());
                     cx.notify();
                     false
                 } else {
@@ -533,7 +551,11 @@ impl AppView {
             }
             Err(e) => {
                 log::error!("rename page {id}: {e}");
-                *self.rename_error.borrow_mut() = Some(format!("Rename failed: {e}").into());
+                *self.rename_error.borrow_mut() = Some(
+                    t!("dialogs.rename_failed_fmt", err = e.to_string())
+                        .into_owned()
+                        .into(),
+                );
                 cx.notify();
                 false
             }
@@ -570,20 +592,20 @@ impl AppView {
             let weak_btn = weak.clone();
             let weak_key = weak.clone();
             dialog
-                .title("Rename notebook")
+                .title(t!("settings.dlg.rename_notebook_title"))
                 .w(px(420.0))
                 .child(Input::new(&input_body))
                 .footer(
                     DialogFooter::new()
                         .child(
                             Button::new("nb-rename-cancel")
-                                .label("Cancel")
+                                .label(t!("common.cancel"))
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
                         .child(
                             Button::new("nb-rename-ok")
                                 .primary()
-                                .label("Rename")
+                                .label(t!("common.rename"))
                                 .on_click(move |_, window, cx| {
                                     let name = input_btn.read(cx).value().to_string();
                                     let _ = weak_btn.update(cx, |this, cx| {
@@ -667,8 +689,8 @@ impl AppView {
                 title_state.update(cx, |s, cx| s.set_value(current, window, cx));
                 if !t.is_empty() && self.title_collides(id, &t) {
                     self.show_error_dialog(
-                        "Can’t rename",
-                        format!("A page named “{t}” already exists."),
+                        t!("dialogs.cant_rename"),
+                        t!("dialogs.title_collision", name = t).into_owned(),
                         window,
                         cx,
                     );
@@ -678,7 +700,7 @@ impl AppView {
             Err(e) => {
                 log::error!("rename page {id} (inline): {e}");
                 title_state.update(cx, |s, cx| s.set_value(current, window, cx));
-                self.show_error_dialog("Rename failed", e.to_string(), window, cx);
+                self.show_error_dialog(t!("dialogs.rename_failed"), e.to_string(), window, cx);
             }
         }
     }

@@ -14,6 +14,7 @@ use gpui_component::Icon;
 use crate::app::AppView;
 use crate::dates;
 use crate::theme;
+use rust_i18n::t;
 
 /// The kind filter chips.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -90,7 +91,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
 
     // The A–Z / 0–9 / # strip. "All" clears.
     let mut strip = div().flex().flex_row().flex_wrap().gap(px(4.0)).child(chip(
-        "All",
+        t!("all_pages.letter_all").into_owned(),
         letter.is_none(),
         true,
         cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
@@ -114,7 +115,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .flex_row()
         .gap(px(6.0))
         .child(chip(
-            "All types",
+            t!("all_pages.filter_all").into_owned(),
             kind == KindFilter::All,
             true,
             cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
@@ -122,7 +123,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             }),
         ))
         .child(chip(
-            "Pages",
+            t!("all_pages.filter_pages").into_owned(),
             kind == KindFilter::Pages,
             true,
             cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
@@ -130,7 +131,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             }),
         ))
         .child(chip(
-            "Whiteboards",
+            t!("all_pages.filter_whiteboards").into_owned(),
             kind == KindFilter::Whiteboards,
             true,
             cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
@@ -138,7 +139,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             }),
         ))
         .child(chip(
-            "PDFs",
+            t!("all_pages.filter_pdfs").into_owned(),
             kind == KindFilter::Pdfs,
             true,
             cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
@@ -154,19 +155,34 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .px(px(10.0))
         .text_size(px(11.0))
         .text_color(theme::text_tertiary())
-        .child(div().flex_1().child("Title"))
-        .child(div().w(px(84.0)).flex_shrink_0().child("Created"))
-        .child(div().w(px(84.0)).flex_shrink_0().child("Updated"))
-        .child(div().w(px(92.0)).flex_shrink_0().child("Type"));
+        .child(div().flex_1().child(t!("all_pages.col_title")))
+        .child(
+            div()
+                .w(px(84.0))
+                .flex_shrink_0()
+                .child(t!("all_pages.col_created")),
+        )
+        .child(
+            div()
+                .w(px(84.0))
+                .flex_shrink_0()
+                .child(t!("all_pages.col_updated")),
+        )
+        .child(
+            div()
+                .w(px(92.0))
+                .flex_shrink_0()
+                .child(t!("all_pages.col_type")),
+        );
 
     let mut list = div().flex().flex_col();
     for (i, (title, row, created, updated)) in rows.into_iter().enumerate() {
         let open_title = title.clone();
         let open_row = row.clone();
         let badge = match &row {
-            Row::Page(_) => "Page",
-            Row::Board(_) => "Whiteboard",
-            Row::Pdf(_) => "PDF",
+            Row::Page(_) => t!("all_pages.type_page").into_owned(),
+            Row::Board(_) => t!("all_pages.type_whiteboard").into_owned(),
+            Row::Pdf(_) => t!("all_pages.type_pdf").into_owned(),
         };
         let menu_target = match &row {
             Row::Page(id) | Row::Board(id) => Some(*id),
@@ -230,7 +246,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .py(px(12.0))
                 .text_size(px(13.0))
                 .text_color(theme::text_tertiary())
-                .child("Nothing matches this filter."),
+                .child(t!("all_pages.empty")),
         );
     }
 
@@ -258,13 +274,13 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                             div()
                                 .text_size(px(22.0))
                                 .font_weight(gpui::FontWeight::BOLD)
-                                .child("All pages"),
+                                .child(t!("all_pages.title")),
                         )
                         .child(
                             div()
                                 .text_size(px(12.0))
                                 .text_color(theme::text_tertiary())
-                                .child(format!("{count} shown")),
+                                .child(t!("all_pages.shown", count = count)),
                         ),
                 )
                 .child(
@@ -293,7 +309,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     },
                                 ))
                                 .child(Icon::empty().path("icons/list.svg").size_4())
-                                .child("Properties"),
+                                .child(t!("all_pages.properties")),
                         )
                         .child(
                             div()
@@ -315,7 +331,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                     },
                                 ))
                                 .child(Icon::empty().path("icons/waypoints.svg").size_4())
-                                .child("Graph"),
+                                .child(t!("all_pages.graph")),
                         ),
                 ),
         )

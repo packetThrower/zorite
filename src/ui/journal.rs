@@ -16,6 +16,7 @@ use gpui_editor::EditorState;
 use crate::app::{self, AppView};
 use crate::slash::SlashTarget;
 use crate::theme;
+use rust_i18n::t;
 
 pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl IntoElement {
     // Reader-day windowing: a MarkdownView rebuilds its whole element tree
@@ -340,7 +341,7 @@ fn rendered_day(
         div()
             .text_size(app.text_size())
             .text_color(theme::text_tertiary())
-            .child("Empty — click to write")
+            .child(t!("journal.empty").to_string())
             .into_any_element()
     } else {
         let weak = cx.entity().downgrade();
@@ -354,6 +355,7 @@ fn rendered_day(
         let embeds = app.build_embed_map(&content);
         let fold_date = d.clone();
         let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
+            .set_labels(crate::i18n::reader_labels())
             .style({
                 let mut st = theme::markdown_style(app.list_indent(), app.text_size());
                 st.block_label = Some(app.block_label_resolver());
@@ -476,7 +478,7 @@ fn load_older(cx: &mut Context<AppView>) -> impl IntoElement {
         .text_color(theme::text_tertiary())
         .cursor_pointer()
         .hover(|h| h.text_color(theme::text_secondary()))
-        .child("Load older days")
+        .child(t!("journal.load_older"))
         .on_click(
             cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
                 this.extend_feed(window, cx);

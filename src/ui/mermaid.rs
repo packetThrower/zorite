@@ -17,6 +17,7 @@ use gpui_markdown::MermaidRenderer;
 use crate::app::AppView;
 use crate::mermaid::MermaidStore;
 use crate::theme;
+use rust_i18n::t;
 
 /// Build the renderer handed to `MarkdownView::on_mermaid`. Captures the diagram
 /// cache and a weak `AppView` to drive the off-thread render.
@@ -100,7 +101,7 @@ fn loading_placeholder(source: SharedString, weak: WeakEntity<AppView>) -> AnyEl
                         .items_center()
                         .justify_center()
                         .text_color(theme::text_tertiary())
-                        .child("Rendering diagram…"),
+                        .child(t!("render.mermaid_rendering").to_string()),
                 )
                 .child(trigger),
         )

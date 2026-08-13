@@ -442,7 +442,7 @@ impl AppView {
                 );
             }
             dialog
-                .title(format!("Linked references ({})", refs.len()))
+                .title(t!("page_view.linked_refs_panel", count = refs.len()))
                 .w(px(480.0))
                 // The default dialog seat (10% down) reads awkwardly for a
                 // click-through list — drop it toward the window's middle.
