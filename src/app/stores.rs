@@ -143,6 +143,33 @@ impl AppView {
         }
     }
 
+    /// Parse `content` into gpui-markdown's shared cache off the render
+    /// thread. The parser is superlinear on some shapes — a pasted CSV table,
+    /// runaway blockquote nesting (issue #60) — so the reader refuses to pay
+    /// that during render and shows plain text until the cache is warm; this
+    /// is what makes the next frame the real thing. `needs_warm` is a linear
+    /// pre-scan plus a cache probe, so an ordinary note spawns nothing at all
+    /// — which is also why the journal feed can call this per loaded day
+    /// without spawning a task per day.
+    pub(super) fn ensure_content_parsed(&mut self, content: &str, cx: &mut Context<Self>) {
+        if !gpui_markdown::needs_warm(content) {
+            return;
+        }
+        let content = content.to_string();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .spawn(async move { gpui_markdown::warm_parse(&content) })
+                .await;
+            // Same repaint dance as a finished mermaid render: a cached row
+            // layout built before the tree existed has to be rebuilt.
+            let _ = this.update(cx, |_, cx| {
+                cx.notify();
+                cx.refresh_windows();
+            });
+        })
+        .detach();
+    }
+
     /// Resolve every `![[target]]` embed in `content` into the shared store the
     /// editors' overlay provider reads: one `EmbedView` per target plus the row
     /// height to reserve — estimated from the embedded content's line count and
@@ -179,6 +206,9 @@ impl AppView {
         self.ensure_content_images(&body, cx);
         self.ensure_content_mermaid(&body, cx);
         self.ensure_content_math(&body, cx);
+        // ...and its parse, for the same reason: an embed of an expensive
+        // note renders as plain text until the cache is warm (issue #60).
+        self.ensure_content_parsed(&body, cx);
         let lh = f32::from(self.text_size()) * 1.45;
         let lines = body.lines().count().max(1) as f32;
         let height = (40.0 + lines * (lh + 6.0)).clamp(64.0, 340.0);

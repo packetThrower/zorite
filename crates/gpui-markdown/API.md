@@ -104,6 +104,8 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 | [`toggle_task_at`](#toggle_task_at) | fn | `fn toggle_task_at(content: &str, offset: usize) -> Option<String>` | Flip the `[ ]`↔`[x]` on the line at `offset` | `view` |
 | [`match_count`](#match_count) | fn | `fn match_count(source: &str, query: &str) -> usize` | In-page find: total matches | `view` |
 | [`find_matches`](#find_matches) | fn | `fn find_matches(source: &str, query: &str) -> Vec<usize>` | In-page find: block index per match, in order | `view` |
+| [`warm_parse`](#warm_parse) | fn | `fn warm_parse(source: &str)` | Fill the shared parse cache off the UI thread | `view` |
+| [`needs_warm`](#needs_warm) | fn | `fn needs_warm(source: &str) -> bool` | Would rendering `source` block on a parse? | `view` |
 | [`Snippet`](#struct-snippet-and-snippets) | struct | 3 pub fields | An authoring snippet (label, text, caret) | `view` |
 | [`SNIPPETS`](#struct-snippet-and-snippets) | const | `&[Snippet]` | Built-in markdown snippets for a `/` palette | `view` |
 | [`ListEdit`](#enum-listedit) | enum | `Continue(String) \| Exit { start, end }` | What Enter should do on a list/quote line | `view` |
@@ -1573,7 +1575,53 @@ of `query` in `source`, in document order — one entry per match, so
   `[!NOTE]` doesn't match; a `[[wiki|alias]]`'s alias does), case-insensitive.
 - Empty query → empty vec.
 
-**Cost & threading** — pure; parses the markdown (uncached), no I/O.
+**Cost & threading** — no I/O; shares `render`'s memoized parse of the same
+source, so a find bar calling it per keystroke pays for one parse, not one
+per character.
+
+---
+
+## `warm_parse`
+
+```rust
+pub fn warm_parse(source: &str)
+```
+
+Parse `source` into the crate's shared parse cache unless it's already there,
+so a later [`MarkdownView`](#struct-markdownview) render finds a tree instead
+of having to build one.
+
+**Guarantees & edge cases** — the cache key is the exact source string,
+normalized the same way `render` normalizes it, so what this warms is what
+renders. Unparseable source is a no-op (nothing is cached). Idempotent.
+
+**Cost & threading** — the parse itself, which is superlinear on some shapes
+(a huge pasted table, runaway blockquote nesting): **call it off the UI
+thread** — that is the entire point. Pure and gpui-free, so any thread will
+do; the cache is process-global and internally locked, and the lock is never
+held across a parse.
+
+---
+
+## `needs_warm`
+
+```rust
+pub fn needs_warm(source: &str) -> bool
+```
+
+Whether rendering `source` would block on a parse — i.e. it is
+expensive-shaped **and** not cached yet. Hosts check this before spawning a
+[`warm_parse`](#warm_parse) task; an ordinary note answers `false` and needs
+no task, since `render` parses cheap shapes inline as it always has.
+
+**Guarantees & edge cases** — "expensive-shaped" is a linear pre-scan
+(document size, blockquote nesting depth, total `[` count, rows in a single
+table, total `*`/`_` count),
+deliberately conservative: a false positive costs one frame of plain text,
+never a refused document. `false` after a successful `warm_parse` of the same
+source, until that entry is evicted (the cache is LRU-capped at 64 entries).
+
+**Cost & threading** — one linear pass plus a cache lookup; any thread.
 
 ---
 

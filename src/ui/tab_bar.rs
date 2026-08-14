@@ -36,7 +36,9 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
 
     for (i, tab) in app.tabs.iter().enumerate() {
         let kind = tab.kind.clone();
-        let title = tab.title.clone();
+        // Resolved per render so an app-named tab follows a language switch;
+        // a page/PDF/whiteboard keeps its own (user) title.
+        let title = tab.display_title();
         let menu_title = title.clone();
         let is_page = matches!(tab.kind, TabKind::Page(_));
         let is_fav = matches!(&tab.kind, TabKind::Page(pid) if app.is_favorite(*pid));

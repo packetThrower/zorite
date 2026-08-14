@@ -48,6 +48,20 @@ pub fn read_theme(path: &Path) -> (Option<String>, Option<String>) {
     )
 }
 
+/// Read the UI language choice from a database file, read-only. The locale has
+/// to be set before the first window builds a label, and on a password-locked
+/// notebook that is before any app handle can exist — so the unlock screen
+/// would otherwise always render in English. `None` (unreadable or unset)
+/// means "follow the OS".
+pub fn read_language(path: &Path) -> Option<String> {
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    read_setting(&conn, "language")
+}
+
 /// Read the update-check preferences from a database file, read-only. Used by
 /// the boot check before the app's main DB handle is wired. Defaults:
 /// auto-check on, pre-releases off. Best-effort — defaults if unreadable.
