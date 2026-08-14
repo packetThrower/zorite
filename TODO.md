@@ -202,16 +202,90 @@ path if plural-heavy languages ever hurt. **Crates stay host-agnostic**: no
 - RTL (Arabic/Hebrew) explicitly OUT of scope — gpui has no real bidi.
 - Docs site: Starlight i18n is a separate, optional effort.
 
-**Phases:**
-- [ ] 1. Scaffold: rust-i18n + sys-locale + en.yml + Settings language picker (S)
-- [ ] 2. Settings window extraction — biggest, self-contained proving ground (M)
-- [ ] 3. App chrome sweep: dialogs, menus, sidebar, slash palette + keywords,
-  dates (L, mechanical tail)
-- [ ] 4. Crate `Labels` structs + host wiring; alert titles both engines (M)
-- [ ] 5. zh-CN first — ask jychen (@JYChen-8866); the whiteboard-adoption
-  commit's original Chinese strings are a ready glossary (S/M, mostly review)
+**RTL / bidi (issue #66 — Persian/Farsi, revised 2026-07-24).** The earlier
+"out of scope, gpui has no bidi" was too blunt. What the code actually shows:
+gpui's `LineLayout::x_for_index` / `index_for_x` / `closest_index_for_x`
+(gpui `text_system/line_layout.rs:58-115`) walk glyphs assuming byte index and
+visual x rise together. That is false for RTL, and Zorite's editor is built
+entirely on `position_for_index` / `index_for_mouse_position` — so **caret
+placement, selection, and click-to-caret are LTR-only at the gpui layer**,
+independent of whether the shaper reorders glyphs. Splitting #66 accordingly:
+
+- *Reader view is reachable.* It has no caret and no hit-testing to speak of —
+  per-block direction detection (first strong character, UAX #9 P2/P3) plus
+  alignment is layout we already control. That alone makes Persian notes
+  readable, which is the reporter's blocking need.
+- *Editor view needs a bidi layer we own.* Right-aligning without fixing the
+  index↔x mapping gives a caret that lands in the wrong place on every RTL
+  line — worse than not shipping it. Upstream gpui is not accepting
+  modifications (confirmed 2026-07-24), so the fix is ours: a logical↔visual
+  run map layered over `LineLayout`, driving caret placement, selection
+  ranges, and click hit-testing. `unicode-bidi` 0.3 is already in the tree
+  (via lopdf/usvg), so this is an adapter over the UAX #9 algorithm, not an
+  implementation of it. **This is the one part that earns its own crate**
+  (`crates/gpui-bidi`, the os-spellcheck shape: one hard isolated problem, a
+  small API, GPU-free tests, useful to any gpui app) — but only when we start
+  the editor side. Direction *detection* stays in `gpui_markdown::syntax`
+  with the other shared recognizers; it's one function and the sanctioned
+  editor→markdown edge already carries it.
+- *Storage:* direction is derived, not stored. The reporter asks for
+  persistence, but a per-line attribute has nowhere to live in portable
+  markdown; auto-detection is deterministic from the text, and a manual
+  override would need a marker that other editors would show as junk. Revisit
+  only if auto-detection proves insufficient in practice.
+- *Shaping is fine; the mapping is what's broken* (measured 2026-07-24 with a
+  throwaway gpui probe, macOS/CoreText — the cosmic-text path runs
+  `Shaping::Advanced`, which is likewise bidi-aware):
+  - Glyphs DO come back correctly reordered into visual order. For
+    `"سلام دنیا"` the glyph indices run 15, 13, 11, 9, 8, 6, 2, 0 while x
+    ascends — visual order, logical indices, exactly as UAX #9 wants. So
+    **rendering RTL text already works**; nothing needs a shaper change.
+  - `x_for_index` is unusable: it returns the first glyph whose
+    `index >= target`, and the first glyph of an RTL line has the HIGHEST
+    index — so every offset 0..15 in that string returns **x = 0.00**. Every
+    caret position in a pure-RTL line collapses onto the left edge.
+  - `index_for_x` / `closest_index_for_x` are equally wrong (`closest` gave
+    0, 13, 9, 8, 6, 2, 0, 17 across evenly spaced x).
+  - Mixed content is worse, not better: in `"hello سلام world"` the four
+    offsets 6, 8, 10, 12 all map to x = 38.25.
+  This confirms the split above: reader view needs alignment only, editor
+  view needs the mapping layer.
+- *Constraint on that layer:* `ShapedLine.layout` is `pub(crate)` in gpui, so
+  we cannot post-process its glyph table — only the `Deref`'d public methods
+  (`x_for_index`, `index_for_x`, `runs`) are reachable. `runs` IS public via
+  the deref, which is how the probe read the glyph table, so a visual-order
+  map can be built on top without forking gpui. Verify that still holds at
+  each gpui bump.
+- Table cell alignment, list-marker side, and the gutter/grip side all flip
+  with direction — reader-side only for now.
+
+**Phases:** 1–5 landed together in PR #70 (@shimoxi123) rather than in
+sequence — a 663-key catalog, zh-CN, and the crate `Labels` wiring in one
+change. What the plan called for and what shipped:
+
+- [x] 1. Scaffold: rust-i18n 4 + sys-locale + catalogs + Settings language
+  picker. (One file per locale, `locales/en.yml` + `locales/zh-CN.yml`,
+  rather than the single combined file first sketched — better for a
+  translator who wants to own one file.)
+- [x] 2. Settings window — done as part of the sweep, not as a separate
+  proving ground.
+- [x] 3. App chrome sweep: dialogs, menus, sidebar, slash palette, dates.
+- [x] 4. Crate `Labels` structs + host wiring (editor + reader context menus).
+- [x] 5. zh-CN.
 - [ ] 6. Per-locale QA: overflow in fixed-width chrome, `.small()` scale with
-  CJK glyph heights (M)
+  CJK glyph heights (M) — the one phase still genuinely open, and now the
+  most valuable since there is a real locale to test with.
+
+Follow-ups from reviewing #70 (fixed in the branch that follows it):
+- `apply_locale` must also call `gpui_component::set_locale` — the toolkit
+  keeps its OWN catalog (it ships zh-CN) and would otherwise leave calendars,
+  dialogs and pickers in English inside an otherwise-Chinese app.
+- The locale has to be applied before the first window, read straight from the
+  database file: on a locked notebook `AppView` doesn't exist yet, so the
+  unlock screen rendered in English.
+- Still open: alert titles (`[!NOTE]` labels) aren't localized in either
+  engine, and slash-command search matches localized labels only — the plan
+  wants English aliases to keep working too.
 
 ## App & polish
 - [ ] **Graph-node context menu** — nodes hit-test inside one

@@ -7,9 +7,9 @@
 //! `rust-i18n`'s global so every window's next render picks it up.
 //!
 //! `t!` is used **only in the app**. The workspace crates stay host-agnostic:
-//! they never call `t!` and receive no labels here. (TODO v0.11.0 Phase 4 -
-//! injecting a `Labels` struct into the crates - is deferred; their strings
-//! remain English for now.)
+//! they never call `t!`. Instead this module builds the `Labels` structs below
+//! from `ctx.*` catalog keys and the host injects them, so a crate keeps its
+//! English defaults when used outside Zorite.
 
 /// The offered Settings -> Language choices: `(persisted id, native-script
 /// title)`. Language names render in their own script (so a zh-CN user can
@@ -43,7 +43,15 @@ pub fn resolve_locale(choice: &str) -> &'static str {
 /// Push the resolved locale into `rust-i18n`'s global so `t!` reads it. Called
 /// at boot (after the persisted choice loads) and on every Settings change.
 pub fn apply_locale(choice: &str) {
-    rust_i18n::set_locale(resolve_locale(choice));
+    let locale = resolve_locale(choice);
+    rust_i18n::set_locale(locale);
+    // gpui-component translates its OWN widget strings (calendar weekday
+    // names, dialog buttons, the date picker) through its own rust-i18n
+    // catalog, and it ships zh-CN among others. The active locale is a global
+    // per rust-i18n MAJOR version, and we deliberately match its 4 — so this
+    // second call is what stops a Chinese app from showing an English date
+    // picker. Miss it and the toolkit's chrome silently stays in English.
+    gpui_component::set_locale(locale);
 }
 
 /// The localized labels injected into `gpui_editor`'s context menus and chrome
@@ -102,6 +110,30 @@ pub fn reader_labels() -> gpui_markdown::Labels {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every language the picker offers must have a catalog behind it.
+    /// Without this, adding a `LANGUAGE_OPTS` entry ahead of its translation
+    /// ships a language that silently renders as English — the user picks
+    /// "Français", nothing changes, and nothing warns anyone.
+    #[test]
+    fn every_offered_language_has_a_catalog() {
+        for (id, label) in LANGUAGE_OPTS {
+            if *id == "auto" {
+                continue; // resolves to one of the others
+            }
+            let path = format!("locales/{id}.yml");
+            assert!(
+                std::path::Path::new(&path).exists(),
+                "picker offers {label:?} ({id}) but {path} does not exist"
+            );
+            // A file that exists but is empty would fall back just as silently.
+            let text = std::fs::read_to_string(&path).expect("read catalog");
+            assert!(
+                text.lines().filter(|l| l.contains(':')).count() > 50,
+                "{path} looks too small to be a real catalog"
+            );
+        }
+    }
 
     #[test]
     fn explicit_choices_resolve_themselves() {

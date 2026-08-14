@@ -22,5 +22,3 @@
 zorite_migration/
 Logseq/
 
-# pi agent session data (local tooling, never commit)
-/.pi/

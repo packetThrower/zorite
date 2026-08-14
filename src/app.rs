@@ -98,6 +98,28 @@ pub enum TabKind {
     Game,
 }
 
+impl OpenTab {
+    /// The title to show in the tab strip.
+    ///
+    /// App-named tabs (Journal, All pages, Graph, Properties) resolve their
+    /// label from the catalog on every render, NOT from the cached `title`:
+    /// that field is filled once when the tab opens, so a tab already open
+    /// when the language changed would keep its old-language name forever.
+    /// Tabs named after user data — a page, a PDF, a whiteboard — keep the
+    /// cached title, because that text IS the user's and must not be
+    /// translated.
+    pub fn display_title(&self) -> SharedString {
+        match self.kind {
+            TabKind::Journal => t!("app_err.journal_tab").into(),
+            TabKind::AllPages => t!("app_err.all_pages").into(),
+            TabKind::Graph => t!("app_err.graph_tab").into(),
+            TabKind::Properties => t!("app_err.properties_tab").into(),
+            // Game is a bare glyph; pages/PDFs/whiteboards are user data.
+            _ => self.title.clone(),
+        }
+    }
+}
+
 /// An open tab: its content kind + a cached title for the tab strip.
 pub struct OpenTab {
     pub kind: TabKind,
@@ -950,6 +972,12 @@ impl AppView {
             .get_setting("language")
             .unwrap_or_else(|| "auto".to_string());
         crate::i18n::apply_locale(&this.language);
+        // Mirror to the sidecar on every load, not just on change: a notebook
+        // that chose its language before the sidecar existed would otherwise
+        // keep showing an English unlock screen until someone happened to
+        // touch the setting again. Writing it here means the NEXT launch is
+        // already right, with no user action.
+        crate::paths::save_language(&this.language);
         this.pdf_quality = this
             .db
             .get_setting("pdf_quality")
@@ -5307,7 +5335,17 @@ impl AppView {
         // Rebuild the native menu bar / titlebar menus so their labels follow
         // the new language immediately (installed once at boot).
         crate::actions::set_app_menu(cx);
+        // Drop the slash-palette flyout cache: it is keyed on (level, title)
+        // with no locale, so its rows would keep the language they were built
+        // in until the level or the note title happened to change. Same trap
+        // as the tab titles — a translated string held in state outlives the
+        // switch that should have replaced it.
+        *self.slash_flyout_cache.borrow_mut() = None;
         let _ = self.db.set_setting("language", choice);
+        // Mirror it outside the database too: on a locked notebook the unlock
+        // screen renders before anything can decrypt the settings table, so
+        // the sidecar is the only way it can know which language to speak.
+        crate::paths::save_language(choice);
         cx.refresh_windows();
     }
 
