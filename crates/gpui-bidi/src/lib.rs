@@ -270,6 +270,7 @@ impl VisualMap {
     }
 }
 
+pub mod paragraph;
 pub mod shaped;
 
 #[cfg(test)]

@@ -1945,6 +1945,23 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     };
 
     let math = std::mem::take(&mut inl.math);
+
+    // #66: an RTL paragraph cannot use gpui's wrapping. gpui shapes the whole
+    // paragraph as one line and slices it into rows by ascending x, and glyph
+    // order is visual — so the first row gets the paragraph's LAST words and a
+    // wrapped Persian note reads bottom-to-top. `RtlText` breaks in logical
+    // order first (UAX #9) and paints the rows itself.
+    //
+    // Links and inline math still take the `StyledText` route: both hit-test
+    // through the text layout this path doesn't populate, so they need the
+    // per-line mapping ported before they can move over.
+    if dir.is_rtl() && inl.links.is_empty() && math.is_empty() {
+        return div()
+            .w_full()
+            .child(gpui_bidi::paragraph::RtlText::new(inl.text).with_highlights(highlights))
+            .into_any_element();
+    }
+
     let styled = StyledText::new(inl.text).with_highlights(highlights);
     // Capture the text layout (a shared handle, populated on paint) so a click can
     // be mapped to a rendered byte index, then to a source offset (and so a canvas can paint
