@@ -15,3 +15,9 @@ categories = ["text-processing", "gui"]
 # reads those pairs out of a `ShapedLine`.
 [dependencies]
 gpui.workspace = true
+# The UAX #9 algorithm itself, for the one thing the shaper's output does not
+# reveal: a glyph's embedding LEVEL. Direction cannot be inferred from
+# (index, x) pairs at the EDGE of an embedded run — the glyph beside it belongs
+# to the other run and carries a misleading index — so the levels come from the
+# text. Already in the tree (via lopdf/usvg), so this adds nothing to the build.
+unicode-bidi = { version = "0.3", default-features = false, features = ["hardcoded-data"] }

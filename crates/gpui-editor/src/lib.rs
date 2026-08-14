@@ -1725,7 +1725,8 @@ impl EditorState {
         self.rtl_rows
             .get(row)
             .and_then(Option::as_ref)
-            .map_or(px(0.), |r| r.shift)
+            .and_then(|r| r.shifts.first().copied())
+            .unwrap_or(px(0.))
     }
 
     /// Where logical line `row`'s painted text actually starts: its inset plus
@@ -1736,12 +1737,52 @@ impl EditorState {
         self.line_inset(row) + self.rtl_shift(row)
     }
 
-    /// The bidi index↔x map for `row`, if it has one (see [`RtlRow`]).
-    fn bidi_map(&self, row: usize) -> Option<&gpui_bidi::VisualMap> {
-        self.rtl_rows
-            .get(row)
-            .and_then(Option::as_ref)
-            .map(|r| &r.map)
+    /// Does the caret's line read right-to-left?
+    ///
+    /// Arrow keys move VISUALLY — Right steps to the character on the right of
+    /// the screen, which every platform does in bidi text and which readers of
+    /// Persian expect. On an RTL row that character is the logically PREVIOUS
+    /// one, so the two step functions swap.
+    fn caret_row_is_rtl(&self) -> bool {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.rtl_rows.get(row).and_then(Option::as_ref).is_some()
+    }
+
+    /// The offset one step to the visual left/right of the caret, taking the
+    /// row's direction into account.
+    fn horizontal_step(&self, visual_right: bool) -> usize {
+        let off = self.cursor_offset();
+        let (row, col) = self.row_col(off);
+        // Inside a bidi row, "one step right" is not "one byte forward, maybe
+        // flipped". A Latin word or URL embedded in Persian runs the other way,
+        // and the caret has to flow THROUGH it rather than jump to its far end
+        // — so the step comes from the glyph order, via the row's map.
+        if let Some(r) = self.bidi_map(row) {
+            let dcol = self.display_col(row, col);
+            let (k, local) = r.row_of(dcol);
+            if let Some(rr) = r.rows.get(k)
+                && let Some(next) = rr.map.step_visual(local, visual_right)
+            {
+                return self.line_starts()[row] + self.source_col(row, rr.start + next);
+            }
+            // Off the end of this row: fall through to the logical neighbour,
+            // which is what carries the caret onto the next row or line.
+            return if visual_right != self.caret_row_is_rtl() {
+                self.next_visible_boundary(off)
+            } else {
+                self.prev_visible_boundary(off)
+            };
+        }
+        if visual_right {
+            self.next_visible_boundary(off)
+        } else {
+            self.prev_visible_boundary(off)
+        }
+    }
+
+    /// The RTL layout for `row`, if it has one (see [`RtlRow`]).
+    fn bidi_map(&self, row: usize) -> Option<&RtlRow> {
+        self.rtl_rows.get(row).and_then(Option::as_ref)
     }
 
     /// Window-space bounds of the caret at `offset`, from the last paint's
@@ -1796,7 +1837,14 @@ impl EditorState {
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            self.move_to(self.selected_range.start, cx);
+            // Collapse to the selection's VISUALLY left edge, which on an RTL
+            // row is its logical end.
+            let to = if self.caret_row_is_rtl() {
+                self.selected_range.end
+            } else {
+                self.selected_range.start
+            };
+            self.move_to(to, cx);
             return;
         }
         if self.caret_in_table()
@@ -1805,7 +1853,7 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        let off = self.prev_visible_boundary(self.cursor_offset());
+        let off = self.horizontal_step(false);
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1839,7 +1887,12 @@ impl EditorState {
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            self.move_to(self.selected_range.end, cx);
+            let to = if self.caret_row_is_rtl() {
+                self.selected_range.start
+            } else {
+                self.selected_range.end
+            };
+            self.move_to(to, cx);
             return;
         }
         if self.caret_in_table()
@@ -1848,7 +1901,7 @@ impl EditorState {
             self.move_to(off, cx);
             return;
         }
-        let off = self.next_visible_boundary(self.cursor_offset());
+        let off = self.horizontal_step(true);
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1970,12 +2023,14 @@ impl EditorState {
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.prev_visible_boundary(self.cursor_offset()), cx);
+        let off = self.horizontal_step(false);
+        self.select_to(off, cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.next_visible_boundary(self.cursor_offset()), cx);
+        let off = self.horizontal_step(true);
+        self.select_to(off, cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -6016,8 +6071,13 @@ struct ShapedDoc {
     inline_maths: Vec<Vec<InlineMath>>,
     /// Per-line wrap-row count. Geometry (line tops, total height) reads THIS,
     /// not `wrap_boundaries()` — a windowed-out line's `WrappedLine` is an
-    /// empty placeholder, but its cached count keeps the layout exact.
+    /// empty placeholder, but its cached count keeps the layout exact. For an
+    /// RTL line it is OUR row count, which is not gpui's (#66).
     wrap_rows: Vec<usize>,
+    /// Per-line RTL layout: the rows we broke in logical order, or `None` for
+    /// the LTR lines that keep gpui's own wrapping. Drives that line's paint,
+    /// caret, selection and hit-testing.
+    rtl_rows: Vec<Option<Vec<gpui_bidi::paragraph::Row>>>,
 }
 
 impl ShapedDoc {
@@ -6054,6 +6114,7 @@ impl ShapedDoc {
         self.marks.push(mark);
         self.inline_maths.push(Vec::new());
         self.wrap_rows.push(rows);
+        self.rtl_rows.push(None);
     }
 }
 
@@ -6103,29 +6164,38 @@ fn display_col_in(map: Option<&std::rc::Rc<Vec<usize>>>, source_col: usize) -> u
 /// Excludes the row's insets — callers add [`EditorState::row_origin_x`].
 fn line_pos(
     line: &WrappedLine,
-    map: Option<&gpui_bidi::VisualMap>,
+    rtl: Option<&RtlRow>,
     dcol: usize,
     lh: Pixels,
 ) -> Option<Point<Pixels>> {
-    let p = line.position_for_index(dcol, lh)?;
-    Some(match map {
-        Some(m) => point(px(m.x_for_index(dcol)), p.y),
-        None => p,
-    })
+    match rtl {
+        // Our own rows: which one holds the offset decides the y, and the
+        // row's map the x. gpui's layout is not consulted at all — its rows
+        // are not ours.
+        Some(r) => {
+            let (row, local) = r.row_of(dcol);
+            let x = px(r.rows.get(row)?.map.x_for_index(local)) + r.shift_delta(row);
+            Some(point(x, lh * row))
+        }
+        None => line.position_for_index(dcol, lh),
+    }
 }
 
 /// The display column a click at row-local `p` names — the inverse of
 /// [`line_pos`], through the bidi map when the row has one (gpui's
 /// `closest_index_for_x` fails on RTL the same way `x_for_index` does).
-fn line_index_at(
-    line: &WrappedLine,
-    map: Option<&gpui_bidi::VisualMap>,
-    p: Point<Pixels>,
-    lh: Pixels,
-) -> usize {
-    match map {
-        Some(m) => m.index_for_x(f32::from(p.x)),
-        None => match line.closest_index_for_position(p, lh) {
+fn line_index_at(line: &WrappedLine, rtl: Option<&RtlRow>, p: Point<Pixels>, lh: Pixels) -> usize {
+    match rtl {
+        Some(r) if !r.rows.is_empty() => {
+            let row = ((f32::from(p.y) / f32::from(lh).max(1.0)).floor().max(0.) as usize)
+                .min(r.rows.len() - 1);
+            let x = p.x - r.shift_delta(row);
+            let Some(rr) = r.rows.get(row) else {
+                return 0;
+            };
+            rr.start + rr.map.index_for_x(f32::from(x))
+        }
+        _ => match line.closest_index_for_position(p, lh) {
             Ok(i) | Err(i) => i,
         },
     }
@@ -6137,14 +6207,68 @@ fn line_index_at(
 /// get one — the flag *is* `Option::is_some`, so an LTR document allocates
 /// nothing and keeps taking gpui's own (cheaper) lookups.
 pub(crate) struct RtlRow {
-    /// Added to the row's text origin so the line right-aligns in the content
-    /// width (see [`rtl_shift`]). Kept OUT of `line_insets` on purpose: the
-    /// list-marker + gutter math reads that, and must not move with the text.
-    shift: Pixels,
-    /// Logical↔visual mapping for the row's glyphs, so a caret/click lands on
-    /// the glyph it names. Only unwrapped rows get one (a map's x's run along
-    /// the single pre-wrap line) — see where it is built, in the prepaint.
-    map: gpui_bidi::VisualMap,
+    /// The line's visual rows, broken in LOGICAL order (gpui's own wrapping
+    /// slices the reordered glyph run and gets them backwards). Each carries
+    /// the map that turns an offset inside it into an x and back.
+    rows: Vec<gpui_bidi::paragraph::Row>,
+    /// Each row's right-align shift, parallel to `rows`: added to the text
+    /// origin so the row right-aligns in the content width (see [`rtl_shift`]).
+    /// Per ROW, not per line — a short last row shifts further than a full one.
+    /// Kept OUT of `line_insets` on purpose: the list-marker + gutter math
+    /// reads that, and must not move with the text.
+    shifts: Vec<Pixels>,
+}
+
+impl RtlRow {
+    /// The row holding display column `dcol`, and the column's offset within
+    /// it. Rows are in reading order and contiguous, so the last row wins for
+    /// an offset at the very end of the line.
+    fn row_of(&self, dcol: usize) -> (usize, usize) {
+        row_of_spans(self.rows.iter().map(|r| (r.start, r.len)), dcol)
+    }
+
+    /// A row's horizontal extent (left, right) relative to the FIRST row's
+    /// origin — the coordinate space callers already work in, since they add
+    /// `row_origin_x`. Used to band a selection across a row: an RTL row does
+    /// not span the content width, so "the whole row" is this, not 0..width.
+    pub(crate) fn row_extent(&self, row: usize) -> (Pixels, Pixels) {
+        let d = self.shift_delta(row);
+        (d, d + self.rows.get(row).map_or(px(0.), |r| r.width))
+    }
+
+    /// How many visual rows this line broke into.
+    pub(crate) fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// A row's shift relative to the FIRST row's. Callers already add
+    /// `row_origin_x`, which carries row 0's shift, so this is the remainder —
+    /// that keeps every existing caller correct without threading a wrap-row
+    /// index through all of them.
+    fn shift_delta(&self, row: usize) -> Pixels {
+        self.shifts.get(row).copied().unwrap_or(px(0.))
+            - self.shifts.first().copied().unwrap_or(px(0.))
+    }
+}
+
+/// Which row holds display column `dcol`, and its offset within that row.
+///
+/// Split out from [`RtlRow::row_of`] so it can be tested without a window: a
+/// `Row` carries a shaped line, which needs one. Rows are contiguous and in
+/// reading order, so an offset at the very end of the line lands on the last
+/// row rather than falling off the end — that is where the caret sits after
+/// typing at the end of a paragraph.
+fn row_of_spans(rows: impl Iterator<Item = (usize, usize)>, dcol: usize) -> (usize, usize) {
+    let mut last = (0, dcol);
+    let mut seen = false;
+    for (i, (start, len)) in rows.enumerate() {
+        seen = true;
+        last = (i, dcol.saturating_sub(start));
+        if dcol < start + len {
+            return (i, dcol - start);
+        }
+    }
+    if seen { last } else { (0, dcol) }
 }
 
 /// The x a right-to-left row's text starts at within `content_width`, so its
@@ -6499,7 +6623,24 @@ mod tests {
 
     // --- RTL row geometry (#66) ---------------------------------------------
 
-    use super::{checkbox_x, px, rtl_marker_x, rtl_shift};
+    use super::{checkbox_x, px, row_of_spans, rtl_marker_x, rtl_shift};
+
+    #[test]
+    fn a_caret_offset_lands_on_the_row_that_holds_it() {
+        // Three rows: "0..5", "5..11", "11..14" — contiguous, reading order.
+        let rows = || [(0usize, 5usize), (5, 6), (11, 3)].into_iter();
+        assert_eq!(row_of_spans(rows(), 0), (0, 0));
+        assert_eq!(row_of_spans(rows(), 4), (0, 4));
+        // A boundary belongs to the row that STARTS there, not the one ending.
+        assert_eq!(row_of_spans(rows(), 5), (1, 0));
+        assert_eq!(row_of_spans(rows(), 12), (2, 1));
+        // The caret sits one past the last character after typing at the end
+        // of a paragraph: it must stay on the last row, not fall off.
+        assert_eq!(row_of_spans(rows(), 14), (2, 3));
+        assert_eq!(row_of_spans(rows(), 99), (2, 88));
+        // No rows at all (an empty line) is row 0.
+        assert_eq!(row_of_spans([].into_iter(), 0), (0, 0));
+    }
 
     #[test]
     fn rtl_shift_mirrors_the_row_inset() {

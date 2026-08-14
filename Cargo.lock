@@ -2776,6 +2776,7 @@ name = "gpui-bidi"
 version = "0.1.0"
 dependencies = [
  "gpui",
+ "unicode-bidi",
 ]
 
 [[package]]

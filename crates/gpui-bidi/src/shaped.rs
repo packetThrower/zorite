@@ -26,7 +26,7 @@ pub fn map_of(line: &ShapedLine, len: usize) -> VisualMap {
             index: g.index,
             x: f32::from(g.position.x),
         });
-    VisualMap::from_glyphs(glyphs, f32::from(line.width), len)
+    VisualMap::from_glyphs(glyphs, f32::from(line.width), len).with_levels(&line.text)
 }
 
 /// [`map_of`] for a wrapped line, over its **pre-wrap** layout.
@@ -50,5 +50,5 @@ pub fn map_of_wrapped(line: &WrappedLine, len: usize) -> VisualMap {
             index: g.index,
             x: f32::from(g.position.x),
         });
-    VisualMap::from_glyphs(glyphs, f32::from(layout.width), len)
+    VisualMap::from_glyphs(glyphs, f32::from(layout.width), len).with_levels(&line.text)
 }

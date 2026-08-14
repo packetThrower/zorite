@@ -362,6 +362,7 @@ impl Element for EditorElement {
             marks,
             inline_maths,
             wrap_rows,
+            rtl_rows: rtl_layout,
         } = if let Some(m) = memo {
             m.shaped
         } else if editor.content.is_empty() {
@@ -385,6 +386,8 @@ impl Element for EditorElement {
                 marks: vec![None; n],
                 inline_maths: vec![Vec::new(); n],
                 wrap_rows: rows,
+                // The placeholder is the host's own string; no RTL layout.
+                rtl_rows: (0..n).map(|_| None).collect(),
             }
         } else {
             shape_document(
@@ -462,44 +465,26 @@ impl Element for EditorElement {
         // rows qualify: a code block is LTR by convention, and a table/image
         // widget row paints its own geometry (flipping those is a follow-up).
         // An all-LTR document leaves every entry `None` and pays nothing.
-        let rtl: Vec<Option<RtlRow>> = {
-            // One split, not `line_end(i)` per row — that rebuilds the whole
-            // line-start table each call.
-            let src_lines: Vec<&str> = editor.content.split('\n').collect();
-            wrapped
-                .iter()
-                .enumerate()
-                .map(|(i, line)| {
-                    let plain = backgrounds.get(i).copied().flatten().is_none()
-                        && widgets.get(i).and_then(Option::as_ref).is_none()
-                        && tables.get(i).and_then(Option::as_ref).is_none();
-                    let src = src_lines.get(i).copied().unwrap_or("");
-                    if !plain || !gpui_markdown::syntax::base_direction(src).is_rtl() {
-                        return None;
-                    }
-                    // A `VisualMap`'s x's are positions along the single
-                    // *pre-wrap* line, so it only describes a row that IS one
-                    // visual row. Splitting one per wrap row means reasoning
-                    // about a bidi run straddling a boundary (gpui wraps in
-                    // visual order) — a follow-up, not a guess; until then a
-                    // wrapped RTL row is left exactly as it was, which also
-                    // keeps its gutter markers on the side its text is on.
-                    let map = line
-                        .wrap_boundaries()
-                        .is_empty()
-                        .then(|| gpui_bidi::shaped::map_of_wrapped(line, line.len()))
-                        .filter(gpui_bidi::VisualMap::is_bidi)?;
-                    let inset = row_inset(
-                        backgrounds.get(i).copied().flatten(),
-                        marks.get(i).copied().flatten(),
-                    );
-                    Some(RtlRow {
-                        shift: rtl_shift(bounds.size.width, inset, line.width()),
-                        map,
-                    })
-                })
-                .collect()
-        };
+        // The RTL layout computed while shaping (that is where the row COUNT
+        // had to be decided), turned into per-row right-align shifts. Rows are
+        // shifted individually: a short last row sits further right than a full
+        // one, which is what right-aligned text means.
+        let rtl: Vec<Option<RtlRow>> = rtl_layout
+            .into_iter()
+            .enumerate()
+            .map(|(i, rows)| {
+                let rows = rows?;
+                let inset = row_inset(
+                    backgrounds.get(i).copied().flatten(),
+                    marks.get(i).copied().flatten(),
+                );
+                let shifts = rows
+                    .iter()
+                    .map(|r| rtl_shift(bounds.size.width, inset, r.width))
+                    .collect();
+                Some(RtlRow { rows, shifts })
+            })
+            .collect();
         // Row text origin, this frame: the row's inset plus its RTL shift.
         // Fresh-data twin of `EditorState::row_origin_x` (the committed state
         // lags a frame — see `disp_col` below).
@@ -510,9 +495,10 @@ impl Element for EditorElement {
             ) + rtl
                 .get(row)
                 .and_then(Option::as_ref)
-                .map_or(px(0.), |r| r.shift)
+                .and_then(|r| r.shifts.first().copied())
+                .unwrap_or(px(0.))
         };
-        let bidi = |row: usize| rtl.get(row).and_then(Option::as_ref).map(|r| &r.map);
+        let bidi = |row: usize| rtl.get(row).and_then(Option::as_ref);
 
         // Corner-grip hitboxes for each inline image, in `widgets` order (matching
         // the order paint walks them) — hitboxes must be inserted during prepaint,
@@ -1225,6 +1211,39 @@ impl Element for EditorElement {
                             ),
                             color,
                         ));
+                    } else if let Some(r) = bidi(row) {
+                        // RTL, spanning wrap rows: the selection runs the other
+                        // way. It leaves the first row at its LEFT edge,
+                        // continues from the right on each following row, and
+                        // ends part-way across the last. Rows are banded to
+                        // their own extent, not the content width — a
+                        // right-aligned row doesn't span it.
+                        let row_of = |y: Pixels| {
+                            (f32::from(y) / f32::from(lh).max(1.0)).round().max(0.) as usize
+                        };
+                        let (ka, kb) = (row_of(pa.y), row_of(pb.y));
+                        let mut band = |k: usize, from: Option<Pixels>, to: Option<Pixels>| {
+                            let (l, rt) = r.row_extent(k);
+                            let (l, rt) = (l + inset, rt + inset);
+                            let (x0, x1) = (from.unwrap_or(l), to.unwrap_or(rt));
+                            if x1 > x0 {
+                                sels.push(fill(
+                                    Bounds::from_corners(
+                                        to_screen(top, point(x0, lh * k)),
+                                        to_screen(top, point(x1, lh * k + lh)),
+                                    ),
+                                    color,
+                                ));
+                            }
+                        };
+                        // The start is the row's RIGHT-hand portion: from the
+                        // row's left edge up to the caret x.
+                        band(ka, None, Some(pa.x));
+                        for k in (ka + 1)..kb.min(r.row_count()) {
+                            band(k, None, None);
+                        }
+                        // ...and the last row from the end x rightwards.
+                        band(kb, Some(pb.x), None);
                     } else {
                         // First wrap row: start x → right edge.
                         sels.push(fill(
@@ -1489,7 +1508,11 @@ impl Element for EditorElement {
             // every gutter decoration mirrors to the other side so the markers
             // sit where the text now starts — matching the reader.
             let rtl = prepaint.rtl.get(i).and_then(Option::as_ref);
-            let shift = rtl.map_or(px(0.), |r| r.shift);
+            // Row 0's shift: the gutter decorations mirror against the line as
+            // a whole, and the per-row shifts only move the text.
+            let shift = rtl
+                .and_then(|r| r.shifts.first().copied())
+                .unwrap_or(px(0.));
             let content_w = bounds.size.width;
             // Nesting guides for a list/task row: a thin vertical line at each
             // ancestor bullet's x, spanning this row (contiguous rows stack into a
@@ -1931,17 +1954,42 @@ impl Element for EditorElement {
                     prepaint.marks.get(i).copied().flatten(),
                 );
                 let text_origin = point(origin.x + inset + shift, origin.y);
-                // Run backgrounds (the inline-code highlight) paint separately from
-                // the glyphs — `paint` alone wouldn't show them.
-                let _ = line.paint_background(
-                    text_origin,
-                    *lh,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
-                let _ = line.paint(text_origin, *lh, gpui::TextAlign::Left, None, window, cx);
+                if let Some(r) = rtl {
+                    // Our own rows, painted in reading order — gpui's wrapping
+                    // is not used for this line at all (#66). Each row is
+                    // right-aligned on its own, so a short last row sits
+                    // further right than a full one.
+                    //
+                    // ponytail: run backgrounds (the inline-code highlight) are
+                    // not painted here; `paint_row` draws glyphs only. An RTL
+                    // line with inline code loses that tint — add it when
+                    // someone writes `code` inside Persian prose.
+                    for (k, row) in r.rows.iter().enumerate() {
+                        gpui_bidi::paragraph::paint_row(
+                            row,
+                            point(
+                                origin.x + inset + r.shifts.get(k).copied().unwrap_or(px(0.)),
+                                origin.y + *lh * k,
+                            ),
+                            *lh,
+                            font_size,
+                            window,
+                            cx,
+                        );
+                    }
+                } else {
+                    // Run backgrounds (the inline-code highlight) paint separately from
+                    // the glyphs — `paint` alone wouldn't show them.
+                    let _ = line.paint_background(
+                        text_origin,
+                        *lh,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                    let _ = line.paint(text_origin, *lh, gpui::TextAlign::Left, None, window, cx);
+                }
                 // Inline `$…$` formulas: paint each typeset raster over its spacer, centered on
                 // the text row. `position_for_index` gives the spacer's x + wrap-row offset.
                 // Record each formula's window bounds for click-to-edit; the one being edited
@@ -2842,6 +2890,9 @@ fn shape_document(
     // Fenced-code-block tracking: collect a block's line indices (so its box can
     // be sized to its widest line + the first/last line marked for rounding) and
     // the running max line width.
+    // Direction of the last line that had a strong character, so blank lines
+    // between paragraphs inherit it (#66).
+    let mut last_strong_rtl = false;
     let mut code_block: Vec<usize> = Vec::new();
     let mut code_w = px(0.);
     // Token colors per code line (line index → in-line ranges), from the host
@@ -3753,13 +3804,39 @@ fn shape_document(
                 }
             };
             let line_w = wl.width();
+            // #66: an RTL line can't use gpui's wrapping. gpui slices the
+            // already-reordered glyph run by ascending x, so its rows come out
+            // in reverse reading order, and its break candidates come from an
+            // `is_word_char` that doesn't know Arabic — so words split down the
+            // middle. Lay the line out in LOGICAL order instead. This has to
+            // happen here, not later with the rest of the RTL geometry: our
+            // break points give a different row COUNT, and the row span and
+            // height are decided right here.
+            // A blank line has no strong character, so it has no direction of
+            // its own — it inherits the paragraph it sits in. Without this the
+            // caret jumps to the LEFT margin the moment you press Enter after a
+            // Persian paragraph, and a selection running through the blank line
+            // puts its marker on the wrong side.
+            let line_rtl = if line.trim().is_empty() {
+                last_strong_rtl
+            } else {
+                let rtl = gpui_markdown::syntax::base_direction(line).is_rtl();
+                last_strong_rtl = rtl;
+                rtl
+            };
+            let rtl_rows = (bg.is_none() && widget.is_none() && table.is_none() && line_rtl)
+                .then(|| {
+                    gpui_bidi::paragraph::layout_rows(&shaped_text, &runs, line_wrap, fs, window)
+                })
+                .filter(|rows| !rows.is_empty());
+            let span = rtl_rows
+                .as_ref()
+                .map_or(wl.wrap_boundaries().len() + 1, Vec::len);
             if let Some(hk) = plain_hkey {
-                caches
-                    .line_heights
-                    .borrow_mut()
-                    .insert(hk, (h, wl.wrap_boundaries().len() + 1));
+                caches.line_heights.borrow_mut().insert(hk, (h, span));
             }
-            out.wrap_rows.push(wl.wrap_boundaries().len() + 1);
+            out.wrap_rows.push(span);
+            out.rtl_rows.push(rtl_rows);
             out.wrapped.push(wl);
             out.heights.push(h);
             out.widgets.push(widget);

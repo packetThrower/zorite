@@ -15,8 +15,13 @@
 //! `closest_index_for_x` fail the same way, and mixed content is worse: in
 //! `"hello سلام world"` the four offsets 6, 8, 10, 12 all map to one x.
 //!
-//! So this crate is **not** an implementation of the bidi algorithm — the
-//! shaper did that. It reads an already-reordered glyph table correctly.
+//! So this crate is mostly **not** an implementation of the bidi algorithm —
+//! the shaper did that, and this reads its already-reordered glyph table
+//! correctly. The one thing the glyph table cannot tell you is a glyph's
+//! embedding LEVEL: at the edge of an embedded run the glyph beside it belongs
+//! to the other run and carries a misleading index, so direction inferred from
+//! geometry is wrong exactly there. Those levels come from `unicode-bidi`,
+//! given the text — see [`VisualMap::with_levels`].
 //!
 //! # Shape of the API
 //!
@@ -29,8 +34,9 @@
 //!
 //! - **Paragraph direction** (which side a line starts on) is the host's, from
 //!   the first strong character. This crate only maps within a shaped line.
-//! - **Logical caret movement.** Left/right arrows moving in *logical* order is
-//!   what most editors do, and it needs nothing from here.
+//! - **Logical caret movement.** Left/right arrows moving in *logical* order
+//!   needs nothing from here. For the *visual* movement platforms actually do
+//!   in bidi text, see [`VisualMap::step_visual`].
 
 use std::ops::Range;
 
@@ -61,6 +67,9 @@ pub struct VisualMap {
     width: f32,
     /// Byte length of the shaped text — the offset one past the last glyph.
     len: usize,
+    /// UAX #9 embedding level per byte of the shaped text, when the caller
+    /// supplied the text ([`Self::with_levels`]). Odd = right-to-left.
+    levels: Option<Vec<u8>>,
 }
 
 impl VisualMap {
@@ -78,7 +87,23 @@ impl VisualMap {
             by_logical,
             width,
             len,
+            levels: None,
         }
+    }
+
+    /// Attach the text these glyphs were shaped from, so glyph direction comes
+    /// from the UAX #9 embedding levels rather than being inferred.
+    ///
+    /// Inference from `(index, x)` alone is exact in the middle of a run and
+    /// WRONG at its edges: the glyph visually beside the last letter of a Latin
+    /// word embedded in Persian belongs to the surrounding RTL run and carries
+    /// a lower index, which reads as "descending, therefore RTL". The caret
+    /// then sits on that letter's far edge — one glyph out, which is what a
+    /// reader sees as the caret skipping a character.
+    pub fn with_levels(mut self, text: &str) -> Self {
+        let info = unicode_bidi::BidiInfo::new(text, None);
+        self.levels = Some(info.levels.iter().map(|l| l.number()).collect());
+        self
     }
 
     /// Whether any glyph sits out of logical order — i.e. the line contains
@@ -207,6 +232,11 @@ impl VisualMap {
     /// case the shaper itself renders ambiguously.
     fn is_rtl_at(&self, gi: usize) -> bool {
         let here = self.glyphs[gi].index;
+        // The levels know, when we have them: no inference, and correct at the
+        // edges of an embedded run where inference cannot be.
+        if let Some(levels) = &self.levels {
+            return levels.get(here).is_some_and(|l| l % 2 == 1);
+        }
         let descends_right = self.glyphs.get(gi + 1).is_some_and(|n| n.index < here);
         let descends_left = gi > 0 && self.glyphs[gi - 1].index > here;
         descends_right || descends_left
@@ -216,6 +246,49 @@ impl VisualMap {
     /// leading edge, or the line's width for the last one.
     fn right_edge(&self, gi: usize) -> f32 {
         self.glyphs.get(gi + 1).map_or(self.width, |next| next.x)
+    }
+
+    /// The logical offset one caret step to the visual left/right of `offset`.
+    ///
+    /// `None` when there is no glyph that way — the caret is leaving the line,
+    /// and the caller moves it to the neighbouring row instead.
+    ///
+    /// Arrow keys move visually, and inside a line that is NOT a matter of
+    /// "this line is RTL, so flip left and right". A Latin word or a URL
+    /// embedded in Persian runs the other way, and the caret has to flow
+    /// through it in ITS direction, not jump over it to the far end. Stepping
+    /// by x rather than by byte gets that for free: the glyph table is already
+    /// in visual order, so "the next caret position to the right" is just the
+    /// next distinct x.
+    pub fn step_visual(&self, offset: usize, right: bool) -> Option<usize> {
+        let stops = self.caret_stops();
+        // Where the caret is now in that order. An offset with no stop of its
+        // own (mid-glyph, say) has no neighbour to step to.
+        let pos = stops.iter().position(|&(_, o)| o == offset)?;
+        if right {
+            stops.get(pos + 1).map(|&(_, o)| o)
+        } else {
+            pos.checked_sub(1).map(|i| stops[i].1)
+        }
+    }
+
+    /// Every caret position on the line as `(x, offset)`, ordered left to
+    /// right.
+    ///
+    /// Ordering by x ALONE is not enough: at a direction change two different
+    /// offsets sit at the same x — the trailing edge of one run and the leading
+    /// edge of the next — and stepping by "the next bigger x" makes one of them
+    /// unreachable, which shows up as the caret skipping a character or two at
+    /// the edge of an embedded word. Ties break on the offset, so the order is
+    /// total and every stop can be reached.
+    fn caret_stops(&self) -> Vec<(f32, usize)> {
+        let mut stops: Vec<(f32, usize)> = (0..self.glyphs.len())
+            .flat_map(|gi| [self.edge_offset(gi, false), self.edge_offset(gi, true)])
+            .map(|off| (self.x_for_index(off), off))
+            .collect();
+        stops.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        stops.dedup();
+        stops
     }
 
     /// The byte offset at one edge of the glyph at visual position `gi`.
@@ -353,6 +426,95 @@ mod tests {
         sorted.sort_by(f32::total_cmp);
         sorted.dedup();
         assert_eq!(sorted.len(), xs.len(), "caret positions must be distinct");
+    }
+
+    #[test]
+    fn levels_fix_the_edges_of_an_embedded_run() {
+        // "سلام Demo x" — a Latin word inside Persian. Shaped, the Latin runs
+        // left-to-right while the Persian around it runs the other way. Build
+        // the glyph table by hand in VISUAL order to mimic that.
+        //
+        // Bytes: "سلام" = 0..8 (4 chars, 2 bytes each), ' ' = 8, "Demo" = 9..13,
+        // ' ' = 13, "x" = 14.
+        let text = "سلام Demo x";
+        let m = VisualMap::from_glyphs(
+            [
+                // Persian, drawn right to left: it sits at the RIGHT, so its
+                // glyphs take the higher x's. Latin sits to its left.
+                Glyph { index: 14, x: 0.0 },  // x
+                Glyph { index: 13, x: 10.0 }, // space
+                Glyph { index: 9, x: 20.0 },  // D
+                Glyph { index: 10, x: 30.0 }, // e
+                Glyph { index: 11, x: 40.0 }, // m
+                Glyph { index: 12, x: 50.0 }, // o
+                Glyph { index: 8, x: 60.0 },  // space
+                Glyph { index: 6, x: 70.0 },
+                Glyph { index: 4, x: 80.0 },
+                Glyph { index: 2, x: 90.0 },
+                Glyph { index: 0, x: 100.0 },
+            ],
+            110.0,
+            text.len(),
+        )
+        .with_levels(text);
+
+        // The caret before 'o' (byte 12) belongs on 'o's LEFT edge, because 'o'
+        // is left-to-right. Inference put it on the right edge — the glyph to
+        // 'o's right is the Persian space, whose lower index reads as
+        // "descending, therefore RTL" — and the caret appeared to skip a
+        // character at the end of the embedded word.
+        assert_eq!(m.x_for_index(12), 50.0, "caret before 'o' sits left of it");
+        assert_eq!(m.x_for_index(9), 20.0, "and before 'D' at the run's start");
+        // Stepping right through the Latin run advances one letter at a time.
+        assert_eq!(m.step_visual(9, true), Some(10));
+        assert_eq!(m.step_visual(10, true), Some(11));
+        assert_eq!(m.step_visual(11, true), Some(12));
+        // Persian around it still reads right-to-left.
+        assert_eq!(m.x_for_index(0), 110.0, "first Persian char at the right");
+    }
+
+    #[test]
+    fn visual_steps_flow_through_an_embedded_run_instead_of_jumping_it() {
+        // `mixed()`: LTR bytes 0,1 — an RTL pair at 2,4 drawn in reverse — then
+        // LTR 6,7. Walking right from the line's left edge must visit every
+        // caret stop in x order, INCLUDING both ends of the embedded run. The
+        // bug this covers: keying the step off "the line is RTL" made the caret
+        // skip to the far side of an embedded Latin word or URL.
+        let m = mixed();
+        let mut seen = vec![0usize];
+        let mut at = 0usize;
+        while let Some(next) = m.step_visual(at, true) {
+            seen.push(next);
+            at = next;
+            assert!(seen.len() < 20, "stepping right must terminate");
+        }
+        // Never moves backwards, and never lands on the same stop twice —
+        // co-located stops at a direction change must each be reachable, which
+        // is what "the caret skipped the last two characters" was.
+        let xs: Vec<f32> = seen.iter().map(|&o| m.x_for_index(o)).collect();
+        assert!(
+            xs.windows(2).all(|w| w[1] >= w[0]),
+            "no step moves left: {xs:?} from {seen:?}"
+        );
+        let mut uniq = seen.clone();
+        uniq.sort_unstable();
+        uniq.dedup();
+        assert_eq!(uniq.len(), seen.len(), "no stop visited twice: {seen:?}");
+        // Every caret stop on the line is reachable by stepping.
+        assert_eq!(seen.len(), m.caret_stops().len(), "all stops visited");
+        // And it reaches the line's right edge rather than stopping early at
+        // the direction change.
+        assert_eq!(*xs.last().unwrap(), 60.0);
+
+        // Walking back left returns to where it started.
+        let mut back = at;
+        let mut steps = 0;
+        while let Some(prev) = m.step_visual(back, false) {
+            back = prev;
+            steps += 1;
+            assert!(steps < 20, "stepping left must terminate");
+        }
+        assert_eq!(m.x_for_index(back), 0.0, "back at the left edge");
     }
 
     #[test]
