@@ -108,6 +108,33 @@ pub fn clear_window_bounds() {
     let _ = std::fs::remove_file(window_bounds_file());
 }
 
+// --- UI language (mirrored out of the database) ---
+//
+// The chosen language also lives in the `settings` table, which is the app's
+// source of truth — but on a password-protected notebook that table is inside
+// the encryption, and the unlock screen has to render BEFORE anything can
+// decrypt it. Same reason window-bounds is a sidecar. So the choice is
+// mirrored here on every change, and read back at boot to pick the locale for
+// the unlock screen. A UI preference, nothing sensitive: it says which
+// language you read, not anything about your notes.
+
+fn language_file() -> PathBuf {
+    data_dir().join("language")
+}
+
+/// The mirrored language choice (`auto` / `en` / `zh-CN` / …), if one was ever
+/// saved. `None` on a fresh install or a notebook last written by a build
+/// predating this mirror — callers fall back to the database, then to `auto`.
+pub fn saved_language() -> Option<String> {
+    let s = std::fs::read_to_string(language_file()).ok()?;
+    let s = s.trim().to_string();
+    (!s.is_empty()).then_some(s)
+}
+
+pub fn save_language(choice: &str) {
+    let _ = std::fs::write(language_file(), choice);
+}
+
 // --- Open-tabs persistence (the second switch on the same Settings card) ---
 //
 // Same sidecar pattern as window-bounds: file presence is the on/off state.

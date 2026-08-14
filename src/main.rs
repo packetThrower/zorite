@@ -282,8 +282,14 @@ fn main() {
         // notebook there is no app handle yet, and the unlock screen has to be
         // in the user's language too. `AppView` re-applies the same choice at
         // construction, so this is only about being early enough.
+        // The sidecar first: it is the only source readable while a notebook is
+        // still locked (the settings table is inside the encryption). The
+        // database read covers a notebook last written before the sidecar
+        // existed, and is reachable only when it isn't encrypted anyway.
         i18n::apply_locale(
-            &db::read_language(&paths::db_path()).unwrap_or_else(|| "auto".to_string()),
+            &paths::saved_language()
+                .or_else(|| db::read_language(&paths::db_path()))
+                .unwrap_or_else(|| "auto".to_string()),
         );
         // User-added UI fonts (Settings → Appearance → Font) live in the
         // managed fonts/ dir; register them before any window measures text.

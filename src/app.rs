@@ -950,6 +950,12 @@ impl AppView {
             .get_setting("language")
             .unwrap_or_else(|| "auto".to_string());
         crate::i18n::apply_locale(&this.language);
+        // Mirror to the sidecar on every load, not just on change: a notebook
+        // that chose its language before the sidecar existed would otherwise
+        // keep showing an English unlock screen until someone happened to
+        // touch the setting again. Writing it here means the NEXT launch is
+        // already right, with no user action.
+        crate::paths::save_language(&this.language);
         this.pdf_quality = this
             .db
             .get_setting("pdf_quality")
@@ -5308,6 +5314,10 @@ impl AppView {
         // the new language immediately (installed once at boot).
         crate::actions::set_app_menu(cx);
         let _ = self.db.set_setting("language", choice);
+        // Mirror it outside the database too: on a locked notebook the unlock
+        // screen renders before anything can decrypt the settings table, so
+        // the sidecar is the only way it can know which language to speak.
+        crate::paths::save_language(choice);
         cx.refresh_windows();
     }
 
