@@ -1108,6 +1108,7 @@ impl AppView {
         self.ensure_content_mermaid(&content, cx);
         self.ensure_content_math(&content, cx);
         self.ensure_content_embeds(&content, cx);
+        self.ensure_content_parsed(&content, cx);
         let key = date.clone();
         let sub = cx.subscribe_in(
             &state,
@@ -1215,6 +1216,9 @@ impl AppView {
                 this.slash = None;
                 let value = bstate.read(cx).text().to_string();
                 this.flush_journal(&bkey, &value);
+                // The reader takes this day back now, so whatever was just
+                // typed/pasted (a CSV table, say) warms off-thread.
+                this.ensure_content_parsed(&value, cx);
                 // Link re-index changed backlinks elsewhere — sync windows.
                 this.signal_doc_changed(cx);
                 cx.notify();
@@ -1259,7 +1263,10 @@ impl AppView {
             if let Some(de) = self.day_editors.get(&date)
                 && de.state.read(cx).value() != content
             {
-                de.state.update(cx, |s, cx| s.set_text(content, cx));
+                de.state.update(cx, |s, cx| s.set_text(content.clone(), cx));
+                // Another window changed this day — warm the new text so the
+                // reader doesn't fall back to plain text on the next frame.
+                self.ensure_content_parsed(&content, cx);
             }
         }
     }
@@ -1929,6 +1936,9 @@ impl AppView {
         self.ensure_content_mermaid(&page.content, cx);
         self.ensure_content_math(&page.content, cx);
         self.ensure_content_embeds(&page.content, cx);
+        // Frontend form, not `page.content`: the reader renders what the
+        // editor holds, and the parse cache is keyed on the exact string.
+        self.ensure_content_parsed(&page_content, cx);
         let sub = cx.subscribe_in(
             &state,
             window,
@@ -2032,6 +2042,8 @@ impl AppView {
                 this.slash = None;
                 let value = bstate.read(cx).text().to_string();
                 this.persist(pid, &value);
+                // Same as the journal day's blur: the reader renders this now.
+                this.ensure_content_parsed(&value, cx);
                 this.refresh_sidebar();
                 this.signal_doc_changed(cx);
                 cx.notify();
