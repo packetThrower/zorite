@@ -272,9 +272,20 @@ change. What the plan called for and what shipped:
 - [x] 3. App chrome sweep: dialogs, menus, sidebar, slash palette, dates.
 - [x] 4. Crate `Labels` structs + host wiring (editor + reader context menus).
 - [x] 5. zh-CN.
-- [ ] 6. Per-locale QA: overflow in fixed-width chrome, `.small()` scale with
-  CJK glyph heights (M) — the one phase still genuinely open, and now the
-  most valuable since there is a real locale to test with.
+- [x] 6. Per-locale QA — done for zh-CN, and it found nothing to fix. Worth
+  recording why, so the next locale is measured rather than eyeballed:
+  - **Width is a non-issue for CJK.** Measured across the catalog in visual
+    columns (CJK/fullwidth = 2, latin = 1): only 27 of 635 strings are wider
+    in zh-CN, 608 are the same or narrower, and the widest delta (+11 cols)
+    is an error message, not chrome. The tightest boxes in the app — the
+    84/92px All-pages column headers — hold 「创建时间」at ~44px.
+  - **Height was the real risk**, since CJK glyphs are full-body where latin
+    sits at cap-height: 25 fixed-height text containers, tightest at 14–20px
+    (the `alias::` row, page title, calendar cells, properties rows).
+    Inspected in a zh-CN build — nothing clipped.
+  - A LATIN locale is the one to actually worry about: German/French run
+    ~1.3–1.5× wider than English, which is the direction those 84px columns
+    have no slack for. Re-run the column measurement before offering one.
 
 Follow-ups from reviewing #70 (fixed in the branch that follows it):
 - `apply_locale` must also call `gpui_component::set_locale` — the toolkit
