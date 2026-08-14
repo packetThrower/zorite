@@ -47,11 +47,17 @@ impl MathStore {
 
     /// Set the text color formulas are tinted for. If it changed (a theme switch), drop the
     /// cached rasters so they re-render in the new color. Call before kicking off renders.
-    pub fn set_color(&mut self, color: Hsla) {
+    ///
+    /// Returns whether anything was dropped, so a caller that has to re-warm
+    /// the rasters itself (inline formulas don't re-render on a cache miss)
+    /// can skip that work when the tint is unchanged.
+    pub fn set_color(&mut self, color: Hsla) -> bool {
         if self.color != Some(color) {
             self.color = Some(color);
             self.slots.clear();
+            return true;
         }
+        false
     }
 
     /// Claim `source` for rendering. Returns `false` if it already has a slot, so the

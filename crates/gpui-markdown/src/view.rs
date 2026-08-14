@@ -13,9 +13,10 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Corners, ElementId, FontStyle, FontWeight,
     HighlightStyle, Hsla, InteractiveElement, InteractiveText, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas,
-    div, point, prelude::FluentBuilder, px, relative, rgb, rgba, size, svg,
+    MouseDownEvent, ParentElement, Pixels, Point, RenderImage, RenderOnce, ScrollHandle,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout,
+    TextRun, Window, canvas, div, point, prelude::FluentBuilder, px, relative, rgb, rgba, size,
+    svg,
 };
 use markdown::mdast;
 
@@ -1843,15 +1844,93 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
 
 // --- Inline rendering ---
 
+#[derive(Clone)]
 enum LinkTarget {
     Wiki(SharedString),
     Url(SharedString),
 }
 
+/// The text layout of whichever paragraph element got built.
+///
+/// RTL blocks lay themselves out (`gpui_bidi::paragraph`), because gpui wraps
+/// by slicing the reordered glyph run and gets the rows backwards — so the two
+/// directions carry different layouts. Everything downstream (link
+/// hit-testing, click-to-caret, seating an inline formula over its spacer)
+/// only ever asks these three questions, so it asks them here.
+enum TextHandle {
+    Ltr(TextLayout),
+    Rtl(gpui_bidi::paragraph::RtlLayout),
+}
+
+impl TextHandle {
+    fn index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
+        match self {
+            Self::Ltr(l) => l.index_for_position(position),
+            Self::Rtl(l) => l.index_for_position(position),
+        }
+    }
+
+    fn line_height(&self) -> Pixels {
+        match self {
+            Self::Ltr(l) => l.line_height(),
+            Self::Rtl(l) => l.line_height(),
+        }
+    }
+
+    /// Top-left corner of the spacer occupying `range`, where an inline raster
+    /// gets painted.
+    ///
+    /// In an LTR line that's just the start offset's position. In an RTL line
+    /// the start offset is the spacer's RIGHT edge — painting from there would
+    /// cover the words beside it — so the whole range's visual box is measured
+    /// and its left edge used.
+    fn raster_origin(&self, range: Range<usize>) -> Option<Point<Pixels>> {
+        match self {
+            Self::Ltr(l) => l.position_for_index(range.start),
+            Self::Rtl(l) => l.left_edge_of(range),
+        }
+    }
+}
+
+/// Open a link target. Shared by both directions: LTR goes through
+/// `InteractiveText`, RTL hit-tests through its own layout, but what a click
+/// DOES must not depend on which.
+fn follow_link(
+    target: Option<&LinkTarget>,
+    on_wiki: &Option<WikiLinkHandler>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match target {
+        Some(LinkTarget::Wiki(title)) => {
+            if let Some(handler) = on_wiki {
+                handler(title.clone(), window, cx);
+            }
+        }
+        // Only http(s) reaches the OS opener — the markdown is untrusted, and
+        // `open_url` runs the scheme's handler.
+        Some(LinkTarget::Url(url)) if crate::syntax::is_safe_external_url(url) => cx.open_url(url),
+        Some(LinkTarget::Url(_)) | None => {}
+    }
+}
+
 /// An inline raster spliced into a paragraph's text: `(display byte offset of
-/// the spacer, raster, logical w, h, image src)`. `src` is `Some` for an
-/// image (clickable → preview), `None` for a `$…$` formula.
-type InlineRaster = (usize, Arc<RenderImage>, f32, f32, Option<SharedString>);
+/// the spacer, spacer byte length, raster, logical w, h, image src)`. `src` is
+/// `Some` for an image (clickable → preview), `None` for a `$…$` formula.
+///
+/// The spacer's LENGTH is carried, not just where it starts, because an RTL
+/// line runs the other way: the first byte of the spacer sits at its RIGHT
+/// edge, and a raster painted from there covers the text beside it instead of
+/// the gap. With the range, the raster is placed by the spacer's actual
+/// visual box, which is correct whichever way the line runs.
+type InlineRaster = (
+    usize,
+    usize,
+    Arc<RenderImage>,
+    f32,
+    f32,
+    Option<SharedString>,
+);
 
 /// Window-space bounds of each painted inline image + its src, for click
 /// hit-testing (image click → preview).
@@ -1946,62 +2025,79 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
 
     let math = std::mem::take(&mut inl.math);
 
+    // Rendered-text ranges of this block's links, so the click-to-caret handler
+    // below can ignore a click that lands on a link. A link's own `on_click`
+    // fires on mouse-*up*; the caret handler fires on mouse-*down*, so without
+    // this it would enter the editor first and swallow the link click.
+    let link_ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
+    let targets: Vec<LinkTarget> = inl.links.iter().map(|(_, t)| t.clone()).collect();
+
     // #66: an RTL paragraph cannot use gpui's wrapping. gpui shapes the whole
     // paragraph as one line and slices it into rows by ascending x, and glyph
     // order is visual — so the first row gets the paragraph's LAST words and a
     // wrapped Persian note reads bottom-to-top. `RtlText` breaks in logical
     // order first (UAX #9) and paints the rows itself.
     //
-    // Links and inline math still take the `StyledText` route: both hit-test
-    // through the text layout this path doesn't populate, so they need the
-    // per-line mapping ported before they can move over.
-    if dir.is_rtl() && inl.links.is_empty() && math.is_empty() {
-        return div()
-            .w_full()
-            .child(gpui_bidi::paragraph::RtlText::new(inl.text).with_highlights(highlights))
-            .into_any_element();
-    }
-
-    let styled = StyledText::new(inl.text).with_highlights(highlights);
-    // Capture the text layout (a shared handle, populated on paint) so a click can
-    // be mapped to a rendered byte index, then to a source offset (and so a canvas can paint
-    // inline formulas over their spacers).
-    let layout = styled.layout().clone();
-    // Rendered-text ranges of this block's links, so the click-to-caret handler
-    // below can ignore a click that lands on a link. A link's own `on_click`
-    // fires on mouse-*up*; the caret handler fires on mouse-*down*, so without
-    // this it would enter the editor first and swallow the link click.
-    let link_ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
-
-    let inner = if inl.links.is_empty() {
-        styled.into_any_element()
+    // Everything past this point is direction-agnostic: it works off
+    // `TextHandle`, so links, click-to-caret and inline math behave the same
+    // either way.
+    let (inner, layout) = if dir.is_rtl() {
+        let rtl = gpui_bidi::paragraph::RtlText::new(inl.text)
+            .with_highlights(highlights)
+            .with_pointer_ranges(link_ranges.clone());
+        let layout = TextHandle::Rtl(rtl.layout().clone());
+        let inner = if link_ranges.is_empty() {
+            rtl.into_any_element()
+        } else {
+            // `InteractiveText` hit-tests through gpui's own layout, which is
+            // the thing that's wrong for RTL — so the click lands via the same
+            // handle that painted the rows. Mouse-DOWN, and consumed, so the
+            // click-to-caret wrapper below doesn't also fire.
+            let TextHandle::Rtl(hit) = &layout else {
+                unreachable!("just built as Rtl")
+            };
+            let hit = hit.clone();
+            let ranges = link_ranges.clone();
+            let targets = targets.clone();
+            let on_wiki = ctx.on_wiki_link.clone();
+            div()
+                .child(rtl)
+                .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
+                    let Ok(ix) = hit.index_for_position(ev.position) else {
+                        return;
+                    };
+                    if let Some(k) = ranges.iter().position(|r| r.contains(&ix)) {
+                        cx.stop_propagation();
+                        follow_link(targets.get(k), &on_wiki, window, cx);
+                    }
+                })
+                .into_any_element()
+        };
+        (inner, layout)
     } else {
-        ctx.counter += 1;
-        let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
-        let targets: Vec<LinkTarget> = inl.links.into_iter().map(|(_, t)| t).collect();
-        let on_wiki = ctx.on_wiki_link.clone();
-        InteractiveText::new(id, styled)
-            .on_click(link_ranges.clone(), move |ix, window, cx| {
-                // The click was on a link range; consume it so it doesn't also reach
-                // a surrounding host handler (e.g. the click-to-caret below).
-                cx.stop_propagation();
-                match targets.get(ix) {
-                    Some(LinkTarget::Wiki(title)) => {
-                        if let Some(handler) = &on_wiki {
-                            handler(title.clone(), window, cx);
-                        }
-                    }
-                    // Only http(s) reaches the OS opener — the markdown is
-                    // untrusted, and `open_url` runs the scheme's handler.
-                    Some(LinkTarget::Url(url)) if crate::syntax::is_safe_external_url(url) => {
-                        cx.open_url(url)
-                    }
-                    Some(LinkTarget::Url(_)) => {}
-                    None => {}
-                }
-            })
-            .into_any_element()
+        let styled = StyledText::new(inl.text).with_highlights(highlights);
+        // Capture the text layout (a shared handle, populated on paint) so a click can
+        // be mapped to a rendered byte index, then to a source offset (and so a canvas can paint
+        // inline formulas over their spacers).
+        let layout = TextHandle::Ltr(styled.layout().clone());
+        let inner = if link_ranges.is_empty() {
+            styled.into_any_element()
+        } else {
+            ctx.counter += 1;
+            let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
+            let on_wiki = ctx.on_wiki_link.clone();
+            InteractiveText::new(id, styled)
+                .on_click(link_ranges.clone(), move |ix, window, cx| {
+                    // The click was on a link range; consume it so it doesn't also reach
+                    // a surrounding host handler (e.g. the click-to-caret below).
+                    cx.stop_propagation();
+                    follow_link(targets.get(ix), &on_wiki, window, cx);
+                })
+                .into_any_element()
+        };
+        (inner, layout)
     };
+    let layout = Rc::new(layout);
 
     // Click-to-caret: outside a link (link clicks `stop_propagation` above), map the
     // click to a source offset and report it so the host can place its editor caret
@@ -2053,7 +2149,7 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     // A paragraph with inline formulas: paint each raster over its spacer via a canvas painted
     // AFTER the text (so the text layout is populated + gives the spacer's window position), and
     // grow the line height so a tall formula (a fraction) doesn't overlap the neighbouring line.
-    let tallest = math.iter().fold(0f32, |a, &(_, _, _, h, _)| a.max(h));
+    let tallest = math.iter().fold(0f32, |a, &(_, _, _, _, h, _)| a.max(h));
     let line_h = px((f32::from(ctx.style.text_size) * 1.4).max(tallest + 6.0));
     let with_math = div()
         .relative()
@@ -2066,8 +2162,8 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
                     let row_h = layout.line_height();
                     let mut hits = image_hits.borrow_mut();
                     hits.clear();
-                    for (off, img, w, h, src) in &math {
-                        if let Some(p) = layout.position_for_index(*off) {
+                    for (off, len, img, w, h, src) in &math {
+                        if let Some(p) = layout.raster_origin(*off..*off + *len) {
                             let y = p.y + (row_h - px(*h)) / 2.0;
                             let b = Bounds::new(point(p.x, y), size(px(*w), px(*h)));
                             let _ =
@@ -2130,7 +2226,8 @@ fn build_inline(
                     Some((img, w, h)) => {
                         let space_w = (f32::from(style.text_size) * 0.26).max(1.0);
                         let n = ((w / space_w).ceil() as usize).max(1);
-                        out.math.push((out.text.len(), img, w, h, None));
+                        out.math
+                            .push((out.text.len(), n * '\u{00A0}'.len_utf8(), img, w, h, None));
                         out.text.extend(std::iter::repeat_n('\u{00A0}', n));
                     }
                     None => push_run(&format!("${}$", m.value), cur, out),
@@ -2166,8 +2263,14 @@ fn build_inline(
                     Some((raster, w, h)) => {
                         let space_w = (f32::from(style.text_size) * 0.26).max(1.0);
                         let n = ((w / space_w).ceil() as usize).max(1);
-                        out.math
-                            .push((out.text.len(), raster, w, h, Some(img.url.clone().into())));
+                        out.math.push((
+                            out.text.len(),
+                            n * '\u{00A0}'.len_utf8(),
+                            raster,
+                            w,
+                            h,
+                            Some(img.url.clone().into()),
+                        ));
                         out.text.extend(std::iter::repeat_n('\u{00A0}', n));
                     }
                     None => {
