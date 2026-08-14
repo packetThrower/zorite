@@ -1763,7 +1763,33 @@ impl EditorState {
             if let Some(rr) = r.rows.get(k)
                 && let Some(next) = rr.map.step_visual(local, visual_right)
             {
-                return self.line_starts()[row] + self.source_col(row, rr.start + next);
+                let target = self.line_starts()[row] + self.source_col(row, rr.start + next);
+                // A visual step that doesn't move the caret in the DOCUMENT has
+                // landed inside something atomic — an inline formula's spacer,
+                // whose every display byte maps back to the span's start. The
+                // logical stepper knows how to cross those (and how to hand the
+                // formula to its editor), so defer to it rather than sitting
+                // still.
+                if target != off {
+                    // Landing ON a spacer resolves to the span's START, and the
+                    // "is the caret inside a formula?" test wants strictly
+                    // inside — so approaching a formula from its end side, the
+                    // caret stepped to the start, failed the test, and the next
+                    // press left the formula behind. Step one byte in so the
+                    // formula opens from either side.
+                    let line_start = self.line_starts()[row];
+                    let here = off.saturating_sub(line_start);
+                    let lands_on_a_formula = markdown_syntax::inline_math_spans(self.line_str(row))
+                        .into_iter()
+                        .any(|s| {
+                            line_start + s.start == target && !(s.start < here && here < s.end)
+                        });
+                    return if lands_on_a_formula {
+                        target + 1
+                    } else {
+                        target
+                    };
+                }
             }
             // Off the end of this row: fall through to the logical neighbour,
             // which is what carries the caret onto the next row or line.
@@ -5830,6 +5856,10 @@ struct BlockImg {
 #[derive(Clone)]
 struct InlineMath {
     display_off: usize,
+    /// Byte length of the spacer this raster sits over. On an RTL row
+    /// `display_off` is its RIGHT edge, so the whole span is needed to find the
+    /// left one — see where it is painted.
+    len: usize,
     /// ABSOLUTE byte range of the `$…$` span in the document — to hit-test a click on the
     /// formula back to its edit range and to position the seated editor.
     source: Range<usize>,

@@ -291,6 +291,22 @@ impl VisualMap {
         stops
     }
 
+    /// Does the byte range read right-to-left?
+    ///
+    /// From the UAX #9 levels when they're available (see
+    /// [`Self::with_levels`]); otherwise from the glyph order, which is right
+    /// in the middle of a run and unreliable at its edges.
+    pub fn is_rtl_range(&self, range: Range<usize>) -> bool {
+        if let Some(levels) = &self.levels {
+            return levels
+                .get(range.start..range.end.min(levels.len()))
+                .is_some_and(|s| s.iter().any(|l| l % 2 == 1));
+        }
+        (0..self.glyphs.len())
+            .filter(|&gi| range.contains(&self.glyphs[gi].index))
+            .any(|gi| self.is_rtl_at(gi))
+    }
+
     /// The byte offset at one edge of the glyph at visual position `gi`.
     /// `trailing` means the edge further along in *reading* order.
     fn edge_offset(&self, gi: usize, trailing: bool) -> usize {
@@ -426,6 +442,24 @@ mod tests {
         sorted.sort_by(f32::total_cmp);
         sorted.dedup();
         assert_eq!(sorted.len(), xs.len(), "caret positions must be distinct");
+    }
+
+    #[test]
+    fn a_neutral_run_takes_the_direction_of_the_text_around_it() {
+        // "سلام [[x]] دنیا" — the bracket pair is neutral, so UAX #9 gives it
+        // the paragraph's direction (RTL). Painting a styled row re-shapes each
+        // run on its own, which loses that context and would render `[[` in
+        // LTR order; the run's direction has to come from the levels.
+        let text = "سلام [[x]] دنیا";
+        let m = VisualMap::from_glyphs([Glyph { index: 0, x: 0.0 }], 10.0, text.len())
+            .with_levels(text);
+        let open = text.find("[[").unwrap();
+        assert!(
+            m.is_rtl_range(open..open + 2),
+            "the brackets read RTL, like the prose around them"
+        );
+        let x = text.find('x').unwrap();
+        assert!(!m.is_rtl_range(x..x + 1), "the Latin between them does not");
     }
 
     #[test]

@@ -1972,7 +1972,6 @@ impl Element for EditorElement {
                                 origin.y + *lh * k,
                             ),
                             *lh,
-                            font_size,
                             window,
                             cx,
                         );
@@ -1991,17 +1990,35 @@ impl Element for EditorElement {
                     let _ = line.paint(text_origin, *lh, gpui::TextAlign::Left, None, window, cx);
                 }
                 // Inline `$…$` formulas: paint each typeset raster over its spacer, centered on
-                // the text row. `position_for_index` gives the spacer's x + wrap-row offset.
-                // Record each formula's window bounds for click-to-edit; the one being edited
-                // shows the seated editor instead of its raster. (Deliberately NOT bidi-mapped:
-                // a raster needs its spacer's *left* edge, which on an RTL run is the caret x of
-                // the offset one past it — a formula inside RTL prose is a follow-up. It still
-                // rides the row's shift, so it stays with the text.)
+                // the text row. Record each formula's window bounds for click-to-edit; the one
+                // being edited shows the seated editor instead of its raster.
                 for im in prepaint.inline_maths.get(i).into_iter().flatten() {
-                    if let Some(p) = line.position_for_index(im.display_off, *lh) {
-                        let x = text_origin.x + p.x;
-                        // Center the formula in the (grown-to-fit) wrap row at p.y.
-                        let y = origin.y + p.y + (*lh - im.height) / 2.0;
+                    // The spacer's LEFT edge and which row it landed on. On an
+                    // RTL row `display_off` is its RIGHT edge — anchoring there
+                    // paints the formula over the words beside it and leaves
+                    // the reserved gap empty — so the row's map gives the
+                    // spacer's actual visual box instead.
+                    let seat = match rtl {
+                        Some(r) => {
+                            let (k, local) = r.row_of(im.display_off);
+                            r.rows.get(k).and_then(|rr| {
+                                let end = local + im.len;
+                                rr.map.rects_for_range(local..end).first().map(|&(x0, _)| {
+                                    (
+                                        inset + r.shifts.get(k).copied().unwrap_or(px(0.)) + px(x0),
+                                        *lh * k,
+                                    )
+                                })
+                            })
+                        }
+                        None => line
+                            .position_for_index(im.display_off, *lh)
+                            .map(|p| (inset + p.x, p.y)),
+                    };
+                    if let Some((x, row_y)) = seat {
+                        let x = origin.x + x;
+                        // Center the formula in the (grown-to-fit) wrap row.
+                        let y = origin.y + row_y + (*lh - im.height) / 2.0;
                         let b = Bounds::new(point(x, y), size(im.width, im.height));
                         inline_math_rects.push((im.source.clone(), im.latex.clone(), b));
                         if editing_inline.as_ref() != Some(&im.source) {
@@ -2520,6 +2537,7 @@ fn shape_inline_math(
         .zip(imgs)
         .map(|(p, (img, width, height, latex))| InlineMath {
             display_off: p.display_off,
+            len: p.len,
             // Absolute byte range in the document, for hit-test / seating / commit.
             source: line_start + p.source.start..line_start + p.source.end,
             latex,
@@ -2598,6 +2616,7 @@ fn shape_inline_images(
         .zip(imgs)
         .map(|(p, (img, width, height))| InlineMath {
             display_off: p.display_off,
+            len: p.len,
             source: line_start + p.source.start..line_start + p.source.end,
             latex: SharedString::default(), // empty = image, not a formula
             img,

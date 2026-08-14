@@ -244,7 +244,6 @@ fn runs_from_highlights(
 
 /// What the measure pass worked out, reused by paint.
 struct Laid {
-    font_size: Pixels,
     /// The rows, in reading order: where each starts in the ORIGINAL text (the
     /// injected `\n`s don't exist there) and how to read its glyphs.
     rows: Vec<Row>,
@@ -273,6 +272,11 @@ pub struct Row {
     pub runs: Vec<(Range<usize>, TextRun)>,
     /// The shaped row, ready to paint.
     pub line: WrappedLine,
+    /// The size it was shaped at. Carried so painting can re-shape a run
+    /// without the caller passing a size that might not be this row's — a
+    /// heading is not the body size, and getting that wrong is invisible until
+    /// a styled heading paints at the wrong scale.
+    pub font_size: Pixels,
 }
 
 /// Lay `text` out as right-to-left rows: break it in LOGICAL order at word
@@ -325,6 +329,7 @@ pub fn layout_rows(
             map: crate::shaped::map_of_wrapped(&line, len),
             runs: row_runs,
             line,
+            font_size,
         });
         orig += len;
         broken_at += len + 1;
@@ -352,7 +357,6 @@ pub fn paint_row(
     row: &Row,
     origin: Point<Pixels>,
     line_height: Pixels,
-    font_size: Pixels,
     window: &mut Window,
     cx: &mut App,
 ) {
@@ -367,12 +371,21 @@ pub fn paint_row(
         let Some(&(x0, _)) = row.map.rects_for_range(range.clone()).first() else {
             continue;
         };
-        let shaped = text_system.shape_line(
-            SharedString::from(row.line.text[range.clone()].to_string()),
-            font_size,
-            std::slice::from_ref(run),
-            None,
-        );
+        // Shaping a slice on its own loses the surrounding direction, and a run
+        // of neutrals — markdown's `[[`, `](`, `**` — then comes out in LTR
+        // order and unmirrored, so the brackets around a Latin link inside
+        // Persian rendered backwards. Re-assert the run's direction with an
+        // explicit embedding so the isolated shaping matches what the full row
+        // laid out.
+        let seg = &row.line.text[range.clone()];
+        let text = if row.map.is_rtl_range(range.clone()) {
+            SharedString::from(format!("\u{202b}{seg}\u{202c}"))
+        } else {
+            SharedString::from(seg.to_string())
+        };
+        let mut run = run.clone();
+        run.len = text.len();
+        let shaped = text_system.shape_line(text, row.font_size, std::slice::from_ref(&run), None);
         let _ = shaped.paint(
             Point {
                 x: origin.x + px(x0),
@@ -623,7 +636,6 @@ impl Element for RtlText {
                 };
                 let bounds = state.borrow().as_ref().and_then(|l| l.bounds);
                 *state.borrow_mut() = Some(Laid {
-                    font_size,
                     rows,
                     line_height,
                     wrap_width,
@@ -695,7 +707,6 @@ impl Element for RtlText {
                     y: bounds.origin.y + laid.line_height * i,
                 },
                 laid.line_height,
-                laid.font_size,
                 window,
                 cx,
             );

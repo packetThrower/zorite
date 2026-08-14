@@ -417,6 +417,20 @@ impl AppView {
     fn exit_math_edit(&mut self, after: bool, window: &mut Window, cx: &mut Context<Self>) {
         let inline = self.math_edit.as_ref().is_some_and(|m| m.inline);
         if let Some((source, block)) = self.commit_math_edit(cx) {
+            // ratex-gpui reports the arrow it was handed — left/up = before the
+            // span, right/down = after — which is the left-to-right reading. On
+            // an RTL line the text continues LEFTWARD, so exiting left means
+            // landing AFTER the span; without this the caret leaves a formula
+            // on the wrong side and appears not to exit at all (#66). The crate
+            // stays host-agnostic, so direction is decided here.
+            let after = {
+                let text = source.read(cx).value();
+                if line_is_rtl(&text, block.start) {
+                    !after
+                } else {
+                    after
+                }
+            };
             source.update(cx, |e, cx| {
                 if inline {
                     e.focus(window, cx);
@@ -442,4 +456,13 @@ impl AppView {
             self.ensure_math_loaded(source, cx);
         }
     }
+}
+
+/// Does the line containing byte `at` read right-to-left? Same rule the editor
+/// and reader use — the line's first strong character.
+fn line_is_rtl(text: &str, at: usize) -> bool {
+    let at = at.min(text.len());
+    let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
+    let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
+    gpui_markdown::syntax::base_direction(&text[start..end]).is_rtl()
 }

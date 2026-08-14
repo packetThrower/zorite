@@ -1942,6 +1942,9 @@ pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineMathPlace {
     pub display_off: usize,
+    /// Byte length of the spacer. Needed to place the raster on an RTL row,
+    /// where `display_off` is the spacer's RIGHT edge, not its left.
+    pub len: usize,
     pub source: Range<usize>,
 }
 
@@ -2005,6 +2008,7 @@ pub(crate) fn splice_inline_math(
         // The spacer, mapped back to the span start.
         places.push(InlineMathPlace {
             display_off: nd.len(),
+            len: *n,
             source: src.clone(),
         });
         let src_at = map.get(d0).copied().unwrap_or(src.start);
@@ -2452,6 +2456,7 @@ mod tests {
             places,
             vec![InlineMathPlace {
                 display_off: 2,
+                len: 3,
                 source: 2..5
             }]
         );
@@ -2478,10 +2483,12 @@ mod tests {
             vec![
                 InlineMathPlace {
                     display_off: 0,
+                    len: 2,
                     source: 0..3
                 },
                 InlineMathPlace {
                     display_off: 7,
+                    len: 4,
                     source: 8..11
                 },
             ]
