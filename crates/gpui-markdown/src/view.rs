@@ -3,12 +3,12 @@
 //! crate docs; `syntax` (always compiled, dependency-free) holds the shared
 //! construct recognition.
 
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Corners, ElementId, FontStyle, FontWeight,
@@ -686,21 +686,23 @@ impl MarkdownView {
 /// visible day on any interaction, and re-running `to_mdast` for every
 /// non-editing day was the dominant per-frame cost (O(days × content)).
 /// Keyed by the exact source string (no hash collisions to reason about;
-/// the cap bounds memory to ~a few dozen notes of text), LRU-evicted, and
-/// thread-local — gpui renders every window on the one UI thread, so all
-/// windows share hits and there's no locking.
+/// the cap bounds memory to ~a few dozen notes of text) and LRU-evicted.
+/// Process-global, not thread-local: a background [`warm_parse`] has to be
+/// able to fill what the render thread later reads (issue #60).
 const PARSE_CACHE_CAP: usize = 64;
 
-thread_local! {
-    #[allow(clippy::type_complexity)]
-    static PARSE_CACHE: RefCell<HashMap<String, (Arc<mdast::Node>, u64)>> =
-        RefCell::new(HashMap::new());
-    static PARSE_TICK: Cell<u64> = const { Cell::new(0) };
+/// The cache entries plus the LRU clock, bumped on every lookup and insert.
+type ParseCache = (HashMap<String, (Arc<mdast::Node>, u64)>, u64);
+
+static PARSE_CACHE: LazyLock<Mutex<ParseCache>> = LazyLock::new(|| Mutex::new((HashMap::new(), 0)));
+
+/// The cache guard. Nothing but map lookups runs under this lock — never a
+/// parse — so a poisoned lock means an unrelated panic and the entries are
+/// still sound to reuse.
+fn parse_cache() -> MutexGuard<'static, ParseCache> {
+    PARSE_CACHE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Parse `source` with the view's options (GFM + `$…$`/`$$…$$` math),
-/// memoized. `None` when the parser errors (not cached — the caller falls
-/// back to plain text).
 /// Alignment named by a `<!-- math:ALIGN -->` marker line.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum MathMarkerAlign {
@@ -745,40 +747,187 @@ fn preceding_math_align(source: &str, start: Option<usize>) -> Option<MathMarker
     }
 }
 
+/// A cache hit for `source`, refreshing its LRU stamp. Never parses.
+fn cache_get(source: &str) -> Option<Arc<mdast::Node>> {
+    let mut cache = parse_cache();
+    cache.1 += 1;
+    let tick = cache.1;
+    let (node, last_used) = cache.0.get_mut(source)?;
+    *last_used = tick;
+    Some(node.clone())
+}
+
+/// Parse `source` with the view's options (GFM + `$…$`/`$$…$$` math),
+/// memoized. `None` when the parser errors (not cached — the caller falls
+/// back to plain text). Callers on a render thread go through
+/// [`parse_for_render`] instead, which won't parse an expensive shape inline.
 fn parse_cached(source: &str) -> Option<Arc<mdast::Node>> {
-    PARSE_CACHE.with(|cache| {
-        let mut map = cache.borrow_mut();
-        let tick = PARSE_TICK.with(|t| {
-            let v = t.get() + 1;
-            t.set(v);
-            v
-        });
-        if let Some((node, last_used)) = map.get_mut(source) {
-            *last_used = tick;
-            return Some(node.clone());
+    if let Some(node) = cache_get(source) {
+        return Some(node);
+    }
+    // Enable block math (`$$…$$` -> a Math node) and inline `$…$`
+    // (`math_text` -> an InlineMath node). markdown's `math_text` already
+    // follows the sensible rules (a `$` followed/preceded by a non-space,
+    // etc.), so prose like "it cost $5" stays literal.
+    let mut opts = markdown::ParseOptions::gfm();
+    opts.constructs.math_flow = true;
+    opts.constructs.math_text = true;
+    // Parsed with the lock RELEASED: this is the expensive step (seconds on
+    // the shapes `is_cheap_to_parse` screens for), and a background warm must
+    // never stall a render thread that only wants a lookup.
+    let node = Arc::new(markdown::to_mdast(source, &opts).ok()?);
+    let mut cache = parse_cache();
+    cache.1 += 1;
+    let tick = cache.1;
+    if cache.0.len() >= PARSE_CACHE_CAP {
+        // Evict the least-recently-used entry (the cap is small; a linear
+        // scan is cheaper than an ordered structure).
+        if let Some(oldest) = cache
+            .0
+            .iter()
+            .min_by_key(|(_, (_, last))| *last)
+            .map(|(k, _)| k.clone())
+        {
+            cache.0.remove(&oldest);
         }
-        // Enable block math (`$$…$$` -> a Math node) and inline `$…$`
-        // (`math_text` -> an InlineMath node). markdown's `math_text` already
-        // follows the sensible rules (a `$` followed/preceded by a non-space,
-        // etc.), so prose like "it cost $5" stays literal.
-        let mut opts = markdown::ParseOptions::gfm();
-        opts.constructs.math_flow = true;
-        opts.constructs.math_text = true;
-        let node = Arc::new(markdown::to_mdast(source, &opts).ok()?);
-        if map.len() >= PARSE_CACHE_CAP {
-            // Evict the least-recently-used entry (the cap is small; a linear
-            // scan is cheaper than an ordered structure).
-            if let Some(oldest) = map
-                .iter()
-                .min_by_key(|(_, (_, last))| *last)
-                .map(|(k, _)| k.clone())
-            {
-                map.remove(&oldest);
+    }
+    cache.0.insert(source.to_string(), (node.clone(), tick));
+    Some(node)
+}
+
+// The four thresholds below are calibrated against timings of the pinned
+// `markdown` crate, release build, on the shapes from issue #60. Crossing one
+// costs a single placeholder frame, never a refusal — so each sits far above
+// anything a written note reaches and far below where the parser falls over.
+
+/// Source bigger than this never parses on the render thread. Linear shapes
+/// stay fast well past it (measured: 129 KB of link-and-emphasis prose parses
+/// in 36 ms — a dropped frame, not a freeze), so this is only a backstop for
+/// pathological shapes the scan below doesn't recognize.
+const INLINE_PARSE_MAX: usize = 128 * 1024;
+
+/// Blockquote nesting deeper than this defers. Depth is the trigger for the
+/// worst shape in the issue: one line 25 000 `>` deep is 48 KB and 6.0 s,
+/// 8 000 deep is 475 ms, 2 000 deep is 35 ms. Written notes nest 1–3 (a GFM
+/// alert `> [!NOTE]` is 1, a quoted reply chain rarely 3), so 8 is orders of
+/// magnitude clear of both ends.
+const MAX_QUOTE_DEPTH: usize = 8;
+
+/// More `[` in the document than this defers. `[[[[[…` is the O(n²) bracket
+/// shape (378 ms at 50 KB); the cost tracks the TOTAL count, not the longest
+/// run — 8 brackets on each of 8 000 lines is 662 ms while a run of 8 on 500
+/// lines is 2.9 ms — so counting is the honest proxy. Measured: 4 000
+/// brackets is 2–6 ms, 16 000 is 37–88 ms. A note with 4 000 links doesn't
+/// happen; a note that dumps unmatched brackets does.
+const MAX_BRACKETS: usize = 4_000;
+
+/// More rows in a single table than this defers. GFM table parsing is
+/// superlinear in rows
+/// (the realistic accident, a pasted CSV: 1 000 five-column rows is 53 ms,
+/// 2 000 narrow rows 40 ms, and the issue measured 9.2 s at 200 KB), while
+/// 200 rows is 1–3 ms. Past that it's a pasted dataset, not a written table.
+const MAX_TABLE_ROWS: usize = 200;
+
+/// More `*`/`_` in the document than this defers. CommonMark's emphasis
+/// matcher is quadratic in unresolved delimiters, and this is the one
+/// pathological shape that carries no other tell — `*_*_*_…` is 58 KB of
+/// plain-looking text with no brackets, quotes or tables (2.6 s). Measured on
+/// that shape: 8 000 markers is 53 ms, 16 000 is 186 ms, 32 000 is 746 ms.
+/// Emphasis that actually pairs stays linear (8 000 markers of ordinary
+/// `*bold*` prose is 8.5 ms), so this only bites text that never resolves.
+const MAX_EMPHASIS: usize = 8_000;
+
+/// Linear pre-scan: can `source` be parsed on the render thread without a
+/// user-visible stall? Size alone does not predict cost — 200 KB of prose is
+/// fine while 48 KB of nested blockquotes is 6 s — so this also looks for the
+/// shapes that make `to_mdast` superlinear. It runs on every render of an
+/// uncached document, so it stays one cheap pass over the lines and bails at
+/// the first threshold crossed.
+fn is_cheap_to_parse(source: &str) -> bool {
+    if source.len() > INLINE_PARSE_MAX {
+        return false;
+    }
+    let mut rows = 0usize;
+    let mut brackets = 0usize;
+    let mut emphasis = 0usize;
+    for line in source.lines() {
+        let line = line.trim_start();
+        if line.starts_with('|') {
+            // Per-table, not per-document: the superlinear cost is inside one
+            // table's parse, so a note with several small tables is cheap even
+            // though their rows add up. A blank line (or any non-row) ends it.
+            rows += 1;
+            if rows > MAX_TABLE_ROWS {
+                return false;
+            }
+        } else {
+            rows = 0;
+        }
+        // Blockquote depth: the leading run of `>` markers (spaces between
+        // them are the usual `> > >` spelling). Stops at the first content
+        // byte, so it costs nothing on an ordinary line.
+        let mut depth = 0usize;
+        for b in line.bytes() {
+            match b {
+                b'>' => depth += 1,
+                b' ' | b'\t' => {}
+                _ => break,
             }
         }
-        map.insert(source.to_string(), (node.clone(), tick));
-        Some(node)
-    })
+        if depth > MAX_QUOTE_DEPTH {
+            return false;
+        }
+        for b in line.bytes() {
+            match b {
+                b'[' => brackets += 1,
+                b'*' | b'_' => emphasis += 1,
+                _ => {}
+            }
+        }
+        if brackets > MAX_BRACKETS || emphasis > MAX_EMPHASIS {
+            return false;
+        }
+    }
+    true
+}
+
+/// The parse a render pass is allowed to do. A cheap-shaped source parses
+/// inline as it always has; an expensive-shaped one renders only if something
+/// warmed the cache first — otherwise the caller falls back to plain text for
+/// this frame instead of freezing the window for seconds (issue #60), and the
+/// host's background [`warm_parse`] makes the next frame the real thing.
+fn parse_for_render(source: &str) -> Option<Arc<mdast::Node>> {
+    // Cache first. `is_cheap_to_parse` is a linear pass, and while it is cheap
+    // (byte scanning, early-bail), it would otherwise run on EVERY frame of
+    // every visible document — the journal feed renders several at once. Once
+    // a tree is cached the classification cannot change the answer, so skip it.
+    if let Some(node) = cache_get(source) {
+        return Some(node);
+    }
+    if is_cheap_to_parse(source) {
+        parse_cached(source)
+    } else {
+        // Expensive and not cached: render plain text for this frame and let
+        // the host's background warm fill the cache.
+        None
+    }
+}
+
+/// Parse `source` into the shared cache unless it's already there. Pure and
+/// gpui-free by design — call it from a background thread (the host uses
+/// `cx.background_executor()`), because that is the only place a superlinear
+/// parse can run without wedging the UI.
+pub fn warm_parse(source: &str) {
+    // Warms the key `MarkdownView::render` will look up, normalization and all.
+    let _ = parse_cached(&crate::syntax::normalize_math_fences(source));
+}
+
+/// Would rendering `source` block on a parse — i.e. is it expensive-shaped AND
+/// not cached yet? Hosts check this before spawning a warm task, so ordinary
+/// notes (which parse inline in microseconds) spawn nothing at all.
+pub fn needs_warm(source: &str) -> bool {
+    let source = crate::syntax::normalize_math_fences(source);
+    !is_cheap_to_parse(&source) && cache_get(&source).is_none()
 }
 
 impl RenderOnce for MarkdownView {
@@ -835,7 +984,7 @@ impl RenderOnce for MarkdownView {
             // the taller phi), so reading and editing space text identically.
             .line_height(relative(ctx.style.line_height));
 
-        let parsed = parse_cached(&source);
+        let parsed = parse_for_render(&source);
         match parsed.as_deref() {
             Some(mdast::Node::Root(root)) => {
                 for node in &root.children {
@@ -2307,7 +2456,12 @@ fn render_embed(
     ctx.on_image = ctx.on_embed_image.clone();
     ctx.embed_depth += 1;
     let mut body = div().flex().flex_col().gap(px(8.0));
-    if let Some(parsed) = parse_cached(&content)
+    // `parse_for_render`, not `parse_cached`: an embed of an expensive-shaped
+    // note would otherwise freeze the *embedding* page's render (issue #60).
+    // The host warms embedded bodies in `upsert_embed` alongside their images
+    // and math, so the fallback below is at most one frame.
+    let parsed = parse_for_render(&content);
+    if let Some(parsed) = &parsed
         && let mdast::Node::Root(root) = parsed.as_ref()
     {
         for node in &root.children {
@@ -2331,6 +2485,10 @@ fn render_embed(
                 body = body.child(el);
             }
         }
+    } else {
+        // Same fallback the top-level renderer uses: the text, unstyled, until
+        // the warm lands — never an empty box.
+        body = body.child(StyledText::new(content.clone()));
     }
     ctx.embed_depth -= 1;
     (
@@ -3026,7 +3184,8 @@ pub fn match_count(source: &str, query: &str) -> usize {
 /// The **block index** (top-level column-child index, as rendered) of each match of
 /// `query` in `source`, in document order. Pair with [`MarkdownView::track_blocks`]:
 /// the host reads `bounds_for_item(find_matches(..)[current])` to scroll the active
-/// match's block into view. Pure — parses the markdown, no I/O or storage.
+/// match's block into view. No I/O; shares the render path's memoized parse,
+/// so calling it per keystroke costs one parse, not one per character.
 pub fn find_matches(source: &str, query: &str) -> Vec<usize> {
     let mut out = Vec::new();
     if query.is_empty() {
@@ -3034,7 +3193,13 @@ pub fn find_matches(source: &str, query: &str) -> Vec<usize> {
     }
     let style = MarkdownStyle::default();
     let defs = HashMap::new();
-    if let Ok(mdast::Node::Root(root)) = markdown::to_mdast(source, &markdown::ParseOptions::gfm())
+    // The same cached tree `render` walks — keyed and normalized identically.
+    // Sharing it is what keeps a find-bar keystroke from re-parsing the page
+    // (issue #60: seconds, per character, on the shapes that go superlinear),
+    // and it makes the block indices below line up with the blocks actually
+    // rendered instead of a separately-parsed approximation.
+    if let Some(node) = parse_cached(&crate::syntax::normalize_math_fences(source))
+        && let mdast::Node::Root(root) = node.as_ref()
     {
         // Walk top-level blocks in render order, assigning each a column-child index
         // (only blocks that render to a child get one — same as `render`), and push
@@ -3470,8 +3635,15 @@ mod tests {
         assert!(crate::syntax::property("time:: 14:01 \r").is_some());
     }
 
+    /// The parse cache is process-global now, and `cargo test` runs these on
+    /// parallel threads — the tests that assert on cache identity or eviction
+    /// would otherwise evict each other's entries. Only they need the lock;
+    /// every other test just parses and uses the result.
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
     #[test]
     fn parse_cache_hits_and_evicts() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         // Same source → the same cached tree (pointer-equal Arc).
         let a1 = parse_cached("# cache me\n\n- item").unwrap();
         let a2 = parse_cached("# cache me\n\n- item").unwrap();
@@ -3493,6 +3665,68 @@ mod tests {
             panic!("root")
         };
         assert!(matches!(root.children.first(), Some(mdast::Node::Math(_))));
+    }
+
+    #[test]
+    fn cheap_parse_scan_classifies_shapes() {
+        // A big note of ordinary prose still parses inline — it's linear, and
+        // no first frame of raw text for a note anyone actually wrote.
+        let prose = "Some prose with a [link](x) and *emphasis*.\n\n".repeat(1_000);
+        assert!(prose.len() > 40_000);
+        assert!(is_cheap_to_parse(&prose));
+        // A pasted CSV-sized table does not.
+        let table = format!(
+            "| a | b |\n|---|---|\n{}",
+            "| one | two |\n".repeat(MAX_TABLE_ROWS + 1)
+        );
+        assert!(!is_cheap_to_parse(&table));
+        // Deep blockquote nesting does not (6 s at 48 KB).
+        assert!(!is_cheap_to_parse(&format!("{}deep\n", "> ".repeat(5_000))));
+        // Nor a document of `[[[[[…` (unmatched brackets, however spread).
+        assert!(!is_cheap_to_parse(&format!(
+            "{}a\n",
+            "[".repeat(MAX_BRACKETS + 1)
+        )));
+        assert!(!is_cheap_to_parse(&"[[a\n".repeat(MAX_BRACKETS)));
+        // No false positive on ordinary quoting: an alert, a nested reply
+        // chain, a short table, and the wiki/embed/footnote bracket forms.
+        let normal = "> [!NOTE]\n> heads up\n\n> quoted\n> > nested\n> > > deeper\n\n\
+             See [[Page]], ![[Page#^ab12]], [^1] and [text](url).\n\n\
+             | a | b |\n|---|---|\n| 1 | 2 |\n";
+        assert!(is_cheap_to_parse(normal));
+        // Many small tables are cheap even though their rows outnumber one
+        // pasted CSV: the superlinear cost lives inside a single table.
+        let many = "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\nbetween\n\n".repeat(200);
+        assert!(is_cheap_to_parse(&many));
+        // Emphasis that never resolves is the shape with no other tell: no
+        // brackets, quotes or tables, and under the size cap, yet 2.6 s.
+        let unresolved = format!("{}a{}", "*_".repeat(15_000), "_*".repeat(15_000));
+        assert!(unresolved.len() < INLINE_PARSE_MAX);
+        assert!(!is_cheap_to_parse(&unresolved));
+        // But ordinary formatting stays inline — it pairs up, so it's linear.
+        assert!(is_cheap_to_parse(
+            &"Some *bold* and _italic_ text.\n\n".repeat(500)
+        ));
+    }
+
+    #[test]
+    fn warm_parse_crosses_threads() {
+        let _serial = CACHE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // Expensive-shaped, so the render path refuses to parse it inline.
+        let source = format!(
+            "| a | b |\n|---|---|\n{}",
+            "| one | two |\n".repeat(MAX_TABLE_ROWS + 1)
+        );
+        assert!(needs_warm(&source));
+        assert!(parse_for_render(&source).is_none());
+        // Warming on another thread fills the shared cache…
+        let warmed = source.clone();
+        std::thread::spawn(move || warm_parse(&warmed))
+            .join()
+            .unwrap();
+        // …and this thread now renders the real tree.
+        assert!(!needs_warm(&source));
+        assert!(parse_for_render(&source).is_some());
     }
 
     #[test]
