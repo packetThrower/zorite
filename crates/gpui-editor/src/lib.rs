@@ -1737,6 +1737,17 @@ impl EditorState {
         self.line_inset(row) + self.rtl_shift(row)
     }
 
+    /// Does the caret's TABLE row read right-to-left? Cells step through their
+    /// own stepper, which walks in logical order — so on an RTL table the
+    /// visual arrows map to the opposite step.
+    fn caret_table_is_rtl(&self) -> bool {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.table_rows
+            .get(row)
+            .and_then(Option::as_ref)
+            .is_some_and(|t| t.rtl)
+    }
+
     /// Does the caret's line read right-to-left?
     ///
     /// Arrow keys move VISUALLY — Right steps to the character on the right of
@@ -1877,7 +1888,8 @@ impl EditorState {
             return;
         }
         if self.caret_in_table()
-            && let Some(off) = self.table_move_horizontal(-1)
+            && let Some(off) =
+                self.table_move_horizontal(if self.caret_table_is_rtl() { 1 } else { -1 })
         {
             self.move_to(off, cx);
             return;
@@ -1925,7 +1937,8 @@ impl EditorState {
             return;
         }
         if self.caret_in_table()
-            && let Some(off) = self.table_move_horizontal(1)
+            && let Some(off) =
+                self.table_move_horizontal(if self.caret_table_is_rtl() { -1 } else { 1 })
         {
             self.move_to(off, cx);
             return;
@@ -6777,6 +6790,34 @@ mod tests {
             table_left_x(px(O), px(W), total, step, true)
                 > table_left_x(px(O), px(W), total, px(0.), true)
         );
+    }
+
+    #[test]
+    fn rtl_mirrors_the_column_order() {
+        use super::tables::{cell_span_width, col_offset};
+        // Three columns, 10/20/30 wide. Left to right they start at 0/10/30;
+        // mirrored, column 0 is the RIGHTMOST, so it starts at 50.
+        let w = [px(10.), px(20.), px(30.)];
+        assert_eq!(col_offset(&w, 3, 0, false), px(0.));
+        assert_eq!(col_offset(&w, 3, 1, false), px(10.));
+        assert_eq!(col_offset(&w, 3, 2, false), px(30.));
+        assert_eq!(col_offset(&w, 3, 0, true), px(50.));
+        assert_eq!(col_offset(&w, 3, 1, true), px(30.));
+        assert_eq!(col_offset(&w, 3, 2, true), px(0.));
+        // Either way the columns tile the table with no gap or overlap — paint,
+        // caret and hit-testing all read this, so a gap is a mis-click.
+        for rtl in [false, true] {
+            let mut spans: Vec<(f32, f32)> = (0..3)
+                .map(|c| {
+                    let x = f32::from(col_offset(&w, 3, c, rtl));
+                    (x, x + f32::from(cell_span_width(&w, 3, c)))
+                })
+                .collect();
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert_eq!(spans[0].0, 0.0);
+            assert_eq!(spans[2].1, 60.0);
+            assert!(spans.windows(2).all(|s| s[0].1 == s[1].0), "{spans:?}");
+        }
     }
 
     #[test]

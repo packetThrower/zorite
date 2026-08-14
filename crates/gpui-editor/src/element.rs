@@ -973,7 +973,7 @@ impl Element for EditorElement {
                     && !rt.col_widths.is_empty()
                 {
                     let cc = ccell.min(rt.col_widths.len() - 1);
-                    let x: Pixels = left + rt.col_widths[..cc].iter().copied().sum::<Pixels>();
+                    let x: Pixels = left + col_offset(&rt.col_widths, rt.cells.len(), cc, rt.rtl);
                     let rect = Bounds::new(
                         point(x, bounds.origin.y + line_tops[crow]),
                         size(
@@ -988,9 +988,11 @@ impl Element for EditorElement {
                 // border (hover-gated; kept while a drag on this table is live).
                 if zone.contains(&mouse) || dragging_col.is_some_and(|r| r.header_row == tbl_header)
                 {
-                    let mut xacc = left;
                     for (col, &cw) in t.col_widths.iter().enumerate() {
-                        xacc += cw;
+                        // The grip sits on the edge where this column ENDS: its
+                        // left on an RTL table, its right otherwise.
+                        let cx = left + col_offset(&t.col_widths, t.cells.len(), col, t.rtl);
+                        let xacc = if t.rtl { cx } else { cx + cw };
                         let band =
                             Bounds::new(point(xacc - px(3.), top), size(px(6.), bottom - top));
                         col_resize_grips.push(ColResizeGrip {
@@ -1048,9 +1050,11 @@ impl Element for EditorElement {
                         .as_ref()
                         .is_some_and(|a| a.plus.contains(&mouse) || a.minus.contains(&mouse));
                     if !on_row_pill && mouse.x >= left && mouse.x < left + width {
-                        let mut colx = left;
                         for (col, &cw) in t.col_widths.iter().enumerate() {
-                            if mouse.x < colx + cw || col + 1 == t.col_widths.len() {
+                            let colx = left + col_offset(&t.col_widths, t.cells.len(), col, t.rtl);
+                            if (mouse.x >= colx && mouse.x < colx + cw)
+                                || col + 1 == t.col_widths.len()
+                            {
                                 let pw = px(PILL_ALONG).min(cw - px(2.));
                                 let px0 = colx + (cw - pw) / 2.;
                                 let pill = Bounds::new(point(px0, top - g / 2.), size(pw, g));
@@ -1071,7 +1075,6 @@ impl Element for EditorElement {
                                 });
                                 break;
                             }
-                            colx += cw;
                         }
                     }
                 }
@@ -1159,11 +1162,8 @@ impl Element for EditorElement {
                             // one full-height band would smear the whole row.
                             (Some((xa, ya, ca, _)), Some((xb, yb, cb, _))) if ca == cb => {
                                 let pad = px(TABLE_CELL_PAD);
-                                let cell_x = tleft
-                                    + t.col_widths[..ca.min(t.col_widths.len())]
-                                        .iter()
-                                        .copied()
-                                        .sum::<Pixels>();
+                                let cell_x =
+                                    tleft + col_offset(&t.col_widths, t.cells.len(), ca, t.rtl);
                                 let cw = cell_span_width(&t.col_widths, t.cells.len(), ca);
                                 let (cl, cr) = (cell_x + pad, cell_x + cw - pad);
                                 let y0 = bounds.top() + top + px(6.);
