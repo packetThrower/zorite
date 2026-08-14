@@ -244,8 +244,8 @@ fn runs_from_highlights(
 
 /// What the measure pass worked out, reused by paint.
 struct Laid {
-    lines: Vec<WrappedLine>,
-    /// Per line, in the same order: where it starts in the ORIGINAL text (the
+    font_size: Pixels,
+    /// The rows, in reading order: where each starts in the ORIGINAL text (the
     /// injected `\n`s don't exist there) and how to read its glyphs.
     rows: Vec<Row>,
     line_height: Pixels,
@@ -256,15 +256,135 @@ struct Laid {
     bounds: Option<Bounds<Pixels>>,
 }
 
-/// One painted row: its span in the original text, plus the visual map that
+/// One laid-out row: its span in the original text, plus the visual map that
 /// turns a logical offset inside it into an x and back.
-struct Row {
+///
+/// Public because both engines need it — the reader's [`RtlText`] and the
+/// editor, which has its own line pipeline but the same problem.
+pub struct Row {
     /// Byte offset in the ORIGINAL text where this row starts.
-    start: usize,
+    pub start: usize,
     /// Byte length of the row's own text.
-    len: usize,
-    width: Pixels,
-    map: VisualMap,
+    pub len: usize,
+    pub width: Pixels,
+    pub map: VisualMap,
+    /// The row's style runs, with row-local ranges. Carried because gpui can't
+    /// paint a multi-styled RTL row correctly — see [`paint_row`].
+    pub runs: Vec<(Range<usize>, TextRun)>,
+    /// The shaped row, ready to paint.
+    pub line: WrappedLine,
+}
+
+/// Lay `text` out as right-to-left rows: break it in LOGICAL order at word
+/// boundaries, then shape each row on its own so the shaper reorders it
+/// independently — the sequence gpui's own wrapping gets backwards.
+///
+/// `runs` must cover every byte of `text`. Rows come back in reading order, so
+/// row 0 is the paragraph's first line whichever way the script runs.
+pub fn layout_rows(
+    text: &str,
+    runs: &[TextRun],
+    wrap_width: Option<Pixels>,
+    font_size: Pixels,
+    window: &Window,
+) -> Vec<Row> {
+    let breaks: Vec<usize> = match wrap_width {
+        Some(w) => wrap_at_words(text, runs, w, font_size, window),
+        None => Vec::new(),
+    };
+    let (broken, broken_runs) = insert_breaks(text, runs, &breaks);
+
+    // Each row now fits, so shaping with no wrap width leaves the rows exactly
+    // where we put them — and each is reordered on its own, which is the point.
+    let lines = window
+        .text_system()
+        .shape_text(broken, font_size, &broken_runs, None, None)
+        .map(|l| l.into_iter().collect::<Vec<_>>())
+        .unwrap_or_default();
+
+    // `orig` walks the ORIGINAL text, where the injected breaks do not exist,
+    // so it advances by the row length alone. `broken_at` walks the string we
+    // built, which DOES carry them. Conflating the two slides every row after
+    // the first by a byte per break.
+    let mut rows = Vec::with_capacity(lines.len());
+    let mut orig = 0usize;
+    let mut broken_at = 0usize;
+    for line in lines {
+        let len = line.text.len();
+        let mut row_runs = Vec::new();
+        let mut at = 0usize;
+        for run in slice_runs(&broken_runs, broken_at..broken_at + len) {
+            let end = at + run.len;
+            row_runs.push((at..end, run));
+            at = end;
+        }
+        rows.push(Row {
+            start: orig,
+            len,
+            width: line.width(),
+            map: crate::shaped::map_of_wrapped(&line, len),
+            runs: row_runs,
+            line,
+        });
+        orig += len;
+        broken_at += len + 1;
+    }
+    rows
+}
+
+/// Paint one row at `origin`, whose x is the row's LEFT edge.
+///
+/// A row with a single style goes through gpui's painter. A row with more than
+/// one can't: `paint_line` walks glyphs in visual order but pulls decorations
+/// from a forward-only iterator keyed on `glyph.index >= run_end`. In an RTL
+/// row the first glyph carries the HIGHEST index, so that first step consumes
+/// every run up to the last and the iterator never advances again — the whole
+/// row is painted in the colour of whichever run covers the logically-last
+/// character. That is why a link inside Persian text came out body-coloured.
+/// So each run is painted itself, seated at the visual box the row layout says
+/// it occupies.
+///
+/// ponytail: a run is shaped in isolation, so cursive joining across a style
+/// boundary is lost — visible only if a style starts INSIDE an Arabic word
+/// (`**می**گیرد`), since joining never crosses the spaces styles normally break
+/// at. Fixing it properly needs per-glyph colour, which gpui doesn't expose.
+pub fn paint_row(
+    row: &Row,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    font_size: Pixels,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if row.runs.len() < 2 {
+        let _ = row
+            .line
+            .paint(origin, line_height, TextAlign::Left, None, window, cx);
+        return;
+    }
+    let text_system = window.text_system().clone();
+    for (range, run) in &row.runs {
+        let Some(&(x0, _)) = row.map.rects_for_range(range.clone()).first() else {
+            continue;
+        };
+        let shaped = text_system.shape_line(
+            SharedString::from(row.line.text[range.clone()].to_string()),
+            font_size,
+            std::slice::from_ref(run),
+            None,
+        );
+        let _ = shaped.paint(
+            Point {
+                x: origin.x + px(x0),
+                y: origin.y,
+            },
+            line_height,
+            TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
+    }
 }
 
 /// A handle onto the last layout, for hosts that need to map between a point on
@@ -314,6 +434,41 @@ impl RtlLayout {
         } else {
             Ok(offset)
         }
+    }
+
+    /// Every window-space box logical `range` occupies, one per visual run per
+    /// row — a link wrapped across two rows gives two, and a range split by a
+    /// direction change inside a row gives one per piece.
+    pub fn rects_for_range(&self, range: Range<usize>) -> Vec<Bounds<Pixels>> {
+        let state = self.0.borrow();
+        let Some(laid) = state.as_ref() else {
+            return Vec::new();
+        };
+        let Some(bounds) = laid.bounds else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (row_ix, row) in laid.rows.iter().enumerate() {
+            let row_end = row.start + row.len;
+            if range.end <= row.start || range.start >= row_end {
+                continue;
+            }
+            let local = range.start.max(row.start) - row.start..range.end.min(row_end) - row.start;
+            let row_left = bounds.origin.x + bounds.size.width - row.width;
+            for (x0, x1) in row.map.rects_for_range(local) {
+                out.push(Bounds::new(
+                    Point {
+                        x: row_left + px(x0),
+                        y: bounds.origin.y + laid.line_height * row_ix,
+                    },
+                    Size {
+                        width: px(x1 - x0),
+                        height: laid.line_height,
+                    },
+                ));
+            }
+        }
+        out
     }
 
     /// Top-left corner of the visual box that logical `range` occupies.
@@ -416,7 +571,7 @@ impl IntoElement for RtlText {
 
 impl Element for RtlText {
     type RequestLayoutState = ();
-    type PrepaintState = Option<Hitbox>;
+    type PrepaintState = Vec<Hitbox>;
 
     fn id(&self) -> Option<ElementId> {
         None
@@ -458,57 +613,17 @@ impl Element for RtlText {
                     return laid.size;
                 }
 
-                // Break in LOGICAL order, at word boundaries we pick ourselves.
-                //
-                // gpui's `LineWrapper` walks the text (so its offsets ARE
-                // logical, which is why this looked like the obvious tool), but
-                // its `is_word_char` covers Latin, Cyrillic, Vietnamese and
-                // Bengali — not Arabic. Persian therefore takes its "CJK may
-                // not be space separated" branch, which makes every character a
-                // break candidate and splits words down the middle. Arabic
-                // script IS space-separated, so we measure words instead.
-                let breaks: Vec<usize> = match wrap_width {
-                    Some(w) => wrap_at_words(&text, &runs, w, font_size, window),
-                    None => Vec::new(),
-                };
-                let (broken, broken_runs) = insert_breaks(&text, &runs, &breaks);
+                let rows = layout_rows(&text, &runs, wrap_width, font_size, window);
 
-                // Each line now fits, so shaping with no wrap width leaves the
-                // rows exactly where we put them — and each is reordered on
-                // its own, which is the whole point.
-                let lines = window
-                    .text_system()
-                    .shape_text(broken, font_size, &broken_runs, None, None)
-                    .map(|l| l.into_iter().collect::<Vec<_>>())
-                    .unwrap_or_default();
-
-                // Walk the rows back onto the ORIGINAL text. `shape_text` hands
-                // each line its own text and glyph indices relative to it, and
-                // the injected `\n`s exist only in the string we built — so a
-                // row starting at `orig` in the source is `orig + rel` here.
-                let mut rows = Vec::with_capacity(lines.len());
-                let mut orig = 0usize;
-                for line in &lines {
-                    let len = line.text.len();
-                    rows.push(Row {
-                        start: orig,
-                        len,
-                        width: line.width(),
-                        map: crate::shaped::map_of_wrapped(line, len),
-                    });
-                    // +1 for the break we injected, which the source lacks.
-                    orig += len + 1;
-                }
-
-                let height = line_height * lines.len().max(1);
-                let widest = lines.iter().map(|l| l.width()).fold(px(0.), Pixels::max);
+                let height = line_height * rows.len().max(1);
+                let widest = rows.iter().map(|r| r.width).fold(px(0.), Pixels::max);
                 let size = Size {
                     width: wrap_width.unwrap_or(widest),
                     height,
                 };
                 let bounds = state.borrow().as_ref().and_then(|l| l.bounds);
                 *state.borrow_mut() = Some(Laid {
-                    lines,
+                    font_size,
                     rows,
                     line_height,
                     wrap_width,
@@ -529,11 +644,24 @@ impl Element for RtlText {
         _request_layout: &mut (),
         window: &mut Window,
         _cx: &mut App,
-    ) -> Option<Hitbox> {
-        // Only paragraphs with links need one; plain prose shouldn't pay for a
-        // hitbox it will never consult.
-        (!self.pointer_ranges.is_empty())
-            .then(|| window.insert_hitbox(bounds, HitboxBehavior::Normal))
+    ) -> Vec<Hitbox> {
+        // Record where we landed here rather than in paint: hit-testing (and
+        // the hitboxes just below) need it, and prepaint is the first phase
+        // that knows.
+        if let Some(laid) = self.layout.0.borrow_mut().as_mut() {
+            laid.bounds = Some(bounds);
+        }
+        // One hitbox per link box, rather than gpui's one-per-element plus a
+        // paint-time "is the mouse over a link?" test. That test only re-runs
+        // when something else repaints the frame, so the cursor lagged or never
+        // changed at all; a hitbox is re-tested by the window on every mouse
+        // move, and it is exact — the hand appears over the link's glyphs and
+        // nowhere else.
+        self.pointer_ranges
+            .iter()
+            .flat_map(|range| self.layout.rects_for_range(range.clone()))
+            .map(|rect| window.insert_hitbox(rect, HitboxBehavior::Normal))
+            .collect()
     }
 
     fn paint(
@@ -542,44 +670,35 @@ impl Element for RtlText {
         _inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut (),
-        hitbox: &mut Option<Hitbox>,
+        hitboxes: &mut Vec<Hitbox>,
         window: &mut Window,
         cx: &mut App,
     ) {
-        let mut state = self.layout.0.borrow_mut();
-        let Some(laid) = state.as_mut() else {
+        // The hand over each link box. Registered unconditionally: the window
+        // decides which (if any) is hovered when it applies the cursor, so this
+        // doesn't depend on a repaint happening as the mouse moves.
+        for hitbox in hitboxes.iter() {
+            window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
+        }
+
+        let state = self.layout.0.borrow();
+        let Some(laid) = state.as_ref() else {
             return;
         };
-        // Hit-testing happens in window space, so the mapping is only valid
-        // once we know where the element actually landed.
-        laid.bounds = Some(bounds);
         // Top-to-bottom in the order we broke them: logical order. Each row is
-        // right-aligned across the full width, which is where an RTL reader
-        // starts — gpui's own `TextAlign` handles the within-row placement.
-        for (i, line) in laid.lines.iter().enumerate() {
-            let origin = Point {
-                x: bounds.origin.x,
-                y: bounds.origin.y + laid.line_height * i,
-            };
-            let _ = line.paint(
-                origin,
+        // right-aligned, which is where an RTL reader starts.
+        for (i, row) in laid.rows.iter().enumerate() {
+            paint_row(
+                row,
+                Point {
+                    x: bounds.origin.x + bounds.size.width - row.width,
+                    y: bounds.origin.y + laid.line_height * i,
+                },
                 laid.line_height,
-                TextAlign::Right,
-                Some(bounds),
+                laid.font_size,
                 window,
                 cx,
             );
-        }
-        drop(state);
-
-        // Hovering a link shows the hand, same as `InteractiveText` gives LTR
-        // text — resolved through OUR mapping, so it lands on the right words
-        // in a reordered line.
-        if let Some(hitbox) = hitbox
-            && let Ok(ix) = self.layout.index_for_position(window.mouse_position())
-            && self.pointer_ranges.iter().any(|r| r.contains(&ix))
-        {
-            window.set_cursor_style(gpui::CursorStyle::PointingHand, hitbox);
         }
     }
 }
