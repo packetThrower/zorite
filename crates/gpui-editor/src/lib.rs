@@ -1745,7 +1745,10 @@ impl EditorState {
     /// one, so the two step functions swap.
     fn caret_row_is_rtl(&self) -> bool {
         let (row, _) = self.row_col(self.cursor_offset());
-        self.rtl_rows.get(row).and_then(Option::as_ref).is_some()
+        self.rtl_rows
+            .get(row)
+            .and_then(Option::as_ref)
+            .is_some_and(|r| r.base_rtl)
     }
 
     /// The offset one step to the visual left/right of the caret, taking the
@@ -6104,10 +6107,11 @@ struct ShapedDoc {
     /// empty placeholder, but its cached count keeps the layout exact. For an
     /// RTL line it is OUR row count, which is not gpui's (#66).
     wrap_rows: Vec<usize>,
-    /// Per-line RTL layout: the rows we broke in logical order, or `None` for
-    /// the LTR lines that keep gpui's own wrapping. Drives that line's paint,
-    /// caret, selection and hit-testing.
-    rtl_rows: Vec<Option<Vec<gpui_bidi::paragraph::Row>>>,
+    /// Per-line bidi layout: whether the line READS right-to-left, plus the
+    /// rows we broke in logical order. `None` for lines with no RTL at all,
+    /// which keep gpui's own wrapping. Drives that line's paint, caret,
+    /// selection and hit-testing.
+    rtl_rows: Vec<Option<(bool, Vec<gpui_bidi::paragraph::Row>)>>,
 }
 
 impl ShapedDoc {
@@ -6247,6 +6251,10 @@ pub(crate) struct RtlRow {
     /// Kept OUT of `line_insets` on purpose: the list-marker + gutter math
     /// reads that, and must not move with the text.
     shifts: Vec<Pixels>,
+    /// Does the line READ right-to-left? A left-to-right line containing a
+    /// Persian phrase gets rows and maps too, but stays left-aligned and keeps
+    /// left-to-right arrow keys.
+    base_rtl: bool,
 }
 
 impl RtlRow {

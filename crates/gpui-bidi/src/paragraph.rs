@@ -35,9 +35,9 @@ use std::rc::Rc;
 use crate::VisualMap;
 
 use gpui::{
-    App, AvailableSpace, Bounds, Element, ElementId, GlobalElementId, HighlightStyle, Hitbox,
-    HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString, Size,
-    TextAlign, TextRun, TextStyle, Window, WrappedLine, px,
+    App, AvailableSpace, Bounds, ContentMask, Element, ElementId, GlobalElementId, HighlightStyle,
+    Hitbox, HitboxBehavior, InspectorElementId, IntoElement, LayoutId, Pixels, Point, SharedString,
+    Size, TextAlign, TextRun, TextStyle, Window, WrappedLine, px,
 };
 
 /// Split `text` into lines at `breaks` (logical byte offsets, ascending) by
@@ -366,37 +366,57 @@ pub fn paint_row(
             .paint(origin, line_height, TextAlign::Left, None, window, cx);
         return;
     }
+
+    // Paint the row once PER STYLE, each pass coloured uniformly for that style
+    // and CLIPPED to the boxes that style actually occupies.
+    //
+    // The uniform colour is what makes gpui's painter usable here at all: it
+    // walks glyphs in visual order but pulls decorations from a forward-only
+    // iterator keyed on `glyph.index >= run_end`, and in an RTL row the first
+    // glyph carries the HIGHEST index — so the iterator jumps to the last run
+    // and never advances, painting the whole row in one colour. If that colour
+    // is the one we want for this pass, the collapse stops mattering.
+    //
+    // Only the decoration differs between passes; fonts, weights and sizes stay
+    // the row's own, so every pass lays out exactly as the row did. Shaping each
+    // run on its OWN instead gives it a slightly different width than it has in
+    // context, and the pieces overlap and swallow the spaces between them.
     let text_system = window.text_system().clone();
-    for (range, run) in &row.runs {
-        let Some(&(x0, _)) = row.map.rects_for_range(range.clone()).first() else {
+    for (range, style) in &row.runs {
+        let rects = row.map.rects_for_range(range.clone());
+        if rects.is_empty() {
             continue;
-        };
-        // Shaping a slice on its own loses the surrounding direction, and a run
-        // of neutrals — markdown's `[[`, `](`, `**` — then comes out in LTR
-        // order and unmirrored, so the brackets around a Latin link inside
-        // Persian rendered backwards. Re-assert the run's direction with an
-        // explicit embedding so the isolated shaping matches what the full row
-        // laid out.
-        let seg = &row.line.text[range.clone()];
-        let text = if row.map.is_rtl_range(range.clone()) {
-            SharedString::from(format!("\u{202b}{seg}\u{202c}"))
-        } else {
-            SharedString::from(seg.to_string())
-        };
-        let mut run = run.clone();
-        run.len = text.len();
-        let shaped = text_system.shape_line(text, row.font_size, std::slice::from_ref(&run), None);
-        let _ = shaped.paint(
-            Point {
-                x: origin.x + px(x0),
-                y: origin.y,
-            },
-            line_height,
-            TextAlign::Left,
-            None,
-            window,
-            cx,
-        );
+        }
+        let uniform: Vec<TextRun> = row
+            .runs
+            .iter()
+            .map(|(_, r)| TextRun {
+                color: style.color,
+                background_color: style.background_color,
+                underline: style.underline,
+                strikethrough: style.strikethrough,
+                ..r.clone()
+            })
+            .collect();
+        let shaped = text_system.shape_line(row.line.text.clone(), row.font_size, &uniform, None);
+        for (x0, x1) in rects {
+            let clip = Bounds::from_corners(
+                Point {
+                    x: origin.x + px(x0),
+                    y: origin.y,
+                },
+                Point {
+                    x: origin.x + px(x1),
+                    y: origin.y + line_height,
+                },
+            );
+            // `with_content_mask`, not `paint_layer`: the latter pushes a
+            // scene layer for z-order and clips nothing, so every pass painted
+            // the whole row and the overdraw showed up as faux-bold text.
+            window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
+                let _ = shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
+            });
+        }
     }
 }
 

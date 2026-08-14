@@ -362,6 +362,16 @@ pub fn base_direction(text: &str) -> Direction {
     Direction::Ltr
 }
 
+/// Does `text` contain ANY right-to-left character?
+///
+/// Distinct from [`base_direction`], which answers which side a line starts on.
+/// A line can read left-to-right and still hold a Persian name in the middle,
+/// and that run needs the same logical↔visual mapping an RTL line does — the
+/// caret misplaces inside it otherwise.
+pub fn contains_rtl(text: &str) -> bool {
+    text.chars().any(is_strong_rtl)
+}
+
 /// Strong right-to-left: Hebrew through Arabic-script languages.
 fn is_strong_rtl(c: char) -> bool {
     matches!(c,

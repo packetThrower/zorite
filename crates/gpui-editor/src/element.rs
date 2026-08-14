@@ -472,17 +472,28 @@ impl Element for EditorElement {
         let rtl: Vec<Option<RtlRow>> = rtl_layout
             .into_iter()
             .enumerate()
-            .map(|(i, rows)| {
-                let rows = rows?;
+            .map(|(i, entry)| {
+                let (base_rtl, rows) = entry?;
                 let inset = row_inset(
                     backgrounds.get(i).copied().flatten(),
                     marks.get(i).copied().flatten(),
                 );
                 let shifts = rows
                     .iter()
-                    .map(|r| rtl_shift(bounds.size.width, inset, r.width))
+                    .map(|r| {
+                        if base_rtl {
+                            rtl_shift(bounds.size.width, inset, r.width)
+                        } else {
+                            // Reads left-to-right; it only needed the mapping.
+                            px(0.)
+                        }
+                    })
                     .collect();
-                Some(RtlRow { rows, shifts })
+                Some(RtlRow {
+                    rows,
+                    shifts,
+                    base_rtl,
+                })
             })
             .collect();
         // Row text origin, this frame: the row's inset plus its RTL shift.
@@ -3843,7 +3854,17 @@ fn shape_document(
                 last_strong_rtl = rtl;
                 rtl
             };
-            let rtl_rows = (bg.is_none() && widget.is_none() && table.is_none() && line_rtl)
+            // Lay out any line CONTAINING right-to-left text, not just one that
+            // reads that way: an English sentence quoting a Persian name still
+            // needs the mapping, or the caret misplaces inside that run. Such a
+            // line stays left-aligned (`line_rtl` drives the shift, this drives
+            // the mapping).
+            //
+            // ponytail: word breaking is space-based, so a line mixing RTL with
+            // unspaced CJK would wrap poorly. Lines without any RTL keep gpui's
+            // wrapping, so plain CJK is untouched.
+            let has_rtl = line_rtl || gpui_markdown::syntax::contains_rtl(line);
+            let rtl_rows = (bg.is_none() && widget.is_none() && table.is_none() && has_rtl)
                 .then(|| {
                     gpui_bidi::paragraph::layout_rows(&shaped_text, &runs, line_wrap, fs, window)
                 })
@@ -3855,7 +3876,7 @@ fn shape_document(
                 caches.line_heights.borrow_mut().insert(hk, (h, span));
             }
             out.wrap_rows.push(span);
-            out.rtl_rows.push(rtl_rows);
+            out.rtl_rows.push(rtl_rows.map(|rows| (line_rtl, rows)));
             out.wrapped.push(wl);
             out.heights.push(h);
             out.widgets.push(widget);
