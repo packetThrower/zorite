@@ -114,7 +114,7 @@ jobs:
           components: clippy, rustfmt
 
       - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16 # v2
 
       # Formatting is platform-independent, so the check only needs to
       # run on one matrix entry. ubuntu-latest is the fastest to boot
@@ -135,7 +135,7 @@ jobs:
       # rather than building cargo-deny from source (~3 min savings).
       - name: Install cargo-deny
         if: matrix.runner == 'ubuntu-latest'
-        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        uses: taiki-e/install-action@288e746965032cfcc232e09af2daf5f23c14d780 # v2.86.1
         with:
           tool: cargo-deny
 
