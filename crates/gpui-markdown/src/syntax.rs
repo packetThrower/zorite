@@ -362,6 +362,90 @@ pub fn base_direction(text: &str) -> Direction {
     Direction::Ltr
 }
 
+/// The direction of a source line's CONTENT, ignoring its markdown markers.
+///
+/// [`base_direction`] takes the first strong character, and a marker can supply
+/// one: the `x` in `- [x] یک کار` is strong left-to-right, so a COMPLETED task
+/// read as LTR while the identical unchecked line read as RTL, and the two sat
+/// on opposite sides of the note. Blockquote arrows, list bullets, task boxes
+/// and heading hashes are syntax, not prose, so they are skipped first.
+pub fn content_direction(line: &str) -> Direction {
+    content_direction_opt(line).unwrap_or(Direction::Ltr)
+}
+
+/// [`content_direction`], but `None` when the line has no strong character at
+/// all — it is blank, or nothing but markers.
+///
+/// `> [!NOTE]` is the case that matters: strip the quote arrow and the alert
+/// marker and nothing is left, so the line has no direction of its own and must
+/// take the surrounding text's. Answering `Ltr` there put a Persian callout's
+/// title on one side and its body on the other.
+pub fn content_direction_opt(line: &str) -> Option<Direction> {
+    let mut rest = line.trim_start();
+    loop {
+        let before = rest;
+        // Blockquote markers, however deep.
+        rest = rest.strip_prefix('>').unwrap_or(rest).trim_start();
+        // A bullet, or an ordered marker like `12.` / `3)`.
+        if let Some(r) = rest
+            .strip_prefix("- ")
+            .or_else(|| rest.strip_prefix("* "))
+            .or_else(|| rest.strip_prefix("+ "))
+        {
+            rest = r.trim_start();
+        } else {
+            let digits = rest.chars().take_while(char::is_ascii_digit).count();
+            if digits > 0
+                && let Some(r) = rest[digits..]
+                    .strip_prefix(". ")
+                    .or_else(|| rest[digits..].strip_prefix(") "))
+            {
+                rest = r.trim_start();
+            }
+        }
+        // A GitHub alert marker (`[!NOTE]`, `[!TIP]` …), plus the Obsidian
+        // fold char after it. Its LABEL is Latin, so it decided the direction
+        // of every Persian callout — the same trap the task box set.
+        if let Some(r) = rest.strip_prefix("[!")
+            && let Some(close) = r.find(']')
+        {
+            let after = &r[close + 1..];
+            rest = after
+                .strip_prefix('-')
+                .or_else(|| after.strip_prefix('+'))
+                .unwrap_or(after)
+                .trim_start();
+        }
+        // A task box — the one that started this.
+        if let Some(r) = rest
+            .strip_prefix("[ ] ")
+            .or_else(|| rest.strip_prefix("[x] "))
+            .or_else(|| rest.strip_prefix("[X] "))
+        {
+            rest = r.trim_start();
+        }
+        // Heading hashes.
+        if rest.starts_with('#') {
+            let hashes = rest.chars().take_while(|c| *c == '#').count();
+            if let Some(r) = rest[hashes..].strip_prefix(' ') {
+                rest = r.trim_start();
+            }
+        }
+        if rest == before {
+            break;
+        }
+    }
+    rest.chars().find_map(|c| {
+        if is_strong_rtl(c) {
+            Some(Direction::Rtl)
+        } else if is_strong_ltr(c) {
+            Some(Direction::Ltr)
+        } else {
+            None
+        }
+    })
+}
+
 /// Does `text` contain ANY right-to-left character?
 ///
 /// Distinct from [`base_direction`], which answers which side a line starts on.
@@ -967,6 +1051,29 @@ mod tests {
             normalize_math_fences("$$y$$"),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    #[test]
+    fn markers_do_not_decide_a_line_s_direction() {
+        // The bug: `x` is strong left-to-right, so a COMPLETED task read LTR
+        // while the same line unchecked read RTL — the two sat on opposite
+        // sides of the note.
+        assert!(content_direction("- [x] یک کار انجام‌شده").is_rtl());
+        assert!(content_direction("- [ ] یک کار انجام‌نشده").is_rtl());
+        assert!(content_direction("- مورد فهرست").is_rtl());
+        assert!(content_direction("1. مورد شماره‌دار").is_rtl());
+        assert!(content_direction("## سلام دنیا").is_rtl());
+        assert!(content_direction("> یک نقل‌قول").is_rtl());
+        // An alert's label is Latin whatever the prose is.
+        assert!(content_direction("> [!NOTE]\n> یک هشدار فارسی").is_rtl());
+        assert!(content_direction("> [!WARNING]- یک هشدار").is_rtl());
+        assert!(!content_direction("> [!NOTE]\n> an english callout").is_rtl());
+        assert!(!content_direction("> > [!NOTE]\n").is_rtl(), "no content");
+        // Latin content still reads left-to-right, markers or not.
+        assert!(!content_direction("- [x] a done task").is_rtl());
+        assert!(!content_direction("## English heading").is_rtl());
+        // A line that is only markers has no direction of its own.
+        assert!(!content_direction("- [ ] ").is_rtl());
     }
 
     #[test]

@@ -1650,7 +1650,24 @@ impl Element for EditorElement {
                 ..
             }) = prepaint.marks.get(i).copied().flatten()
             {
-                window.paint_quad(fill(Bounds::new(origin, size(px(2.), *lh)), bar));
+                // An RTL callout mirrors like the rest of the row: the rule on
+                // the right, then the icon, then the label running leftward.
+                // Each box is reflected on its own, which reverses their order
+                // exactly as intended.
+                let amirror = |x: Pixels, w: Pixels| {
+                    if rtl.is_some() {
+                        origin.x + content_w - (x - origin.x) - w
+                    } else {
+                        x
+                    }
+                };
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(amirror(origin.x, px(2.)), origin.y),
+                        size(px(2.), *lh),
+                    ),
+                    bar,
+                ));
                 // Foldable callout: a chevron after the label; clicking it flips
                 // the `-`/`+` in the source (rects committed for on_mouse_down).
                 if let Some(folded) = fold {
@@ -1666,7 +1683,7 @@ impl Element for EditorElement {
                     let shaped = window
                         .text_system()
                         .shape_line(glyph, font_size, &[run], None);
-                    let cx0 = origin.x + chevron_x;
+                    let cx0 = amirror(origin.x + chevron_x, shaped.width());
                     let _ = shaped.paint(
                         point(cx0, origin.y),
                         *lh,
@@ -1691,8 +1708,10 @@ impl Element for EditorElement {
                 let mut label_x = origin.x + px(QUOTE_INSET);
                 if let Some(icons) = &prepaint.alert_icons {
                     let sz = font_size;
-                    let icon_bounds =
-                        Bounds::new(point(label_x, origin.y + (*lh - sz) / 2.), size(sz, sz));
+                    let icon_bounds = Bounds::new(
+                        point(amirror(label_x, sz), origin.y + (*lh - sz) / 2.),
+                        size(sz, sz),
+                    );
                     let _ = window.paint_svg(
                         icon_bounds,
                         icons.get(kind),
@@ -1719,7 +1738,7 @@ impl Element for EditorElement {
                     .text_system()
                     .shape_line(label.into(), font_size, &[run], None);
                 let _ = shaped.paint(
-                    point(label_x, origin.y),
+                    point(amirror(label_x, shaped.width()), origin.y),
                     *lh,
                     gpui::TextAlign::Left,
                     None,
@@ -1949,6 +1968,7 @@ impl Element for EditorElement {
                 paint_prop_panel(
                     p,
                     origin,
+                    content_w,
                     &font,
                     font_size,
                     window,
@@ -3847,12 +3867,21 @@ fn shape_document(
             // caret jumps to the LEFT margin the moment you press Enter after a
             // Persian paragraph, and a selection running through the blank line
             // puts its marker on the wrong side.
-            let line_rtl = if line.trim().is_empty() {
-                last_strong_rtl
-            } else {
-                let rtl = gpui_markdown::syntax::base_direction(line).is_rtl();
-                last_strong_rtl = rtl;
-                rtl
+            // A line with no strong character of its own — blank, or nothing
+            // but markers like `> [!NOTE]` — inherits the paragraph it sits in.
+            // Otherwise a Persian callout's title sat on the opposite side from
+            // its body, and pressing Enter after a Persian paragraph dropped the
+            // caret on the left margin.
+            //
+            // ponytail: it inherits from ABOVE, so an alert whose title follows
+            // English text but whose body is Persian still splits. Looking ahead
+            // to the body would fix it; no one has hit that yet.
+            let line_rtl = match gpui_markdown::syntax::content_direction_opt(line) {
+                Some(d) => {
+                    last_strong_rtl = d.is_rtl();
+                    d.is_rtl()
+                }
+                None => last_strong_rtl,
             };
             // Lay out any line CONTAINING right-to-left text, not just one that
             // reads that way: an English sentence quoting a Persian name still
@@ -4057,6 +4086,7 @@ fn prop_pill_bounds(
 fn paint_prop_panel(
     p: &PropPanel,
     origin: Point<Pixels>,
+    content_w: Pixels,
     font: &Font,
     font_size: Pixels,
     window: &mut Window,
@@ -4068,6 +4098,35 @@ fn paint_prop_panel(
     let line_h = font_size * LINE_HEIGHT_RATIO;
     let pad = px(10.);
     let mouse = window.mouse_position();
+    // Follow the VALUES, not the keys: a Persian note's property keys are
+    // usually Latin (`tags`, `key`), so the key would decide the wrong way.
+    // Panel-wide, so the key column doesn't stagger row to row.
+    let rtl = p.rows.iter().any(|(_, _, segs)| {
+        segs.iter().any(|s| {
+            let t = match s {
+                PanelSeg::Plain(t) => t,
+                PanelSeg::Pill { text, .. } => text,
+            };
+            gpui_markdown::syntax::content_direction(t).is_rtl()
+        })
+    });
+    // The panel is sized to its content, so mirroring INSIDE it is not enough —
+    // it also has to sit on the right, where the rest of an RTL block does.
+    let origin = if rtl {
+        point(origin.x + content_w - p.width, origin.y)
+    } else {
+        origin
+    };
+    // Reflect a box across the panel: everything below is laid out
+    // left-to-right and mirrored on the way out, so the two directions can't
+    // drift apart.
+    let mirror = |x: Pixels, w: Pixels| {
+        if rtl {
+            origin.x + p.width - (x - origin.x) - w
+        } else {
+            x
+        }
+    };
     for (ri, (key, icon, segs)) in p.rows.iter().enumerate() {
         let row_top = origin.y + p.row_h * ri as f32;
         let row_bounds = Bounds::new(point(origin.x, row_top), size(p.width, p.row_h));
@@ -4087,7 +4146,10 @@ fn paint_prop_panel(
         // Optional key icon (host-resolved), then the muted key name inset past it.
         if let Some(path) = icon {
             let ib = Bounds::new(
-                point(origin.x + pad, row_top + (p.row_h - p.icon_sz) / 2.),
+                point(
+                    mirror(origin.x + pad, p.icon_sz),
+                    row_top + (p.row_h - p.icon_sz) / 2.,
+                ),
                 size(p.icon_sz, p.icon_sz),
             );
             let _ = window.paint_svg(
@@ -4111,7 +4173,7 @@ fn paint_prop_panel(
             .text_system()
             .shape_line(key.clone(), font_size, &[krun], None);
         let _ = ks.paint(
-            point(origin.x + pad + p.key_indent, ty),
+            point(mirror(origin.x + pad + p.key_indent, ks.width()), ty),
             line_h,
             gpui::TextAlign::Left,
             None,
@@ -4145,13 +4207,14 @@ fn paint_prop_panel(
                 let mut bg = color;
                 bg.a = 0.16;
                 let ph = line_h + px(2.);
+                let pw = tw + px(PILL_PAD_X * 2.);
                 let pb = Bounds::new(
-                    point(x, row_top + (p.row_h - ph) / 2.),
-                    size(tw + px(PILL_PAD_X * 2.), ph),
+                    point(mirror(x, pw), row_top + (p.row_h - ph) / 2.),
+                    size(pw, ph),
                 );
                 window.paint_quad(fill(pb, bg).corner_radii(Corners::all(px(6.))));
                 let _ = shaped.paint(
-                    point(x + px(PILL_PAD_X), ty),
+                    point(pb.origin.x + px(PILL_PAD_X), ty),
                     line_h,
                     gpui::TextAlign::Left,
                     None,
@@ -4162,7 +4225,7 @@ fn paint_prop_panel(
                 x += tw + px(PILL_PAD_X * 2. + PILL_GAP);
             } else {
                 let _ = shaped.paint(
-                    point(x, ty),
+                    point(mirror(x, tw), ty),
                     line_h,
                     gpui::TextAlign::Left,
                     None,

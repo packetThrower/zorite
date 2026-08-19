@@ -17,7 +17,8 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use gpui::{
     App, Bounds, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
     MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, deferred, div, px, svg,
+    StatefulInteractiveElement, Styled, Window, canvas, deferred, div, prelude::FluentBuilder, px,
+    svg,
 };
 
 use crate::theme;
@@ -340,24 +341,31 @@ impl PropertyEditor {
         let n = self.rows.len();
         let m = &ev.keystroke.modifiers;
         match ev.keystroke.key.as_str() {
-            "left" => {
-                let moved = self.field_mut(row, is_key).is_some_and(Field::left);
+            // Arrows move VISUALLY, as everywhere else: on an RTL field the
+            // character to the right is the logically previous one, and the
+            // field to the visual left is the one that comes NEXT (the key sits
+            // on the right there). Direction is decided once, from the field's
+            // own text, so a Latin key beside a Persian value keeps its own.
+            key @ ("left" | "right") => {
+                let rtl = self
+                    .field(row, is_key)
+                    .is_some_and(|f| gpui_markdown::syntax::content_direction(&f.text).is_rtl());
+                let forward = (key == "right") != rtl;
+                let moved = self
+                    .field_mut(row, is_key)
+                    .is_some_and(|f| if forward { f.right() } else { f.left() });
                 if !moved {
-                    // Hop to the field on the left, caret at its end.
-                    if !is_key {
+                    if forward {
+                        if is_key {
+                            self.go(row, false, false);
+                        } else if row + 1 < n {
+                            self.go(row + 1, true, false);
+                        }
+                    } else if !is_key {
+                        // Hop to the preceding field, caret at its end.
                         self.go(row, true, true);
                     } else if row > 0 {
                         self.go(row - 1, false, true);
-                    }
-                }
-            }
-            "right" => {
-                let moved = self.field_mut(row, is_key).is_some_and(Field::right);
-                if !moved {
-                    if is_key {
-                        self.go(row, false, false);
-                    } else if row + 1 < n {
-                        self.go(row + 1, true, false);
                     }
                 }
             }
@@ -448,8 +456,16 @@ impl Render for PropertyEditor {
         }
         // icon + gap(6) + widest key + a small trailing gap before the value.
         let key_col = px(self.text_size * 0.95 + 6.0 + max_key + 14.0);
+        // Follow the note, like the rendered panel does: keyed off the VALUES,
+        // since a Persian note's property keys are usually Latin (`tags`). The
+        // panel is what the rendered one turns into on click, so it has to sit
+        // on the same side — otherwise it jumps across the note as you edit it.
+        let rtl = self
+            .rows
+            .iter()
+            .any(|r| gpui_markdown::syntax::content_direction(&r.value.text).is_rtl());
         let rows: Vec<_> = (0..self.rows.len())
-            .map(|i| self.render_row(i, key_col, cx))
+            .map(|i| self.render_row(i, key_col, rtl, cx))
             .collect();
         div()
             .track_focus(&self.focus)
@@ -472,7 +488,12 @@ impl Render for PropertyEditor {
             // Match the rendered panel: the note's text size, rows stacked with
             // no gap (the row height carries the spacing).
             .text_size(px(self.text_size))
-            .max_w(px(480.0))
+            // The 480px cap keeps a left-to-right panel from stretching across
+            // the note. An RTL panel has to span so its rows can sit against
+            // the right edge, where the rendered panel puts them — capped, it
+            // right-aligns inside its own 480px and lands mid-note.
+            .when(!rtl, |d| d.max_w(px(480.0)))
+            .when(rtl, |d| d.w_full().items_end())
             .children(rows)
             .child(
                 div()
@@ -496,7 +517,13 @@ impl Render for PropertyEditor {
 }
 
 impl PropertyEditor {
-    fn render_row(&self, i: usize, key_col: Pixels, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_row(
+        &self,
+        i: usize,
+        key_col: Pixels,
+        rtl: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let r = &self.rows[i];
         let key_active = self.active == Some((i, true));
         let value_active = self.active == Some((i, false));
@@ -509,6 +536,9 @@ impl PropertyEditor {
 
         div()
             .flex()
+            // Key (and its icon) lead from the right, value beside it, the
+            // remove affordance at the row's trailing end either way.
+            .when(rtl, |d| d.flex_row_reverse())
             .items_center()
             .h(row_h)
             .gap(px(6.0))
@@ -518,6 +548,7 @@ impl PropertyEditor {
                     .w(key_col)
                     .flex_shrink_0()
                     .flex()
+                    .when(rtl, |d| d.flex_row_reverse())
                     .items_center()
                     .gap(px(6.0))
                     .children(icon.map(|p| {
@@ -600,16 +631,20 @@ impl PropertyEditor {
         } else {
             cell = cell.flex_1();
         }
+        // The field's OWN text decides here, not the panel: a Latin key next
+        // to a Persian value must not be reversed along with it.
+        let f_rtl = gpui_markdown::syntax::content_direction(&f.text).is_rtl();
         if active && is_key {
             // Key: plain text split at the caret (keys aren't pills).
             let (before, after) = f.text.split_at(f.caret);
-            cell.child(before.to_string())
+            cell.when(f_rtl, |d| d.flex_row_reverse())
+                .child(before.to_string())
                 .child(caret_bar(sz))
                 .child(after.to_string())
                 .into_any_element()
         } else if active {
             // Value: pills, revealing the segment under the caret as raw text.
-            cell.child(active_value(f, sz)).into_any_element()
+            cell.child(active_value(f, sz, f_rtl)).into_any_element()
         } else if is_key {
             let label = if f.text.is_empty() {
                 "key".to_string()
@@ -738,7 +773,7 @@ fn caret_bar(text_size: f32) -> impl IntoElement {
 /// The focused value, rendered like the panel (tags/wiki-links as pills) except
 /// the segment the caret sits in, which shows raw text + the caret so it can be
 /// edited — reveal-on-caret, within the field.
-fn active_value(f: &Field, text_size: f32) -> impl IntoElement {
+fn active_value(f: &Field, text_size: f32, rtl: bool) -> impl IntoElement {
     let value = f.text.as_str();
     let caret = f.caret;
     let mut kids: Vec<gpui::AnyElement> = Vec::new();
@@ -788,7 +823,15 @@ fn active_value(f: &Field, text_size: f32) -> impl IntoElement {
     if !placed {
         kids.push(caret_bar(text_size).into_any_element());
     }
-    div().flex().items_center().children(kids)
+    // An active field is a SEQUENCE of children — text before the caret, the
+    // caret bar, text after it, pills — so the row's direction is what puts
+    // them in reading order. Laid out left-to-right, an RTL value comes apart:
+    // `#فارسی #آزمایش` renders as `سی #آزمایش#فار`.
+    div()
+        .flex()
+        .when(rtl, |d| d.flex_row_reverse())
+        .items_center()
+        .children(kids)
 }
 
 /// Push a plain-text run, splitting it at the caret (once) with a caret bar.

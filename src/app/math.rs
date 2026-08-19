@@ -464,5 +464,5 @@ fn line_is_rtl(text: &str, at: usize) -> bool {
     let at = at.min(text.len());
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-    gpui_markdown::syntax::base_direction(&text[start..end]).is_rtl()
+    gpui_markdown::syntax::content_direction(&text[start..end]).is_rtl()
 }

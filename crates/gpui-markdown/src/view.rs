@@ -1191,7 +1191,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                 .position
                 .as_ref()
                 .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
-                .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
+                .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
             let text = div()
                 // Full width, else `inline_element`'s right-alignment has
                 // nothing to align WITHIN: a content-sized div sits left
@@ -1400,11 +1400,21 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
             // a chevron joins the title, clicking flips the `-`/`+` in the
             // source (via the host's handler), and a folded callout shows only
             // its title.
+            // Direction from the quote's source, so the `>` markers and
+            // whitespace (neutral under UAX #9) don't skew it. Shared by the
+            // alert branch and the plain quote below.
+            let rtl = b
+                .position
+                .as_ref()
+                .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+                .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
             if let Some((kind, fold, marker_offset, children)) = alert_parts(b) {
                 let color = kind.color(&ctx.style.alerts);
                 let mut title = div()
                     .flex()
-                    .flex_row()
+                    // The icon leads the label, so it swaps sides with the text.
+                    .when(rtl, |d| d.flex_row_reverse())
+                    .when(!rtl, |d| d.flex_row())
                     .items_center()
                     .gap(px(6.0))
                     .font_weight(FontWeight::BOLD)
@@ -1431,7 +1441,8 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                             format!("{}-fold-{}", ctx.id_base, ctx.counter).into(),
                         ))
                         .flex()
-                        .flex_row()
+                        .when(rtl, |d| d.flex_row_reverse())
+                        .when(!rtl, |d| d.flex_row())
                         .items_center()
                         .gap(px(6.0))
                         .child(title)
@@ -1448,9 +1459,10 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     title = row.into_any_element();
                 }
                 let mut q = div()
-                    .border_l_2()
                     .border_color(color)
-                    .pl(px(12.0))
+                    // The rule goes on the side the text starts from.
+                    .when(rtl, |d| d.border_r_2().pr(px(12.0)))
+                    .when(!rtl, |d| d.border_l_2().pl(px(12.0)))
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
@@ -1465,14 +1477,7 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                 return Some(q.into_any_element());
             }
             let muted = ctx.style.muted_color;
-            // An RTL quote's rule belongs on the right, where the text starts
-            // (#66) — direction from the quote's source, so the `>` markers
-            // and whitespace (neutral under UAX #9) don't skew it.
-            let rtl = b
-                .position
-                .as_ref()
-                .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
-                .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
+            // An RTL quote's rule belongs on the right, where the text starts.
             let mut q = div()
                 .border_color(muted)
                 .when(rtl, |d| d.border_r_2().pr(px(12.0)))
@@ -1828,7 +1833,7 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
             .position
             .as_ref()
             .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
-            .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
+            .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
         col = col.child(
             div()
                 .flex()
@@ -2927,6 +2932,13 @@ fn render_property_table(
         0.0
     };
     let key_cell_w = key_w + px(icon_indent + 20.0);
+    // The panel follows its VALUES, not its keys: a Persian note's property
+    // keys are usually Latin (`tags`, `key`), so keying off the line would leave
+    // an RTL note's properties reading the wrong way — and deciding per ROW
+    // would stagger the fixed-width key column.
+    let rtl = rows
+        .iter()
+        .any(|(_, v, _)| crate::syntax::content_direction(v).is_rtl());
     let key_col = ctx.style.muted_color;
     let tag_c = ctx.style.tag_color;
     let link_c = ctx.style.link_color;
@@ -2940,9 +2952,15 @@ fn render_property_table(
         let mut val = div()
             .flex()
             .flex_wrap()
+            // Segments read right-to-left. The cell does NOT grow in that case:
+            // the reversed row puts the key at the right edge and the value
+            // immediately beside it, whereas a growing cell would stretch to the
+            // far margin and strand the value there — which is not a `justify`
+            // that can be relied on to mean the same thing under row-reverse.
+            .when(rtl, |d| d.flex_row_reverse())
+            .when(!rtl, |d| d.flex_1())
             .items_center()
             .gap(px(5.0))
-            .flex_1()
             .px(px(8.0))
             .py(px(3.0));
         for seg in crate::syntax::property_value_segments(&value) {
@@ -3006,6 +3024,8 @@ fn render_property_table(
             .w(key_cell_w)
             .flex_shrink_0()
             .flex()
+            // The icon leads the key name, so it swaps sides too.
+            .when(rtl, |d| d.flex_row_reverse())
             .items_center()
             .gap(px(6.0))
             .px(px(8.0))
@@ -3033,6 +3053,8 @@ fn render_property_table(
         panel = panel.child(
             div()
                 .flex()
+                // Key on the right, value to its left.
+                .when(rtl, |d| d.flex_row_reverse())
                 .items_center()
                 .rounded(px(6.0))
                 .border_1()
@@ -3078,7 +3100,7 @@ fn render_table(
         .position
         .as_ref()
         .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
-        .is_some_and(|s| crate::syntax::base_direction(s).is_rtl());
+        .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
     let base_font = window.text_style().font();
     let mut widths = vec![px(0.0); ncols];
     for (ri, row) in table.children.iter().enumerate() {
