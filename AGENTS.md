@@ -7,17 +7,20 @@ already here — match the surrounding code, and prefer deleting over adding.
 
 Zorite — a cross-platform (macOS / Windows / Linux) Markdown daily-journal desktop app.
 Rust + [GPUI](https://www.gpui.rs) + gpui-component + SQLite. The repo is a Cargo
-workspace (edition 2024): the app at the root, plus six reusable crates under `crates/`.
+workspace (edition 2024): the app at the root, plus eight reusable crates under `crates/`.
 
 ## Layout
 
 - `src/` — the app: window, journal feed, editor wiring, SQLite (`db.rs`), import,
   settings, and the host-side renderers (`ui/`).
+- `crates/gpui-bidi` — bidirectional text for GPUI: index↔x over reordered glyphs,
+  logical-order row layout, and the row painter both renderers use (#66).
 - `crates/gpui-editor` — from-scratch text editor for GPUI (the WYSIWYG markdown surface).
 - `crates/gpui-markdown` — Markdown reading-view renderer.
 - `crates/gpui-pdf` — page-virtualized PDF viewer (pure-Rust `hayro`, no native libs).
 - `crates/gpui-whiteboard` — infinite pan/zoom whiteboard canvas.
 - `crates/ratex-gpui` — LaTeX math renderer + structural editor (RaTeX engine).
+- `crates/os-cursors` — custom mouse cursors (no gpui fork; Linux XCursor / macOS / Windows).
 - `crates/os-spellcheck` — native OS spell-check (no deps; macOS/Windows, Linux no-op).
 - `docs/` — Astro Starlight docs site (auto-deploys on push to `main`).
 
@@ -82,12 +85,20 @@ change must stay cross-platform.
   reformat or "improve" adjacent code. It's a `-D warnings` repo — leave no orphaned
   `dead_code`/`unused` behind your edit.
 - **Crates stay host-agnostic.** `crates/*` depend on `gpui` only — not `gpui-component`,
-  not the app — and run on all three platforms with no native libraries. One
-  sanctioned sibling dependency: `gpui-editor` → `gpui-markdown`, for the shared
-  construct **recognition** in `gpui_markdown::syntax` (alert kinds, table
-  styles, heading scales) — never for rendering. Keep the
-  editor/rendering cores GUI-free where a crate already splits them (e.g. ratex-gpui's
-  `editor::{model,cursor,geometry,input,latex}` are GUI-free; only `view` is gpui glue).
+  not the app — and run on all three platforms with no native libraries. Sibling
+  dependencies are sanctioned one at a time, and there are two:
+  - `gpui-editor` → `gpui-markdown`, for the shared construct **recognition** in
+    `gpui_markdown::syntax` (alert kinds, table styles, heading scales, writing
+    direction) — never for rendering.
+  - both renderers → `gpui-bidi`, the bidi layer (#66). It is a leaf: the
+    index↔x map, logical-order row layout, and the row painter that works
+    around gpui collapsing a bidi row to one colour. Shared because the two
+    engines have the same problem and must not solve it twice — when they did,
+    they disagreed about which side a table's first column sits on.
+
+  Keep the editor/rendering cores GUI-free where a crate already splits them
+  (e.g. ratex-gpui's `editor::{model,cursor,geometry,input,latex}` are GUI-free;
+  only `view` is gpui glue).
 - **The app owns rendering.** Renderers in the crates are host-agnostic; the app supplies
   the concrete one (see the `MarkdownView::on_math` / `on_inline_math` wiring in `ui/`).
 - **Cross-platform IO.** No `$HOME` or Unix-only assumptions — use `paths::*`
