@@ -1942,6 +1942,9 @@ pub(crate) fn inline_math_spans(line: &str) -> Vec<Range<usize>> {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct InlineMathPlace {
     pub display_off: usize,
+    /// Byte length of the spacer. Needed to place the raster on an RTL row,
+    /// where `display_off` is the spacer's RIGHT edge, not its left.
+    pub len: usize,
     pub source: Range<usize>,
 }
 
@@ -2005,6 +2008,7 @@ pub(crate) fn splice_inline_math(
         // The spacer, mapped back to the span start.
         places.push(InlineMathPlace {
             display_off: nd.len(),
+            len: *n,
             source: src.clone(),
         });
         let src_at = map.get(d0).copied().unwrap_or(src.start);
@@ -2059,6 +2063,10 @@ pub(crate) struct TableRegion {
     /// Explicit column widths (logical px) from the marker's `cols=` attribute
     /// — written by drag-to-resize; `None` = content-measured.
     pub col_widths_attr: Option<Vec<f32>>,
+    /// The table reads right-to-left (#66), so its grid hugs the note column's
+    /// RIGHT edge with the 22px gutter on the other side — the reader's
+    /// `.mr(22).ml_auto()`. Column ORDER is not mirrored; see [`EditorState::table_left`].
+    pub rtl: bool,
 }
 
 /// Detect GFM table regions in `content` (W4c). A region is a row line (trimmed
@@ -2096,12 +2104,19 @@ pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
             };
             let col_widths_attr =
                 marker_line.and_then(|m| gpui_markdown::syntax::table_col_widths(lines[m]));
+            // Writing direction of the whole table (#66) — the reader runs
+            // `base_direction` over the table's byte span, so join the region's
+            // lines and ask the same question: the first strong character
+            // anywhere in the table decides (pipes, dashes and digits are
+            // neutral under UAX #9). Once per scan, not per frame.
+            let rtl = gpui_markdown::syntax::base_direction(&lines[start..end].join("\n")).is_rtl();
             out.push(TableRegion {
                 lines: start..end,
                 aligns,
                 style,
                 marker_line,
                 col_widths_attr,
+                rtl,
             });
             i = end;
         } else {
@@ -2441,6 +2456,7 @@ mod tests {
             places,
             vec![InlineMathPlace {
                 display_off: 2,
+                len: 3,
                 source: 2..5
             }]
         );
@@ -2467,10 +2483,12 @@ mod tests {
             vec![
                 InlineMathPlace {
                     display_off: 0,
+                    len: 2,
                     source: 0..3
                 },
                 InlineMathPlace {
                     display_off: 7,
+                    len: 4,
                     source: 8..11
                 },
             ]

@@ -5382,7 +5382,7 @@ impl AppView {
 
     /// Resolve the active skin + mode (+ OS appearance for Auto) to a
     /// palette and push it live to every window.
-    fn apply_theme(&self, window: &mut Window, cx: &mut Context<Self>) {
+    fn apply_theme(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let skin = self.current_skin();
         // A dark-only theme ignores the Light/Dark/Auto setting and forces dark,
         // so the window chrome / titlebar matches its always-dark content.
@@ -5411,8 +5411,34 @@ impl AppView {
         theme::apply(palette, is_dark, window, cx);
         theme::set_ui_font(&font, cx);
         // Diagrams are themed at render time — drop the cache so they re-render
-        // with the new palette (Rc<RefCell>, so this is fine from `&self`).
+        // with the new palette.
         self.mermaid_store.borrow_mut().clear();
+        // Formulas are tinted at render time too, and were being missed here: a
+        // raster rendered for the dark palette is white, so after one visit to a
+        // dark theme every light theme showed an invisible formula over the
+        // spacer it had reserved. `set_color` drops them only when the tint
+        // actually changed. Block math re-renders itself on a cache miss, but
+        // INLINE math deliberately doesn't (it relies on content having been
+        // pre-warmed), so the loaded content is re-warmed here.
+        let retint = self
+            .math_store
+            .borrow_mut()
+            .set_color(theme::text_primary());
+        if retint {
+            let contents: Vec<String> = self
+                .day_editors
+                .values()
+                .map(|de| de.state.read(cx).value().to_string())
+                .chain(
+                    self.page_editor
+                        .as_ref()
+                        .map(|pe| pe.state.read(cx).value().to_string()),
+                )
+                .collect();
+            for content in contents {
+                self.ensure_content_math(&content, cx);
+            }
+        }
         // Open editors hold a SyntaxStyle cloned at creation — re-push it so the
         // inline tag/code/link colors track the new palette live, instead of
         // keeping the old theme's until a restart or a WYSIWYG toggle.

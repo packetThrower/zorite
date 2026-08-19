@@ -25,7 +25,14 @@ return contracts, edge cases, and the seat/commit protocols, lives in
   (coalesced), click + drag selection, double-click word / triple-click line.
   **Lists continue on Enter** (an empty item exits the list), and **bold /
   italic / inline-code** toggles (`cmd`/`ctrl`-`b`/`i`/`e`).
-- **Soft-wrap** with content-driven height.
+- **Soft-wrap** with content-driven height. A line containing right-to-left
+  text is instead broken in *logical* order and laid out row by row via
+  [`gpui-bidi`](../gpui-bidi/README.md) — gpui's own wrapping slices the
+  already-reordered glyph run, which reads bottom-to-top and splits words.
+- **Bidirectional text:** caret, selection, click hit-testing and visual arrow
+  movement work in Persian/Hebrew prose, table cells and mixed lines, including
+  a Latin word embedded in RTL. Direction comes from each line's *content*, so
+  markdown markers (`- [x]`, `> [!NOTE]`) don't decide it.
 - **Spell-check squiggles:** the host feeds in misspelled byte ranges
   (`Diagnostic`); a right-click menu offers replacements via a lazy provider.
 - **Live-preview Markdown ("WYSIWYG"):** with a `SyntaxStyle` installed, the

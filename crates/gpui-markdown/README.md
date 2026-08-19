@@ -35,6 +35,13 @@ This is **the** markdown crate of the Zorite workspace, in two layers:
 - GFM **tables** — content-measured columns, column alignment, plus **per-table
   visual designs** (striped / header-shaded / minimal) chosen by a hidden
   `<!-- table:STYLE -->` marker
+- **Bidirectional text** — a block containing right-to-left prose is broken in
+  *logical* order and laid out row by row via
+  [`gpui-bidi`](../gpui-bidi/README.md), then mirrored: alignment, list markers,
+  quote and callout rules, table column order, property rows. Links keep their
+  colour, hitboxes and hover cursor inside reordered runs, and inline rasters
+  sit on their spacer's real visual box. A left-to-right block containing a
+  Persian phrase gets the mapping but stays left-aligned.
 - **GitHub alerts** — `> [!NOTE]` / `[!TIP]` / `[!IMPORTANT]` / `[!WARNING]` /
   `[!CAUTION]` blockquotes render with a colored bar, bold title, and optional
   host-supplied icons; the natural inline form (`> [!NOTE] like so`) works too.

@@ -13,9 +13,10 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Corners, ElementId, FontStyle, FontWeight,
     HighlightStyle, Hsla, InteractiveElement, InteractiveText, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, RenderImage, RenderOnce, ScrollHandle, SharedString,
-    StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextRun, Window, canvas,
-    div, point, prelude::FluentBuilder, px, relative, rgb, rgba, size, svg,
+    MouseDownEvent, ParentElement, Pixels, Point, RenderImage, RenderOnce, ScrollHandle,
+    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout,
+    TextRun, Window, canvas, div, point, prelude::FluentBuilder, px, relative, rgb, rgba, size,
+    svg,
 };
 use markdown::mdast;
 
@@ -1183,7 +1184,21 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     _ => 6.0,
                 })
             };
+            // An RTL heading right-aligns like any other block (#66), and its
+            // fold chevron moves to the left so it stays on the text's
+            // trailing edge.
+            let h_rtl = h
+                .position
+                .as_ref()
+                .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+                .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
             let text = div()
+                // Full width, else `inline_element`'s right-alignment has
+                // nothing to align WITHIN: a content-sized div sits left
+                // whatever its text alignment says.
+                .w_full()
+                .flex_1()
+                .min_w_0()
                 .text_size(size)
                 .text_color(color)
                 .font_weight(FontWeight::BOLD)
@@ -1220,7 +1235,8 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                         .group(group)
                         .mt(top)
                         .flex()
-                        .flex_row()
+                        .when(h_rtl, |d| d.flex_row_reverse())
+                        .when(!h_rtl, |d| d.flex_row())
                         .items_center()
                         .gap(px(8.0))
                         .child(text)
@@ -1384,11 +1400,21 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
             // a chevron joins the title, clicking flips the `-`/`+` in the
             // source (via the host's handler), and a folded callout shows only
             // its title.
+            // Direction from the quote's source, so the `>` markers and
+            // whitespace (neutral under UAX #9) don't skew it. Shared by the
+            // alert branch and the plain quote below.
+            let rtl = b
+                .position
+                .as_ref()
+                .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+                .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
             if let Some((kind, fold, marker_offset, children)) = alert_parts(b) {
                 let color = kind.color(&ctx.style.alerts);
                 let mut title = div()
                     .flex()
-                    .flex_row()
+                    // The icon leads the label, so it swaps sides with the text.
+                    .when(rtl, |d| d.flex_row_reverse())
+                    .when(!rtl, |d| d.flex_row())
                     .items_center()
                     .gap(px(6.0))
                     .font_weight(FontWeight::BOLD)
@@ -1415,7 +1441,8 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                             format!("{}-fold-{}", ctx.id_base, ctx.counter).into(),
                         ))
                         .flex()
-                        .flex_row()
+                        .when(rtl, |d| d.flex_row_reverse())
+                        .when(!rtl, |d| d.flex_row())
                         .items_center()
                         .gap(px(6.0))
                         .child(title)
@@ -1432,9 +1459,10 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                     title = row.into_any_element();
                 }
                 let mut q = div()
-                    .border_l_2()
                     .border_color(color)
-                    .pl(px(12.0))
+                    // The rule goes on the side the text starts from.
+                    .when(rtl, |d| d.border_r_2().pr(px(12.0)))
+                    .when(!rtl, |d| d.border_l_2().pl(px(12.0)))
                     .flex()
                     .flex_col()
                     .gap(px(6.0))
@@ -1449,10 +1477,11 @@ fn render_block(node: &mdast::Node, ctx: &mut Ctx, window: &mut Window) -> Optio
                 return Some(q.into_any_element());
             }
             let muted = ctx.style.muted_color;
+            // An RTL quote's rule belongs on the right, where the text starts.
             let mut q = div()
-                .border_l_2()
                 .border_color(muted)
-                .pl(px(12.0))
+                .when(rtl, |d| d.border_r_2().pr(px(12.0)))
+                .when(!rtl, |d| d.border_l_2().pl(px(12.0)))
                 .flex()
                 .flex_col()
                 .gap(px(6.0))
@@ -1796,10 +1825,20 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
         } else {
             marker_el.into_any_element()
         };
+        // An RTL item puts its bullet/number on the right (#66). Direction
+        // comes from the item's SOURCE slice — the list marker, digits and
+        // whitespace are all neutral under UAX #9, so `- سلام` reads RTL and
+        // `- hello` reads LTR.
+        let item_rtl = li
+            .position
+            .as_ref()
+            .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+            .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
         col = col.child(
             div()
                 .flex()
-                .flex_row()
+                .when(item_rtl, |d| d.flex_row_reverse())
+                .when(!item_rtl, |d| d.flex_row())
                 .gap(px(8.0))
                 .child(marker_col)
                 .child(div().flex_1().min_w_0().child(content)),
@@ -1810,15 +1849,93 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
 
 // --- Inline rendering ---
 
+#[derive(Clone)]
 enum LinkTarget {
     Wiki(SharedString),
     Url(SharedString),
 }
 
+/// The text layout of whichever paragraph element got built.
+///
+/// RTL blocks lay themselves out (`gpui_bidi::paragraph`), because gpui wraps
+/// by slicing the reordered glyph run and gets the rows backwards — so the two
+/// directions carry different layouts. Everything downstream (link
+/// hit-testing, click-to-caret, seating an inline formula over its spacer)
+/// only ever asks these three questions, so it asks them here.
+enum TextHandle {
+    Ltr(TextLayout),
+    Rtl(gpui_bidi::paragraph::RtlLayout),
+}
+
+impl TextHandle {
+    fn index_for_position(&self, position: Point<Pixels>) -> Result<usize, usize> {
+        match self {
+            Self::Ltr(l) => l.index_for_position(position),
+            Self::Rtl(l) => l.index_for_position(position),
+        }
+    }
+
+    fn line_height(&self) -> Pixels {
+        match self {
+            Self::Ltr(l) => l.line_height(),
+            Self::Rtl(l) => l.line_height(),
+        }
+    }
+
+    /// Top-left corner of the spacer occupying `range`, where an inline raster
+    /// gets painted.
+    ///
+    /// In an LTR line that's just the start offset's position. In an RTL line
+    /// the start offset is the spacer's RIGHT edge — painting from there would
+    /// cover the words beside it — so the whole range's visual box is measured
+    /// and its left edge used.
+    fn raster_origin(&self, range: Range<usize>) -> Option<Point<Pixels>> {
+        match self {
+            Self::Ltr(l) => l.position_for_index(range.start),
+            Self::Rtl(l) => l.left_edge_of(range),
+        }
+    }
+}
+
+/// Open a link target. Shared by both directions: LTR goes through
+/// `InteractiveText`, RTL hit-tests through its own layout, but what a click
+/// DOES must not depend on which.
+fn follow_link(
+    target: Option<&LinkTarget>,
+    on_wiki: &Option<WikiLinkHandler>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    match target {
+        Some(LinkTarget::Wiki(title)) => {
+            if let Some(handler) = on_wiki {
+                handler(title.clone(), window, cx);
+            }
+        }
+        // Only http(s) reaches the OS opener — the markdown is untrusted, and
+        // `open_url` runs the scheme's handler.
+        Some(LinkTarget::Url(url)) if crate::syntax::is_safe_external_url(url) => cx.open_url(url),
+        Some(LinkTarget::Url(_)) | None => {}
+    }
+}
+
 /// An inline raster spliced into a paragraph's text: `(display byte offset of
-/// the spacer, raster, logical w, h, image src)`. `src` is `Some` for an
-/// image (clickable → preview), `None` for a `$…$` formula.
-type InlineRaster = (usize, Arc<RenderImage>, f32, f32, Option<SharedString>);
+/// the spacer, spacer byte length, raster, logical w, h, image src)`. `src` is
+/// `Some` for an image (clickable → preview), `None` for a `$…$` formula.
+///
+/// The spacer's LENGTH is carried, not just where it starts, because an RTL
+/// line runs the other way: the first byte of the spacer sits at its RIGHT
+/// edge, and a raster painted from there covers the text beside it instead of
+/// the gap. With the range, the raster is placed by the spacer's actual
+/// visual box, which is correct whichever way the line runs.
+type InlineRaster = (
+    usize,
+    usize,
+    Arc<RenderImage>,
+    f32,
+    f32,
+    Option<SharedString>,
+);
 
 /// Window-space bounds of each painted inline image + its src, for click
 /// hit-testing (image click → preview).
@@ -1890,47 +2007,107 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         inl.highlights
     };
 
+    // Writing direction for this block (#66). Detected from the RENDERED text
+    // — what the reader actually sees, markers already stripped — so a
+    // `- سلام` item and a `## سلام` heading both come out RTL. Every block
+    // that shows prose funnels through here (paragraphs, headings, list-item
+    // content, quotes, table cells), so this is the one place it's decided.
+    //
+    // Reader-only by design: the platform shapers already reorder RTL glyphs
+    // correctly, so alignment is all that's missing here. The EDITOR needs a
+    // logical↔visual index map before it can do the same — gpui's
+    // `x_for_index` collapses every caret offset in an RTL line onto x=0 (see
+    // the bidi note in TODO.md), and a right-aligned line with a broken caret
+    // would be worse than none.
+    let dir = crate::syntax::base_direction(&inl.text);
+    let align = move |el: AnyElement| -> AnyElement {
+        if dir.is_rtl() {
+            div().w_full().text_right().child(el).into_any_element()
+        } else {
+            el
+        }
+    };
+
     let math = std::mem::take(&mut inl.math);
-    let styled = StyledText::new(inl.text).with_highlights(highlights);
-    // Capture the text layout (a shared handle, populated on paint) so a click can
-    // be mapped to a rendered byte index, then to a source offset (and so a canvas can paint
-    // inline formulas over their spacers).
-    let layout = styled.layout().clone();
+
     // Rendered-text ranges of this block's links, so the click-to-caret handler
     // below can ignore a click that lands on a link. A link's own `on_click`
     // fires on mouse-*up*; the caret handler fires on mouse-*down*, so without
     // this it would enter the editor first and swallow the link click.
     let link_ranges: Vec<Range<usize>> = inl.links.iter().map(|(r, _)| r.clone()).collect();
+    let targets: Vec<LinkTarget> = inl.links.iter().map(|(_, t)| t.clone()).collect();
 
-    let inner = if inl.links.is_empty() {
-        styled.into_any_element()
+    // #66: an RTL paragraph cannot use gpui's wrapping. gpui shapes the whole
+    // paragraph as one line and slices it into rows by ascending x, and glyph
+    // order is visual — so the first row gets the paragraph's LAST words and a
+    // wrapped Persian note reads bottom-to-top. `RtlText` breaks in logical
+    // order first (UAX #9) and paints the rows itself.
+    //
+    // Everything past this point is direction-agnostic: it works off
+    // `TextHandle`, so links, click-to-caret and inline math behave the same
+    // either way.
+    // Any paragraph CONTAINING right-to-left text needs the mapping, not just
+    // one that reads that way: an English sentence quoting a Persian name
+    // misplaces the caret and its link hitboxes inside that phrase otherwise.
+    // `with_base_rtl` keeps such a paragraph left-aligned (#66).
+    let (inner, layout) = if crate::syntax::contains_rtl(&inl.text) {
+        let rtl = gpui_bidi::paragraph::RtlText::new(inl.text)
+            .with_base_rtl(dir.is_rtl())
+            .with_highlights(highlights)
+            .with_pointer_ranges(link_ranges.clone());
+        let layout = TextHandle::Rtl(rtl.layout().clone());
+        let inner = if link_ranges.is_empty() {
+            rtl.into_any_element()
+        } else {
+            // `InteractiveText` hit-tests through gpui's own layout, which is
+            // the thing that's wrong for RTL — so the click lands via the same
+            // handle that painted the rows. Mouse-DOWN, and consumed, so the
+            // click-to-caret wrapper below doesn't also fire.
+            let TextHandle::Rtl(hit) = &layout else {
+                unreachable!("just built as Rtl")
+            };
+            let hit = hit.clone();
+            let ranges = link_ranges.clone();
+            let targets = targets.clone();
+            let on_wiki = ctx.on_wiki_link.clone();
+            div()
+                .child(rtl)
+                .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
+                    let Ok(ix) = hit.index_for_position(ev.position) else {
+                        return;
+                    };
+                    if let Some(k) = ranges.iter().position(|r| r.contains(&ix)) {
+                        cx.stop_propagation();
+                        follow_link(targets.get(k), &on_wiki, window, cx);
+                    }
+                })
+                .into_any_element()
+        };
+        (inner, layout)
     } else {
-        ctx.counter += 1;
-        let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
-        let targets: Vec<LinkTarget> = inl.links.into_iter().map(|(_, t)| t).collect();
-        let on_wiki = ctx.on_wiki_link.clone();
-        InteractiveText::new(id, styled)
-            .on_click(link_ranges.clone(), move |ix, window, cx| {
-                // The click was on a link range; consume it so it doesn't also reach
-                // a surrounding host handler (e.g. the click-to-caret below).
-                cx.stop_propagation();
-                match targets.get(ix) {
-                    Some(LinkTarget::Wiki(title)) => {
-                        if let Some(handler) = &on_wiki {
-                            handler(title.clone(), window, cx);
-                        }
-                    }
-                    // Only http(s) reaches the OS opener — the markdown is
-                    // untrusted, and `open_url` runs the scheme's handler.
-                    Some(LinkTarget::Url(url)) if crate::syntax::is_safe_external_url(url) => {
-                        cx.open_url(url)
-                    }
-                    Some(LinkTarget::Url(_)) => {}
-                    None => {}
-                }
-            })
-            .into_any_element()
+        let styled = StyledText::new(inl.text).with_highlights(highlights);
+        // Capture the text layout (a shared handle, populated on paint) so a click can
+        // be mapped to a rendered byte index, then to a source offset (and so a canvas can paint
+        // inline formulas over their spacers).
+        let layout = TextHandle::Ltr(styled.layout().clone());
+        let inner = if link_ranges.is_empty() {
+            styled.into_any_element()
+        } else {
+            ctx.counter += 1;
+            let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
+            let on_wiki = ctx.on_wiki_link.clone();
+            InteractiveText::new(id, styled)
+                .on_click(link_ranges.clone(), move |ix, window, cx| {
+                    // The click was on a link range; consume it so it doesn't also reach
+                    // a surrounding host handler (e.g. the click-to-caret below).
+                    cx.stop_propagation();
+                    follow_link(targets.get(ix), &on_wiki, window, cx);
+                })
+                .into_any_element()
+        };
+        (inner, layout)
     };
+    let layout = Rc::new(layout);
 
     // Click-to-caret: outside a link (link clicks `stop_propagation` above), map the
     // click to a source offset and report it so the host can place its editor caret
@@ -1977,14 +2154,14 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
         }
     };
     if math.is_empty() {
-        return el;
+        return align(el);
     }
     // A paragraph with inline formulas: paint each raster over its spacer via a canvas painted
     // AFTER the text (so the text layout is populated + gives the spacer's window position), and
     // grow the line height so a tall formula (a fraction) doesn't overlap the neighbouring line.
-    let tallest = math.iter().fold(0f32, |a, &(_, _, _, h, _)| a.max(h));
+    let tallest = math.iter().fold(0f32, |a, &(_, _, _, _, h, _)| a.max(h));
     let line_h = px((f32::from(ctx.style.text_size) * 1.4).max(tallest + 6.0));
-    div()
+    let with_math = div()
         .relative()
         .line_height(line_h)
         .child(el)
@@ -1995,8 +2172,8 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
                     let row_h = layout.line_height();
                     let mut hits = image_hits.borrow_mut();
                     hits.clear();
-                    for (off, img, w, h, src) in &math {
-                        if let Some(p) = layout.position_for_index(*off) {
+                    for (off, len, img, w, h, src) in &math {
+                        if let Some(p) = layout.raster_origin(*off..*off + *len) {
                             let y = p.y + (row_h - px(*h)) / 2.0;
                             let b = Bounds::new(point(p.x, y), size(px(*w), px(*h)));
                             let _ =
@@ -2011,7 +2188,8 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
             .absolute()
             .inset_0(),
         )
-        .into_any_element()
+        .into_any_element();
+    align(with_math)
 }
 
 fn build_inline(
@@ -2058,7 +2236,8 @@ fn build_inline(
                     Some((img, w, h)) => {
                         let space_w = (f32::from(style.text_size) * 0.26).max(1.0);
                         let n = ((w / space_w).ceil() as usize).max(1);
-                        out.math.push((out.text.len(), img, w, h, None));
+                        out.math
+                            .push((out.text.len(), n * '\u{00A0}'.len_utf8(), img, w, h, None));
                         out.text.extend(std::iter::repeat_n('\u{00A0}', n));
                     }
                     None => push_run(&format!("${}$", m.value), cur, out),
@@ -2094,8 +2273,14 @@ fn build_inline(
                     Some((raster, w, h)) => {
                         let space_w = (f32::from(style.text_size) * 0.26).max(1.0);
                         let n = ((w / space_w).ceil() as usize).max(1);
-                        out.math
-                            .push((out.text.len(), raster, w, h, Some(img.url.clone().into())));
+                        out.math.push((
+                            out.text.len(),
+                            n * '\u{00A0}'.len_utf8(),
+                            raster,
+                            w,
+                            h,
+                            Some(img.url.clone().into()),
+                        ));
                         out.text.extend(std::iter::repeat_n('\u{00A0}', n));
                     }
                     None => {
@@ -2752,6 +2937,13 @@ fn render_property_table(
         0.0
     };
     let key_cell_w = key_w + px(icon_indent + 20.0);
+    // The panel follows its VALUES, not its keys: a Persian note's property
+    // keys are usually Latin (`tags`, `key`), so keying off the line would leave
+    // an RTL note's properties reading the wrong way — and deciding per ROW
+    // would stagger the fixed-width key column.
+    let rtl = rows
+        .iter()
+        .any(|(_, v, _)| crate::syntax::content_direction(v).is_rtl());
     let key_col = ctx.style.muted_color;
     let tag_c = ctx.style.tag_color;
     let link_c = ctx.style.link_color;
@@ -2765,9 +2957,15 @@ fn render_property_table(
         let mut val = div()
             .flex()
             .flex_wrap()
+            // Segments read right-to-left. The cell does NOT grow in that case:
+            // the reversed row puts the key at the right edge and the value
+            // immediately beside it, whereas a growing cell would stretch to the
+            // far margin and strand the value there — which is not a `justify`
+            // that can be relied on to mean the same thing under row-reverse.
+            .when(rtl, |d| d.flex_row_reverse())
+            .when(!rtl, |d| d.flex_1())
             .items_center()
             .gap(px(5.0))
-            .flex_1()
             .px(px(8.0))
             .py(px(3.0));
         for seg in crate::syntax::property_value_segments(&value) {
@@ -2831,6 +3029,8 @@ fn render_property_table(
             .w(key_cell_w)
             .flex_shrink_0()
             .flex()
+            // The icon leads the key name, so it swaps sides too.
+            .when(rtl, |d| d.flex_row_reverse())
             .items_center()
             .gap(px(6.0))
             .px(px(8.0))
@@ -2858,6 +3058,8 @@ fn render_property_table(
         panel = panel.child(
             div()
                 .flex()
+                // Key on the right, value to its left.
+                .when(rtl, |d| d.flex_row_reverse())
                 .items_center()
                 .rounded(px(6.0))
                 .border_1()
@@ -2896,6 +3098,14 @@ fn render_table(
         .max()
         .unwrap_or(1)
         .max(1);
+    // An RTL table reads right-to-left: the first column sits on the RIGHT
+    // (#66). Direction from the table's source — pipes, dashes and digits are
+    // neutral under UAX #9, so the first strong character in a cell decides.
+    let rtl = table
+        .position
+        .as_ref()
+        .and_then(|p| ctx.source.get(p.start.offset..p.end.offset))
+        .is_some_and(|s| crate::syntax::content_direction(s).is_rtl());
     let base_font = window.text_style().font();
     let mut widths = vec![px(0.0); ncols];
     for (ri, row) in table.children.iter().enumerate() {
@@ -2966,7 +3176,12 @@ fn render_table(
         // The mdast table has no separator child: row 0 is the header, row 1 the
         // first body row (body_index 0).
         let body_index = ri.checked_sub(1);
-        let mut row_el = div().flex().flex_row();
+        // Reversing the row lays column 0 at the right without touching the
+        // width/alignment bookkeeping, which stays keyed by logical index.
+        let mut row_el = div()
+            .flex()
+            .when(rtl, |d| d.flex_row_reverse())
+            .when(!rtl, |d| d.flex_row());
         // Top divider: under every row (Grid), just under the header
         // (Striped/Minimal → the first body row's top), or never (Header).
         let top_divider = if row_lines {
@@ -2998,7 +3213,16 @@ fn render_table(
                 .min_h(px(f32::from(ctx.style.text_size) * 1.45 + 12.0))
                 .flex()
                 .items_center();
-            if vlines && ci + 1 < r.children.len() {
+            // Column separators sit between adjacent cells. Reversed, cell `i`
+            // is drawn LEFT of cell `i-1`, so the divider belongs on every
+            // cell except index 0 (the rightmost) — mirroring the LTR rule of
+            // "every cell except the last".
+            let needs_divider = if rtl {
+                ci > 0
+            } else {
+                ci + 1 < r.children.len()
+            };
+            if vlines && needs_divider {
                 cell_el = cell_el.border_r_1().border_color(border);
             }
             // Honor the column's GFM alignment (`:---:` / `---:`).
@@ -3022,7 +3246,10 @@ fn render_table(
         .id(("md-table", ctx.counter))
         // WYSIWYG indents tables into a 22px gutter (its row handles live
         // there); mirror it so the grid sits at the same x in both views.
-        .ml(px(22.0))
+        // An RTL table takes that gutter on its other side and hugs the right
+        // edge, where the rest of an RTL block starts.
+        .when(rtl, |d| d.mr(px(22.0)).ml_auto())
+        .when(!rtl, |d| d.ml(px(22.0)))
         .max_w_full()
         .overflow_x_scroll()
         .child(grid)

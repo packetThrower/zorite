@@ -767,6 +767,9 @@ pub struct EditorState {
     /// inset): non-zero for fenced code blocks and gutter marks (blockquotes,
     /// lists). From the last paint.
     line_insets: Vec<Pixels>,
+    /// Per-logical-line right-to-left geometry (#66), `None` on every LTR row
+    /// so an LTR document pays nothing. From the last paint. See [`RtlRow`].
+    rtl_rows: Vec<Option<RtlRow>>,
     last_bounds: Option<Bounds<Pixels>>,
     line_height: Pixels,
     /// Font size from the last paint. Hit-testing that runs during event
@@ -1011,6 +1014,7 @@ impl EditorState {
             widget_rows: Vec::new(),
             offset_maps: Vec::new(),
             line_insets: Vec::new(),
+            rtl_rows: Vec::new(),
             table_rows: Vec::new(),
             table_row_add_rects: Vec::new(),
             table_col_add_rects: Vec::new(),
@@ -1715,6 +1719,112 @@ impl EditorState {
         self.line_insets.get(row).copied().unwrap_or(px(0.))
     }
 
+    /// The right-align shift of an RTL row (zero everywhere else) — see
+    /// [`RtlRow::shift`].
+    fn rtl_shift(&self, row: usize) -> Pixels {
+        self.rtl_rows
+            .get(row)
+            .and_then(Option::as_ref)
+            .and_then(|r| r.shifts.first().copied())
+            .unwrap_or(px(0.))
+    }
+
+    /// Where logical line `row`'s painted text actually starts: its inset plus
+    /// the right-align shift of an RTL row (#66). Everything that positions
+    /// against a row's text — caret, click, selection, link boxes — goes
+    /// through this, so the two can never drift apart.
+    fn row_origin_x(&self, row: usize) -> Pixels {
+        self.line_inset(row) + self.rtl_shift(row)
+    }
+
+    /// Does the caret's TABLE row read right-to-left? Cells step through their
+    /// own stepper, which walks in logical order — so on an RTL table the
+    /// visual arrows map to the opposite step.
+    fn caret_table_is_rtl(&self) -> bool {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.table_rows
+            .get(row)
+            .and_then(Option::as_ref)
+            .is_some_and(|t| t.rtl)
+    }
+
+    /// Does the caret's line read right-to-left?
+    ///
+    /// Arrow keys move VISUALLY — Right steps to the character on the right of
+    /// the screen, which every platform does in bidi text and which readers of
+    /// Persian expect. On an RTL row that character is the logically PREVIOUS
+    /// one, so the two step functions swap.
+    fn caret_row_is_rtl(&self) -> bool {
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.rtl_rows
+            .get(row)
+            .and_then(Option::as_ref)
+            .is_some_and(|r| r.base_rtl)
+    }
+
+    /// The offset one step to the visual left/right of the caret, taking the
+    /// row's direction into account.
+    fn horizontal_step(&self, visual_right: bool) -> usize {
+        let off = self.cursor_offset();
+        let (row, col) = self.row_col(off);
+        // Inside a bidi row, "one step right" is not "one byte forward, maybe
+        // flipped". A Latin word or URL embedded in Persian runs the other way,
+        // and the caret has to flow THROUGH it rather than jump to its far end
+        // — so the step comes from the glyph order, via the row's map.
+        if let Some(r) = self.bidi_map(row) {
+            let dcol = self.display_col(row, col);
+            let (k, local) = r.row_of(dcol);
+            if let Some(rr) = r.rows.get(k)
+                && let Some(next) = rr.map.step_visual(local, visual_right)
+            {
+                let target = self.line_starts()[row] + self.source_col(row, rr.start + next);
+                // A visual step that doesn't move the caret in the DOCUMENT has
+                // landed inside something atomic — an inline formula's spacer,
+                // whose every display byte maps back to the span's start. The
+                // logical stepper knows how to cross those (and how to hand the
+                // formula to its editor), so defer to it rather than sitting
+                // still.
+                if target != off {
+                    // Landing ON a spacer resolves to the span's START, and the
+                    // "is the caret inside a formula?" test wants strictly
+                    // inside — so approaching a formula from its end side, the
+                    // caret stepped to the start, failed the test, and the next
+                    // press left the formula behind. Step one byte in so the
+                    // formula opens from either side.
+                    let line_start = self.line_starts()[row];
+                    let here = off.saturating_sub(line_start);
+                    let lands_on_a_formula = markdown_syntax::inline_math_spans(self.line_str(row))
+                        .into_iter()
+                        .any(|s| {
+                            line_start + s.start == target && !(s.start < here && here < s.end)
+                        });
+                    return if lands_on_a_formula {
+                        target + 1
+                    } else {
+                        target
+                    };
+                }
+            }
+            // Off the end of this row: fall through to the logical neighbour,
+            // which is what carries the caret onto the next row or line.
+            return if visual_right != self.caret_row_is_rtl() {
+                self.next_visible_boundary(off)
+            } else {
+                self.prev_visible_boundary(off)
+            };
+        }
+        if visual_right {
+            self.next_visible_boundary(off)
+        } else {
+            self.prev_visible_boundary(off)
+        }
+    }
+
+    /// The RTL layout for `row`, if it has one (see [`RtlRow`]).
+    fn bidi_map(&self, row: usize) -> Option<&RtlRow> {
+        self.rtl_rows.get(row).and_then(Option::as_ref)
+    }
+
     /// Window-space bounds of the caret at `offset`, from the last paint's
     /// layout — for anchoring a popup (e.g. a slash menu) at a document offset.
     /// `None` before the first paint or if `offset`'s row isn't laid out.
@@ -1723,9 +1833,9 @@ impl EditorState {
         let (row, col) = self.row_col(offset);
         let lh = self.line_h(row);
         let line = self.wrapped.get(row)?;
-        let p = line.position_for_index(self.display_col(row, col), lh)?;
+        let p = line_pos(line, self.bidi_map(row), self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
-        let x = bounds.left() + p.x + self.line_inset(row);
+        let x = bounds.left() + p.x + self.row_origin_x(row);
         Some(Bounds::from_corners(point(x, top), point(x, top + lh)))
     }
 
@@ -1767,16 +1877,24 @@ impl EditorState {
 
     fn left(&mut self, _: &Left, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            self.move_to(self.selected_range.start, cx);
+            // Collapse to the selection's VISUALLY left edge, which on an RTL
+            // row is its logical end.
+            let to = if self.caret_row_is_rtl() {
+                self.selected_range.end
+            } else {
+                self.selected_range.start
+            };
+            self.move_to(to, cx);
             return;
         }
         if self.caret_in_table()
-            && let Some(off) = self.table_move_horizontal(-1)
+            && let Some(off) =
+                self.table_move_horizontal(if self.caret_table_is_rtl() { 1 } else { -1 })
         {
             self.move_to(off, cx);
             return;
         }
-        let off = self.prev_visible_boundary(self.cursor_offset());
+        let off = self.horizontal_step(false);
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1810,16 +1928,22 @@ impl EditorState {
 
     fn right(&mut self, _: &Right, _: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            self.move_to(self.selected_range.end, cx);
+            let to = if self.caret_row_is_rtl() {
+                self.selected_range.start
+            } else {
+                self.selected_range.end
+            };
+            self.move_to(to, cx);
             return;
         }
         if self.caret_in_table()
-            && let Some(off) = self.table_move_horizontal(1)
+            && let Some(off) =
+                self.table_move_horizontal(if self.caret_table_is_rtl() { -1 } else { 1 })
         {
             self.move_to(off, cx);
             return;
         }
-        let off = self.next_visible_boundary(self.cursor_offset());
+        let off = self.horizontal_step(true);
         if let Some((range, source)) = self.inline_math_span_at(off) {
             cx.emit(EditorEvent::EditMath {
                 range,
@@ -1941,12 +2065,14 @@ impl EditorState {
 
     fn select_left(&mut self, _: &SelectLeft, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.prev_visible_boundary(self.cursor_offset()), cx);
+        let off = self.horizontal_step(false);
+        self.select_to(off, cx);
     }
 
     fn select_right(&mut self, _: &SelectRight, _: &mut Window, cx: &mut Context<Self>) {
         self.goal_x = None;
-        self.select_to(self.next_visible_boundary(self.cursor_offset()), cx);
+        let off = self.horizontal_step(true);
+        self.select_to(off, cx);
     }
 
     fn select_up(&mut self, _: &SelectUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -4057,12 +4183,15 @@ impl EditorState {
         let Some(cur) = self
             .wrapped
             .get(row)
-            .and_then(|l| l.position_for_index(self.display_col(row, col), cur_lh))
+            .and_then(|l| line_pos(l, self.bidi_map(row), self.display_col(row, col), cur_lh))
         else {
             return self.vertical_offset(dir);
         };
         let global_y = self.line_tops[row] + cur.y;
-        let goal = self.goal_x.unwrap_or(cur.x);
+        // The goal column is the caret's *visual* x, so it carries an RTL row's
+        // right-align shift — the target row's shift comes off again below.
+        // (Row insets stay out of it, as they always have.)
+        let goal = self.goal_x.unwrap_or(cur.x + self.rtl_shift(row));
         self.goal_x = Some(goal);
         // Step to the adjacent visual row. Down: to the bottom of the current
         // row (= the top of the next one). Up: just above the current row's top
@@ -4149,10 +4278,16 @@ impl EditorState {
                 }
             }
         }
-        let rel = point(goal, (target_y - self.line_tops[trow]).max(px(0.)));
-        let col = match self.wrapped[trow].closest_index_for_position(rel, self.line_h(trow)) {
-            Ok(i) | Err(i) => i,
-        };
+        let rel = point(
+            (goal - self.rtl_shift(trow)).max(px(0.)),
+            (target_y - self.line_tops[trow]).max(px(0.)),
+        );
+        let col = line_index_at(
+            &self.wrapped[trow],
+            self.bidi_map(trow),
+            rel,
+            self.line_h(trow),
+        );
         self.line_starts()[trow] + self.source_col(trow, col)
     }
 
@@ -4410,11 +4545,14 @@ impl EditorState {
         if self.widget_rows.get(row).copied().unwrap_or(false) {
             return self.line_starts()[row];
         }
-        let x = (rel.x - self.line_inset(row)).max(px(0.));
+        let x = (rel.x - self.row_origin_x(row)).max(px(0.));
         let line_rel = point(x, rel.y - self.line_tops[row]);
-        let col = match self.wrapped[row].closest_index_for_position(line_rel, self.line_h(row)) {
-            Ok(i) | Err(i) => i,
-        };
+        let col = line_index_at(
+            &self.wrapped[row],
+            self.bidi_map(row),
+            line_rel,
+            self.line_h(row),
+        );
         self.line_starts()[row] + self.source_col(row, col)
     }
 
@@ -4721,18 +4859,19 @@ impl EntityInputHandler for EditorState {
         let (row, col) = self.row_col(range.start);
         let lh = self.line_h(row);
         let line = self.wrapped.get(row)?;
-        let p = line.position_for_index(self.display_col(row, col), lh)?;
+        let map = self.bidi_map(row);
+        let p = line_pos(line, map, self.display_col(row, col), lh)?;
         let top = bounds.top() + self.line_tops.get(row).copied().unwrap_or(px(0.)) + p.y;
-        let x = bounds.left() + p.x + self.line_inset(row);
+        let x = bounds.left() + p.x + self.row_origin_x(row);
         // Span the whole range when it stays on one wrap row (the common IME
         // composition), so the candidate window anchors under the marked TEXT
         // rather than a zero-width bar at its start. Multi-row ranges keep the
         // start-anchored bar.
         let (erow, ecol) = self.row_col(range.end);
         let x2 = if erow == row && range.end > range.start {
-            line.position_for_index(self.display_col(row, ecol), lh)
+            line_pos(line, map, self.display_col(row, ecol), lh)
                 .filter(|e| e.y == p.y)
-                .map(|e| bounds.left() + e.x + self.line_inset(row))
+                .map(|e| bounds.left() + e.x + self.row_origin_x(row))
                 .unwrap_or(x)
         } else {
             x
@@ -5733,6 +5872,10 @@ struct BlockImg {
 #[derive(Clone)]
 struct InlineMath {
     display_off: usize,
+    /// Byte length of the spacer this raster sits over. On an RTL row
+    /// `display_off` is its RIGHT edge, so the whole span is needed to find the
+    /// left one — see where it is painted.
+    len: usize,
     /// ABSOLUTE byte range of the `$…$` span in the document — to hit-test a click on the
     /// formula back to its edit range and to position the seated editor.
     source: Range<usize>,
@@ -5876,6 +6019,9 @@ struct TableRow {
     border: Hsla,
     /// Row-shade color for striped / header-shaded styles (a faint tint).
     shade: Hsla,
+    /// The table reads right-to-left (#66) — from its region's
+    /// [`markdown_syntax::TableRegion::rtl`], so every row of one table agrees.
+    rtl: bool,
 }
 
 /// A per-line "gutter" decoration: a left-margin treatment that hides its source
@@ -5971,8 +6117,14 @@ struct ShapedDoc {
     inline_maths: Vec<Vec<InlineMath>>,
     /// Per-line wrap-row count. Geometry (line tops, total height) reads THIS,
     /// not `wrap_boundaries()` — a windowed-out line's `WrappedLine` is an
-    /// empty placeholder, but its cached count keeps the layout exact.
+    /// empty placeholder, but its cached count keeps the layout exact. For an
+    /// RTL line it is OUR row count, which is not gpui's (#66).
     wrap_rows: Vec<usize>,
+    /// Per-line bidi layout: whether the line READS right-to-left, plus the
+    /// rows we broke in logical order. `None` for lines with no RTL at all,
+    /// which keep gpui's own wrapping. Drives that line's paint, caret,
+    /// selection and hit-testing.
+    rtl_rows: Vec<Option<(bool, Vec<gpui_bidi::paragraph::Row>)>>,
 }
 
 impl ShapedDoc {
@@ -6009,6 +6161,7 @@ impl ShapedDoc {
         self.marks.push(mark);
         self.inline_maths.push(Vec::new());
         self.wrap_rows.push(rows);
+        self.rtl_rows.push(None);
     }
 }
 
@@ -6045,6 +6198,157 @@ fn display_col_in(map: Option<&std::rc::Rc<Vec<usize>>>, source_col: usize) -> u
         // just before the formula must land at the spacer's LEFT edge, not somewhere inside it.
         Some(m) => m.partition_point(|&s| s < source_col),
         None => source_col,
+    }
+}
+
+/// The painted position of display column `dcol` on a shaped line: gpui's own
+/// lookup, with the x taken from the row's bidi map when it has one (#66).
+///
+/// gpui's `x_for_index` returns the first glyph whose `index >= dcol`, and the
+/// first glyph of an RTL line carries the HIGHEST index — so every offset in
+/// the line collapses onto x = 0. The y (which wrap row) stays gpui's; a row
+/// only gets a map while it is ONE visual row, so it is always 0 there.
+/// Excludes the row's insets — callers add [`EditorState::row_origin_x`].
+fn line_pos(
+    line: &WrappedLine,
+    rtl: Option<&RtlRow>,
+    dcol: usize,
+    lh: Pixels,
+) -> Option<Point<Pixels>> {
+    match rtl {
+        // Our own rows: which one holds the offset decides the y, and the
+        // row's map the x. gpui's layout is not consulted at all — its rows
+        // are not ours.
+        Some(r) => {
+            let (row, local) = r.row_of(dcol);
+            let x = px(r.rows.get(row)?.map.x_for_index(local)) + r.shift_delta(row);
+            Some(point(x, lh * row))
+        }
+        None => line.position_for_index(dcol, lh),
+    }
+}
+
+/// The display column a click at row-local `p` names — the inverse of
+/// [`line_pos`], through the bidi map when the row has one (gpui's
+/// `closest_index_for_x` fails on RTL the same way `x_for_index` does).
+fn line_index_at(line: &WrappedLine, rtl: Option<&RtlRow>, p: Point<Pixels>, lh: Pixels) -> usize {
+    match rtl {
+        Some(r) if !r.rows.is_empty() => {
+            let row = ((f32::from(p.y) / f32::from(lh).max(1.0)).floor().max(0.) as usize)
+                .min(r.rows.len() - 1);
+            let x = p.x - r.shift_delta(row);
+            let Some(rr) = r.rows.get(row) else {
+                return 0;
+            };
+            rr.start + rr.map.index_for_x(f32::from(x))
+        }
+        _ => match line.closest_index_for_position(p, lh) {
+            Ok(i) | Err(i) => i,
+        },
+    }
+}
+
+/// A right-to-left row's editor-side geometry, built in prepaint (#66).
+///
+/// Only rows whose source reads RTL ([`gpui_markdown::syntax::base_direction`])
+/// get one — the flag *is* `Option::is_some`, so an LTR document allocates
+/// nothing and keeps taking gpui's own (cheaper) lookups.
+pub(crate) struct RtlRow {
+    /// The line's visual rows, broken in LOGICAL order (gpui's own wrapping
+    /// slices the reordered glyph run and gets them backwards). Each carries
+    /// the map that turns an offset inside it into an x and back.
+    rows: Vec<gpui_bidi::paragraph::Row>,
+    /// Each row's right-align shift, parallel to `rows`: added to the text
+    /// origin so the row right-aligns in the content width (see [`rtl_shift`]).
+    /// Per ROW, not per line — a short last row shifts further than a full one.
+    /// Kept OUT of `line_insets` on purpose: the list-marker + gutter math
+    /// reads that, and must not move with the text.
+    shifts: Vec<Pixels>,
+    /// Does the line READ right-to-left? A left-to-right line containing a
+    /// Persian phrase gets rows and maps too, but stays left-aligned and keeps
+    /// left-to-right arrow keys.
+    base_rtl: bool,
+}
+
+impl RtlRow {
+    /// The row holding display column `dcol`, and the column's offset within
+    /// it. Rows are in reading order and contiguous, so the last row wins for
+    /// an offset at the very end of the line.
+    fn row_of(&self, dcol: usize) -> (usize, usize) {
+        row_of_spans(self.rows.iter().map(|r| (r.start, r.len)), dcol)
+    }
+
+    /// A row's horizontal extent (left, right) relative to the FIRST row's
+    /// origin — the coordinate space callers already work in, since they add
+    /// `row_origin_x`. Used to band a selection across a row: an RTL row does
+    /// not span the content width, so "the whole row" is this, not 0..width.
+    pub(crate) fn row_extent(&self, row: usize) -> (Pixels, Pixels) {
+        let d = self.shift_delta(row);
+        (d, d + self.rows.get(row).map_or(px(0.), |r| r.width))
+    }
+
+    /// How many visual rows this line broke into.
+    pub(crate) fn row_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// A row's shift relative to the FIRST row's. Callers already add
+    /// `row_origin_x`, which carries row 0's shift, so this is the remainder —
+    /// that keeps every existing caller correct without threading a wrap-row
+    /// index through all of them.
+    fn shift_delta(&self, row: usize) -> Pixels {
+        self.shifts.get(row).copied().unwrap_or(px(0.))
+            - self.shifts.first().copied().unwrap_or(px(0.))
+    }
+}
+
+/// Which row holds display column `dcol`, and its offset within that row.
+///
+/// Split out from [`RtlRow::row_of`] so it can be tested without a window: a
+/// `Row` carries a shaped line, which needs one. Rows are contiguous and in
+/// reading order, so an offset at the very end of the line lands on the last
+/// row rather than falling off the end — that is where the caret sits after
+/// typing at the end of a paragraph.
+fn row_of_spans(rows: impl Iterator<Item = (usize, usize)>, dcol: usize) -> (usize, usize) {
+    let mut last = (0, dcol);
+    let mut seen = false;
+    for (i, (start, len)) in rows.enumerate() {
+        seen = true;
+        last = (i, dcol.saturating_sub(start));
+        if dcol < start + len {
+            return (i, dcol - start);
+        }
+    }
+    if seen { last } else { (0, dcol) }
+}
+
+/// The x a right-to-left row's text starts at within `content_width`, so its
+/// *trailing* edge sits `inset` in from the right — the mirror of the leading
+/// `inset` an LTR row gets. Zero once the text no longer fits (it wraps, and
+/// every wrap row starts at the left edge).
+///
+/// Callers add this to the origin they already inset, hence the doubled
+/// `inset`: `origin + inset + shift` lands the text `inset` from the right.
+fn rtl_shift(content_width: Pixels, inset: Pixels, line_width: Pixels) -> Pixels {
+    (content_width - inset * 2. - line_width).max(px(0.))
+}
+
+/// Mirror a gutter marker's x (a bullet, a number, a checkbox) to the right
+/// edge for an RTL row, so it sits on the side the text now starts at —
+/// matching the reader's `flex_row_reverse` list items. Nesting is preserved:
+/// a deeper level's larger `marker_x` indents further from the right.
+fn rtl_marker_x(content_width: Pixels, marker_x: Pixels, marker_width: Pixels) -> Pixels {
+    (content_width - marker_x - marker_width).max(px(0.))
+}
+
+/// A task row's checkbox x within the content width, mirrored on an RTL row.
+/// One function so the prepaint hitbox (the hand cursor) and the paint (the
+/// box, and the rects a click hit-tests) can never land on different sides.
+fn checkbox_x(bullet_x: Pixels, size: Pixels, content_width: Pixels, rtl: bool) -> Pixels {
+    if rtl {
+        rtl_marker_x(content_width, bullet_x, size)
+    } else {
+        bullet_x
     }
 }
 
@@ -6366,5 +6670,171 @@ mod tests {
         );
         // Not an image row: returned unchanged.
         assert_eq!(set_image_width("just text", 100), "just text");
+    }
+
+    // --- RTL row geometry (#66) ---------------------------------------------
+
+    use super::{checkbox_x, px, row_of_spans, rtl_marker_x, rtl_shift};
+
+    #[test]
+    fn a_caret_offset_lands_on_the_row_that_holds_it() {
+        // Three rows: "0..5", "5..11", "11..14" — contiguous, reading order.
+        let rows = || [(0usize, 5usize), (5, 6), (11, 3)].into_iter();
+        assert_eq!(row_of_spans(rows(), 0), (0, 0));
+        assert_eq!(row_of_spans(rows(), 4), (0, 4));
+        // A boundary belongs to the row that STARTS there, not the one ending.
+        assert_eq!(row_of_spans(rows(), 5), (1, 0));
+        assert_eq!(row_of_spans(rows(), 12), (2, 1));
+        // The caret sits one past the last character after typing at the end
+        // of a paragraph: it must stay on the last row, not fall off.
+        assert_eq!(row_of_spans(rows(), 14), (2, 3));
+        assert_eq!(row_of_spans(rows(), 99), (2, 88));
+        // No rows at all (an empty line) is row 0.
+        assert_eq!(row_of_spans([].into_iter(), 0), (0, 0));
+    }
+
+    #[test]
+    fn rtl_shift_mirrors_the_row_inset() {
+        // Plain paragraph (no inset): the text's right edge meets the content
+        // edge, so the shift is all the slack.
+        assert_eq!(rtl_shift(px(500.), px(0.), px(200.)), px(300.));
+        // Inset row (a list item / blockquote body): callers add the shift to
+        // an origin they already inset, so the doubled inset leaves the SAME
+        // gap on the right that an LTR row gets on the left.
+        assert_eq!(rtl_shift(px(500.), px(24.), px(200.)), px(252.));
+        assert_eq!(px(24.) + rtl_shift(px(500.), px(24.), px(200.)), px(276.));
+        // …i.e. text spans 276..476, exactly 24 in from the right edge.
+        // Text that fills or overflows the row wraps, and every wrap row starts
+        // at the left edge — no shift, never a negative one.
+        assert_eq!(rtl_shift(px(500.), px(0.), px(500.)), px(0.));
+        assert_eq!(rtl_shift(px(500.), px(0.), px(900.)), px(0.));
+        assert_eq!(rtl_shift(px(100.), px(60.), px(50.)), px(0.));
+    }
+
+    #[test]
+    fn rtl_markers_mirror_to_the_right_edge() {
+        // A bullet 8px wide at x=10 lands 10 in from the right edge instead.
+        assert_eq!(rtl_marker_x(px(500.), px(10.), px(8.)), px(482.));
+        // Nesting is preserved: a deeper level (larger x) indents further FROM
+        // THE RIGHT, so the levels keep their order.
+        let l1 = rtl_marker_x(px(500.), px(10.), px(8.));
+        let l2 = rtl_marker_x(px(500.), px(34.), px(8.));
+        assert!(l2 < l1, "level 2 must sit further in from the right");
+        assert_eq!(l1 - l2, px(24.), "the indent step survives the mirror");
+        // Never off the left edge, however wide the marker.
+        assert_eq!(rtl_marker_x(px(20.), px(10.), px(40.)), px(0.));
+        // The checkbox shares that math, and an LTR row is untouched.
+        assert_eq!(checkbox_x(px(10.), px(12.), px(500.), true), px(478.));
+        assert_eq!(checkbox_x(px(10.), px(12.), px(500.), false), px(10.));
+    }
+
+    // --- RTL table placement (#66) ------------------------------------------
+
+    use super::tables::{TABLE_GUTTER, table_left_x, table_visible_band};
+
+    /// The note column used throughout: origin 100, width 500 → the LTR band
+    /// is 122..600 and the RTL band 100..578, both `TABLE_GUTTER` wide.
+    const O: f32 = 100.;
+    const W: f32 = 500.;
+
+    #[test]
+    fn an_rtl_table_hugs_the_right_edge_with_the_gutter_mirrored() {
+        let g = TABLE_GUTTER;
+        // A table narrower than the column: LTR starts a gutter in from the
+        // left, RTL *ends* a gutter in from the right.
+        let ltr = table_left_x(px(O), px(W), px(300.), px(0.), false);
+        let rtl = table_left_x(px(O), px(W), px(300.), px(0.), true);
+        assert_eq!(ltr, px(O + g));
+        assert_eq!(rtl + px(300.), px(O + W - g), "right edge, one gutter in");
+        // The two are mirror images about the column's centre.
+        assert_eq!(
+            f32::from(ltr - px(O)),
+            f32::from(px(O + W) - (rtl + px(300.)))
+        );
+        // Column widths don't move an LTR table but do move an RTL one — it is
+        // anchored at its trailing edge.
+        assert_eq!(
+            table_left_x(px(O), px(W), px(120.), px(0.), false),
+            px(O + g)
+        );
+        assert_eq!(
+            table_left_x(px(O), px(W), px(120.), px(0.), true),
+            px(O + W - g - 120.)
+        );
+    }
+
+    #[test]
+    fn a_wide_table_scrolls_to_its_own_far_edge_either_way() {
+        let g = TABLE_GUTTER;
+        let total = px(900.);
+        let avail = px(W - g); // what `table_sx` clamps against
+        let max = total - avail;
+        // Unscrolled, each direction shows its own leading edge at the gutter.
+        assert_eq!(table_left_x(px(O), px(W), total, px(0.), false), px(O + g));
+        assert_eq!(
+            table_left_x(px(O), px(W), total, px(0.), true) + total,
+            px(O + W - g)
+        );
+        // Fully scrolled, each shows its trailing edge at the band's far side:
+        // LTR's right edge reaches the column's right, RTL's left edge the left.
+        assert_eq!(
+            table_left_x(px(O), px(W), total, max, false) + total,
+            px(O + W)
+        );
+        assert_eq!(table_left_x(px(O), px(W), total, max, true), px(O));
+        // Scroll moves the content in OPPOSITE directions — why the wheel and
+        // the thumb's `factor` invert their sign on an RTL table.
+        let step = px(50.);
+        assert!(table_left_x(px(O), px(W), total, step, false) < px(O + g));
+        assert!(
+            table_left_x(px(O), px(W), total, step, true)
+                > table_left_x(px(O), px(W), total, px(0.), true)
+        );
+    }
+
+    #[test]
+    fn rtl_mirrors_the_column_order() {
+        use super::tables::{cell_span_width, col_offset};
+        // Three columns, 10/20/30 wide. Left to right they start at 0/10/30;
+        // mirrored, column 0 is the RIGHTMOST, so it starts at 50.
+        let w = [px(10.), px(20.), px(30.)];
+        assert_eq!(col_offset(&w, 3, 0, false), px(0.));
+        assert_eq!(col_offset(&w, 3, 1, false), px(10.));
+        assert_eq!(col_offset(&w, 3, 2, false), px(30.));
+        assert_eq!(col_offset(&w, 3, 0, true), px(50.));
+        assert_eq!(col_offset(&w, 3, 1, true), px(30.));
+        assert_eq!(col_offset(&w, 3, 2, true), px(0.));
+        // Either way the columns tile the table with no gap or overlap — paint,
+        // caret and hit-testing all read this, so a gap is a mis-click.
+        for rtl in [false, true] {
+            let mut spans: Vec<(f32, f32)> = (0..3)
+                .map(|c| {
+                    let x = f32::from(col_offset(&w, 3, c, rtl));
+                    (x, x + f32::from(cell_span_width(&w, 3, c)))
+                })
+                .collect();
+            spans.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert_eq!(spans[0].0, 0.0);
+            assert_eq!(spans[2].1, 60.0);
+            assert!(spans.windows(2).all(|s| s[0].1 == s[1].0), "{spans:?}");
+        }
+    }
+
+    #[test]
+    fn the_visible_band_is_the_column_less_its_gutter() {
+        let g = TABLE_GUTTER;
+        assert_eq!(
+            table_visible_band(px(O), px(W), false),
+            (px(O + g), px(O + W))
+        );
+        assert_eq!(
+            table_visible_band(px(O), px(W), true),
+            (px(O), px(O + W - g))
+        );
+        // Both bands are the `avail` width the scroll clamp assumes.
+        for rtl in [false, true] {
+            let (l, r) = table_visible_band(px(O), px(W), rtl);
+            assert_eq!(r - l, px(W - g));
+        }
     }
 }

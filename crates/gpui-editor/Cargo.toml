@@ -19,6 +19,11 @@ unicode-segmentation = "1"
 # (see AGENTS.md); rendering stays entirely this crate's own.
 gpui-markdown = { path = "../gpui-markdown", default-features = false }
 
+# Bidi index↔x mapping (#66). gpui's own `x_for_index` / `index_for_x` assume
+# byte index and x rise together, which is false for a right-to-left line — so
+# every caret/click lookup in this crate goes through `VisualMap` on RTL rows.
+gpui-bidi = { path = "../gpui-bidi" }
+
 # The standalone demo needs a platform backend to open a real window (the `gpui`
 # crate alone has no app entry point in this setup — it's split into
 # `gpui_platform`, same as the host app). Shared workspace spec, one graph.
