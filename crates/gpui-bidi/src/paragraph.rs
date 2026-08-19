@@ -206,6 +206,7 @@ fn wrap_at_words(
 /// interactive-text machinery.
 pub struct RtlText {
     text: SharedString,
+    base_rtl: bool,
     highlights: Vec<(Range<usize>, HighlightStyle)>,
     pointer_ranges: Vec<Range<usize>>,
     layout: RtlLayout,
@@ -244,6 +245,9 @@ fn runs_from_highlights(
 
 /// What the measure pass worked out, reused by paint.
 struct Laid {
+    /// Does the paragraph READ right-to-left? A left-to-right one can still
+    /// contain an RTL phrase and need all of this mapping.
+    base_rtl: bool,
     /// The rows, in reading order: where each starts in the ORIGINAL text (the
     /// injected `\n`s don't exist there) and how to read its glyphs.
     rows: Vec<Row>,
@@ -346,13 +350,12 @@ pub fn layout_rows(
 /// every run up to the last and the iterator never advances again — the whole
 /// row is painted in the colour of whichever run covers the logically-last
 /// character. That is why a link inside Persian text came out body-coloured.
-/// So each run is painted itself, seated at the visual box the row layout says
-/// it occupies.
 ///
-/// ponytail: a run is shaped in isolation, so cursive joining across a style
-/// boundary is lost — visible only if a style starts INSIDE an Arabic word
-/// (`**می**گیرد`), since joining never crosses the spaces styles normally break
-/// at. Fixing it properly needs per-glyph colour, which gpui doesn't expose.
+/// So the row is painted once per style, each pass coloured uniformly for that
+/// style (making the collapse harmless) and clipped to the boxes that style
+/// occupies. The whole row is shaped every pass, with its real fonts — cursive
+/// joining and kerning survive a style boundary INSIDE a word (`**می**گیرد`),
+/// which shaping each run separately would break.
 pub fn paint_row(
     row: &Row,
     origin: Point<Pixels>,
@@ -361,6 +364,11 @@ pub fn paint_row(
     cx: &mut App,
 ) {
     if row.runs.len() < 2 {
+        // Backgrounds (the inline-code tint) are a separate pass from the
+        // glyphs — `paint` alone would drop them.
+        let _ = row
+            .line
+            .paint_background(origin, line_height, TextAlign::Left, None, window, cx);
         let _ = row
             .line
             .paint(origin, line_height, TextAlign::Left, None, window, cx);
@@ -414,9 +422,25 @@ pub fn paint_row(
             // scene layer for z-order and clips nothing, so every pass painted
             // the whole row and the overdraw showed up as faux-bold text.
             window.with_content_mask(Some(ContentMask { bounds: clip }), |window| {
+                let _ =
+                    shaped.paint_background(origin, line_height, TextAlign::Left, None, window, cx);
                 let _ = shaped.paint(origin, line_height, TextAlign::Left, None, window, cx);
             });
         }
+    }
+}
+
+/// Where row `row` starts, in window space.
+///
+/// An RTL paragraph is right-aligned, so each row hangs off the right edge; a
+/// left-to-right one containing an RTL phrase still starts at the left. Every
+/// lookup and the paint go through this, or the caret would sit somewhere the
+/// glyphs are not.
+fn row_left(laid: &Laid, bounds: Bounds<Pixels>, row: &Row) -> Pixels {
+    if laid.base_rtl {
+        bounds.origin.x + bounds.size.width - row.width
+    } else {
+        bounds.origin.x
     }
 }
 
@@ -459,7 +483,7 @@ impl RtlLayout {
 
         // Rows are right-aligned across the full width (see `paint`), so the
         // row's own coordinate space starts at its left edge, not the element's.
-        let row_left = bounds.origin.x + bounds.size.width - row.width;
+        let row_left = row_left(laid, bounds, row);
         let local = f32::from(position.x - row_left);
         let offset = row.start + row.map.index_for_x(local);
         if outside || position.x < row_left || position.x > bounds.origin.x + bounds.size.width {
@@ -487,7 +511,7 @@ impl RtlLayout {
                 continue;
             }
             let local = range.start.max(row.start) - row.start..range.end.min(row_end) - row.start;
-            let row_left = bounds.origin.x + bounds.size.width - row.width;
+            let row_left = row_left(laid, bounds, row);
             for (x0, x1) in row.map.rects_for_range(local) {
                 out.push(Bounds::new(
                     Point {
@@ -531,7 +555,7 @@ impl RtlLayout {
         if !left.is_finite() {
             return None;
         }
-        let row_left = bounds.origin.x + bounds.size.width - row.width;
+        let row_left = row_left(laid, bounds, row);
         Some(Point {
             x: row_left + px(left),
             y: bounds.origin.y + laid.line_height * row_ix,
@@ -549,7 +573,7 @@ impl RtlLayout {
             .iter()
             .enumerate()
             .find(|(_, r)| offset >= r.start && offset <= r.start + r.len)?;
-        let row_left = bounds.origin.x + bounds.size.width - row.width;
+        let row_left = row_left(laid, bounds, row);
         Some(Point {
             x: row_left + px(row.map.x_for_index(offset - row.start)),
             y: bounds.origin.y + laid.line_height * row_ix,
@@ -561,10 +585,20 @@ impl RtlText {
     pub fn new(text: impl Into<SharedString>) -> Self {
         Self {
             text: text.into(),
+            base_rtl: true,
             highlights: Vec::new(),
             pointer_ranges: Vec::new(),
             layout: RtlLayout::default(),
         }
+    }
+
+    /// Does the paragraph read right-to-left (so it right-aligns)? Default
+    /// `true`. Pass `false` for a left-to-right paragraph that merely CONTAINS
+    /// right-to-left text: it still needs the index↔x mapping, or the caret
+    /// misplaces inside that phrase, but it must stay left-aligned.
+    pub fn with_base_rtl(mut self, rtl: bool) -> Self {
+        self.base_rtl = rtl;
+        self
     }
 
     /// Ranges that should show the pointing-hand cursor on hover — links.
@@ -629,6 +663,7 @@ impl Element for RtlText {
                 .to_pixels(font_size.into(), window.rem_size()),
         );
         let text = self.text.clone();
+        let base_rtl = self.base_rtl;
         let runs = runs_from_highlights(&text, &text_style, &self.highlights);
         let state = self.layout.0.clone();
 
@@ -656,6 +691,7 @@ impl Element for RtlText {
                 };
                 let bounds = state.borrow().as_ref().and_then(|l| l.bounds);
                 *state.borrow_mut() = Some(Laid {
+                    base_rtl,
                     rows,
                     line_height,
                     wrap_width,
@@ -723,7 +759,7 @@ impl Element for RtlText {
             paint_row(
                 row,
                 Point {
-                    x: bounds.origin.x + bounds.size.width - row.width,
+                    x: row_left(laid, bounds, row),
                     y: bounds.origin.y + laid.line_height * i,
                 },
                 laid.line_height,

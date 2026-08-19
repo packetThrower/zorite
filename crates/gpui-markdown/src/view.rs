@@ -2046,8 +2046,13 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
     // Everything past this point is direction-agnostic: it works off
     // `TextHandle`, so links, click-to-caret and inline math behave the same
     // either way.
-    let (inner, layout) = if dir.is_rtl() {
+    // Any paragraph CONTAINING right-to-left text needs the mapping, not just
+    // one that reads that way: an English sentence quoting a Persian name
+    // misplaces the caret and its link hitboxes inside that phrase otherwise.
+    // `with_base_rtl` keeps such a paragraph left-aligned (#66).
+    let (inner, layout) = if crate::syntax::contains_rtl(&inl.text) {
         let rtl = gpui_bidi::paragraph::RtlText::new(inl.text)
+            .with_base_rtl(dir.is_rtl())
             .with_highlights(highlights)
             .with_pointer_ranges(link_ranges.clone());
         let layout = TextHandle::Rtl(rtl.layout().clone());

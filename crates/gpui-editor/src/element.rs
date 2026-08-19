@@ -1989,12 +1989,8 @@ impl Element for EditorElement {
                     // Our own rows, painted in reading order — gpui's wrapping
                     // is not used for this line at all (#66). Each row is
                     // right-aligned on its own, so a short last row sits
-                    // further right than a full one.
-                    //
-                    // ponytail: run backgrounds (the inline-code highlight) are
-                    // not painted here; `paint_row` draws glyphs only. An RTL
-                    // line with inline code loses that tint — add it when
-                    // someone writes `code` inside Persian prose.
+                    // further right than a full one. `paint_row` draws the run
+                    // backgrounds (the inline-code tint) too.
                     for (k, row) in r.rows.iter().enumerate() {
                         gpui_bidi::paragraph::paint_row(
                             row,
@@ -3881,6 +3877,17 @@ fn shape_document(
                     last_strong_rtl = d.is_rtl();
                     d.is_rtl()
                 }
+                // Nothing but markers (`> [!NOTE]`, a bare `- `): its content is
+                // the line BELOW, so take that one's direction — a callout's
+                // title has to land on the same side as its body. Only within
+                // the block: a blank line ends it, and there the line above is
+                // what matters (pressing Enter after a Persian paragraph should
+                // keep the caret on the right).
+                None if !line.trim().is_empty() => lines
+                    .get(idx + 1)
+                    .filter(|next| !next.trim().is_empty())
+                    .and_then(|next| gpui_markdown::syntax::content_direction_opt(next))
+                    .map_or(last_strong_rtl, |d| d.is_rtl()),
                 None => last_strong_rtl,
             };
             // Lay out any line CONTAINING right-to-left text, not just one that

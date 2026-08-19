@@ -1068,6 +1068,11 @@ mod tests {
         assert!(content_direction("> [!NOTE]\n> یک هشدار فارسی").is_rtl());
         assert!(content_direction("> [!WARNING]- یک هشدار").is_rtl());
         assert!(!content_direction("> [!NOTE]\n> an english callout").is_rtl());
+        // A marker-only line has NO direction of its own — the caller decides
+        // whether that means the line above or the content below.
+        assert_eq!(content_direction_opt("> [!NOTE]"), None);
+        assert_eq!(content_direction_opt("- "), None);
+        assert_eq!(content_direction_opt(""), None);
         assert!(!content_direction("> > [!NOTE]\n").is_rtl(), "no content");
         // Latin content still reads left-to-right, markers or not.
         assert!(!content_direction("- [x] a done task").is_rtl());
