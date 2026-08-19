@@ -29,6 +29,11 @@ const DOCS = '/zorite/reference/crates';
 
 const crates = [
 	{
+		name: 'gpui-bidi',
+		description:
+			"Bidirectional text for GPUI: index↔x over reordered glyphs, logical-order row layout, and a row painter that keeps a styled line's colours.",
+	},
+	{
 		name: 'gpui-editor',
 		description:
 			"A from-scratch multi-line text editor for GPUI — the engine behind Zorite's Word-like note editor.",

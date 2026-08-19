@@ -39,6 +39,9 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 | [`is_safe_external_url`](#is_safe_external_url) | fn | `fn is_safe_external_url(url: &str) -> bool` | May this URL reach the OS opener? (http/https/mailto only) | — |
 | [`Direction`](#base_direction) | enum | `Ltr \| Rtl` | A block's base writing direction | — |
 | [`base_direction`](#base_direction) | fn | `fn base_direction(text: &str) -> Direction` | First-strong-character direction (UAX #9 P2/P3) | — |
+| [`content_direction`](#content_direction) | fn | `fn content_direction(line: &str) -> Direction` | Direction of a markdown line's CONTENT, ignoring its markers | — |
+| [`content_direction_opt`](#content_direction) | fn | `fn content_direction_opt(line: &str) -> Option<Direction>` | Same, `None` when the line has no strong character | — |
+| [`contains_rtl`](#contains_rtl) | fn | `fn contains_rtl(text: &str) -> bool` | Does the text hold ANY right-to-left character? | — |
 | [`wiki_target_display`](#wiki_target_display) | fn | `fn wiki_target_display(inner: &str) -> (&str, &str)` | Split `target\|label` into `(target, display)` | — |
 | [`is_tag_char`](#is_tag_char--is_word_char) | fn | `fn is_tag_char(c: u8) -> bool` | Byte valid inside a `#tag` name | — |
 | [`is_word_char`](#is_tag_char--is_word_char) | fn | `fn is_word_char(c: u8) -> bool` | Word byte for boundary checks | — |
@@ -466,9 +469,66 @@ character at all.
 
 **Not** a bidi implementation. It gives a *paragraph* direction only. Mixed
 runs inside a line are reordered by the platform shaper (CoreText,
-cosmic-text), which already handles them correctly — but note that gpui's
-`LineLayout` index↔x mapping does not, so this is safe for read-only rendering
-and not sufficient for a text editor's caret.
+cosmic-text), which already handles them correctly. gpui's `LineLayout`
+index↔x mapping does **not** — that is what the `gpui-bidi` crate exists for,
+and both this renderer and the editor go through it for caret placement,
+selection and hit-testing.
+
+**Use [`content_direction`](#content_direction) for a markdown source line.**
+Neutrals pass through here, but markdown supplies *strong* characters of its
+own: the `x` in `- [x]` and the label in `> [!NOTE]` are strong left-to-right,
+so a completed task and every alert read `Ltr` whatever their prose says.
+
+---
+
+## `content_direction`
+
+```rust
+pub fn content_direction(line: &str) -> Direction
+pub fn content_direction_opt(line: &str) -> Option<Direction>
+```
+
+The direction of a source line's **content**, with its markdown markers
+skipped: blockquote arrows, list bullets, ordered markers, task boxes, heading
+hashes, GitHub alert markers (`[!NOTE]`) and the Obsidian fold char after one.
+
+**Why it isn't [`base_direction`](#base_direction)** — that takes the first
+strong character, and markers can supply one. The `x` in `- [x] یک کار` and the
+`N` in `> [!NOTE]` are both strong left-to-right, so a completed task read
+`Ltr` while the identical unchecked line read `Rtl`, and the two sat on
+opposite sides of the note.
+
+**`_opt` and the `None` case** — a line can have no direction of its own: it is
+blank, or nothing but markers. `> [!NOTE]` strips to nothing. Answering `Ltr`
+there put a callout's title on one side and its body on the other, so callers
+that care take the surrounding text's direction instead. `content_direction`
+flattens `None` to `Ltr` for callers that don't.
+
+**Guarantees & edge cases**
+
+- Markers are stripped repeatedly, so nested forms work: `> - [ ] متن`.
+- Latin content still reads `Ltr`, markers or not.
+- What remains after stripping is passed to [`base_direction`](#base_direction),
+  so all of its rules (first strong wins, neutrals skipped) apply to it.
+
+---
+
+## `contains_rtl`
+
+```rust
+pub fn contains_rtl(text: &str) -> bool
+```
+
+Whether `text` holds **any** right-to-left character.
+
+Distinct from [`base_direction`](#base_direction), which answers which side a
+line starts on. A line can read left-to-right and still hold a Persian name in
+the middle, and that run needs the same logical↔visual mapping an RTL line
+does — the caret misplaces inside it otherwise. Both views use this to decide
+whether a line needs bidi layout at all, while `base_direction` decides which
+way it aligns.
+
+**Cost** — one pass over the chars, early-exit on the first hit; no allocation.
 
 ---
 
