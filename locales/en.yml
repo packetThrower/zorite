@@ -394,8 +394,6 @@ app_err:
   alias_hint: "alias1, alias2, …"
   table_rows: rows
   table_cols: cols
-  table_rows: rows
-  table_cols: cols
   not_found: "not found"
   relaunch_failed: "relaunch: spawn failed: {}"
   relaunch_exe_failed: "relaunch: current_exe: {}"
@@ -463,7 +461,6 @@ all_pages:
   type_whiteboard: Whiteboard
   type_pdf: PDF
   empty: "Nothing matches this filter."
-  shown: "%{count} shown"
   shown: "%{count} shown"
   properties: Properties
   graph: Graph
