@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.11.0] - 2026-08-30
+
+The international release: the app speaks Simplified Chinese, and notes lay
+out correctly in right-to-left languages — plus editable math accents and a
+movable sidebar. The Chinese localization is contributed by
+[@shimoxi123](https://github.com/shimoxi123) — thank you!
+
+### Added
+
+- **简体中文** — the whole app is localized to Simplified Chinese: Settings →
+  General → Language. English synonyms still find settings in the search box,
+  and slash commands match both languages.
+- **Right-to-left text.** Arabic, Hebrew, Persian, and mixed-direction notes
+  lay out correctly in both the editor and reading view — paragraphs,
+  headings, lists and tasks, tables (columns mirror), quotes, alerts,
+  properties, links, and inline math — with the caret, selection, and clicks
+  following the visual order.
+- **Math accents.** `\hat`, `\bar`, `\vec`, `\tilde`, `\dot` and friends are
+  first-class in the formula editor: type the command (or use the new palette
+  row), and the caret drops into an editable base. Opening an existing
+  `\hat{x}` no longer silently drops the accent on save.
+- **Formula editing, rounded out**: select with the mouse by dragging; a
+  `\command` typed over a selection wraps it (selection becomes the fraction's
+  numerator, the root's radicand, the accent's base); `{` and `}` type as a
+  proper brace pair; backspace after an accent peels it, keeping the content.
+- **The sidebar can dock on the right** — Settings → Appearance.
+- **AppImage delta updates.** AppImages now embed update information and each
+  release publishes a `.zsync` file, so AppImageUpdate, AppImageLauncher, and
+  friends can update by downloading only the difference. This release is the
+  baseline — delta updates apply from the next release onward.
+
+### Fixed
+
+- Large notes no longer hitch while typing — parsing runs off the render
+  thread.
+- The unlock screen, calendars, and dialogs follow the chosen language
+  (previously parts of the app stayed in English).
+- Formula editor polish: the `\` autocomplete no longer hides behind the
+  palette, sizes to its content, scrolls correctly with the arrow keys, and
+  its scrollbar can be dragged; entering an inline formula no longer nudges
+  it; the caret enters a formula from the right side as well as the left; and
+  the up arrow at a document-opening formula no longer exposes its source.
+
 ## [0.10.1] - 2026-07-24
 
 A security release, from a four-domain audit of the codebase. **If you use a
