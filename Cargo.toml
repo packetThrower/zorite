@@ -17,22 +17,24 @@ resolver = "2"
 
 [workspace.dependencies]
 # ONE shared gpui spec for the app and every crate, so Cargo unifies the
-# whole workspace on a single gpui graph (git deps only unify when their
-# specs match exactly). The rev is the one gpui-component's Cargo.toml
-# pins — to upgrade, take gpui-component's new tip, read the gpui rev
-# from ITS Cargo.toml, and update these two plus the gpui-component revs
-# in [dependencies] below. Dependabot's standalone gpui bumps break the
-# lockstep — close them.
-gpui = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe" }
+# whole workspace on a single gpui graph. gpui ships on crates.io as the
+# `gpui-pre` family (weekly snapshots of zed; each version = one zed sha —
+# 0.3.2 is zed@801c087), consumed here under the crate name `gpui` so
+# `gpui::…` paths and `gpui::actions!` are unchanged. EXACT-pinned: GPUI Kit
+# requires only `^0.3.1`, so a caret spec would float to whatever snapshot
+# is newest and silently change the gpui API under us. To upgrade, take the
+# gpui-kit release you want, read the `gpui-pre` version from ITS Cargo.lock,
+# and move these two together with gpui-component + gpui-kit-assets in
+# [dependencies] below (Dependabot ignores all four for that reason).
+gpui = { package = "gpui-pre", version = "=0.3.2" }
 # Per-platform backend. The Linux `wayland` / `x11` features are NOT
 # default — without them `gpui::guess_compositor()` hits `unreachable!`
 # inside a Wayland session before the first paint. Harmless on macOS /
 # Windows. `runtime_shaders` compiles the Metal shaders at app startup
 # instead of at build time — as of this gpui rev the build-time path
 # needs Xcode's separately-downloaded Metal Toolchain, on every dev
-# machine and CI runner (gpui-component's own workspace makes the same
-# choice).
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "1d217ee39d381ac101b7cf49d3d22451ac1093fe", features = [
+# machine and CI runner (gpui-kit's own workspace makes the same choice).
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.2", features = [
     "font-kit",
     "wayland",
     "x11",
@@ -124,10 +126,10 @@ serde_json = "1"
 gpui = { workspace = true }
 gpui_platform = { workspace = true }
 
-# Widget library. Pinned to a git rev because the crates.io release
-# targets a different gpui than our git pin; the rev's Cargo.toml names
-# the gpui rev to unify against (see the gpui comment above).
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1", features = [
+# Widget library — GPUI Kit's styled layer (github.com/longbridge/gpui-kit;
+# we depend on it directly rather than through the `gpui-kit` facade).
+# Exact-pinned so it only moves together with the gpui-pre pin above.
+gpui-component = { version = "=0.6.0", features = [
     # Code-block syntax highlighting (src/highlight.rs): each feature compiles
     # in one tree-sitter grammar (~0.5-1 MB binary each) — the top languages a
     # note is likely to quote. JSON ships in the base crate already.
@@ -155,10 +157,10 @@ gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "
     "tree-sitter-yaml",
 ] }
 
-# Lucide icon SVGs. Without `.with_assets(Assets)` at startup, every
-# gpui-component icon renders as an empty rect. Pin to the same rev so
-# the icon set tracks the `IconName` enum in gpui-component.
-gpui-component-assets = { git = "https://github.com/longbridge/gpui-component", rev = "1505b1487131adbb443f6c69e87847db35bfa2d1" }
+# Lucide icon SVGs (was `gpui-component-assets`). Without `.with_assets(Assets)`
+# at startup, every gpui-component icon renders as an empty rect. Pin to the
+# same version so the icon set tracks the `IconName` enum in gpui-component.
+gpui-kit-assets = "=0.6.0"
 
 # Parse `file://` URLs into filesystem paths correctly across platforms (Windows
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.

@@ -216,7 +216,7 @@ impl AssetSource for Assets {
         if let Some(bytes) = custom {
             return Ok(Some(Cow::Borrowed(bytes)));
         }
-        let delegated = gpui_component_assets::Assets.load(path);
+        let delegated = gpui_kit_assets::Assets.load(path);
         if matches!(delegated, Ok(Some(_))) {
             return delegated;
         }
@@ -236,7 +236,7 @@ impl AssetSource for Assets {
     }
 
     fn list(&self, path: &str) -> Result<Vec<SharedString>> {
-        gpui_component_assets::Assets.list(path)
+        gpui_kit_assets::Assets.list(path)
     }
 }
 

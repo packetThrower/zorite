@@ -86,7 +86,7 @@ impl HighlightStore {
         let mut hl = SyntaxHighlighter::new(lang);
         let rope = ropey::Rope::from_str(code);
         hl.update(None, &rope, Some(std::time::Duration::from_millis(80)));
-        let styles = Rc::new(hl.styles(&(0..code.len()), &theme));
+        let styles = Rc::new(hl.styles(&(0..code.len()), &*theme));
         self.cache.insert(key, styles.clone());
         styles
     }
