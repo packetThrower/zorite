@@ -92,7 +92,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                                 // WYSIWYG on → the live editor is the only view; off → the
                                 // reader view, swapped for the editor while editing.
                                 .child(if app.wysiwyg() || app.is_page_editing() {
-                                    // gpui-editor draws no chrome; the wrapper sets the
+                                    // zorite-editor draws no chrome; the wrapper sets the
                                     // ambient text style it inherits when shaping lines.
                                     // The gutter — the page's margin rail (line numbers
                                     // today; room for more per-line UI later) — is an
@@ -163,7 +163,7 @@ pub(crate) fn gutter_width(content: &str, text_size: Pixels) -> Pixels {
 /// and are skipped; off-screen rows aren't shaped. A UI surface of its own —
 /// future per-line affordances (fold handles, block markers) belong here too.
 pub(crate) fn line_gutter(
-    state: Entity<gpui_editor::EditorState>,
+    state: Entity<zorite_editor::EditorState>,
     text_size: Pixels,
     width: Pixels,
 ) -> impl IntoElement {
@@ -353,7 +353,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
         let fold_content = content.to_string();
         let embeds = app.build_embed_map(&content);
         let fold_page_id = pe.id;
-        let mut md = gpui_markdown::MarkdownView::new("page-md", content)
+        let mut md = zorite_markdown::MarkdownView::new("page-md", content)
             .set_labels(crate::i18n::reader_labels())
             .style({
                 let mut st = theme::markdown_style(app.list_indent(), app.text_size());
@@ -394,7 +394,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             }))
             // Click a task checkbox → toggle it in the source + persist immediately.
             .on_task_toggle(std::rc::Rc::new(move |offset, _window, cx| {
-                if let Some(new) = gpui_markdown::toggle_task_at(&toggle_content, offset) {
+                if let Some(new) = zorite_markdown::toggle_task_at(&toggle_content, offset) {
                     let _ = toggle_weak.update(cx, |this, cx| {
                         this.save_page_content(toggle_page_id, &new, cx);
                         this.signal_doc_changed(cx);
@@ -404,7 +404,7 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             // Click a foldable callout's title → flip its `-`/`+` in the source.
             .on_alert_toggle(std::rc::Rc::new(move |offset, _window, cx| {
                 if let Some(new) =
-                    gpui_markdown::syntax::toggle_alert_fold_at(&fold_content, offset)
+                    zorite_markdown::syntax::toggle_alert_fold_at(&fold_content, offset)
                 {
                     let _ = fold_weak.update(cx, |this, cx| {
                         this.save_page_content(fold_page_id, &new, cx);
@@ -769,7 +769,7 @@ fn backlink_row(
             .text_size(px(13.0))
             .text_color(theme::text_secondary())
             .child(
-                gpui_markdown::MarkdownView::new(format!("bl-md-{i}"), bl.snippet.clone())
+                zorite_markdown::MarkdownView::new(format!("bl-md-{i}"), bl.snippet.clone())
                     .set_labels(crate::i18n::reader_labels())
                     .style(st),
             )

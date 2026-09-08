@@ -1,6 +1,6 @@
 # Markdown coverage
 
-A reference document exercising everything `gpui-markdown` renders. Seed it into
+A reference document exercising everything `zorite-markdown` renders. Seed it into
 a Zorite database (it's the `Markdown Test` page) to eyeball the renderer, or
 read it as living documentation of supported syntax.
 

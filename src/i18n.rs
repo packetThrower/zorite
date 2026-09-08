@@ -54,12 +54,12 @@ pub fn apply_locale(choice: &str) {
     gpui_component::set_locale(locale);
 }
 
-/// The localized labels injected into `gpui_editor`'s context menus and chrome
+/// The localized labels injected into `zorite_editor`'s context menus and chrome
 /// (right-click menu items, the code-card / math `Copy` chips, the table and
 /// "Turn into" menus). The crate stays host-agnostic — it never calls `t!` —
 /// so the app supplies these strings; re-inject on language switch.
-pub fn editor_labels() -> gpui_editor::Labels {
-    gpui_editor::Labels {
+pub fn editor_labels() -> zorite_editor::Labels {
+    zorite_editor::Labels {
         cut: rust_i18n::t!("ctx.cut").into(),
         copy: rust_i18n::t!("ctx.copy").into(),
         copy_as_markdown: rust_i18n::t!("ctx.copy_as_markdown").into(),
@@ -99,10 +99,10 @@ pub fn editor_labels() -> gpui_editor::Labels {
     }
 }
 
-/// The localized labels injected into `gpui_markdown`'s reader chrome (the
+/// The localized labels injected into `zorite_markdown`'s reader chrome (the
 /// code-card `Copy` button). Same injection pattern as [`editor_labels`].
-pub fn reader_labels() -> gpui_markdown::Labels {
-    gpui_markdown::Labels {
+pub fn reader_labels() -> zorite_markdown::Labels {
+    zorite_markdown::Labels {
         code_copy: rust_i18n::t!("ctx.code_copy").into(),
     }
 }

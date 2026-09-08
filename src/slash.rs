@@ -1,12 +1,12 @@
 //! The `/` command palette: detecting a `/query` at the caret, and the
 //! set of things it can insert — built-in markdown snippets (from
-//! `gpui-markdown`) plus user **templates** parsed from a reserved
+//! `zorite-markdown`) plus user **templates** parsed from a reserved
 //! `Templates` page. `AppView` owns the open `Slash`, keyboard handling,
 //! and insertion.
 
 use gpui::{Bounds, Pixels};
-use gpui_markdown::SNIPPETS;
 use rust_i18n::t;
+use zorite_markdown::SNIPPETS;
 
 use crate::models::Page;
 
@@ -14,7 +14,7 @@ use crate::models::Page;
 /// line `!name` followed by its body (until the next `!name` or EOF).
 pub const TEMPLATES_PAGE: &str = "Templates";
 
-/// Localized display label for a [`gpui_markdown::SNIPPETS`] entry, keyed on
+/// Localized display label for a [`zorite_markdown::SNIPPETS`] entry, keyed on
 /// its English `&'static str` label (the stable identifier - the `Table`
 /// detection and any future lookup keep using the English label). Unknown
 /// labels pass through unchanged.
@@ -342,7 +342,7 @@ fn markdown_items(q: &str, out: &mut Vec<PaletteItem>) {
             out.push(PaletteItem { label, kind });
         }
     }
-    // Properties are app-level (the form is the host's), not a gpui-markdown
+    // Properties are app-level (the form is the host's), not a zorite-markdown
     // snippet - appended after the shared list.
     let prop_label = t!("slash.property").into_owned();
     if q.is_empty() || prop_label.to_lowercase().contains(q) || "property".contains(q) {
@@ -548,7 +548,7 @@ pub fn build_block_ref_items(query: &str, rows: &[(i64, String, String)]) -> Vec
                 || t.starts_with('|')
                 || t.starts_with("<!--")
                 || t.starts_with("$$")
-                || gpui_markdown::syntax::property(line).is_some()
+                || zorite_markdown::syntax::property(line).is_some()
                 || !line.to_lowercase().contains(&q)
             {
                 continue;

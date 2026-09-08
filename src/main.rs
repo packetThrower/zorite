@@ -302,7 +302,7 @@ fn main() {
         // key context (used by the note body editors). Bind these FIRST so the
         // app's slash/indent rebindings (also scoped to "Editor", in
         // `actions::bind_keys`) are registered after and thus tried first.
-        gpui_editor::bind_keys(cx);
+        zorite_editor::bind_keys(cx);
         actions::bind_keys(cx);
         // View-independent commands, handled at the App level so they work from
         // any focused window. Tab/settings commands are handled per-window on

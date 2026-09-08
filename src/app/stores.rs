@@ -20,7 +20,7 @@ impl AppView {
         content: &str,
     ) -> std::rc::Rc<HashMap<String, (SharedString, SharedString)>> {
         let mut map = HashMap::new();
-        let mut queue: Vec<(String, usize)> = gpui_markdown::syntax::embed_targets(content)
+        let mut queue: Vec<(String, usize)> = zorite_markdown::syntax::embed_targets(content)
             .into_iter()
             .map(|t| (t, 0usize))
             .collect();
@@ -29,7 +29,7 @@ impl AppView {
                 continue;
             }
             if let Some((label, body)) = self.resolve_embed(&target) {
-                for t in gpui_markdown::syntax::embed_targets(&body) {
+                for t in zorite_markdown::syntax::embed_targets(&body) {
                     queue.push((t, depth + 1));
                 }
                 map.insert(target, (label, body));
@@ -43,7 +43,7 @@ impl AppView {
     /// navigation (a literal `#`-titled page wins; PDFs and whiteboards don't
     /// embed). `None` leaves the `![[…]]` line rendering as plain text.
     fn resolve_embed(&self, inner: &str) -> Option<(SharedString, SharedString)> {
-        use gpui_markdown::syntax::{
+        use zorite_markdown::syntax::{
             extract_block, extract_section, split_block_anchor, split_heading_anchor,
             wiki_target_display,
         };
@@ -127,7 +127,7 @@ impl AppView {
     /// notifies → repaint → the editor's block-image provider finds the bitmap.
     pub(super) fn ensure_content_images(&mut self, content: &str, cx: &mut Context<Self>) {
         // Every image, block AND inline — inline images render as rasters too.
-        for src in gpui_markdown::all_image_srcs(content) {
+        for src in zorite_markdown::all_image_srcs(content) {
             self.ensure_image_loaded(src, cx);
         }
     }
@@ -138,12 +138,12 @@ impl AppView {
     /// provider finds the bitmap. Uses the editor's extraction so the cache key
     /// matches what the editor looks up.
     pub(super) fn ensure_content_mermaid(&mut self, content: &str, cx: &mut Context<Self>) {
-        for source in gpui_editor::mermaid_sources(content) {
+        for source in zorite_editor::mermaid_sources(content) {
             self.ensure_mermaid_loaded(source, cx);
         }
     }
 
-    /// Parse `content` into gpui-markdown's shared cache off the render
+    /// Parse `content` into zorite-markdown's shared cache off the render
     /// thread. The parser is superlinear on some shapes — a pasted CSV table,
     /// runaway blockquote nesting (issue #60) — so the reader refuses to pay
     /// that during render and shows plain text until the cache is warm; this
@@ -152,13 +152,13 @@ impl AppView {
     /// — which is also why the journal feed can call this per loaded day
     /// without spawning a task per day.
     pub(super) fn ensure_content_parsed(&mut self, content: &str, cx: &mut Context<Self>) {
-        if !gpui_markdown::needs_warm(content) {
+        if !zorite_markdown::needs_warm(content) {
             return;
         }
         let content = content.to_string();
         cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .spawn(async move { gpui_markdown::warm_parse(&content) })
+                .spawn(async move { zorite_markdown::warm_parse(&content) })
                 .await;
             // Same repaint dance as a finished mermaid render: a cached row
             // layout built before the tree existed has to be rebuilt.
@@ -176,7 +176,7 @@ impl AppView {
     /// capped (long content scrolls inside the view). A target that no longer
     /// resolves drops out, falling back to the chip.
     pub(super) fn ensure_content_embeds(&mut self, content: &str, cx: &mut Context<Self>) {
-        for inner in gpui_markdown::syntax::embed_targets(content) {
+        for inner in zorite_markdown::syntax::embed_targets(content) {
             self.upsert_embed(inner, cx);
         }
     }
@@ -212,7 +212,7 @@ impl AppView {
         let lh = f32::from(self.text_size()) * 1.45;
         let lines = body.lines().count().max(1) as f32;
         let height = (40.0 + lines * (lh + 6.0)).clamp(64.0, 340.0);
-        let nav_target: SharedString = gpui_markdown::syntax::wiki_target_display(&inner)
+        let nav_target: SharedString = zorite_markdown::syntax::wiki_target_display(&inner)
             .0
             .to_string()
             .into();

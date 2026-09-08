@@ -1,7 +1,7 @@
 //! Zorite's **WYSIWYG** (live-preview) markdown editor — and, without a
 //! [`SyntaxStyle`] installed, its **raw**-markdown editor. A from-scratch
 //! multi-line text editor for GPUI. (The third view, the read-only
-//! **reader**, is the separate `gpui-markdown` crate — the two engines share
+//! **reader**, is the separate `zorite-markdown` crate — the two engines share
 //! nothing, so any markdown behavior added here must be checked there and
 //! vice versa. See AGENTS.md "The three views".)
 //!
@@ -59,7 +59,7 @@ use element::*;
 const CONTEXT: &str = "Editor";
 
 actions!(
-    gpui_editor,
+    zorite_editor,
     [
         Backspace,
         Delete,
@@ -325,7 +325,7 @@ fn normalize_loaded(content: String) -> String {
     if !content.contains("$$") {
         return content;
     }
-    match gpui_markdown::syntax::normalize_math_fences(&content) {
+    match zorite_markdown::syntax::normalize_math_fences(&content) {
         std::borrow::Cow::Owned(n) => n,
         std::borrow::Cow::Borrowed(_) => content,
     }
@@ -952,7 +952,7 @@ pub struct EditorState {
     editing_inline: Option<EditingInline>,
     /// Painted bounds + target of each property-panel pill (from the last paint),
     /// so a left-click opens it (`OpenWikiLink` / `OpenLink`).
-    prop_pill_rects: Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)>,
+    prop_pill_rects: Vec<(Bounds<Pixels>, zorite_markdown::syntax::LinkHit)>,
     /// Painted bounds of each property-panel row (from the last paint), so
     /// `on_mouse_move` repaints when the hovered row changes (the panel's hover
     /// border reads the live pointer during paint).
@@ -1574,7 +1574,7 @@ impl EditorState {
             if caret_row == Some(row) {
                 continue;
             }
-            let Some(inner) = gpui_markdown::syntax::embed_line(line) else {
+            let Some(inner) = zorite_markdown::syntax::embed_line(line) else {
                 continue;
             };
             let (Some(top), Some((view, height))) = (self.line_tops.get(row), provider(inner))
@@ -2575,7 +2575,7 @@ impl EditorState {
                     // text split onto their own lines (issue #54) — same
                     // normalization typing gets.
                     if let std::borrow::Cow::Owned(n) =
-                        gpui_markdown::syntax::normalize_math_fences(&text)
+                        zorite_markdown::syntax::normalize_math_fences(&text)
                     {
                         text = n;
                     }
@@ -2963,7 +2963,7 @@ impl EditorState {
         if let Some(row) = self.alert_fold_at(event.position) {
             let start = self.line_starts()[row];
             let line = &self.content[start..self.line_end(row)];
-            if let Some((at, folded)) = gpui_markdown::syntax::alert_fold_char(line) {
+            if let Some((at, folded)) = zorite_markdown::syntax::alert_fold_char(line) {
                 let range = start + at..start + at + 1;
                 let repl = if folded { "+" } else { "-" };
                 self.record_edit(&range, repl);
@@ -3033,13 +3033,13 @@ impl EditorState {
                 .find(|(b, _)| b.contains(&event.position))
         {
             match hit {
-                gpui_markdown::syntax::LinkHit::Page(t) => {
+                zorite_markdown::syntax::LinkHit::Page(t) => {
                     cx.emit(EditorEvent::OpenWikiLink(t.clone().into()))
                 }
-                gpui_markdown::syntax::LinkHit::BlockRef(id) => {
+                zorite_markdown::syntax::LinkHit::BlockRef(id) => {
                     cx.emit(EditorEvent::OpenWikiLink(format!("#^{id}").into()))
                 }
-                gpui_markdown::syntax::LinkHit::Url(u) => {
+                zorite_markdown::syntax::LinkHit::Url(u) => {
                     cx.emit(EditorEvent::OpenLink(u.clone().into()))
                 }
             }
@@ -3109,7 +3109,7 @@ impl EditorState {
             // the anchor is hidden — with the caret on the line the raw text
             // is revealed for editing and clicks place the caret as usual.
             if self.row_col(self.selected_range.start).0 != row
-                && let Some((at, id)) = gpui_markdown::syntax::block_id(line)
+                && let Some((at, id)) = zorite_markdown::syntax::block_id(line)
                 && offset - start >= at
                 && self
                     .markdown_style
@@ -3686,7 +3686,7 @@ impl EditorState {
         if !para.contains("$$") {
             return;
         }
-        let normalized = match gpui_markdown::syntax::normalize_math_fences(para) {
+        let normalized = match zorite_markdown::syntax::normalize_math_fences(para) {
             std::borrow::Cow::Borrowed(_) => return,
             std::borrow::Cow::Owned(s) => s,
         };
@@ -5969,7 +5969,7 @@ enum PanelSeg {
     Pill {
         text: SharedString,
         color: Hsla,
-        target: gpui_markdown::syntax::LinkHit,
+        target: zorite_markdown::syntax::LinkHit,
     },
 }
 
@@ -6300,7 +6300,7 @@ fn line_index_at(line: &WrappedLine, rtl: Option<&RtlRow>, p: Point<Pixels>, lh:
 
 /// A right-to-left row's editor-side geometry, built in prepaint (#66).
 ///
-/// Only rows whose source reads RTL ([`gpui_markdown::syntax::base_direction`])
+/// Only rows whose source reads RTL ([`zorite_markdown::syntax::base_direction`])
 /// get one — the flag *is* `Option::is_some`, so an LTR document allocates
 /// nothing and keeps taking gpui's own (cheaper) lookups.
 pub(crate) struct RtlRow {

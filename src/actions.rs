@@ -73,7 +73,7 @@ actions!(
 );
 
 const INPUT_CONTEXT: &str = "Input";
-/// Key context of our gpui-editor body editors (matches `gpui_editor`'s own).
+/// Key context of our zorite-editor body editors (matches `zorite_editor`'s own).
 const EDITOR_CONTEXT: &str = "Editor";
 
 pub fn bind_keys(cx: &mut App) {
@@ -88,12 +88,12 @@ pub fn bind_keys(cx: &mut App) {
         // Shift+Tab outdents the caret's list line (no-op if nothing to remove).
         KeyBinding::new("shift-tab", Outdent, Some(INPUT_CONTEXT)),
     ]);
-    // The note body editors run on gpui-editor (key context "Editor"), which
+    // The note body editors run on zorite-editor (key context "Editor"), which
     // binds its own up/down/enter/escape. Rebind the same keys to the slash /
-    // indent actions so the menu, Tab, and Esc work there too. `gpui_editor::
+    // indent actions so the menu, Tab, and Esc work there too. `zorite_editor::
     // bind_keys` runs first (see `main`), so these are tried first and the
     // handlers `cx.propagate()` to fall through to the editor when not consumed.
-    // Note: Tab / Shift+Tab are NOT rebound here — gpui-editor owns them as its
+    // Note: Tab / Shift+Tab are NOT rebound here — zorite-editor owns them as its
     // own `Indent`/`Outdent` (configurable, list-aware), so they work reliably in
     // the always-live editor without depending on the app's focus flags.
     cx.bind_keys([

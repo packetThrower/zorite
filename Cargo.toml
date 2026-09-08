@@ -12,7 +12,7 @@ name = "zorite"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/gpui-bidi", "crates/gpui-editor", "crates/gpui-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-cursors", "crates/os-spellcheck", "crates/ratex-gpui"]
+members = ["crates/gpui-bidi", "crates/zorite-editor", "crates/zorite-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-cursors", "crates/os-spellcheck", "crates/ratex-gpui"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -20,13 +20,15 @@ resolver = "2"
 # whole workspace on a single gpui graph. gpui ships on crates.io as the
 # `gpui-pre` family (weekly snapshots of zed; each version = one zed sha —
 # 0.3.2 is zed@801c087), consumed here under the crate name `gpui` so
-# `gpui::…` paths and `gpui::actions!` are unchanged. EXACT-pinned: GPUI Kit
-# requires only `^0.3.1`, so a caret spec would float to whatever snapshot
-# is newest and silently change the gpui API under us. To upgrade, take the
-# gpui-kit release you want, read the `gpui-pre` version from ITS Cargo.lock,
-# and move these two together with gpui-component + gpui-kit-assets in
+# `gpui::…` paths and `gpui::actions!` are unchanged. The spec is a caret so
+# the published crates don't force consumers onto one snapshot; for THIS
+# workspace the exact snapshot is held by Cargo.lock (0.3.2 = zed@801c087) —
+# never `cargo update -p gpui-pre` casually: every gpui-pre release is a new
+# zed sha and can change the gpui API under us. To upgrade, take the gpui-kit
+# release you want, read the `gpui-pre` version from ITS Cargo.lock, and move
+# gpui-pre/-platform together with gpui-component + gpui-kit-assets in
 # [dependencies] below (Dependabot ignores all four for that reason).
-gpui = { package = "gpui-pre", version = "=0.3.2" }
+gpui = { package = "gpui-pre", version = "0.3" }
 # Per-platform backend. The Linux `wayland` / `x11` features are NOT
 # default — without them `gpui::guess_compositor()` hits `unreachable!`
 # inside a Wayland session before the first paint. Harmless on macOS /
@@ -34,7 +36,7 @@ gpui = { package = "gpui-pre", version = "=0.3.2" }
 # instead of at build time — as of this gpui rev the build-time path
 # needs Xcode's separately-downloaded Metal Toolchain, on every dev
 # machine and CI runner (gpui-kit's own workspace makes the same choice).
-gpui_platform = { package = "gpui-pre-platform", version = "=0.3.2", features = [
+gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = [
     "font-kit",
     "wayland",
     "x11",
@@ -43,8 +45,8 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.2", features = 
 
 [dependencies]
 # Our own markdown renderer (clickable wiki-links), a workspace crate.
-gpui-markdown = { path = "crates/gpui-markdown" }
-# PDF export (src/export.rs): `markdown` parses (same crate gpui-markdown uses),
+zorite-markdown = { path = "crates/zorite-markdown" }
+# PDF export (src/export.rs): `markdown` parses (same crate zorite-markdown uses),
 # oxidize-pdf writes — pure Rust; with default features off it adds only a
 # handful of small crates (cipher primitives) to the tree.
 markdown = "1"
@@ -73,7 +75,7 @@ gpui-whiteboard = { path = "crates/gpui-whiteboard" }
 
 # Our from-scratch text editor — replaces gpui-component's Input across the note
 # body editors (native spell-check + custom menus). A workspace crate.
-gpui-editor = { path = "crates/gpui-editor" }
+zorite-editor = { path = "crates/zorite-editor" }
 
 # Native OS spell-check (NSSpellChecker / ISpellChecker), feeding the editor's
 # diagnostics; a no-op on Linux. A workspace crate.

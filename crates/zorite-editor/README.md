@@ -1,11 +1,11 @@
-# gpui-editor
+# zorite-editor
 
 A from-scratch, multi-line **text editor for [GPUI](https://github.com/zed-industries/zed)** —
 the basis for [Zorite](https://github.com/packetThrower/zorite)'s note editor.
 
 Host-agnostic: it depends on `gpui` (+ `unicode-segmentation`), **not** on
-`gpui-component` — plus one sibling, [`gpui-markdown`](../gpui-markdown/README.md)
-with default features off, which contributes only `gpui_markdown::syntax`: the
+`gpui-component` — plus one sibling, [`zorite-markdown`](../zorite-markdown/README.md)
+with default features off, which contributes only `zorite_markdown::syntax`: the
 **dependency-free** construct-recognition module (what counts as a link / alert /
 table style) shared with the reader so the two views can never drift apart. It's built directly on GPUI's text primitives — an
 `EntityInputHandler` for keyboard + IME input, `shape_line` for per-line text
@@ -71,7 +71,7 @@ It's a path/git crate (not on crates.io — `gpui` is a git-only dependency):
 
 ```toml
 [dependencies]
-gpui-editor = { path = "crates/gpui-editor" }   # or a git dependency
+zorite-editor = { path = "crates/zorite-editor" }   # or a git dependency
 ```
 
 > **gpui revision:** this crate takes the workspace's pinned `gpui` rev
@@ -83,10 +83,10 @@ gpui-editor = { path = "crates/gpui-editor" }   # or a git dependency
 
 ```rust
 use gpui::*;
-use gpui_editor::{EditorState, EditorEvent};
+use zorite_editor::{EditorState, EditorEvent};
 
 // 1. Once at startup, bind the editing keys (scoped to the editor's key context).
-gpui_editor::bind_keys(cx);
+zorite_editor::bind_keys(cx);
 
 // 2. Create the editor entity.
 let editor = cx.new(|cx| {
@@ -126,7 +126,7 @@ div()
 The editor is a **text editor first**: create it, focus it, and it edits plain
 text. The whole Markdown/WYSIWYG side is dormant until the host installs a
 `SyntaxStyle` — there is deliberately **no cargo feature** for it, because
-its only compile-time cost is the dependency-free `gpui_markdown::syntax`
+its only compile-time cost is the dependency-free `zorite_markdown::syntax`
 module, and every markdown code path is dead (and dead-code-eliminated) unless
 these calls are made:
 
@@ -215,7 +215,7 @@ A standalone window wired to the real OS spell checker (via the
 file chip, and styled tables:
 
 ```sh
-cargo run -p gpui-editor --example demo
+cargo run -p zorite-editor --example demo
 ```
 
 Type to watch the spell squiggles update; right-click a flagged word for

@@ -1,5 +1,5 @@
-//! Rendering a ` ```mermaid ` code block. `gpui-markdown` detects the fence and
-//! hands the source here (via [`gpui_markdown::MermaidRenderer`]); the app owns
+//! Rendering a ` ```mermaid ` code block. `zorite-markdown` detects the fence and
+//! hands the source here (via [`zorite_markdown::MermaidRenderer`]); the app owns
 //! the render so the renderer stays host-agnostic. Shows the cached diagram, a
 //! "rendering…" placeholder (which kicks off the off-thread render the first time
 //! it paints), or the source text on failure.
@@ -12,7 +12,7 @@ use gpui::{
     AnyElement, Bounds, ImageSource, InteractiveElement, IntoElement, ParentElement, Pixels,
     SharedString, StatefulInteractiveElement, Styled, WeakEntity, canvas, div, img, px, relative,
 };
-use gpui_markdown::MermaidRenderer;
+use zorite_markdown::MermaidRenderer;
 
 use crate::app::AppView;
 use crate::mermaid::MermaidStore;

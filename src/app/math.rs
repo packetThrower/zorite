@@ -4,18 +4,18 @@
 use super::*;
 
 /// Map the editor's `<!-- math:ALIGN -->` marker alignment to the in-line editor's, and back.
-fn to_ratex_align(a: gpui_editor::MathAlign) -> ratex_gpui::MathAlign {
+fn to_ratex_align(a: zorite_editor::MathAlign) -> ratex_gpui::MathAlign {
     match a {
-        gpui_editor::MathAlign::Left => ratex_gpui::MathAlign::Left,
-        gpui_editor::MathAlign::Center => ratex_gpui::MathAlign::Center,
-        gpui_editor::MathAlign::Right => ratex_gpui::MathAlign::Right,
+        zorite_editor::MathAlign::Left => ratex_gpui::MathAlign::Left,
+        zorite_editor::MathAlign::Center => ratex_gpui::MathAlign::Center,
+        zorite_editor::MathAlign::Right => ratex_gpui::MathAlign::Right,
     }
 }
-fn to_editor_align(a: ratex_gpui::MathAlign) -> gpui_editor::MathAlign {
+fn to_editor_align(a: ratex_gpui::MathAlign) -> zorite_editor::MathAlign {
     match a {
-        ratex_gpui::MathAlign::Left => gpui_editor::MathAlign::Left,
-        ratex_gpui::MathAlign::Center => gpui_editor::MathAlign::Center,
-        ratex_gpui::MathAlign::Right => gpui_editor::MathAlign::Right,
+        ratex_gpui::MathAlign::Left => zorite_editor::MathAlign::Left,
+        ratex_gpui::MathAlign::Center => zorite_editor::MathAlign::Center,
+        ratex_gpui::MathAlign::Right => zorite_editor::MathAlign::Right,
     }
 }
 
@@ -472,12 +472,12 @@ impl AppView {
     /// notifies → repaint → the editor's math provider finds the bitmap.
     pub(super) fn ensure_content_math(&mut self, content: &str, cx: &mut Context<Self>) {
         self.ensure_content_block_labels(content, cx);
-        for source in gpui_editor::math_sources(content) {
+        for source in zorite_editor::math_sources(content) {
             self.ensure_math_loaded(source, cx);
         }
         // Inline `$…$` formulas typeset into the same store (keyed by LaTeX); the editor reuses
         // the raster scaled to text size.
-        for source in gpui_editor::inline_math_sources(content) {
+        for source in zorite_editor::inline_math_sources(content) {
             self.ensure_math_loaded(source, cx);
         }
     }
@@ -489,5 +489,5 @@ fn line_is_rtl(text: &str, at: usize) -> bool {
     let at = at.min(text.len());
     let start = text[..at].rfind('\n').map_or(0, |i| i + 1);
     let end = text[at..].find('\n').map_or(text.len(), |i| at + i);
-    gpui_markdown::syntax::content_direction(&text[start..end]).is_rtl()
+    zorite_markdown::syntax::content_direction(&text[start..end]).is_rtl()
 }

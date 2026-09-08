@@ -691,11 +691,11 @@ fn flatten(nodes: &[mdast::Node], style: Style, out: &mut Vec<(String, Style)>) 
 }
 
 /// GitHub alert detection — recognition shared with both views
-/// (`gpui_markdown::alert_children`); only the print palette (GitHub light,
+/// (`zorite_markdown::alert_children`); only the print palette (GitHub light,
 /// since print is light) is this renderer's own.
 fn alert_of(b: &mdast::Blockquote) -> Option<(&'static str, Color, Vec<mdast::Node>)> {
-    use gpui_markdown::syntax::AlertKind;
-    let (kind, children) = gpui_markdown::alert_children(b)?;
+    use zorite_markdown::syntax::AlertKind;
+    let (kind, children) = zorite_markdown::alert_children(b)?;
     let (r, g, bl) = match kind {
         AlertKind::Note => (0.04, 0.41, 0.85),
         AlertKind::Tip => (0.10, 0.50, 0.22),
@@ -767,7 +767,7 @@ fn mermaid_png(source: &str) -> Option<Vec<u8>> {
     svg_to_png(svg.as_bytes(), SVG_SCALE).map(|(png, _, _)| png)
 }
 
-use gpui_markdown::syntax::heading_scale;
+use zorite_markdown::syntax::heading_scale;
 
 #[cfg(test)]
 mod tests {

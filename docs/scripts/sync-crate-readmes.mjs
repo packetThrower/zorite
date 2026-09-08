@@ -10,7 +10,7 @@
 // the only ones rewritten here:
 //   • cross-crate links  ../<crate>  -> the sibling docs page
 //   • README <-> API.md links        -> the paired docs pages
-//   • gpui-markdown's     sample.md  -> the file on GitHub
+//   • zorite-markdown's     sample.md  -> the file on GitHub
 // Everything else is left untouched — in particular the many `](url)` /
 // `](src)` snippets that illustrate Markdown syntax all live inside code
 // spans, so they render as literal text and must not be touched.
@@ -34,12 +34,12 @@ const crates = [
 			"Bidirectional text for GPUI: index↔x over reordered glyphs, logical-order row layout, and a row painter that keeps a styled line's colours.",
 	},
 	{
-		name: 'gpui-editor',
+		name: 'zorite-editor',
 		description:
 			"A from-scratch multi-line text editor for GPUI — the engine behind Zorite's Word-like note editor.",
 	},
 	{
-		name: 'gpui-markdown',
+		name: 'zorite-markdown',
 		description:
 			'A host-agnostic Markdown renderer for GPUI: wrapping text, clickable links, images, mermaid, and in-page find.',
 	},
@@ -84,10 +84,10 @@ function rewrite(src, name) {
 			// README <-> API.md pairing (keeps GitHub-relative links working there).
 			.replace(/\]\(API\.md(#[^)]*)?\)/g, `](${DOCS}/${name}-api/$1)`)
 			.replace(/\]\(README\.md(#[^)]*)?\)/g, `](${DOCS}/${name}/$1)`)
-			// The one local-file link (gpui-markdown's sample.md) -> GitHub.
+			// The one local-file link (zorite-markdown's sample.md) -> GitHub.
 			.replace(
 				/\]\(sample\.md\)/g,
-				`](${GH}/blob/main/crates/gpui-markdown/sample.md)`,
+				`](${GH}/blob/main/crates/zorite-markdown/sample.md)`,
 			)
 	);
 }

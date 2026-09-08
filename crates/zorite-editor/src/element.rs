@@ -771,7 +771,7 @@ impl Element for EditorElement {
                     .and_then(|st| st.block_ref_count.as_ref())
                     .filter(|_| editor.row_col(editor.selected_range.start).0 != i)
                     .and_then(|f| {
-                        gpui_markdown::syntax::block_id(line)
+                        zorite_markdown::syntax::block_id(line)
                             .filter(|(_, id)| f(id) > 0)
                             .map(|(at, _)| at..line.len())
                     });
@@ -1485,7 +1485,8 @@ impl Element for EditorElement {
         let mut inline_math_rects: Vec<(Range<usize>, SharedString, Bounds<Pixels>)> = Vec::new();
         // Property-panel pill bounds + targets (click-to-open) and row bounds
         // (hover change-detection), committed for the next frame's handlers.
-        let mut prop_pill_rects: Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)> = Vec::new();
+        let mut prop_pill_rects: Vec<(Bounds<Pixels>, zorite_markdown::syntax::LinkHit)> =
+            Vec::new();
         let mut prop_row_rects: Vec<(Bounds<Pixels>, usize)> = Vec::new();
         // The span being structurally edited (if any): skip painting its raster — the seated
         // editor overlays its spot.
@@ -1591,7 +1592,7 @@ impl Element for EditorElement {
             // past it by QUOTE_INSET).
             if let Some(LineMark::Quote { bar, .. }) = prepaint.marks.get(i).copied().flatten() {
                 // RTL: the rule belongs on the right, where the text starts —
-                // the reader's `border_r_2` (see `gpui-markdown`'s blockquote).
+                // the reader's `border_r_2` (see `zorite-markdown`'s blockquote).
                 let bx = origin.x + rtl.map_or(px(0.), |_| content_w - px(2.));
                 window.paint_quad(fill(
                     Bounds::new(point(bx, origin.y), size(px(2.), *lh)),
@@ -1765,7 +1766,7 @@ impl Element for EditorElement {
             }) = prepaint.marks.get(i).copied().flatten()
             {
                 let glyph: SharedString = if ordered {
-                    gpui_markdown::syntax::ordered_marker(level, num).into()
+                    zorite_markdown::syntax::ordered_marker(level, num).into()
                 } else {
                     "•".into()
                 };
@@ -3067,7 +3068,7 @@ fn shape_document(
         // through to the chip below.
         if md.is_some()
             && caret_row != Some(idx)
-            && let Some(inner) = gpui_markdown::syntax::embed_line(line)
+            && let Some(inner) = zorite_markdown::syntax::embed_line(line)
             && let Some(h) = embed_view.and_then(|f| f(inner).map(|(_, h)| h))
         {
             out.push_placeholder(window, base_font_size, wrap_width, h, None, None, 1);
@@ -3186,14 +3187,14 @@ fn shape_document(
             _ => px(0.),
         };
         let widget: Option<Block> = if let Some(st) = md.filter(|_| !is_code)
-            && let Some(inner) = gpui_markdown::syntax::embed_line(line)
+            && let Some(inner) = zorite_markdown::syntax::embed_line(line)
         {
             // A standalone `![[target]]` transclusion renders as a clickable
             // chip (`⧉ Note → anchor`) that opens/jumps to the source — the
             // reading view renders the full embedded content; nesting live
             // views inside the editor isn't feasible. Raw on caret, like a
             // file chip.
-            let (target, _) = gpui_markdown::syntax::wiki_target_display(inner);
+            let (target, _) = zorite_markdown::syntax::wiki_target_display(inner);
             (Some(idx) != caret_row).then(|| Block::Chip {
                 src: target.to_string().into(),
                 label: embed_chip_label(inner).into(),
@@ -3393,7 +3394,7 @@ fn shape_document(
                     // Word-style depth markers (1. -> a. -> i.), shared with
                     // the reader. The level is structural (from the
                     // renumbering pass), not an indent-width guess.
-                    gpui_markdown::syntax::ordered_marker(level, num)
+                    zorite_markdown::syntax::ordered_marker(level, num)
                 } else {
                     "\u{2022}".to_string()
                 };
@@ -3885,7 +3886,7 @@ fn shape_document(
             // ponytail: it inherits from ABOVE, so an alert whose title follows
             // English text but whose body is Persian still splits. Looking ahead
             // to the body would fix it; no one has hit that yet.
-            let line_rtl = match gpui_markdown::syntax::content_direction_opt(line) {
+            let line_rtl = match zorite_markdown::syntax::content_direction_opt(line) {
                 Some(d) => {
                     last_strong_rtl = d.is_rtl();
                     d.is_rtl()
@@ -3899,7 +3900,7 @@ fn shape_document(
                 None if !line.trim().is_empty() => lines
                     .get(idx + 1)
                     .filter(|next| !next.trim().is_empty())
-                    .and_then(|next| gpui_markdown::syntax::content_direction_opt(next))
+                    .and_then(|next| zorite_markdown::syntax::content_direction_opt(next))
                     .map_or(last_strong_rtl, |d| d.is_rtl()),
                 None => last_strong_rtl,
             };
@@ -3912,7 +3913,7 @@ fn shape_document(
             // ponytail: word breaking is space-based, so a line mixing RTL with
             // unspaced CJK would wrap poorly. Lines without any RTL keep gpui's
             // wrapping, so plain CJK is untouched.
-            let has_rtl = line_rtl || gpui_markdown::syntax::contains_rtl(line);
+            let has_rtl = line_rtl || zorite_markdown::syntax::contains_rtl(line);
             let rtl_rows = (bg.is_none() && widget.is_none() && table.is_none() && has_rtl)
                 .then(|| {
                     gpui_bidi::paragraph::layout_rows(&shaped_text, &runs, line_wrap, fs, window)
@@ -4007,20 +4008,20 @@ fn build_prop_panel(
     let mut key_w = px(0.);
     let mut val_w = px(0.);
     for &line in &lines[range.start..range.end] {
-        let Some((_, k, v)) = gpui_markdown::syntax::prefixed_property(line) else {
+        let Some((_, k, v)) = zorite_markdown::syntax::prefixed_property(line) else {
             continue;
         };
         key_w = key_w.max(measure_width(window, k, font, font_size));
         let icon = icon_of.and_then(|f| f(k));
         let mut w = px(0.);
-        let segs = gpui_markdown::syntax::property_value_segments(v)
+        let segs = zorite_markdown::syntax::property_value_segments(v)
             .into_iter()
             .map(|seg| match seg {
-                gpui_markdown::syntax::PropSeg::Text(t) => {
+                zorite_markdown::syntax::PropSeg::Text(t) => {
                     w += measure_width(window, &t, font, font_size);
                     PanelSeg::Plain(t.into())
                 }
-                gpui_markdown::syntax::PropSeg::Pill {
+                zorite_markdown::syntax::PropSeg::Pill {
                     label,
                     is_tag,
                     target,
@@ -4111,7 +4112,7 @@ fn paint_prop_panel(
     font_size: Pixels,
     window: &mut Window,
     cx: &mut App,
-    pill_rects: &mut Vec<(Bounds<Pixels>, gpui_markdown::syntax::LinkHit)>,
+    pill_rects: &mut Vec<(Bounds<Pixels>, zorite_markdown::syntax::LinkHit)>,
     row_rects: &mut Vec<(Bounds<Pixels>, usize)>,
     base_row: usize,
 ) {
@@ -4127,7 +4128,7 @@ fn paint_prop_panel(
                 PanelSeg::Plain(t) => t,
                 PanelSeg::Pill { text, .. } => text,
             };
-            gpui_markdown::syntax::content_direction(t).is_rtl()
+            zorite_markdown::syntax::content_direction(t).is_rtl()
         })
     });
     // The panel is sized to its content, so mirroring INSIDE it is not enough —
@@ -4262,15 +4263,15 @@ fn paint_prop_panel(
 /// anchor-link display (`Note → id` / `Note → Heading`), else the page name —
 /// each behind a transclusion glyph.
 fn embed_chip_label(inner: &str) -> String {
-    let (target, display) = gpui_markdown::syntax::wiki_target_display(inner);
+    let (target, display) = zorite_markdown::syntax::wiki_target_display(inner);
     if display != target {
         return format!("⧉ {display}");
     }
-    let (page, block) = gpui_markdown::syntax::split_block_anchor(target);
+    let (page, block) = zorite_markdown::syntax::split_block_anchor(target);
     if let Some(id) = block {
         return format!("⧉ {page} → {id}");
     }
-    let (page, heading) = gpui_markdown::syntax::split_heading_anchor(target);
+    let (page, heading) = zorite_markdown::syntax::split_heading_anchor(target);
     match heading {
         Some(h) => format!("⧉ {page} → {}", h.trim()),
         None => format!("⧉ {page}"),

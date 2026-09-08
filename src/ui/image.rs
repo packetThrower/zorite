@@ -1,5 +1,5 @@
-//! Rendering standalone markdown images. The `gpui-markdown` crate detects an
-//! image block and hands it here (via [`gpui_markdown::ImageRenderer`]) so the
+//! Rendering standalone markdown images. The `zorite-markdown` crate detects an
+//! image block and hands it here (via [`zorite_markdown::ImageRenderer`]) so the
 //! app — not the host-agnostic renderer — owns image loading and the resize
 //! interaction (a draggable corner handle).
 
@@ -12,7 +12,7 @@ use gpui::{
     MouseDownEvent, ParentElement, Pixels, SharedString, SharedUri, StatefulInteractiveElement,
     Styled, WeakEntity, canvas, div, img, px, relative,
 };
-use gpui_markdown::{ImageInfo, ImageRenderer, InlineImageRenderer};
+use zorite_markdown::{ImageInfo, ImageRenderer, InlineImageRenderer};
 
 use crate::app::AppView;
 use crate::images::ImageStore;
@@ -223,7 +223,7 @@ fn build(
 /// A `![](file.pdf)` reference renders as a clickable chip that opens the PDF in
 /// its own viewer tab (keeping the note light — the pages live in the viewer).
 /// Styled to pixel-match the WYSIWYG editor's file chip (`paint_chip` in
-/// gpui-editor): same tokens, geometry, and line-art document glyph.
+/// zorite-editor): same tokens, geometry, and line-art document glyph.
 fn pdf_chip(info: &ImageInfo, weak: WeakEntity<AppView>) -> AnyElement {
     let src = info.src.clone();
     let label = crate::pdf::resolve_path(&src)
@@ -238,7 +238,7 @@ fn pdf_chip(info: &ImageInfo, weak: WeakEntity<AppView>) -> AnyElement {
     let icon = canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
-            gpui_editor::paint_doc_icon(
+            zorite_editor::paint_doc_icon(
                 bounds.origin.x,
                 bounds.origin.y,
                 bounds.size.width,
@@ -253,7 +253,7 @@ fn pdf_chip(info: &ImageInfo, weak: WeakEntity<AppView>) -> AnyElement {
     let chip = div()
         .id(SharedString::from(format!("pdf-chip:{src}")))
         .my(px(4.0))
-        .h(fs * gpui_editor::LINE_HEIGHT_RATIO + px(10.0))
+        .h(fs * zorite_editor::LINE_HEIGHT_RATIO + px(10.0))
         .px(px(10.0))
         .rounded(px(6.0))
         .border_1()

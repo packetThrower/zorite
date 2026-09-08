@@ -1,5 +1,5 @@
 //! The WYSIWYG transclusion view: one entity per `![[target]]`, overlaid by
-//! gpui-editor in the gap its line reserves (see `EditorState::set_embed_provider`).
+//! zorite-editor in the gap its line reserves (see `EditorState::set_embed_provider`).
 //! Mirrors the reader's embed box — a quoted border, a small clickable source
 //! label, and the target content rendered as markdown — with the content
 //! scrolling inside when it outgrows the reserved height. The host resolves
@@ -34,11 +34,11 @@ pub struct EmbedView {
     /// The full renderer set, so embedded content shows images (read-only —
     /// resizing would rewrite the wrong page), mermaid, math, and highlighted
     /// code just like the note it came from. Built by `upsert_embed`.
-    pub image: gpui_markdown::ImageRenderer,
-    pub mermaid: gpui_markdown::MermaidRenderer,
-    pub math: gpui_markdown::MathRenderer,
-    pub inline_math: gpui_markdown::InlineMathRenderer,
-    pub highlight: gpui_markdown::CodeHighlighter,
+    pub image: zorite_markdown::ImageRenderer,
+    pub mermaid: zorite_markdown::MermaidRenderer,
+    pub math: zorite_markdown::MathRenderer,
+    pub inline_math: zorite_markdown::InlineMathRenderer,
+    pub highlight: zorite_markdown::CodeHighlighter,
     /// Pre-resolved nested embeds (`![[…]]` inside this embed's content).
     pub nested: std::rc::Rc<HashMap<String, (SharedString, SharedString)>>,
 }
@@ -71,7 +71,7 @@ impl Render for EmbedView {
             })
         };
         let nested = self.nested.clone();
-        let md = gpui_markdown::MarkdownView::new(
+        let md = zorite_markdown::MarkdownView::new(
             format!("embed-{}", self.nav_target),
             self.content.clone(),
         )

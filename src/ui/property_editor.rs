@@ -349,7 +349,7 @@ impl PropertyEditor {
             key @ ("left" | "right") => {
                 let rtl = self
                     .field(row, is_key)
-                    .is_some_and(|f| gpui_markdown::syntax::content_direction(&f.text).is_rtl());
+                    .is_some_and(|f| zorite_markdown::syntax::content_direction(&f.text).is_rtl());
                 let forward = (key == "right") != rtl;
                 let moved = self
                     .field_mut(row, is_key)
@@ -463,7 +463,7 @@ impl Render for PropertyEditor {
         let rtl = self
             .rows
             .iter()
-            .any(|r| gpui_markdown::syntax::content_direction(&r.value.text).is_rtl());
+            .any(|r| zorite_markdown::syntax::content_direction(&r.value.text).is_rtl());
         let rows: Vec<_> = (0..self.rows.len())
             .map(|i| self.render_row(i, key_col, rtl, cx))
             .collect();
@@ -633,7 +633,7 @@ impl PropertyEditor {
         }
         // The field's OWN text decides here, not the panel: a Latin key next
         // to a Persian value must not be reversed along with it.
-        let f_rtl = gpui_markdown::syntax::content_direction(&f.text).is_rtl();
+        let f_rtl = zorite_markdown::syntax::content_direction(&f.text).is_rtl();
         if active && is_key {
             // Key: plain text split at the caret (keys aren't pills).
             let (before, after) = f.text.split_at(f.caret);
@@ -779,7 +779,7 @@ fn active_value(f: &Field, text_size: f32, rtl: bool) -> impl IntoElement {
     let mut kids: Vec<gpui::AnyElement> = Vec::new();
     let mut placed = false;
     let mut pos = 0;
-    for (range, _hit) in gpui_markdown::syntax::links(value) {
+    for (range, _hit) in zorite_markdown::syntax::links(value) {
         if range.start > pos {
             push_editable(
                 &mut kids,
@@ -862,7 +862,7 @@ fn push_editable(
 /// `#`, a `[text](url)`'s text, else the raw text.
 fn pill_label(raw: &str) -> String {
     if let Some(inner) = raw.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
-        gpui_markdown::syntax::wiki_target_display(inner)
+        zorite_markdown::syntax::wiki_target_display(inner)
             .1
             .to_string()
     } else if let Some(tag) = raw.strip_prefix('#') {
@@ -877,15 +877,15 @@ fn pill_label(raw: &str) -> String {
 /// The value rendered like the panel: plain runs, tags/wiki-links as pills.
 fn value_display(value: &str) -> impl IntoElement {
     let mut row = div().flex().flex_wrap().items_center().gap(px(5.0));
-    for seg in gpui_markdown::syntax::property_value_segments(value) {
+    for seg in zorite_markdown::syntax::property_value_segments(value) {
         match seg {
-            gpui_markdown::syntax::PropSeg::Text(t) => {
+            zorite_markdown::syntax::PropSeg::Text(t) => {
                 let t = t.trim();
                 if !t.is_empty() {
                     row = row.child(div().text_color(theme::text_primary()).child(t.to_string()));
                 }
             }
-            gpui_markdown::syntax::PropSeg::Pill { label, is_tag, .. } => {
+            zorite_markdown::syntax::PropSeg::Pill { label, is_tag, .. } => {
                 let color = if is_tag {
                     theme::tag()
                 } else {
@@ -923,7 +923,7 @@ fn parse(source: &str) -> Vec<(String, String, String)> {
     source
         .lines()
         .filter_map(|l| {
-            gpui_markdown::syntax::prefixed_property(l)
+            zorite_markdown::syntax::prefixed_property(l)
                 .map(|(p, k, v)| (p.to_string(), k.to_string(), v.to_string()))
         })
         .collect()

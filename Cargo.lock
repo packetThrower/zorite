@@ -2773,18 +2773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-editor"
-version = "0.1.0"
-dependencies = [
- "gpui-bidi",
- "gpui-markdown",
- "gpui-pre",
- "gpui-pre-platform",
- "os-spellcheck",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2800,17 +2788,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-markdown"
-version = "0.1.0"
-dependencies = [
- "gpui-bidi",
- "gpui-pre",
- "markdown",
-]
-
-[[package]]
 name = "gpui-pdf"
-version = "0.1.0"
+version = "0.6.0"
 dependencies = [
  "gpui-pre",
  "hayro",
@@ -3339,7 +3318,7 @@ checksum = "53f82b48b20d2eec9d121f2fc8cf7ac3e917455ad05482fa2cb87260e50e6790"
 
 [[package]]
 name = "gpui-whiteboard"
-version = "0.1.0"
+version = "0.5.0"
 dependencies = [
  "gpui-pre",
  "log",
@@ -5545,7 +5524,7 @@ dependencies = [
 
 [[package]]
 name = "os-spellcheck"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
@@ -6286,7 +6265,7 @@ dependencies = [
 
 [[package]]
 name = "ratex-gpui"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "gpui-pre",
  "gpui-pre-platform",
@@ -10636,9 +10615,7 @@ dependencies = [
  "embed-resource",
  "env_logger",
  "gpui-component",
- "gpui-editor",
  "gpui-kit-assets",
- "gpui-markdown",
  "gpui-pdf",
  "gpui-pre",
  "gpui-pre-platform",
@@ -10667,6 +10644,29 @@ dependencies = [
  "trash",
  "ureq",
  "url",
+ "zorite-editor",
+ "zorite-markdown",
+]
+
+[[package]]
+name = "zorite-editor"
+version = "0.10.0"
+dependencies = [
+ "gpui-bidi",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "os-spellcheck",
+ "unicode-segmentation",
+ "zorite-markdown",
+]
+
+[[package]]
+name = "zorite-markdown"
+version = "0.9.0"
+dependencies = [
+ "gpui-bidi",
+ "gpui-pre",
+ "markdown",
 ]
 
 [[package]]

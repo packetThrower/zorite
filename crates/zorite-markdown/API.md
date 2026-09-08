@@ -1,13 +1,13 @@
-# gpui-markdown API
+# zorite-markdown API
 
-The complete public API of [`gpui-markdown`](README.md) — every exported item,
+The complete public API of [`zorite-markdown`](README.md) — every exported item,
 with its signature, parameters, return contract, edge cases, and cost. For the
 what-and-why (the two layers, quick start, per-table designs, supported
 syntax), see the [README](README.md).
 
 The crate is two layers, and this reference mirrors that:
 
-- **[Part I — `gpui_markdown::syntax`](#part-i--gpui_markdownsyntax)** — always
+- **[Part I — `zorite_markdown::syntax`](#part-i--zorite_markdownsyntax)** — always
   compiled, dependency-free construct *recognition* shared by every renderer.
 - **[Part II — the reader view](#part-ii--the-reader-view-feature-view)** —
   `MarkdownView` and everything around it, behind the default-on **`view`**
@@ -16,7 +16,7 @@ The crate is two layers, and this reference mirrors that:
 ## Public API at a glance
 
 Everything below is the complete public surface — if it isn't listed here, it
-isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
+isn't public. Feature `—` = always compiled (`zorite_markdown::syntax`);
 `view` = behind the default-on `view` feature (crate root).
 
 | Item | Kind | Signature | Purpose | Feature |
@@ -120,10 +120,10 @@ isn't public. Feature `—` = always compiled (`gpui_markdown::syntax`);
 
 ---
 
-# Part I — `gpui_markdown::syntax`
+# Part I — `zorite_markdown::syntax`
 
 Always compiled, **dependency-free** (no `gpui`, no `markdown`): the shared
-construct recognition that this crate's reader, `gpui-editor`'s WYSIWYG view,
+construct recognition that this crate's reader, `zorite-editor`'s WYSIWYG view,
 and the PDF exporter all consume, so *what a construct is* is defined exactly
 once. Everything here is pure text over `&str` — no I/O, no allocation beyond
 the returned values, no threading constraints.
@@ -1122,7 +1122,7 @@ The collapsed headings — keys are **trimmed source lines** (e.g. `"## Goals"`)
 A folded heading renders with a `▸` chevron and its whole section (everything
 until the next heading at its level or higher) is skipped. Host-owned state,
 since this view is rebuilt every frame; the line-text key is shared with
-gpui-editor's WYSIWYG folds and self-heals — editing the heading drops the
+zorite-editor's WYSIWYG folds and self-heals — editing the heading drops the
 fold instead of letting it drift.
 
 ### `MarkdownView::on_heading_toggle`
@@ -1163,7 +1163,7 @@ sets only `text_size` — set the font family on a parent element if needed.
 | --- | --- | --- |
 | `text_color` | `Hsla` | Body text |
 | `text_size` | `Pixels` | Base size; headings scale from it via [`heading_scale`](#heading_scale) (default `px(15.0)`) |
-| `line_height` | `f32` | Body line height as a multiple of `text_size`. Hosts with an editor match its ratio so reading and editing line up (default `1.45`, gpui-editor's) |
+| `line_height` | `f32` | Body line height as a multiple of `text_size`. Hosts with an editor match its ratio so reading and editing line up (default `1.45`, zorite-editor's) |
 | `heading_color` | `Hsla` | h1–h6 |
 | `link_color` | `Hsla` | Links, footnote markers, image labels |
 | `tag_color` | `Hsla` | `#tags` |

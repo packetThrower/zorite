@@ -23,7 +23,7 @@ Linux additionally needs a **Vulkan-capable GPU with current Mesa drivers**.
 ## Building from source
 
 Zorite is a small Rust workspace — the app plus three reusable crates
-(`gpui-markdown`, `gpui-pdf`, `gpui-whiteboard`).
+(`zorite-markdown`, `gpui-pdf`, `gpui-whiteboard`).
 
 ```sh
 git clone git@github.com:packetThrower/zorite.git

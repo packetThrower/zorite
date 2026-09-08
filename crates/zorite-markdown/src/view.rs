@@ -42,7 +42,7 @@ pub struct MarkdownStyle {
     pub text_size: Pixels,
     /// Body line height as a multiple of `text_size`. Hosts with an editor
     /// match it to the editor's ratio so reading and editing line up (Zorite
-    /// passes gpui-editor's 1.45); the default follows suit.
+    /// passes zorite-editor's 1.45); the default follows suit.
     pub line_height: f32,
     pub heading_color: Hsla,
     pub link_color: Hsla,
@@ -601,7 +601,7 @@ impl MarkdownView {
     /// text, emphasizing the `current`-th match (0-based, document order). An empty
     /// query highlights nothing. The host owns the find bar and the match index +
     /// total — pair this with [`match_count`] to size "n of m" and bound `current`.
-    /// gpui-markdown only paints: no I/O, no storage, just the source string.
+    /// zorite-markdown only paints: no I/O, no storage, just the source string.
     pub fn search(mut self, query: impl Into<SharedString>, current: usize) -> Self {
         let q = query.into();
         self.query = (!q.is_empty()).then_some(q);

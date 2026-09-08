@@ -1,6 +1,6 @@
-# gpui-editor API
+# zorite-editor API
 
-The complete public API of [`gpui-editor`](README.md) — every exported item,
+The complete public API of [`zorite-editor`](README.md) — every exported item,
 with its signature, parameters, return contract, edge cases, and cost. For the
 what-and-why (the three views, quick start, the WYSIWYG opt-in recipe), see
 the [README](README.md).
@@ -10,7 +10,7 @@ the [README](README.md).
 Everything below is the complete public surface — if it isn't listed here, it
 isn't public. (`SyntaxStyle`, `AlertIcons`, `MathAlign`, and `PropertyIconFn`
 are defined in this crate's `markdown_syntax` module and re-exported at the
-crate root; nothing from `gpui-markdown` is re-exported.)
+crate root; nothing from `zorite-markdown` is re-exported.)
 
 | Item | Kind | Signature | Purpose |
 | --- | --- | --- | --- |
@@ -597,7 +597,7 @@ view that renders the embedded content, plus the **row height to reserve**.
 The editor reserves that gap in its layout and paints the `AnyView` there as
 an absolute overlay (skipped on the caret's row, where the raw `![[…]]` shows
 for editing). The host owns resolution — fetch the target page, render it
-(typically with [`gpui-markdown`](../gpui-markdown), whose
+(typically with [`zorite-markdown`](../zorite-markdown), whose
 `syntax::embed_targets` / `extract_block` / `extract_section` slice `#^id` /
 `#Heading` anchors) — and refreshing views when a source page changes; it
 estimates and caps the height (long content scrolls inside the view).
@@ -1033,7 +1033,7 @@ resolution.
 
 A `[[wiki-link]]`, `#tag`, wiki file chip, or property-panel pill was
 left-clicked; the payload is the target page title. It may carry a
-`#Heading` / `#^id` anchor (split with `gpui_markdown::syntax`'s
+`#Heading` / `#^id` anchor (split with `zorite_markdown::syntax`'s
 `split_heading_anchor` / `split_block_anchor`).
 
 **Host obligation:** navigate to that page (and scroll to the anchor).

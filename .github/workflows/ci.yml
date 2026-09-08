@@ -123,7 +123,7 @@ jobs:
       # surfaces in seconds rather than after an apt-get pass.
       #
       # `cargo fmt` is workspace-aware, so this one invocation covers
-      # the root crate and every `crates/*` member (gpui-markdown,
+      # the root crate and every `crates/*` member (zorite-markdown,
       # gpui-pdf).
       - name: cargo fmt --check
         if: matrix.runner == 'ubuntu-latest'
@@ -182,6 +182,6 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # `--workspace` runs the root bin's in-module unit tests plus
-      # each `crates/*` library's tests (gpui-markdown, gpui-pdf).
+      # each `crates/*` library's tests (zorite-markdown, gpui-pdf).
       - name: cargo test
         run: cargo test --workspace

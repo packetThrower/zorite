@@ -72,13 +72,13 @@ That's the entire surface — one struct, two methods. The exact contracts
   backends convert them to the UTF-8 byte ranges this crate returns, so callers
   work in plain byte offsets throughout.
 
-## Using it with [`gpui-editor`](../gpui-editor)
+## Using it with [`zorite-editor`](../zorite-editor)
 
-`gpui-editor` consumes exactly this shape — byte-range diagnostics plus a lazy
+`zorite-editor` consumes exactly this shape — byte-range diagnostics plus a lazy
 suggestion provider:
 
 ```rust
-use gpui_editor::Diagnostic;
+use zorite_editor::Diagnostic;
 use os_spellcheck::SpellChecker;
 
 // On each edit: feed the misspelled ranges in as diagnostics (red squiggles).

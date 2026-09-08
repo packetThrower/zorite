@@ -22,7 +22,7 @@ impl AppView {
         let p = self.db.get_page(page_id).ok()??;
         let lines: Vec<&str> = p.content.split('\n').collect();
         let line = *lines.get(line_idx)?;
-        if let Some((_, id)) = gpui_markdown::syntax::block_id(line) {
+        if let Some((_, id)) = zorite_markdown::syntax::block_id(line) {
             return Some((id.to_string(), usize::MAX));
         }
         let t = line.trim_start();
@@ -65,7 +65,7 @@ impl AppView {
                     e.replace_range(end..end, &anchor, cx);
                     let restored = if old >= end { old + anchor.len() } else { old };
                     e.set_cursor(restored.min(e.value().len()), cx);
-                    cx.emit(gpui_editor::EditorEvent::Changed);
+                    cx.emit(zorite_editor::EditorEvent::Changed);
                 });
             }
             None => {
@@ -170,7 +170,7 @@ impl AppView {
 
     /// The editor syntax style with the block-label resolver + generation
     /// installed — every `set_markdown_style` call routes through here.
-    pub(super) fn editor_style(&self) -> gpui_editor::SyntaxStyle {
+    pub(super) fn editor_style(&self) -> zorite_editor::SyntaxStyle {
         let mut st = theme::editor_syntax_style();
         st.block_label = Some(self.block_label_resolver());
         st.block_label_gen = self.block_label_gen;
@@ -248,7 +248,7 @@ impl AppView {
             };
             let lines: Vec<&str> = p.content.split('\n').collect();
             let label = lines.iter().enumerate().find_map(|(li, line)| {
-                let (cut, lid) = gpui_markdown::syntax::block_id(line)?;
+                let (cut, lid) = zorite_markdown::syntax::block_id(line)?;
                 (lid == id).then(|| {
                     let mut t = line[..cut].trim();
                     // Strip list/task/heading dressing for a clean label.
@@ -283,7 +283,7 @@ impl AppView {
         // ones get a count badge. Only cold ids query the DB; the debounced
         // doc-changed refresh keeps the known set current.
         for line in content.split('\n') {
-            if let Some((_, id)) = gpui_markdown::syntax::block_id(line)
+            if let Some((_, id)) = zorite_markdown::syntax::block_id(line)
                 && !self.block_ref_counts.borrow().contains_key(id)
             {
                 let n = self.db.count_block_refs(id).unwrap_or(0);
@@ -426,7 +426,7 @@ impl AppView {
                                 .text_size(px(13.0))
                                 .text_color(theme::text_secondary())
                                 .child(
-                                    gpui_markdown::MarkdownView::new(
+                                    zorite_markdown::MarkdownView::new(
                                         format!("block-ref-md-{i}"),
                                         bl.snippet.clone(),
                                     )

@@ -1,9 +1,9 @@
 [package]
 name = "os-spellcheck"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Native OS spell-check — NSSpellChecker on macOS, ISpellChecker on Windows; a no-op elsewhere. Returns misspelled byte ranges + the OS's suggestions. Host-agnostic (no gpui)."
-license = "GPL-3.0-or-later"
+license = "MIT"
 repository = "https://github.com/packetThrower/zorite"
 homepage = "https://packetthrower.github.io/zorite/reference/crates/os-spellcheck/"
 keywords = ["spell-check", "spelling", "macos", "windows"]

@@ -1,13 +1,13 @@
 //! Finding **unlinked mentions**: occurrences of a page title in note text
 //! that aren't already a `[[link]]`, `#tag`, or part of some other link —
 //! the "Unlinked References" panel and its one-click Link action. Linked
-//! constructs are recognized by the shared `gpui_markdown::syntax::links`
+//! constructs are recognized by the shared `zorite_markdown::syntax::links`
 //! grammar, so what counts as "already linked" can't drift from what the
 //! views render as links.
 
 use std::ops::Range;
 
-use gpui_markdown::syntax::{LinkHit, is_word_char, links};
+use zorite_markdown::syntax::{LinkHit, is_word_char, links};
 
 /// Byte ranges of every unlinked, word-bounded mention of `title` in
 /// `content`, skipping fenced code blocks, inline code, and anything inside

@@ -2,7 +2,7 @@
 //! Zorite's engines consume so they can never drift apart (links navigated in
 //! the reader for months while WYSIWYG ignored clicks; alerts were once
 //! recognized in three separate places). The reader (this crate's view),
-//! the WYSIWYG editor (`gpui-editor`), and any other consumer (PDF export)
+//! the WYSIWYG editor (`zorite-editor`), and any other consumer (PDF export)
 //! share *what counts as a construct and what's its payload*; each keeps its
 //! own rendering. Everything here is engine-neutral and gpui-free.
 

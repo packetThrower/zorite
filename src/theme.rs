@@ -180,7 +180,7 @@ pub fn tag() -> Hsla {
     get().tag
 }
 
-/// Styling for the markdown reading view (the `gpui-markdown` crate),
+/// Styling for the markdown reading view (the `zorite-markdown` crate),
 /// mapped from the active palette.
 /// SVG asset paths for the GitHub-alert title icons, served by the app's
 /// `AssetSource` (bundled Lucide faces — see `main.rs`). One set of names for
@@ -279,16 +279,16 @@ fn mono_font() -> &'static str {
 /// that many spaces of the editor font, so reading and editing line up. `text_size`
 /// is the user's note text size — the same value the editor wrappers set, so the
 /// reader and the editor render at one size.
-pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown::MarkdownStyle {
+pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> zorite_markdown::MarkdownStyle {
     let p = get();
-    gpui_markdown::MarkdownStyle {
+    zorite_markdown::MarkdownStyle {
         // The host injects the block-label and ref-count resolvers after
         // construction (they need AppView state); the theme stays data-only.
         block_label: None,
         block_ref_count: None,
         text_color: p.text_primary,
         text_size,
-        line_height: gpui_editor::LINE_HEIGHT_RATIO,
+        line_height: zorite_editor::LINE_HEIGHT_RATIO,
         heading_color: p.text_primary,
         link_color: p.accent,
         tag_color: p.tag,
@@ -307,14 +307,14 @@ pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown:
         search_current_bg: gpui::rgba(0xFF9500DD).into(),
         list_indent: px(indent_spaces as f32 * 4.5),
         mono_font: mono_font().into(),
-        alerts: gpui_markdown::AlertColors {
+        alerts: zorite_markdown::AlertColors {
             note: p.alert_note,
             tip: p.alert_tip,
             important: p.alert_important,
             warning: p.alert_warning,
             caution: p.alert_caution,
         },
-        alert_icons: Some(gpui_markdown::AlertIcons {
+        alert_icons: Some(zorite_markdown::AlertIcons {
             note: ALERT_ICON_NOTE.into(),
             tip: ALERT_ICON_TIP.into(),
             important: ALERT_ICON_IMPORTANT.into(),
@@ -325,11 +325,11 @@ pub fn markdown_style(indent_spaces: usize, text_size: Pixels) -> gpui_markdown:
     }
 }
 
-/// Inline-markdown styling palette for the live-preview editor (gpui-editor).
+/// Inline-markdown styling palette for the live-preview editor (zorite-editor).
 /// Mirrors [`markdown_style`]'s colors so editing looks like the rendered view.
-pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
+pub fn editor_syntax_style() -> zorite_editor::SyntaxStyle {
     let p = get();
-    gpui_editor::SyntaxStyle {
+    zorite_editor::SyntaxStyle {
         block_label: None,
         block_label_gen: 0,
         block_ref_count: None,
@@ -344,7 +344,7 @@ pub fn editor_syntax_style() -> gpui_editor::SyntaxStyle {
         alert_important: p.alert_important,
         alert_warning: p.alert_warning,
         alert_caution: p.alert_caution,
-        alert_icons: Some(gpui_editor::AlertIcons {
+        alert_icons: Some(zorite_editor::AlertIcons {
             note: ALERT_ICON_NOTE.into(),
             tip: ALERT_ICON_TIP.into(),
             important: ALERT_ICON_IMPORTANT.into(),
