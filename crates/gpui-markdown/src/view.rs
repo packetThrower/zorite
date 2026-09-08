@@ -2177,7 +2177,7 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
                             let y = p.y + (row_h - px(*h)) / 2.0;
                             let b = Bounds::new(point(p.x, y), size(px(*w), px(*h)));
                             let _ =
-                                window.paint_image(b, Corners::default(), img.clone(), 0, false);
+                                window.paint_image(b, b, Corners::default(), img.clone(), 0, false);
                             if let Some(src) = src {
                                 hits.push((b, src.clone()));
                             }

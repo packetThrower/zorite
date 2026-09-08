@@ -7153,7 +7153,7 @@ impl Render for AppView {
                             this.close_feed_find(cx)
                         }
                         None if this.page_find.is_some() => this.close_page_find(cx),
-                        None if this.page_editing || this.editing_day.is_some() => window.blur(),
+                        None if this.page_editing || this.editing_day.is_some() => window.blur(cx),
                         None => cx.propagate(),
                     }
                 }),
