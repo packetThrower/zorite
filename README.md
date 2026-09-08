@@ -286,15 +286,30 @@ real notes.
 zorite/
 ├── src/                       the app — journal feed, pages, search, slash menu, import, SQLite
 └── crates/
-    ├── zorite-editor/           a from-scratch WYSIWYG Markdown editor (live preview, tables, math hosting)
-    ├── zorite-markdown/         a reusable Markdown renderer for gpui (clickable links, Mermaid, math)
+    ├── zorite-editor/         a from-scratch WYSIWYG Markdown editor (live preview, tables, math hosting)
+    ├── zorite-markdown/       a reusable Markdown renderer for gpui (clickable links, Mermaid, math)
+    ├── gpui-bidi/             bidirectional text for gpui (RTL caret/selection/row layout)
     ├── gpui-pdf/              a page-virtualized PDF viewer (pure-Rust hayro) with highlight markup
     ├── gpui-whiteboard/       a host-agnostic infinite-canvas whiteboard
+    ├── os-cursors/            custom mouse cursors without forking the toolkit
     ├── os-spellcheck/         native OS spell-checking (NSSpellChecker / ISpellChecker)
     └── ratex-gpui/            a structural (MathQuill-style) math editor + LaTeX renderer (RaTeX)
 ```
 
-Each crate is host-agnostic and carries its own README.
+Each crate is host-agnostic, MIT-licensed, and **published on crates.io**:
+
+| Crate | | |
+| --- | --- | --- |
+| `zorite-editor` | [crates.io](https://crates.io/crates/zorite-editor) | [docs.rs](https://docs.rs/zorite-editor) |
+| `zorite-markdown` | [crates.io](https://crates.io/crates/zorite-markdown) | [docs.rs](https://docs.rs/zorite-markdown) |
+| `gpui-bidi` | [crates.io](https://crates.io/crates/gpui-bidi) | [docs.rs](https://docs.rs/gpui-bidi) |
+| `gpui-pdf` | [crates.io](https://crates.io/crates/gpui-pdf) | [docs.rs](https://docs.rs/gpui-pdf) |
+| `gpui-whiteboard` | [crates.io](https://crates.io/crates/gpui-whiteboard) | [docs.rs](https://docs.rs/gpui-whiteboard) |
+| `os-cursors` | [crates.io](https://crates.io/crates/os-cursors) | [docs.rs](https://docs.rs/os-cursors) |
+| `os-spellcheck` | [crates.io](https://crates.io/crates/os-spellcheck) | [docs.rs](https://docs.rs/os-spellcheck) |
+| `ratex-gpui` | [crates.io](https://crates.io/crates/ratex-gpui) | [docs.rs](https://docs.rs/ratex-gpui) |
+
+Each carries its own README and a complete `API.md`.
 
 ## Performance
 
@@ -339,6 +354,9 @@ cost is independent of the total (it's capped to recently-viewed pages).
 [GNU General Public License v3.0 or later](LICENSE). Forks are welcome;
 derivative works must stay open under the same license. Commercial use is
 permitted but can't close the source.
+
+The reusable crates under [`crates/`](#workspace-layout) are licensed **MIT** so any
+gpui application can use them.
 
 Third-party dependencies keep their own licenses (see
 [`THIRD-PARTY-LICENSES.html`](THIRD-PARTY-LICENSES.html)); HEIC/AVIF decoding

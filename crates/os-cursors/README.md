@@ -1,5 +1,7 @@
 # os-cursors
 
+[![crates.io](https://img.shields.io/crates/v/os-cursors.svg)](https://crates.io/crates/os-cursors) [![docs.rs](https://docs.rs/os-cursors/badge.svg)](https://docs.rs/os-cursors) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Per-app **custom mouse cursors** without forking the UI toolkit:
 
 - **macOS** — the `NSCursor` class factory methods (`+arrowCursor`, …) are
@@ -31,6 +33,15 @@ affected; the system cursor is untouched.
 Because interception happens below the toolkit, it works with any AppKit-
 or Win32-backed UI (gpui, winit, …) with zero toolkit patches — and keeps
 working across toolkit upgrades.
+
+## Adding the dependency
+
+Published on [crates.io](https://crates.io/crates/os-cursors):
+
+```toml
+[dependencies]
+os-cursors = "0.1"
+```
 
 ## Quick start
 
@@ -70,4 +81,4 @@ the classic `wl_cursor` path (gpui today) are fine.
 
 ## License
 
-GPL-3.0-or-later, like the rest of the Zorite workspace.
+MIT. (The Zorite app itself is GPL-3.0-or-later.)

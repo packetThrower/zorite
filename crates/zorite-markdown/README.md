@@ -1,5 +1,7 @@
 # zorite-markdown
 
+[![crates.io](https://img.shields.io/crates/v/zorite-markdown.svg)](https://crates.io/crates/zorite-markdown) [![docs.rs](https://docs.rs/zorite-markdown/badge.svg)](https://docs.rs/zorite-markdown) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A small **Markdown renderer for [GPUI](https://www.gpui.rs/)**, built on gpui's own
 `StyledText` / `InteractiveText` so paragraphs wrap properly and links are clickable
 through a real **callback** — unlike renderers that only `cx.open_url` externally.
@@ -84,6 +86,21 @@ This is **the** markdown crate of the Zorite workspace, in two layers:
 
 See [`sample.md`](sample.md) for a document exercising everything.
 
+## Adding the dependency
+
+Published on [crates.io](https://crates.io/crates/zorite-markdown):
+
+```toml
+[dependencies]
+zorite-markdown = "0.9"
+```
+
+> **gpui version:** the crate depends on GPUI as published on crates.io — the
+> `gpui-pre` family, consumed under the name `gpui` (`gpui = { package = "gpui-pre",
+> version = "0.3" }`). Every `gpui-pre` release is a different Zed snapshot, so your
+> app must resolve to the **same** `gpui-pre` version as this crate (one gpui graph);
+> pin it in your `Cargo.lock` and move both together.
+
 ## Quick start
 
 ```rust
@@ -159,9 +176,8 @@ documented in [API.md](API.md).
 
 Feature-complete for CommonMark + GFM. The view parses with the
 [`markdown`](https://crates.io/crates/markdown) crate (mdast); `syntax` is pure
-text and dependency-free. Not yet published to crates.io (gpui is a git-only
-dependency).
+text and dependency-free.
 
 ## License
 
-GPL-3.0-or-later.
+MIT. (The Zorite app itself is GPL-3.0-or-later.)

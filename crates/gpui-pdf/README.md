@@ -1,5 +1,7 @@
 # gpui-pdf
 
+[![crates.io](https://img.shields.io/crates/v/gpui-pdf.svg)](https://crates.io/crates/gpui-pdf) [![docs.rs](https://docs.rs/gpui-pdf/badge.svg)](https://docs.rs/gpui-pdf) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **Page-virtualized PDF viewing for [GPUI](https://www.gpui.rs/)**, built on the
 pure-Rust [`hayro`](https://crates.io/crates/hayro) rasterizer — no native libraries,
 no system-font dependency, so it builds and runs the same on macOS, Linux, and
@@ -41,18 +43,24 @@ return contracts, edge cases, and cost notes, lives in [API.md](API.md).
 
 ## Adding the dependency
 
-Not yet published to crates.io — use a path (or git) dependency:
+Published on [crates.io](https://crates.io/crates/gpui-pdf):
 
 ```toml
 [dependencies]
-gpui-pdf = { path = "../gpui-pdf" }
+gpui-pdf = "0.6"
 
 # Optional features:
 #   markup — text layer + quote-anchored highlights (adds only `kurbo`)
 #   search — find-in-PDF bar; implies markup
 #   forms  — AcroForm values/checkboxes display correctly (adds `lopdf`)
-gpui-pdf = { path = "../gpui-pdf", features = ["search", "forms"] }
+gpui-pdf = { version = "0.6", features = ["search", "forms"] }
 ```
+> **gpui version:** the crate depends on GPUI as published on crates.io — the
+> `gpui-pre` family, consumed under the name `gpui` (`gpui = { package = "gpui-pre",
+> version = "0.3" }`). Every `gpui-pre` release is a different Zed snapshot, so your
+> app must resolve to the **same** `gpui-pre` version as this crate (one gpui graph);
+> pin it in your `Cargo.lock` and move both together.
+
 
 ## Quick start
 
@@ -122,8 +130,8 @@ form navigation. A `forms_check` example reports any PDF's widget shapes.
 Early, but solid for scroll-to-read viewing. Password-protected PDFs open behind a
 host-rendered prompt. Markup, find-in-PDF, and forms (display + filling) are
 available behind their features. Roadmap: area highlights for pages with no
-text layer; choice-field dropdowns. Not yet published to crates.io.
+text layer; choice-field dropdowns.
 
 ## License
 
-GPL-3.0-or-later.
+MIT. (The Zorite app itself is GPL-3.0-or-later.)

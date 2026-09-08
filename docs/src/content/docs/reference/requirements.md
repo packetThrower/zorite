@@ -22,8 +22,9 @@ Linux additionally needs a **Vulkan-capable GPU with current Mesa drivers**.
 
 ## Building from source
 
-Zorite is a small Rust workspace — the app plus three reusable crates
-(`zorite-markdown`, `gpui-pdf`, `gpui-whiteboard`).
+Zorite is a Rust workspace — the app plus eight reusable crates (published on
+[crates.io](https://crates.io/users/packetThrower); see the
+[crate reference](/zorite/reference/crates/gpui-bidi/)).
 
 ```sh
 git clone git@github.com:packetThrower/zorite.git

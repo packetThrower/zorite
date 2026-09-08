@@ -124,7 +124,8 @@ artifact directly from the
 
 ## Building from source
 
-A small Rust workspace — the app plus three reusable crates. See
+A Rust workspace — the app plus eight reusable crates (published on
+[crates.io](https://crates.io/users/packetThrower)). See
 [Requirements](/zorite/reference/requirements/) for the per-OS system libraries.
 
 ```sh

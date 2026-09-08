@@ -7,7 +7,8 @@ already here — match the surrounding code, and prefer deleting over adding.
 
 Zorite — a cross-platform (macOS / Windows / Linux) Markdown daily-journal desktop app.
 Rust + [GPUI](https://www.gpui.rs) + gpui-component + SQLite. The repo is a Cargo
-workspace (edition 2024): the app at the root, plus eight reusable crates under `crates/`.
+workspace (edition 2024): the app at the root, plus eight reusable crates under `crates/`
+(MIT, published on crates.io; the app is GPL-3.0-or-later).
 
 ## Layout
 
@@ -133,3 +134,12 @@ winget submission fires automatically when it completes on a stable tag
 `gh workflow run after_release.yml -f tag_name=vX.Y.Z` remains as the fallback
 if a run flakes). Homebrew tap + Scoop bucket bumps stay manual (version +
 hashes from the release's SHA256SUMS).
+
+**Crate releases** are independent of app releases: bump `version` in
+`crates/<name>/Cargo.toml` (and the `version` requirement in any workspace crate that
+depends on it — path deps carry one so they publish), update the README's dependency
+snippet, then `cargo publish -p <name>` in dependency order (bidi → markdown → editor).
+`gpui` is the crates.io `gpui-pre` family, spec `"0.3"` (caret) so consumers aren't
+pinned to one snapshot; `Cargo.lock` holds the exact version for this workspace. The
+token needs the `publish-update` scope; crates.io limits new-crate publishes to five
+then one per ten minutes.

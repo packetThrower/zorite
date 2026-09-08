@@ -65,8 +65,8 @@ typing still works for combos that allow free entry.
 
 PDF rendering is pure-Rust via [`hayro`](https://crates.io/crates/hayro), so
 there are **no native dependencies**. The viewer is its own reusable
-[`gpui-pdf`](https://github.com/packetThrower/zorite/blob/main/crates/gpui-pdf/README.md)
-crate.
+[`gpui-pdf`](https://crates.io/crates/gpui-pdf) crate
+([reference](/zorite/reference/crates/gpui-pdf/)).
 
 ## Inline images
 

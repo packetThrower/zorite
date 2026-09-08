@@ -1,5 +1,7 @@
 # gpui-whiteboard
 
+[![crates.io](https://img.shields.io/crates/v/gpui-whiteboard.svg)](https://crates.io/crates/gpui-whiteboard) [![docs.rs](https://docs.rs/gpui-whiteboard/badge.svg)](https://docs.rs/gpui-whiteboard) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 **An infinite, pannable/zoomable whiteboard canvas for [GPUI](https://www.gpui.rs/).**
 Shapes, lines, arrows, freehand ink, text, images, and "page cards" on a boundless
 board — with select / move / resize / rotate / z-order, a built-in toolbar + color
@@ -60,6 +62,21 @@ GPUI app on macOS, Linux, or Windows. It comes in two layers:
   clipboard, or your page store. It calls back to you ([hooks](#host-hooks)) to fetch
   an image bitmap, open a page, read/write the clipboard, or persist the scene — and
   hands you a plain JSON string to store however you like.
+
+## Adding the dependency
+
+Published on [crates.io](https://crates.io/crates/gpui-whiteboard):
+
+```toml
+[dependencies]
+gpui-whiteboard = "0.5"
+```
+
+> **gpui version:** the crate depends on GPUI as published on crates.io — the
+> `gpui-pre` family, consumed under the name `gpui` (`gpui = { package = "gpui-pre",
+> version = "0.3" }`). Every `gpui-pre` release is a different Zed snapshot, so your
+> app must resolve to the **same** `gpui-pre` version as this crate (one gpui graph);
+> pin it in your `Cargo.lock` and move both together.
 
 ## Quick start
 
@@ -479,5 +496,5 @@ large.
 
 ## License
 
-GPL-3.0-or-later. The bundled default font (JetBrains Mono) is under the SIL Open Font
+MIT (the Zorite app itself is GPL-3.0-or-later). The bundled default font (JetBrains Mono) is under the SIL Open Font
 License — see `assets/JetBrainsMono-OFL.txt`.

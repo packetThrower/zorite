@@ -1,5 +1,7 @@
 # ratex-gpui
 
+[![crates.io](https://img.shields.io/crates/v/ratex-gpui.svg)](https://crates.io/crates/ratex-gpui) [![docs.rs](https://docs.rs/ratex-gpui/badge.svg)](https://docs.rs/ratex-gpui) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A **structural, [MathQuill](https://mathquill.com/)-style math editor for [GPUI](https://www.gpui.rs/)**,
 built on the [RaTeX](https://crates.io/crates/ratex-parser) typesetting engine. RaTeX is the
 engine (parse → layout → rasterize); this crate is the **editor + display layer** for gpui.
@@ -44,13 +46,15 @@ commit); edit those as raw LaTeX instead. Details in [API.md](API.md) under `par
 
 ## Adding the dependency
 
+Published on [crates.io](https://crates.io/crates/ratex-gpui):
+
 ```toml
 # Full crate (default `editor` feature: MathEditor + the editing modules):
-ratex-gpui = { version = "0.1" }
+ratex-gpui = { version = "0.4" }
 
 # Render-only build — LaTeX → image / PNG / SVG plus the parse/serialize core,
 # without the gpui view + editing machinery:
-ratex-gpui = { version = "0.1", default-features = false }
+ratex-gpui = { version = "0.4", default-features = false }
 ```
 
 ## Quick start
@@ -121,9 +125,10 @@ blocks and inline `$…$` formulas.
 Typesetting comes from the [RaTeX](https://crates.io/crates/ratex-parser) crates —
 `ratex-parser` (parse), `ratex-layout` (box layout), `ratex-render` (raster, KaTeX fonts
 embedded), and `ratex-svg` (vector export). This crate adds the editing model + cursor +
-hit-testing and the gpui view/render adapters on top. `gpui` is a **git-only** dependency
-(tracking Zed), so this isn't published to crates.io yet.
+hit-testing and the gpui view/render adapters on top. GPUI comes from crates.io as the
+`gpui-pre` family (`gpui = { package = "gpui-pre", version = "0.3" }`); keep your app on
+the same `gpui-pre` version as this crate so there is one gpui graph.
 
 ## License
 
-GPL-3.0-or-later.
+MIT. (The Zorite app itself is GPL-3.0-or-later.)

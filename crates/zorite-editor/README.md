@@ -1,5 +1,7 @@
 # zorite-editor
 
+[![crates.io](https://img.shields.io/crates/v/zorite-editor.svg)](https://crates.io/crates/zorite-editor) [![docs.rs](https://docs.rs/zorite-editor/badge.svg)](https://docs.rs/zorite-editor) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A from-scratch, multi-line **text editor for [GPUI](https://github.com/zed-industries/zed)** —
 the basis for [Zorite](https://github.com/packetThrower/zorite)'s note editor.
 
@@ -67,17 +69,18 @@ return contracts, edge cases, and the seat/commit protocols, lives in
 
 ## Adding the dependency
 
-It's a path/git crate (not on crates.io — `gpui` is a git-only dependency):
+Published on [crates.io](https://crates.io/crates/zorite-editor):
 
 ```toml
 [dependencies]
-zorite-editor = { path = "crates/zorite-editor" }   # or a git dependency
+zorite-editor = "0.10"
 ```
 
-> **gpui revision:** this crate takes the workspace's pinned `gpui` rev
-> (`[workspace.dependencies]` — one spec, byte-for-byte). In a separate
-> workspace, keep your `gpui` rev in lockstep with this crate's or you'll get
-> two `gpui` versions in one build (won't compile).
+> **gpui version:** the crate depends on GPUI as published on crates.io — the
+> `gpui-pre` family, consumed under the name `gpui` (`gpui = { package = "gpui-pre",
+> version = "0.3" }`). Every `gpui-pre` release is a different Zed snapshot, so your
+> app must resolve to the **same** `gpui-pre` version as this crate (one gpui graph);
+> pin it in your `Cargo.lock` and move both together.
 
 ## Quick start
 
@@ -231,4 +234,4 @@ suggestions.
 
 ## License
 
-GPL-3.0-or-later.
+MIT. (The Zorite app itself is GPL-3.0-or-later.)

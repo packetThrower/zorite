@@ -1,5 +1,7 @@
 # os-spellcheck
 
+[![crates.io](https://img.shields.io/crates/v/os-spellcheck.svg)](https://crates.io/crates/os-spellcheck) [![docs.rs](https://docs.rs/os-spellcheck/badge.svg)](https://docs.rs/os-spellcheck) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Native **OS spell-checking** with a tiny, host-agnostic API:
 
 - **macOS** — Apple's `NSSpellChecker` (AppKit).
@@ -27,9 +29,11 @@ without ever paying for suggestions until the user actually asks for them.
 
 ## Adding the dependency
 
+Published on [crates.io](https://crates.io/crates/os-spellcheck):
+
 ```toml
 [dependencies]
-os-spellcheck = "0.1"
+os-spellcheck = "0.2"
 ```
 
 No features to configure — the platform backend is selected by `cfg`. On macOS it
@@ -97,4 +101,4 @@ editor.update(cx, |ed, _| {
 
 ## License
 
-GPL-3.0-or-later.
+MIT. (The Zorite app itself is GPL-3.0-or-later.)

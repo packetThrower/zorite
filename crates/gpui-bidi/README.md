@@ -1,5 +1,7 @@
 # gpui-bidi
 
+[![crates.io](https://img.shields.io/crates/v/gpui-bidi.svg)](https://crates.io/crates/gpui-bidi) [![docs.rs](https://docs.rs/gpui-bidi/badge.svg)](https://docs.rs/gpui-bidi) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Bidirectional text for [GPUI](https://www.gpui.rs): read a shaped line's
 already-reordered glyphs correctly, break a paragraph into rows in reading
 order, and paint a styled row without the colours collapsing.
@@ -56,6 +58,21 @@ from the glyph geometry: at the *edge* of an embedded run the glyph beside it
 belongs to the other run and carries a misleading index, so geometry is exact
 in the middle of a run and wrong precisely where it matters.
 
+## Adding the dependency
+
+Published on [crates.io](https://crates.io/crates/gpui-bidi):
+
+```toml
+[dependencies]
+gpui-bidi = "0.1"
+```
+
+> **gpui version:** the crate depends on GPUI as published on crates.io — the
+> `gpui-pre` family, consumed under the name `gpui` (`gpui = { package = "gpui-pre",
+> version = "0.3" }`). Every `gpui-pre` release is a different Zed snapshot, so your
+> app must resolve to the **same** `gpui-pre` version as this crate (one gpui graph);
+> pin it in your `Cargo.lock` and move both together.
+
 ## Quick start
 
 ```rust
@@ -104,4 +121,4 @@ Complete reference: [API.md](API.md).
 
 ## License
 
-GPL-3.0-or-later, same as Zorite.
+MIT. (The Zorite app itself is GPL-3.0-or-later.)
