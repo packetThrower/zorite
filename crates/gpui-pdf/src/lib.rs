@@ -35,11 +35,14 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui::{
-    AnyView, App, AppContext, Bounds, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Pixels, Render,
-    RenderImage, ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla,
-    img, point, px,
+    AnyView, App, AppContext, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement,
+    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, ParentElement, Render, RenderImage,
+    ScrollHandle, SharedString, StatefulInteractiveElement, Styled, Window, div, hsla, img, point,
+    px,
 };
+// Only the forms layer maps field rects to window space.
+#[cfg(feature = "forms")]
+use gpui::{Bounds, Pixels};
 use hayro::hayro_interpret::InterpreterSettings;
 use hayro::hayro_syntax::{DecryptionError, LoadPdfError, Pdf};
 use image::{Frame, RgbaImage};
@@ -592,8 +595,10 @@ pub struct PdfView {
     on_highlight: Option<HighlightClickFn>,
     /// "Area mode" (only meaningful while `selecting`): a drag marks a page
     /// region instead of selecting text (markup).
+    #[cfg(feature = "markup")]
     area_mode: bool,
     /// Called when an area drag finishes, so the host stores it (markup).
+    #[cfg(feature = "markup")]
     on_create_area: Option<CreateAreaFn>,
     /// "Highlight mode": dragging over text selects + creates a highlight (markup).
     #[cfg(feature = "markup")]
@@ -724,7 +729,9 @@ impl PdfView {
             on_highlight: None,
             #[cfg(feature = "markup")]
             selecting: false,
+            #[cfg(feature = "markup")]
             area_mode: false,
+            #[cfg(feature = "markup")]
             on_create_area: None,
             #[cfg(feature = "markup")]
             sel_drag: None,
@@ -1003,6 +1010,7 @@ impl PdfView {
     /// on release. Turning it on turns text-highlight mode's selection off (they
     /// share the pen state); turning either mode off clears the other.
     /// (`markup` feature.)
+    #[cfg(feature = "markup")]
     pub fn toggle_area_mode(&mut self, cx: &mut Context<Self>) {
         if self.selecting && self.area_mode {
             self.selecting = false;
@@ -1017,6 +1025,7 @@ impl PdfView {
     }
 
     /// Set the handler invoked when an area (box) drag finishes. (`markup` feature.)
+    #[cfg(feature = "markup")]
     pub fn set_on_create_area(&mut self, f: CreateAreaFn, _cx: &mut Context<Self>) {
         self.on_create_area = Some(f);
     }
