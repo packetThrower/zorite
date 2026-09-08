@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 description = "An infinite, pannable/zoomable whiteboard canvas for GPUI."
 license = "GPL-3.0-or-later"
+repository = "https://github.com/packetThrower/zorite"
+homepage = "https://packetthrower.github.io/zorite/reference/crates/gpui-whiteboard/"
+keywords = ["gpui", "whiteboard", "canvas", "drawing", "infinite-canvas"]
+categories = ["gui", "graphics"]
 
 [dependencies]
 # Shared workspace spec (the root pins the rev) so Cargo unifies to one gpui.

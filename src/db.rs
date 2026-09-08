@@ -1049,11 +1049,11 @@ impl Db {
             // Navigation's rule applies: an EXISTING literal `#`-titled page
             // wins; otherwise the anchor splits off. Without this, every
             // anchor link spawned a junk page named `Note#…`.
-            let (base, block) = gpui_markdown::syntax::split_block_anchor(title);
+            let (base, block) = zorite_markdown::syntax::split_block_anchor(title);
             let title = if block.is_some() {
                 base
             } else if title.contains('#') && !matches!(self.get_page_by_title(title), Ok(Some(_))) {
-                gpui_markdown::syntax::split_heading_anchor(title).0
+                zorite_markdown::syntax::split_heading_anchor(title).0
             } else {
                 title
             };
@@ -1135,7 +1135,7 @@ impl Db {
                 if in_fence {
                     continue;
                 }
-                if let Some((k, v)) = gpui_markdown::syntax::property(line) {
+                if let Some((k, v)) = zorite_markdown::syntax::property(line) {
                     let vals = map.entry(k.to_string()).or_default();
                     if !v.is_empty() {
                         vals.insert(v.to_string());
@@ -1173,7 +1173,7 @@ impl Db {
                 if in_fence {
                     continue;
                 }
-                if let Some((k, v)) = gpui_markdown::syntax::property(line) {
+                if let Some((k, v)) = zorite_markdown::syntax::property(line) {
                     map.entry(k.to_string())
                         .or_default()
                         .entry(v.to_string())
@@ -1227,7 +1227,7 @@ impl Db {
                     if line.trim_start().starts_with("```") {
                         in_fence = !in_fence;
                     } else if !in_fence
-                        && let Some((k, _)) = gpui_markdown::syntax::property(line)
+                        && let Some((k, _)) = zorite_markdown::syntax::property(line)
                         && k == old
                     {
                         // The key starts right after the indentation and is
@@ -1550,7 +1550,7 @@ pub(crate) fn snippet(content: &str, needle: &str) -> String {
 /// `[[title#…]]`, or `#tag` form, case-insensitive), as
 /// `(line index, byte offset of the line start)`.
 fn find_reference(content: &str, title: &str) -> Option<(usize, usize)> {
-    use gpui_markdown::syntax::{LinkHit, links, split_block_anchor, split_heading_anchor};
+    use zorite_markdown::syntax::{LinkHit, links, split_block_anchor, split_heading_anchor};
     let mut off = 0;
     for (idx, line) in content.split('\n').enumerate() {
         for (_, hit) in links(line) {

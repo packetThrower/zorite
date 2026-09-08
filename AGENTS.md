@@ -15,8 +15,8 @@ workspace (edition 2024): the app at the root, plus eight reusable crates under 
   settings, and the host-side renderers (`ui/`).
 - `crates/gpui-bidi` — bidirectional text for GPUI: index↔x over reordered glyphs,
   logical-order row layout, and the row painter both renderers use (#66).
-- `crates/gpui-editor` — from-scratch text editor for GPUI (the WYSIWYG markdown surface).
-- `crates/gpui-markdown` — Markdown reading-view renderer.
+- `crates/zorite-editor` — from-scratch text editor for GPUI (the WYSIWYG markdown surface).
+- `crates/zorite-markdown` — Markdown reading-view renderer.
 - `crates/gpui-pdf` — page-virtualized PDF viewer (pure-Rust `hayro`, no native libs).
 - `crates/gpui-whiteboard` — infinite pan/zoom whiteboard canvas.
 - `crates/ratex-gpui` — LaTeX math renderer + structural editor (RaTeX engine).
@@ -31,9 +31,9 @@ comments, and commits — so a search for the view name finds its implementation
 
 | View | What it is | Owner | Switched by |
 |---|---|---|---|
-| **WYSIWYG** | Live-preview *editing*: markers dimmed/hidden, headings sized, images/tables/math render inline, reveal-on-caret | `crates/gpui-editor` with a `markdown_style` installed | `AppView.wysiwyg` on (the default; Settings → Markdown) |
-| **raw** | Plain-text *editing*: the bare markdown source, no styling | `crates/gpui-editor` with no `markdown_style` | `AppView.wysiwyg` off, while editing |
-| **reader** | *Read-only* rendered markdown (clickable links, checkboxes) | `crates/gpui-markdown` (`MarkdownView`) | `AppView.wysiwyg` off, when not editing |
+| **WYSIWYG** | Live-preview *editing*: markers dimmed/hidden, headings sized, images/tables/math render inline, reveal-on-caret | `crates/zorite-editor` with a `markdown_style` installed | `AppView.wysiwyg` on (the default; Settings → Markdown) |
+| **raw** | Plain-text *editing*: the bare markdown source, no styling | `crates/zorite-editor` with no `markdown_style` | `AppView.wysiwyg` off, while editing |
+| **reader** | *Read-only* rendered markdown (clickable links, checkboxes) | `crates/zorite-markdown` (`MarkdownView`) | `AppView.wysiwyg` off, when not editing |
 
 The app picks the view in `day_section` (`src/ui/journal.rs`) and its
 `src/ui/page_view.rs` twin; hosts wire renderers/handlers to both crates from
@@ -41,8 +41,8 @@ The app picks the view in `day_section` (`src/ui/journal.rs`) and its
 
 **The cross-view rule:** any user-facing markdown behavior — rendering a
 construct, clicking it, hover cursors — must be implemented (or knowingly
-skipped) in **both** the reader (`gpui-markdown`) and WYSIWYG
-(`gpui-editor`); raw is plain text by design. They are separate engines and
+skipped) in **both** the reader (`zorite-markdown`) and WYSIWYG
+(`zorite-editor`); raw is plain text by design. They are separate engines and
 share nothing: a feature added to one does NOT appear in the other. This has
 bitten before — links (`[[wiki]]`, `#tag`, `[text](url)`) navigated in the
 reader for months while WYSIWYG silently ignored clicks (fixed in 0.4.1).
@@ -54,7 +54,7 @@ height 1.45) converge toward it. The exceptions: bullet-list item spacing
 AND list indentation (bullet→text gap) follow the READER's roomier look.
 (User-set rules, 2026-07-02.)
 
-`gpui-editor` comments use `W1`/`W2`/`W4a–c`/`W6` milestone codes for WYSIWYG
+`zorite-editor` comments use `W1`/`W2`/`W4a–c`/`W6` milestone codes for WYSIWYG
 features — the legend is in that crate's `lib.rs` top doc.
 
 ## Build, run, and the gate
@@ -87,8 +87,8 @@ change must stay cross-platform.
 - **Crates stay host-agnostic.** `crates/*` depend on `gpui` only — not `gpui-component`,
   not the app — and run on all three platforms with no native libraries. Sibling
   dependencies are sanctioned one at a time, and there are two:
-  - `gpui-editor` → `gpui-markdown`, for the shared construct **recognition** in
-    `gpui_markdown::syntax` (alert kinds, table styles, heading scales, writing
+  - `zorite-editor` → `zorite-markdown`, for the shared construct **recognition** in
+    `zorite_markdown::syntax` (alert kinds, table styles, heading scales, writing
     direction) — never for rendering.
   - both renderers → `gpui-bidi`, the bidi layer (#66). It is a leaf: the
     index↔x map, logical-order row layout, and the row painter that works

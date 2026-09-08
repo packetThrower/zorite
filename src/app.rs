@@ -32,7 +32,7 @@ use gpui_component::{
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
 };
-use gpui_editor::{Diagnostic, EditorEvent, EditorState};
+use zorite_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
     CloseTab, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
@@ -225,7 +225,7 @@ pub struct DayEditor {
     /// bracket/quote insertions for auto-pairing.
     prev: String,
     _sub: Subscription,
-    /// gpui-editor has no Focus/Blur events, so we listen on its focus handle.
+    /// zorite-editor has no Focus/Blur events, so we listen on its focus handle.
     _focus_sub: Subscription,
     _blur_sub: Subscription,
 }
@@ -246,7 +246,7 @@ pub struct PageEditor {
     /// Last-change text snapshot for auto-pair detection (see `DayEditor::prev`).
     prev: String,
     _sub: Subscription,
-    /// gpui-editor has no Focus/Blur events, so we listen on its focus handle.
+    /// zorite-editor has no Focus/Blur events, so we listen on its focus handle.
     _focus_sub: Subscription,
     _blur_sub: Subscription,
     _title_sub: Subscription,
@@ -1199,7 +1199,7 @@ impl AppView {
                 }
             },
         );
-        // gpui-editor has no Focus/Blur events; listen on its focus handle.
+        // zorite-editor has no Focus/Blur events; listen on its focus handle.
         let handle = state.read(cx).focus_handle(cx);
         let weak = cx.entity().downgrade();
         let fkey = date.clone();
@@ -1496,7 +1496,7 @@ impl AppView {
         // A `[[Note#^block-id]]` link targets a block: open the note, then seat
         // the caret at (and scroll to) the line carrying the `^block-id` anchor.
         // Only the `#^` form is an anchor — a bare `#` stays part of the title.
-        let (title, block) = gpui_markdown::syntax::split_block_anchor(title);
+        let (title, block) = zorite_markdown::syntax::split_block_anchor(title);
         // A `[[file.pdf]]` link opens the PDF viewer instead of a page; a `#pN`
         // fragment (`[[file.pdf#p12]]`) also jumps to page N when it's already loaded.
         let (base, target_page) = match title.split_once('#') {
@@ -1529,7 +1529,7 @@ impl AppView {
             && title.contains('#')
             && !matches!(self.db.get_page_by_title(title), Ok(Some(_)))
         {
-            gpui_markdown::syntax::split_heading_anchor(title)
+            zorite_markdown::syntax::split_heading_anchor(title)
         } else {
             (title, None)
         };
@@ -1543,11 +1543,11 @@ impl AppView {
                     .then(|| {
                         block
                             .and_then(|id| {
-                                gpui_markdown::syntax::find_block_line(&page.content, id)
+                                zorite_markdown::syntax::find_block_line(&page.content, id)
                             })
                             .or_else(|| {
                                 heading.and_then(|h| {
-                                    gpui_markdown::syntax::find_heading_line(&page.content, h)
+                                    zorite_markdown::syntax::find_heading_line(&page.content, h)
                                 })
                             })
                     })
@@ -2026,7 +2026,7 @@ impl AppView {
                 }
             },
         );
-        // gpui-editor has no Focus/Blur events; listen on its focus handle.
+        // zorite-editor has no Focus/Blur events; listen on its focus handle.
         let handle = state.read(cx).focus_handle(cx);
         let weak = cx.entity().downgrade();
         let fstate = state.clone();
@@ -2670,8 +2670,8 @@ impl AppView {
         // On a list/quote line, Tab indents the whole item; elsewhere it inserts the
         // configured indent (default four spaces) at the caret.
         let indent = self.list_indent_str();
-        let (new, caret) =
-            gpui_markdown::indent_list_line(&value, cursor, &indent).unwrap_or_else(|| {
+        let (new, caret) = zorite_markdown::indent_list_line(&value, cursor, &indent)
+            .unwrap_or_else(|| {
                 (
                     format!("{}{indent}{}", &value[..cursor], &value[cursor..]),
                     cursor + indent.len(),
@@ -2702,7 +2702,7 @@ impl AppView {
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
         let indent = self.list_indent_str();
-        if let Some((new, caret)) = gpui_markdown::outdent_line(&value, cursor, &indent) {
+        if let Some((new, caret)) = zorite_markdown::outdent_line(&value, cursor, &indent) {
             self.apply_editor_edit(&target, &editor, new, caret, window, cx);
         }
     }
@@ -2935,15 +2935,15 @@ impl AppView {
         };
         let value = editor.read(cx).value().to_string();
         let cursor = editor.read(cx).cursor().min(value.len());
-        let Some(edit) = gpui_markdown::list_continuation(&value, cursor) else {
+        let Some(edit) = zorite_markdown::list_continuation(&value, cursor) else {
             return false;
         };
         let (new, caret) = match edit {
-            gpui_markdown::ListEdit::Continue(insert) => (
+            zorite_markdown::ListEdit::Continue(insert) => (
                 format!("{}{}{}", &value[..cursor], insert, &value[cursor..]),
                 cursor + insert.len(),
             ),
-            gpui_markdown::ListEdit::Exit { start, end } => {
+            zorite_markdown::ListEdit::Exit { start, end } => {
                 (format!("{}{}", &value[..start], &value[end..]), start)
             }
         };
@@ -2992,7 +2992,7 @@ impl AppView {
 
     /// The typeset-formula cache, shared into the markdown math renderer.
     /// The fenced-code highlighter callback for the reader (`on_highlight`).
-    pub fn highlighter_fn(&self) -> gpui_markdown::CodeHighlighter {
+    pub fn highlighter_fn(&self) -> zorite_markdown::CodeHighlighter {
         let store = self.highlight_store.clone();
         std::rc::Rc::new(move |lang, code| {
             store.borrow_mut().highlight(lang, code).as_ref().clone()
@@ -3103,7 +3103,7 @@ impl AppView {
         // Reserve a gap tall enough for the rows + the add-property button.
         let n = block
             .lines()
-            .filter(|l| gpui_markdown::syntax::property(l).is_some())
+            .filter(|l| zorite_markdown::syntax::property(l).is_some())
             .count()
             .max(1);
         let height = px(n as f32 * 34.0 + 44.0);
@@ -5154,7 +5154,7 @@ impl AppView {
 
     /// [`Self::edit_day`] variant for clicking a day's rendered text: enter edit mode
     /// with the caret at source byte `offset` and keep the clicked line under the cursor
-    /// (gpui-markdown maps the click to a source offset and reports the click's `click_y`).
+    /// (zorite-markdown maps the click to a source offset and reports the click's `click_y`).
     pub fn edit_day_at_offset(
         &mut self,
         date: &str,
@@ -5217,7 +5217,7 @@ impl AppView {
     }
 
     /// Enter edit mode with the caret at source byte `offset` — used when clicking
-    /// the rendered page (gpui-markdown maps the click to a source offset and reports
+    /// the rendered page (zorite-markdown maps the click to a source offset and reports
     /// the click's window `click_y`), so the cursor lands where you clicked.
     /// `set_cursor_position` also focuses the editor.
     pub fn edit_page_at_offset(
@@ -5686,7 +5686,7 @@ impl AppView {
         for (target, state) in targets {
             state.update(cx, |editor, _| editor.set_tab_indent(spaces));
             let content = state.read(cx).value().to_string();
-            if let Some(new) = gpui_markdown::reindent(&content, old, spaces) {
+            if let Some(new) = zorite_markdown::reindent(&content, old, spaces) {
                 state.update(cx, |editor, cx| editor.set_text(new.clone(), cx));
                 match &target {
                     SlashTarget::Day(d) => self.save_journal(d, &new, cx),
@@ -6424,7 +6424,7 @@ impl AppView {
             // still off-screen and unpainted) are skipped — size unknown.
             let imgs: Vec<(Range<usize>, f32)> = {
                 let widths = self.image_widths.borrow();
-                gpui_markdown::images(&value)
+                zorite_markdown::images(&value)
                     .into_iter()
                     .filter_map(|img| {
                         let w = img
@@ -7434,9 +7434,9 @@ fn clamp_to_boundary(source: &str, offset: usize) -> usize {
     offset
 }
 
-/// Layout constants for our chrome-less gpui-editor body editors, used by
+/// Layout constants for our chrome-less zorite-editor body editors, used by
 /// [`predict_caret_row`] to position the caret *before* the editor first paints.
-/// gpui-editor draws no internal padding and soft-wraps at its full width, so
+/// zorite-editor draws no internal padding and soft-wraps at its full width, so
 /// the padding / wrap-margin are zero (kept named so the click-to-edit math
 /// reads clearly). Its line height is the text size × its `LINE_HEIGHT_RATIO`.
 const INPUT_PY: Pixels = px(0.0);
@@ -7464,8 +7464,8 @@ fn predict_caret_row(
     let mut style = window.text_style();
     style.font_size = text_size.into();
     style.font_family = cx.theme().font_family.clone();
-    // gpui-editor sizes rows from its own font, not the ambient line height.
-    let line_height = text_size * gpui_editor::LINE_HEIGHT_RATIO;
+    // zorite-editor sizes rows from its own font, not the ambient line height.
+    let line_height = text_size * zorite_editor::LINE_HEIGHT_RATIO;
     let wrap_width = slot_width - INPUT_PX * 2.0 - INPUT_WRAP_RIGHT_MARGIN;
     let mut wrapper = cx.text_system().line_wrapper(style.font(), text_size);
     let off = clamp_to_boundary(source, off);
@@ -7574,7 +7574,7 @@ fn align_caret_to_click(mut state: CaretAlign, window: &mut Window) {
 fn make_editor(
     content: &str,
     wysiwyg: bool,
-    style: gpui_editor::SyntaxStyle,
+    style: zorite_editor::SyntaxStyle,
     list_indent: usize,
     image_store: Rc<RefCell<crate::images::ImageStore>>,
     mermaid_store: Rc<RefCell<crate::mermaid::MermaidStore>>,
@@ -7586,7 +7586,7 @@ fn make_editor(
     window: &mut Window,
     cx: &mut Context<AppView>,
 ) -> Entity<EditorState> {
-    // Our gpui-editor auto-grows to its content height and soft-wraps by design,
+    // Our zorite-editor auto-grows to its content height and soft-wraps by design,
     // so the feed/page scrolls and the editor never does — the behavior the old
     // `auto_grow(1, 100_000)` InputState approximated.
     let editor = cx.new(|cx| {

@@ -2773,18 +2773,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gpui-editor"
-version = "0.1.0"
-dependencies = [
- "gpui-bidi",
- "gpui-markdown",
- "gpui-pre",
- "gpui-pre-platform",
- "os-spellcheck",
- "unicode-segmentation",
-]
-
-[[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2797,15 +2785,6 @@ dependencies = [
  "rust-embed",
  "wasm-bindgen",
  "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "gpui-markdown"
-version = "0.1.0"
-dependencies = [
- "gpui-bidi",
- "gpui-pre",
- "markdown",
 ]
 
 [[package]]
@@ -10636,9 +10615,7 @@ dependencies = [
  "embed-resource",
  "env_logger",
  "gpui-component",
- "gpui-editor",
  "gpui-kit-assets",
- "gpui-markdown",
  "gpui-pdf",
  "gpui-pre",
  "gpui-pre-platform",
@@ -10667,6 +10644,29 @@ dependencies = [
  "trash",
  "ureq",
  "url",
+ "zorite-editor",
+ "zorite-markdown",
+]
+
+[[package]]
+name = "zorite-editor"
+version = "0.1.0"
+dependencies = [
+ "gpui-bidi",
+ "gpui-pre",
+ "gpui-pre-platform",
+ "os-spellcheck",
+ "unicode-segmentation",
+ "zorite-markdown",
+]
+
+[[package]]
+name = "zorite-markdown"
+version = "0.1.0"
+dependencies = [
+ "gpui-bidi",
+ "gpui-pre",
+ "markdown",
 ]
 
 [[package]]

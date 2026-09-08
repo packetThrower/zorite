@@ -1,6 +1,6 @@
-//! Standalone demo for the `gpui-editor` crate.
+//! Standalone demo for the `zorite-editor` crate.
 //!
-//! Run with: `cargo run -p gpui-editor --example demo`.
+//! Run with: `cargo run -p zorite-editor --example demo`.
 //!
 //! Wires the editor to the real OS spell checker (M6): misspelled words get red
 //! squiggles, and right-clicking one offers the system's suggestions. Type to
@@ -13,8 +13,8 @@ use gpui::{
     Styled, Subscription, Window, WindowBounds, WindowOptions, actions, div, font, hsla, px, rgb,
     size,
 };
-use gpui_editor::{Diagnostic, EditorEvent, EditorState, SyntaxStyle};
 use os_spellcheck::SpellChecker;
+use zorite_editor::{Diagnostic, EditorEvent, EditorState, SyntaxStyle};
 
 actions!(demo, [Quit]);
 
@@ -96,7 +96,7 @@ fn diagnostics_for(text: &str) -> Vec<Diagnostic> {
 
 fn main() {
     gpui_platform::application().run(|cx: &mut App| {
-        gpui_editor::bind_keys(cx);
+        zorite_editor::bind_keys(cx);
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
         cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
 

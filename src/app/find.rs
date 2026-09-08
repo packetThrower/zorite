@@ -39,16 +39,16 @@ impl FeedFind {
 
 /// In-page find state. The query field's Change events recompute `count` against
 /// the active page; `current` + `count` size the bar's "n of m" and pick which
-/// match [`gpui_markdown::MarkdownView::search`] emphasizes.
+/// match [`zorite_markdown::MarkdownView::search`] emphasizes.
 pub struct PageFind {
     pub input: Entity<InputState>,
     pub query: String,
     pub current: usize,
     pub count: usize,
-    /// Block index (per `gpui_markdown::find_matches`) of each match, used to scroll
+    /// Block index (per `zorite_markdown::find_matches`) of each match, used to scroll
     /// the active match's block into view (reader mode).
     match_blocks: Vec<usize>,
-    /// Source byte range of each match (per `gpui_editor::find_in_source`),
+    /// Source byte range of each match (per `zorite_editor::find_in_source`),
     /// driving the editor's highlights + scroll in WYSIWYG/editing mode.
     ranges: Vec<std::ops::Range<usize>>,
     _sub: Subscription,
@@ -110,11 +110,11 @@ impl AppView {
             .as_ref()
             .map(|pe| pe.state.read(cx).value().to_string())
             .unwrap_or_default();
-        let blocks = gpui_markdown::find_matches(&content, &query);
+        let blocks = zorite_markdown::find_matches(&content, &query);
         let ranges = if query.trim().is_empty() {
             Vec::new()
         } else {
-            gpui_editor::find_in_source(&content, &query)
+            zorite_editor::find_in_source(&content, &query)
         };
         // The count follows the surface doing the finding: source matches in
         // the editor (WYSIWYG/editing), rendered blocks in the reader.
@@ -258,7 +258,7 @@ impl AppView {
                 let date = date_for_offset(i);
                 if let Some(day) = self.day_editors.get(&date) {
                     let content = day.state.read(cx).value().to_string();
-                    for r in gpui_editor::find_in_source(&content, &query) {
+                    for r in zorite_editor::find_in_source(&content, &query) {
                         matches.push((date.clone(), r));
                     }
                 }
@@ -334,7 +334,7 @@ impl AppView {
             day.state.read(cx).offset_screen_top(range.start)
         } else {
             let content = day.state.read(cx).value().to_string();
-            let blocks = gpui_markdown::find_matches(&content, &ff.query);
+            let blocks = zorite_markdown::find_matches(&content, &ff.query);
             let in_day = ff.current_in_day(date).min(blocks.len().saturating_sub(1));
             blocks
                 .get(in_day)

@@ -1,5 +1,5 @@
 //! Zorite's **reader** view: a small read-only markdown renderer for GPUI.
-//! (Editing — WYSIWYG and raw — is the separate `gpui-editor` crate; the two
+//! (Editing — WYSIWYG and raw — is the separate `zorite-editor` crate; the two
 //! engines share nothing, so any markdown behavior added here must be checked
 //! there and vice versa. See AGENTS.md "The three views".)
 //!

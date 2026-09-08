@@ -575,11 +575,11 @@ fn scan_line(text: &str, start: usize, end: usize, st: &SyntaxStyle, out: &mut V
     // place (Logseq-style; the anchor hitbox/click emit `refs:^id`).
     // Hidden BEFORE the heading fast-path — heading lines carry anchors too
     // (`### Notes ^id` used to show the raw tail).
-    let end = match gpui_markdown::syntax::block_id(&text[start..end]) {
+    let end = match zorite_markdown::syntax::block_id(&text[start..end]) {
         Some((at, id)) => {
             let refs = st.block_ref_count.as_ref().map_or(0, |f| f(id));
             if refs > 0 {
-                let badge = format!(" {}", gpui_markdown::syntax::superscript(refs));
+                let badge = format!(" {}", zorite_markdown::syntax::superscript(refs));
                 out.push(Span {
                     range: start + at..end,
                     style: Style {
@@ -1122,7 +1122,7 @@ fn scan_inline(
         if (b[i..end].starts_with(b"http://") || b[i..end].starts_with(b"https://"))
             && (i == start || !is_word(b[i - 1]))
         {
-            let j = i + gpui_markdown::syntax::url_end(&text[i..end], 0);
+            let j = i + zorite_markdown::syntax::url_end(&text[i..end], 0);
             if j > i + 8 {
                 push(
                     out,
@@ -1217,9 +1217,9 @@ fn find_underscore_close(b: &[u8], from: usize, end: usize, double: bool) -> Opt
 }
 
 // Linkables (wiki/tag/url/bare-url) are shared with the reader
-// (`gpui_markdown::syntax`) — one grammar for clicks, hover cursors, and
+// (`zorite_markdown::syntax`) — one grammar for clicks, hover cursors, and
 // styling in every renderer.
-pub(crate) use gpui_markdown::syntax::{LinkHit, link_at, links};
+pub(crate) use zorite_markdown::syntax::{LinkHit, link_at, links};
 
 /// ATX heading depth (1–6) if `line` is a heading: 1–6 leading `#` followed by
 /// a space or end-of-line. `None` otherwise.
@@ -1249,7 +1249,7 @@ pub(crate) fn line_heading_level(line: &str) -> Option<(u8, Option<usize>)> {
 /// sections: `folded` holds the trimmed source lines of folded headings
 /// (`## Goals`). A top-level section runs from its heading to the next
 /// heading of the same or a higher level, fence-aware — mirrors
-/// [`gpui_markdown::syntax::extract_section`]. A LIST heading's section
+/// [`zorite_markdown::syntax::extract_section`]. A LIST heading's section
 /// (`- ### Notes`) is its indented children: it runs while lines sit deeper
 /// than the heading's own indent (blank lines included). Every line matching
 /// a folded key folds (duplicate headings fold together; the key is the line
@@ -1347,10 +1347,10 @@ pub(crate) fn html_block(line: &str) -> bool {
 /// each with an optional trailing space — if `line` is a blockquote. `None`
 /// otherwise. The editor hides this marker (reveal-on-caret) and renders the line
 /// with a muted color + a left border.
-// Alert recognition is shared with the reader (`gpui_markdown::syntax`) —
+// Alert recognition is shared with the reader (`zorite_markdown::syntax`) —
 // what a marker IS lives in one place; this crate only decides how to paint
 // it (hide the prefix, label + colored bar, reveal on caret).
-pub(crate) use gpui_markdown::syntax::{AlertKind, alert_prefix};
+pub(crate) use zorite_markdown::syntax::{AlertKind, alert_prefix};
 
 /// Per-kind SVG asset paths for the alert title icons.
 #[derive(Clone)]
@@ -1389,7 +1389,7 @@ impl SyntaxStyle {
 }
 
 /// The alert kind if `body` — a blockquote line's text after its `>` prefix —
-/// starts with an alert marker (see [`gpui_markdown::syntax::alert_prefix`]).
+/// starts with an alert marker (see [`zorite_markdown::syntax::alert_prefix`]).
 pub(crate) fn alert_kind(body: &str) -> Option<AlertKind> {
     alert_prefix(body).map(|(kind, ..)| kind)
 }
@@ -2038,15 +2038,15 @@ pub(crate) enum Align {
     Right,
 }
 
-/// The shared table-style enum — recognition lives in `gpui_markdown::syntax`
+/// The shared table-style enum — recognition lives in `zorite_markdown::syntax`
 /// (the sanctioned dependency), including the marker's `cols=` widths.
-pub(crate) use gpui_markdown::syntax::TableStyle;
+pub(crate) use zorite_markdown::syntax::TableStyle;
 
 /// Parse a `<!-- table:STYLE -->` marker line into its [`TableStyle`]. `None` if
 /// the line isn't a recognized table-style marker (so an unknown marker stays a
 /// plain HTML comment).
 pub(crate) fn table_style_marker(line: &str) -> Option<TableStyle> {
-    gpui_markdown::syntax::table_style_marker(line)
+    zorite_markdown::syntax::table_style_marker(line)
 }
 
 /// A detected GFM table region: the half-open range of logical line indices it
@@ -2103,13 +2103,14 @@ pub(crate) fn table_regions(content: &str) -> Vec<TableRegion> {
                 _ => (TableStyle::Grid, None),
             };
             let col_widths_attr =
-                marker_line.and_then(|m| gpui_markdown::syntax::table_col_widths(lines[m]));
+                marker_line.and_then(|m| zorite_markdown::syntax::table_col_widths(lines[m]));
             // Writing direction of the whole table (#66) — the reader runs
             // `base_direction` over the table's byte span, so join the region's
             // lines and ask the same question: the first strong character
             // anywhere in the table decides (pipes, dashes and digits are
             // neutral under UAX #9). Once per scan, not per frame.
-            let rtl = gpui_markdown::syntax::base_direction(&lines[start..end].join("\n")).is_rtl();
+            let rtl =
+                zorite_markdown::syntax::base_direction(&lines[start..end].join("\n")).is_rtl();
             out.push(TableRegion {
                 lines: start..end,
                 aligns,
@@ -2150,12 +2151,12 @@ pub(crate) fn property_regions(content: &str) -> Vec<Range<usize>> {
             i += 1;
             continue;
         }
-        if !in_fence && gpui_markdown::syntax::prefixed_property(lines[i]).is_some() {
+        if !in_fence && zorite_markdown::syntax::prefixed_property(lines[i]).is_some() {
             let start = i;
             i += 1;
             while i < lines.len()
                 && !lines[i].trim_start().starts_with("```")
-                && gpui_markdown::syntax::prefixed_property(lines[i]).is_some()
+                && zorite_markdown::syntax::prefixed_property(lines[i]).is_some()
             {
                 i += 1;
             }
@@ -2259,7 +2260,7 @@ fn is_word(c: u8) -> bool {
 }
 
 // One tag grammar with the reader (namespaced `#a/b` included).
-use gpui_markdown::syntax::is_tag_char as is_tag;
+use zorite_markdown::syntax::is_tag_char as is_tag;
 
 #[cfg(test)]
 mod tests {

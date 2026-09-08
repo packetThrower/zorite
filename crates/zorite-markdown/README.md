@@ -1,4 +1,4 @@
-# gpui-markdown
+# zorite-markdown
 
 A small **Markdown renderer for [GPUI](https://www.gpui.rs/)**, built on gpui's own
 `StyledText` / `InteractiveText` so paragraphs wrap properly and links are clickable
@@ -14,16 +14,16 @@ return contracts, edge cases, and cost notes, lives in [API.md](API.md).
 
 This is **the** markdown crate of the Zorite workspace, in two layers:
 
-- **`gpui_markdown::syntax`** — always compiled, **dependency-free**: the shared
+- **`zorite_markdown::syntax`** — always compiled, **dependency-free**: the shared
   construct *recognition* (linkables, GitHub alert kinds + fold chars, table
   styles, heading scales, `key:: value` properties, ` ^block-id` anchors,
   `#Heading` / `#^id` link-target splitting, and `![[embed]]` lines with
   block/section extraction) that this reader, the
-  [`gpui-editor`](../gpui-editor/README.md) WYSIWYG
+  [`zorite-editor`](../zorite-editor/README.md) WYSIWYG
   view, and the PDF exporter all consume, so what a construct IS is defined once.
 - **The reader view** — `MarkdownView` and everything around it, behind the
   default-on **`view`** feature, which owns the `gpui` + `markdown` dependencies.
-  Consumers that only need recognition (like gpui-editor) depend with
+  Consumers that only need recognition (like zorite-editor) depend with
   `default-features = false`.
 
 ## Features
@@ -88,7 +88,7 @@ See [`sample.md`](sample.md) for a document exercising everything.
 
 ```rust
 use std::rc::Rc;
-use gpui_markdown::{MarkdownView, MarkdownStyle};
+use zorite_markdown::{MarkdownView, MarkdownStyle};
 
 // In a render method, returning an `impl IntoElement`:
 MarkdownView::new("note-1", source_text)          // unique id + markdown source

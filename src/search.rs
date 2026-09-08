@@ -209,7 +209,7 @@ fn collect(db: &Db, term: &str) -> Vec<Hit> {
             }
         }
         // Images referenced here whose filename or alt text matches the term.
-        for img in gpui_markdown::images(content) {
+        for img in zorite_markdown::images(content) {
             let src = img.src.to_string();
             if !src.starts_with("images/") {
                 continue; // managed local images only (remote URLs aren't files)
@@ -244,7 +244,7 @@ fn pdf_refs(content: &str) -> Vec<String> {
             out.push(strip_fragment(&t).to_string());
         }
     }
-    for img in gpui_markdown::images(content) {
+    for img in zorite_markdown::images(content) {
         if img.src.starts_with("pdf/") {
             out.push(img.src.to_string());
         }

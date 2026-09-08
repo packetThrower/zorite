@@ -167,7 +167,7 @@ line under a `!name` (until the next `!name`) is that template's body:
 Then type `/meeting` in any day or page to insert it. Placeholders expand on
 insert: `{{date}}`, `{{time}}`, `{{title}}` (the current page/day), and
 `{{cursor}}` (where the caret lands). Built-in Markdown commands live in
-[`gpui-markdown`](crates/gpui-markdown/README.md) as `SNIPPETS`.
+[`zorite-markdown`](crates/zorite-markdown/README.md) as `SNIPPETS`.
 
 ## Themes
 
@@ -286,8 +286,8 @@ real notes.
 zorite/
 ├── src/                       the app — journal feed, pages, search, slash menu, import, SQLite
 └── crates/
-    ├── gpui-editor/           a from-scratch WYSIWYG Markdown editor (live preview, tables, math hosting)
-    ├── gpui-markdown/         a reusable Markdown renderer for gpui (clickable links, Mermaid, math)
+    ├── zorite-editor/           a from-scratch WYSIWYG Markdown editor (live preview, tables, math hosting)
+    ├── zorite-markdown/         a reusable Markdown renderer for gpui (clickable links, Mermaid, math)
     ├── gpui-pdf/              a page-virtualized PDF viewer (pure-Rust hayro) with highlight markup
     ├── gpui-whiteboard/       a host-agnostic infinite-canvas whiteboard
     ├── os-spellcheck/         native OS spell-checking (NSSpellChecker / ISpellChecker)

@@ -4634,7 +4634,7 @@ impl WhiteboardView {
             .and_then(|id| self.edit_target(id).map(|tg| tg.content))
     }
 
-    // Kept byte-for-byte equivalent to gpui-markdown-editor's UTF-16 bridge.
+    // Kept byte-for-byte equivalent to zorite-markdown-editor's UTF-16 bridge.
     fn utf16_to_utf8_in(text: &str, offset: usize) -> usize {
         let mut utf8_offset = 0;
         let mut utf16_count = 0;
@@ -4676,7 +4676,7 @@ impl WhiteboardView {
 
     /// Whiteboard storage adapter for the editor's `replace_text_in_visible_range`.
     /// The full inserted text is the marked range; the IME's relative selection is
-    /// tracked independently, exactly as in gpui-markdown-editor.
+    /// tracked independently, exactly as in zorite-markdown-editor.
     fn replace_text_in_visible_range(
         &mut self,
         visible_range: Range<usize>,

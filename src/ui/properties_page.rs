@@ -89,7 +89,7 @@ impl PropsPageState {
 /// Whether `key` is a valid property key under the shared grammar (what a
 /// rename / add-mapping accepts).
 pub fn valid_key(key: &str) -> bool {
-    gpui_markdown::syntax::property(&format!("{key}:: x")).is_some_and(|(k, _)| k == key)
+    zorite_markdown::syntax::property(&format!("{key}:: x")).is_some_and(|(k, _)| k == key)
 }
 
 pub fn render(app: &AppView, cx: &mut gpui::Context<AppView>) -> impl IntoElement {

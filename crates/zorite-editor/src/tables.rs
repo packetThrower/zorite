@@ -752,10 +752,10 @@ impl EditorState {
         let Some(region) = self.caret_table_region() else {
             return;
         };
-        let style = gpui_markdown::syntax::TableStyle::from_name(name.unwrap_or("grid"))
+        let style = zorite_markdown::syntax::TableStyle::from_name(name.unwrap_or("grid"))
             .unwrap_or_default();
         let marker =
-            gpui_markdown::syntax::table_marker_text(style, region.col_widths_attr.as_deref());
+            zorite_markdown::syntax::table_marker_text(style, region.col_widths_attr.as_deref());
         self.rewrite_table_marker(&region, marker, cx);
     }
 
@@ -844,7 +844,7 @@ impl EditorState {
         if let Some(w) = widths.get_mut(resize.col) {
             *w = resize.width.max(24.);
         }
-        let marker = gpui_markdown::syntax::table_marker_text(region.style, Some(&widths));
+        let marker = zorite_markdown::syntax::table_marker_text(region.style, Some(&widths));
         self.rewrite_table_marker(&region, marker, cx);
     }
 
@@ -1272,7 +1272,7 @@ pub(crate) fn table_caret_pos(
     // RTL run onto one x, which is a caret that won't move through the word.
     // Only an unwrapped cell can use it — a map's x's run along the single
     // pre-wrap line (same limit as elsewhere).
-    if !wrapped && gpui_markdown::syntax::contains_rtl(content) {
+    if !wrapped && zorite_markdown::syntax::contains_rtl(content) {
         let map = gpui_bidi::shaped::map_of_wrapped(&wl, content.len());
         pos.x = px(map.x_for_index(in_cell));
     }
@@ -1312,7 +1312,7 @@ fn cell_offset_for_point(
     ) else {
         return 0;
     };
-    if wl.wrap_boundaries().is_empty() && gpui_markdown::syntax::contains_rtl(content) {
+    if wl.wrap_boundaries().is_empty() && zorite_markdown::syntax::contains_rtl(content) {
         // Same reason as the caret above, in reverse.
         let map = gpui_bidi::shaped::map_of_wrapped(&wl, content.len());
         return map.index_for_x(f32::from(target.x));

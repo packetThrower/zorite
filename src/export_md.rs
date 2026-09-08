@@ -463,9 +463,9 @@ fn rewrite_target(inner: &str, targets: &HashMap<String, String>) -> String {
         None => (inner.trim(), None),
     };
     // Block anchor first (`#^` is unambiguous), then heading (guards `.pdf`).
-    let (page, anchor) = match gpui_markdown::syntax::split_block_anchor(target) {
+    let (page, anchor) = match zorite_markdown::syntax::split_block_anchor(target) {
         (p, Some(id)) => (p, Some(format!("#^{id}"))),
-        _ => match gpui_markdown::syntax::split_heading_anchor(target) {
+        _ => match zorite_markdown::syntax::split_heading_anchor(target) {
             (p, Some(h)) => (p, Some(format!("#{h}"))),
             (p, None) => (p, None),
         },
@@ -487,7 +487,7 @@ fn rewrite_target(inner: &str, targets: &HashMap<String, String>) -> String {
 /// Collect the `images/…` and `pdf/…` references in `content` (markdown
 /// images — block and inline — plus `[[pdf/…]]` chips).
 fn collect_assets(content: &str, out: &mut BTreeSet<String>) {
-    for src in gpui_markdown::all_image_srcs(content) {
+    for src in zorite_markdown::all_image_srcs(content) {
         let s = src.to_string();
         // The prefix alone proves nothing: `images/../../x` starts with it.
         if (s.starts_with("images/") || s.starts_with("pdf/"))
@@ -505,8 +505,8 @@ fn collect_assets(content: &str, out: &mut BTreeSet<String>) {
         if in_fence {
             continue;
         }
-        for (_, hit) in gpui_markdown::syntax::links(line) {
-            if let gpui_markdown::syntax::LinkHit::Page(t) = hit {
+        for (_, hit) in zorite_markdown::syntax::links(line) {
+            if let zorite_markdown::syntax::LinkHit::Page(t) = hit {
                 // A pdf chip's target may carry a `#pN` page anchor.
                 let t = t.split('#').next().unwrap_or(&t);
                 if (t.starts_with("pdf/") || t.starts_with("images/"))

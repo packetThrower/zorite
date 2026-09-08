@@ -229,7 +229,7 @@ pub fn render(
     }
 
     // Scrollbar thumb — only when the rows overflow the cap; sized from the content height
-    // and positioned from the live scroll offset (mirrors the gpui-editor table/suggestion
+    // and positioned from the live scroll offset (mirrors the zorite-editor table/suggestion
     // menus). Wheel + keyboard scroll both re-render, so the offset read here stays fresh.
     let vh = view_h(slash.trigger);
     let rows_h = items.len().max(1) as f32 * row_h;

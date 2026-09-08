@@ -63,7 +63,7 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [x] **Editor splits table cells on escaped `\|`** — `table_cells` is a blind
   `split('|')`; the reader (GFM) treats `\|` as a literal pipe → grid, caret,
   and click hit-tests disagree with the rendered table. (S/M)
-- [x] **CRLF paste** — no `\r\n` normalization anywhere in gpui-editor; Windows/
+- [x] **CRLF paste** — no `\r\n` normalization anywhere in zorite-editor; Windows/
   browser pastes inject literal `\r` (garbled render + column-math desync).
   Normalize in `paste` + IME `replace_text_in_range`. (S)
 - [x] **Paste into a table cell breaks the row** — paste inserts `\n`/`|`
@@ -80,13 +80,13 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [x] Table well-formedness: body rows with a different cell count than the
   header render ragged (Cditor rejects); validate in `table_regions`. (S)
 
-**Performance (gpui-editor):**
+**Performance (zorite-editor):**
 - [x] **Document shaped TWICE per frame** — `shape_document` runs in the measure
   closure AND prepaint with identical inputs; memoize one frame's result across
   the two passes. Halves editor cost, removes a divergence hazard. (S)
 - [x] **Cross-frame shaped-line cache** — every blink/hover reshapes every
   visible day's full text; adopt Cditor's `LayoutCacheKey` (content version +
-  width bucket + font/theme/scale). gpui-markdown's `PARSE_CACHE` is the
+  width bucket + font/theme/scale). zorite-markdown's `PARSE_CACHE` is the
   in-repo template. (M)
 - [x] **IME UTF-16↔UTF-8 mapping is O(document) per call** — scan from the
   caret's line start instead of byte 0; CJK composition latency currently grows
@@ -137,7 +137,7 @@ blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
   markers — enforce "caret never rests on a collapsed marker line" once in the
   collapse/caret logic. (M)
 
-*Per-frame / per-event efficiency (gpui-editor):*
+*Per-frame / per-event efficiency (zorite-editor):*
 - [x] Window-level MouseMove listener runs `editor.update` + a full line scan
   in EVERY loaded editor per pointer move — gate on markdown_style + a y-range
   early-out (or register only for the hovered editor). (S)
@@ -179,7 +179,7 @@ blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
 ~550–600 user-facing strings: settings.rs ~200 (labels + search keywords),
 app.rs ~120 (dialogs/menus/errors), src/ui/* ~150, slash.rs ~50 (labels AND
 search keywords), dates.rs 19 (hardcoded English month/weekday names),
-gpui-editor ~40 (clipboard verbs, Turn-into kinds, table menu, code chrome),
+zorite-editor ~40 (clipboard verbs, Turn-into kinds, table menu, code chrome),
 whiteboard/pdf/markdown ~20 (toolbars, alert titles). Already done for free:
 spellcheck follows the OS locale (both platforms); whiteboard has CJK font
 fallback.
@@ -226,7 +226,7 @@ independent of whether the shaper reorders glyphs. Splitting #66 accordingly:
   implementation of it. **This is the one part that earns its own crate**
   (`crates/gpui-bidi`, the os-spellcheck shape: one hard isolated problem, a
   small API, GPU-free tests, useful to any gpui app) — but only when we start
-  the editor side. Direction *detection* stays in `gpui_markdown::syntax`
+  the editor side. Direction *detection* stays in `zorite_markdown::syntax`
   with the other shared recognizers; it's one function and the sanctioned
   editor→markdown edge already carries it.
 - *Storage:* direction is derived, not stored. The reporter asks for
@@ -325,14 +325,14 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
 *use*, ranked — and, first, what it does NOT replace, so this isn't re-argued:
 
 **Keep our engines** (verified against the 0.6.0 sources):
-- `gpui-markdown` stays: gpui-base's `TextView` has no wiki-links/tags/embeds/
+- `zorite-markdown` stays: gpui-base's `TextView` has no wiki-links/tags/embeds/
   properties/block-refs/alert folding/table-style markers, renders `$math$` as
   *code* (no engine), has **zero** RTL/bidi handling, and its plugin API is
   block-level only (inline plugins `panic!`). It also shares no recognition
-  with `gpui-editor`, which the cross-view rule depends on. Revisit only if
+  with `zorite-editor`, which the cross-view rule depends on. Revisit only if
   inline plugins land. The one fit: foreign markdown (the updater's release
   notes preview).
-- `gpui-editor` stays: the new `Editor` is a code editor (LSP, folding, multi
+- `zorite-editor` stays: the new `Editor` is a code editor (LSP, folding, multi
   cursor) — no WYSIWYG / live preview. `os-spellcheck` stays: no spell-check
   upstream. `gpui-bidi` stays (and is a plausible upstream contribution —
   `TextView` has the same problem).
@@ -420,7 +420,7 @@ findings worth fixing rather than just documenting):
   match `API.md`
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize
 - [ ] Publish to crates.io once the API is stable
-- [ ] **Split the reusable crates (`gpui-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: the crates use the workspace's pinned gpui rev (`[workspace.dependencies]`, one spec byte-for-byte); in separate repos each picks its own rev, and a mismatch puts two gpui versions in one consumer's build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
+- [ ] **Split the reusable crates (`zorite-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: the crates use the workspace's pinned gpui rev (`[workspace.dependencies]`, one spec byte-for-byte); in separate repos each picks its own rev, and a mismatch puts two gpui versions in one consumer's build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
 
 ## Maybe
 
@@ -480,7 +480,7 @@ Ideas worth keeping, not yet committed to.
   >
   > Resources: `journal://today` (and `journal://YYYY-MM-DD`) → that day's
   > markdown; `journal://tags` → distinct `#tags` extracted from content with
-  > the shared `gpui_markdown::syntax::links` grammar (tags are inline, not
+  > the shared `zorite_markdown::syntax::links` grammar (tags are inline, not
   > "properties").
   >
   > **No write tools in this phase** — writes are unsafe while the app runs
@@ -497,7 +497,7 @@ Ideas worth keeping, not yet committed to.
   hanging absolutely in the left padding so the text column never shifts —
   and a UI surface of its own for future per-line affordances. Logical lines
   (wraps count once), folds skipped, off-screen rows unshaped; reader stays
-  clean (add later if wanted). `EditorState::row_layout` in gpui-editor
+  clean (add later if wanted). `EditorState::row_layout` in zorite-editor
 - [x] **Rich-text copy** — Copy/Cut and the page menu's "Copy contents" now
   write rendered HTML beside the raw markdown (one `arboard` transaction —
   gpui's clipboard has NO html flavor, contrary to this entry's original
@@ -505,11 +505,11 @@ Ideas worth keeping, not yet committed to.
   markdown; graceful fallback to plain if the platform write fails. Explicit
   **"Copy as Markdown"** variants (editor menu + page menu) write the raw
   source only, for pasting literal syntax into rich surfaces.
-  `EditorState::set_clipboard_writer`/`copy_plain` in gpui-editor
+  `EditorState::set_clipboard_writer`/`copy_plain` in zorite-editor
 - [x] **Find in the journal feed** — `⌘F` on the Journal opens a floating
   PDF-viewer-style bar (query, n / m, ‹ › step, ✕; Esc closes): matches span
   every loaded day (case-insensitive, Unicode-aware `find_in_source`), with
-  highlights + scroll in BOTH modes — WYSIWYG via gpui-editor's new
+  highlights + scroll in BOTH modes — WYSIWYG via zorite-editor's new
   `set_search`/`offset_screen_top` (match quads share the selection's
   multi-row geometry), reader via per-day `MarkdownView::search` + tracked
   block bounds. The page find bar gained the same WYSIWYG support (it was
@@ -549,7 +549,7 @@ deferrals moved to App & polish.
 - [x] CLOSED AS FALSE POSITIVES (verified 2026-07-09): "reader lacks file
   chips" — the host's `ImageRenderer` (src/ui/image.rs) classifies
   `is_pdf` and renders chips in both the page and embed renderers, the
-  audit only searched gpui-markdown; "embed image-resize writes the wrong
+  audit only searched zorite-markdown; "embed image-resize writes the wrong
   page" — embeds use the deliberately grip-free `embed_renderer`
 
 
@@ -577,7 +577,7 @@ deferrals moved to App & polish.
   dialogs and focal surfaces keep the default size. Convention in AGENTS.md
 
 ### Obsidian parity (0.6.0)
-- [x] **Properties (`key:: value` anywhere)** (PR #32) — any-line properties render as a two-column panel (per-key icons, `#tag` / `[[link]]` values as clickable pills, hover highlight) in BOTH views; an **in-place property editor** seated in the note (click or arrow in; key dropdown fed by every key in the vault; full keyboard nav; writes `key:: value` back on blur); and a **Properties index page** (All pages → Properties): every key with its values + pages, icon overrides / pre-mapping from a picker, and rename-a-key-across-the-vault. Recognition shared in `gpui_markdown::syntax`; `alias::` keeps its `page_aliases` DB resolution
+- [x] **Properties (`key:: value` anywhere)** (PR #32) — any-line properties render as a two-column panel (per-key icons, `#tag` / `[[link]]` values as clickable pills, hover highlight) in BOTH views; an **in-place property editor** seated in the note (click or arrow in; key dropdown fed by every key in the vault; full keyboard nav; writes `key:: value` back on blur); and a **Properties index page** (All pages → Properties): every key with its values + pages, icon overrides / pre-mapping from a picker, and rename-a-key-across-the-vault. Recognition shared in `zorite_markdown::syntax`; `alias::` keeps its `page_aliases` DB resolution
 - [x] **Block references & heading anchors** (PR #34) — ` ^block-id` gives a line an address; `[[Note#^id]]` and `[[Note#Heading]]` (case-insensitive) open the note scrolled to that line, in both views. Links read as `Note → anchor` (the raw `#^` / `#` renders as ` → `), the trailing `^id` marker hides outside the caret's line, `file.pdf#p3` and literal `#`-titled pages keep their meaning, and the link reindexer no longer spawns junk `Note#…` pages
 - [x] **Transclusion / embeds (`![[note]]`)** (PR #34) — a standalone `![[Note]]` / `![[Note#Heading]]` / `![[Note#^id]]` line renders the target's content in a quoted box with a clickable source label, in BOTH views: hover scrollbar + wheel hand-off at the edges, live updates when the source page changes, full inner rendering (images read-only, math, mermaid, highlighted code, nested embeds capped at depth 3), `|alias` renames the label; caret on the line edits the raw text
 - [x] **Foldable callouts** — Obsidian's fold char on an alert marker: `> [!NOTE]-` starts folded, `+` open; a chevron joins the title in both views, clicking folds/unfolds and persists the flip in the source (like a task checkbox), and the editor reveals a folded callout while the caret is inside
@@ -626,27 +626,27 @@ deferrals moved to App & polish.
   (SlashCancel / InsertTab / Outdent), the same mechanism as the property editor.
 
 ### Editor & rendering (0.5.x)
-- [x] **gpui-markdown becomes THE markdown crate; gpui-editor consumes it**
+- [x] **zorite-markdown becomes THE markdown crate; zorite-editor consumes it**
   (design agreed 2026-07-02, replacing the earlier third-crate idea). The two
   views recognize every construct separately and drift — links (fixed 0.4.1),
   alerts (recognized in 3 places incl. PDF export), math parse options. Plan:
-  1. gpui-markdown owns *recognition* — construct detection + payloads
+  1. zorite-markdown owns *recognition* — construct detection + payloads
      (wiki/tag/url linkables, alert kinds + palette, table styles, heading
      scales) — exposed BOTH as mdast helpers and as line-level recognizers
      (the editor can't afford full parses per keystroke). The reader view
      moves behind a default-on `view` feature.
-  2. gpui-editor depends on gpui-markdown (recognition only,
+  2. zorite-editor depends on zorite-markdown (recognition only,
      default-features = false) — `markdown_syntax.rs` keeps the scanning
      shape but consumes shared definitions. AGENTS.md's "crates depend on
      gpui only" gains this one sibling exception.
-  3. gpui-editor's whole markdown/WYSIWYG side moves behind a default-on
+  3. zorite-editor's whole markdown/WYSIWYG side moves behind a default-on
      `markdown` feature — it's a text editor first (ratex-gpui's `editor`
      feature is the precedent).
-  **DONE** (2026-07-02) except one deliberate cut: `gpui_markdown::syntax`
+  **DONE** (2026-07-02) except one deliberate cut: `zorite_markdown::syntax`
   holds alerts, table styles, heading scales, AND the linkables (one grammar —
   unification caught live tag-rule drift and gave WYSIWYG bare-URL autolinks);
   the `view` feature ships (recognition-only builds are dependency-free, the
-  editor consumes `default-features = false`). **Cut: the gpui-editor
+  editor consumes `default-features = false`). **Cut: the zorite-editor
   `markdown` feature** — ~102 integration points would need cfg or a 30-item
   stub mirror, while the benefit evaporated once recognition became a
   dependency-free module (unused markdown paths are dead-code-eliminated for
@@ -658,7 +658,7 @@ deferrals moved to App & polish.
 
 ### Editor & rendering (0.5.0)
 - [x] **WYSIWYG table: delete last row/column caret drop** — no longer reproduces (user-verified 2026-07-02); most likely resolved by the table measure/hit-box overhaul (shared `line_pads`, always-committed strip rects) that fixed the add-row "+" strip
-- [x] **Shared construct recognition** (`gpui_markdown::syntax`) — alerts, table styles, heading scales recognized in ONE place; reader, WYSIWYG, and PDF export all consume it (phase 1 of the restructure above)
+- [x] **Shared construct recognition** (`zorite_markdown::syntax`) — alerts, table styles, heading scales recognized in ONE place; reader, WYSIWYG, and PDF export all consume it (phase 1 of the restructure above)
 - [x] **View parity rounds** — reader ↔ WYSIWYG converged per the AGENTS.md parity rules: body line height 1.45 both (reader had gpui's phi default), content-hugging tables (WYSIWYG's measured columns, 22px gutter, row metric) and code cards (widest line, bold-measured for highlight runs), list spacing + indentation (reader's roomier look, WYSIWYG adopts), under-bullet nested-list guides (reader), HTML comments render nowhere
 - [x] **GitHub alerts** (`> [!NOTE]` …) in both views + slash menu + PDF export, five themeable palette tokens, Lucide icons; lenient inline form accepted
 - [x] **Syntax highlighting** for fenced code blocks in both views — gpui-component's tree-sitter highlighter (already in the binary), 22 grammars as Cargo features, one app-side cache, themes recolor live
@@ -679,9 +679,9 @@ deferrals moved to App & polish.
 - [x] **CRT (Green Phosphor) builtin theme** — a new skin inspired by classic CRT monitors (green-on-black aesthetics). Created as a builtin in `skins.rs` (no longer a JSON file) with palette `(bg=#000000, surface=#030703, accent=#33FF33, …)`. Theme tokens (button/slider/ring families) now respect the custom accent color via luminance-aware foreground selection. All gpui-component widget families (tab, button, slider, ring) now properly theme to custom skins. See commits caf3c8d, 87abe5c, 3e0e36d
 
 ### Editor & rendering (older)
-- [x] **Click-to-caret** — clicking the rendered page **or a journal day** enters edit mode with the caret on the clicked character (empty space → end of the nearest line). gpui-markdown records a rendered→source byte-offset map while rendering (handling stripped `[[ ]]` / `#` / inline-code markup) and resolves a click via gpui's text layout (`index_for_position`); the host places the editor caret (`set_cursor_position`). To keep the clicked line under the cursor (the source layout is more compact than the rendered one), gpui-markdown reports the click's window-y and the host *predicts* the caret's row with the same `LineWrapper` soft-wrap math the editor uses (`predict_caret_row` — mirrors the input's 1.25 rem line height + paddings), jumping the scroll in the same frame so the editor's first paint is already aligned; a stability-gated verify pass (`align_caret_to_click`) mops up drift and rejects the editor's stale first-paint bounds. Near the document top the jump clamps to 0 — the page stays put and the caret just lands visibly. See `crates/gpui-markdown` (`on_click_source`) + `AppView::edit_page_at_offset` / `edit_day_at_offset`
+- [x] **Click-to-caret** — clicking the rendered page **or a journal day** enters edit mode with the caret on the clicked character (empty space → end of the nearest line). zorite-markdown records a rendered→source byte-offset map while rendering (handling stripped `[[ ]]` / `#` / inline-code markup) and resolves a click via gpui's text layout (`index_for_position`); the host places the editor caret (`set_cursor_position`). To keep the clicked line under the cursor (the source layout is more compact than the rendered one), zorite-markdown reports the click's window-y and the host *predicts* the caret's row with the same `LineWrapper` soft-wrap math the editor uses (`predict_caret_row` — mirrors the input's 1.25 rem line height + paddings), jumping the scroll in the same frame so the editor's first paint is already aligned; a stability-gated verify pass (`align_caret_to_click`) mops up drift and rejects the editor's stale first-paint bounds. Near the document top the jump clamps to 0 — the page stays put and the caret just lands visibly. See `crates/zorite-markdown` (`on_click_source`) + `AppView::edit_page_at_offset` / `edit_day_at_offset`
 - [x] Slash menu: **click-to-insert** — slash-menu rows are now mouse-driven as well as keyboard-driven: hovering a row moves the selection to it (one highlight shared with the arrow keys) and clicking accepts it like Enter (inserts the snippet or opens a category). Driven from the row's `on_mouse_down` with `stop_propagation` so it fires before the press can blur the editor — the insertion lands and focus stays put. See `src/ui/slash_menu.rs`, `AppView::click_slash` / `slash_hover`
-- [x] **Find in page** (`⌘F`) — a find bar above a named page searches the **rendered** text (not the editor, which clashes with click-to-edit): every match highlights, the active one emphasized, with an *n / m* count; Enter/⇧Enter or ↑/↓ step (scrolling the match into view), Esc closes. `⌘⇧F` focuses the global note search; the journal feed defers to it. The search core lives in **`gpui-markdown`** — a reusable, db-free `find_matches` + `MarkdownView::search` / `track_blocks` (operates only on the source string) — with the find bar, shortcuts, and scroll in the host. See `src/ui/page_view.rs`, `crates/gpui-markdown/src/lib.rs`
+- [x] **Find in page** (`⌘F`) — a find bar above a named page searches the **rendered** text (not the editor, which clashes with click-to-edit): every match highlights, the active one emphasized, with an *n / m* count; Enter/⇧Enter or ↑/↓ step (scrolling the match into view), Esc closes. `⌘⇧F` focuses the global note search; the journal feed defers to it. The search core lives in **`zorite-markdown`** — a reusable, db-free `find_matches` + `MarkdownView::search` / `track_blocks` (operates only on the source string) — with the find bar, shortcuts, and scroll in the host. See `src/ui/page_view.rs`, `crates/zorite-markdown/src/lib.rs`
 - [x] **Configurable date/time format** — a **Settings → General** pane chooses the date (ISO / US / European / long / day-month-year) and time (24-hour / 12-hour) styles used by `/date`, `/time`, and the `{{date}}` / `{{time}}` placeholders; persisted, ISO + 24-hour by default. Date helpers consolidated into `src/dates.rs`; journal day headers keep their own long format. See `src/dates.rs`, `src/settings.rs`
 - [x] **As-you-type completion** — `[[` (pages, with a "Create" entry), `#` (tags), and `{{` (template placeholders); reuses the slash popup, ranks matches, and caps the list so it stays usable with many pages
 - [x] **Auto-pair brackets/quotes** (`()` `[]` `{}` `<>` `""` `''`) with type-over and prose-safe guards (contraction-aware quotes, `<` only after a word); confirming a `[[`/`{{` completion absorbs the auto-inserted closer
@@ -691,10 +691,10 @@ deferrals moved to App & polish.
 - [x] **Note-image memory** — local images go through `images::ImageStore`: decoded **downscaled to display size** (`DynamicImage::thumbnail`, longest edge ≤ 2048 — a 12 MP phone photo is ~12 MB of RGBA instead of ~47 MB) into a GPU-ready `RenderImage`, decoded **one at a time** (a serialized queue, so only one full-res decode buffer is ever alive), and **freed on view change** (`cx.drop_image` for CPU + GPU atlas, like the PDF viewer — gpui never auto-evicts a `RenderImage`). Before this, a note's photos decoded at full native resolution and were never released, so RAM climbed without bound as you browsed photo pages (the synthetic perf DBs had no real images, so it only surfaced after the Logseq import). Remaining: `image` 0.25 can't DCT-decode JPEGs at reduced size, so a full-res buffer is still briefly allocated and macOS's allocator keeps it as a bounded ~50 MB reclaimable cache (`MALLOC_LARGE (empty)`); a frugal/zune decoder path could remove even that. See `src/images.rs`, `AppView::ensure_image_loaded` / `pump_image_decodes` / `release_images`
 - [x] Image **resize** — drag the corner handle (live preview); persists as `![](src){width=N}` in the markdown
 - [x] Image **insert** — paste from clipboard (`Cmd+V`) or drag-and-drop a file; copied into the data-dir `images/` folder and referenced relatively
-- [x] Image **fit-to-view** (`⌘⇧I`) — shrink every image in the active page / journal that renders wider than ~half the content column back down to that size, so an image dragged, pasted, or **imported with no `{width}`** stops dominating the page. Width-less images are handled too: the size comes from the painted measurement (`image_widths`), not just an explicit `{width=N}`, and all images are enumerated via a new `gpui_markdown::images()`. Until fit, an over-wide image **scrolls horizontally within its own row** (keeping its resize grip reachable) instead of running off the page, while sibling text keeps wrapping at the normal width. See `AppView::on_fit_images` / `apply_fit`, `src/ui/image.rs`
+- [x] Image **fit-to-view** (`⌘⇧I`) — shrink every image in the active page / journal that renders wider than ~half the content column back down to that size, so an image dragged, pasted, or **imported with no `{width}`** stops dominating the page. Width-less images are handled too: the size comes from the painted measurement (`image_widths`), not just an explicit `{width=N}`, and all images are enumerated via a new `zorite_markdown::images()`. Until fit, an over-wide image **scrolls horizontally within its own row** (keeping its resize grip reachable) instead of running off the page, while sibling text keeps wrapping at the normal width. See `AppView::on_fit_images` / `apply_fit`, `src/ui/image.rs`
 - [x] **Task-list checkboxes** (`- [ ]` / `- [x]`) — rendered via mdast `ListItem.checked` (the field does exist after all)
-- [x] `gpui-markdown` now covers CommonMark + GFM: footnotes, reference-style `[text][id]` links/images, and raw HTML (shown literally)
-- [x] **Mermaid diagrams** — a ` ```mermaid ` block renders as a diagram (flowchart / sequence / class / state). Pure-Rust, **no JS**: the [`mermaid-rs-renderer`](https://github.com/zed-industries/mermaid-rs-renderer) crate (the one Zed's markdown preview uses) lays it out to SVG, then gpui's built-in SVG rasterizer turns that into a `RenderImage`. Rendered off-thread and cached by source text (mirroring `ImageStore`), with a "Rendering…" placeholder and a fall-back to the code on failure. **Themed to the live skin** — `mermaid::current_theme()` maps Zorite's palette onto the diagram theme (translucent tokens composited over the page background so colours land right), and the cache is dropped in `apply_theme` so diagrams re-colour when you switch skin / light-dark. `gpui-markdown` stays renderer-agnostic via an `on_mermaid` hook (sibling of `on_image`). **Click a diagram to expand it** in a full-window, scrollable lightbox (dimmed backdrop or × to close). Follow-ups: match the UI font, render at display DPI for crispness. See `src/mermaid.rs`, `src/ui/mermaid.rs`, `crates/gpui-markdown` (`on_mermaid`)
+- [x] `zorite-markdown` now covers CommonMark + GFM: footnotes, reference-style `[text][id]` links/images, and raw HTML (shown literally)
+- [x] **Mermaid diagrams** — a ` ```mermaid ` block renders as a diagram (flowchart / sequence / class / state). Pure-Rust, **no JS**: the [`mermaid-rs-renderer`](https://github.com/zed-industries/mermaid-rs-renderer) crate (the one Zed's markdown preview uses) lays it out to SVG, then gpui's built-in SVG rasterizer turns that into a `RenderImage`. Rendered off-thread and cached by source text (mirroring `ImageStore`), with a "Rendering…" placeholder and a fall-back to the code on failure. **Themed to the live skin** — `mermaid::current_theme()` maps Zorite's palette onto the diagram theme (translucent tokens composited over the page background so colours land right), and the cache is dropped in `apply_theme` so diagrams re-colour when you switch skin / light-dark. `zorite-markdown` stays renderer-agnostic via an `on_mermaid` hook (sibling of `on_image`). **Click a diagram to expand it** in a full-window, scrollable lightbox (dimmed backdrop or × to close). Follow-ups: match the UI font, render at display DPI for crispness. See `src/mermaid.rs`, `src/ui/mermaid.rs`, `crates/zorite-markdown` (`on_mermaid`)
 - [x] `/time` and `/date` slash commands — insert the current time/date directly (distinct from the `{{time}}` / `{{date}}` *template* placeholders, which only expand inside a template)
 - [x] **Headings nested in list items** — markdown like `- # Heading` now renders the heading with proper size/weight in WYSIWYG (previously displayed as plain text). Parser recognizes heading markers post-list-marker via shared `apply_heading` function. See commit 7d81518
 - [x] **Line height tuning** — adjusted `LINE_HEIGHT_RATIO` to 1.45 (from 1.35) for better readability in normal text while maintaining good visual balance. See commit e928638
@@ -705,7 +705,7 @@ deferrals moved to App & polish.
 - [x] **Page hierarchy** via `[[parent::child]]` — Logseq-style: the `::` path *is* the page title, so the sidebar tree and each page's "Sub-pages" index are derived from titles (no parent column). Intermediate namespace segments show as virtual nodes and materialize on click. See `src/hierarchy.rs`
 - [x] **Page aliases** — a subdued `alias::` field under the page title takes a comma list of alternate names; `[[name]]` then resolves to that page (exact title wins). Stored in a `page_aliases` table; resolution lives in `get_or_create_page`, so links and backlinks follow it
 - [x] **Sidebar shows recent pages** — the page tree is capped to the last 10 *viewed* named pages (persisted in `settings`; seeded from the most-recently-edited pages on first run). Reach the rest via search
-- [x] **Type-aware search** — the global search returns the PDF and image *files* referenced in notes, not just pages. A `pdf:` / `img:` / `page:` prefix (or a results-pane chip with a live per-kind count) filters by kind; `pdf:` / `img:` with no term browses every file in the managed `pdf/` / `images/` store. A PDF hit opens the viewer, an image opens the page showing it, a page opens the page. Files are extracted from the FTS-matched pages (`gpui_markdown::images` + the wiki-link index) rather than a separate file index. See `src/search.rs`, `src/ui/search.rs`
+- [x] **Type-aware search** — the global search returns the PDF and image *files* referenced in notes, not just pages. A `pdf:` / `img:` / `page:` prefix (or a results-pane chip with a live per-kind count) filters by kind; `pdf:` / `img:` with no term browses every file in the managed `pdf/` / `images/` store. A PDF hit opens the viewer, an image opens the page showing it, a page opens the page. Files are extracted from the FTS-matched pages (`zorite_markdown::images` + the wiki-link index) rather than a separate file index. See `src/search.rs`, `src/ui/search.rs`
 - [x] Journal: jump-to-date — a sidebar calendar date picker opens any day (creating it if needed)
 - [x] Rename: whitespace + alias-label link variants rewrite (2026-07-03) — `[[ Foo ]]` and `[[Foo|nick]]` follow a rename (fenced code untouched; `mentions::rewrite_wiki_links` on the shared links grammar). **Case variants (`[[FOO]]`) deliberately left alone** — that casing reads as the writer's choice, and links resolve case-insensitively anyway
 - [x] Hierarchy follow-ups: cascade-rename a namespace (renaming `Foo` retitles `Foo::*` children and rewrites their exact `[[links]]`, atomically — any child collision aborts the whole rename); sidebar right-click → "New sub-page" (the New-page dialog pre-filled with `Parent::`)
@@ -715,7 +715,7 @@ deferrals moved to App & polish.
 - [x] Calendar: entry markers (2026-07-03) — the jump-to-date overlay is a hand-rolled month grid (`src/ui/month_cal.rs`; gpui-component's Calendar has no per-day decoration hook): an accent dot + brighter number on days with non-empty entries, today outlined, ‹ › month nav, click any day to jump
 
 ### Whiteboards
-The freeform `gpui-whiteboard` canvas — a reusable, host-agnostic crate (like `gpui-markdown` / `gpui-pdf`) for an infinite, pannable/zoomable board of shapes, arrows, freehand, text, images, and page-cards, linkable to pages. A distinct surface from the text journal. Design: [docs/whiteboard-architecture.md](docs/whiteboard-architecture.md). **Feature-complete** — the milestones:
+The freeform `gpui-whiteboard` canvas — a reusable, host-agnostic crate (like `zorite-markdown` / `gpui-pdf`) for an infinite, pannable/zoomable board of shapes, arrows, freehand, text, images, and page-cards, linkable to pages. A distinct surface from the text journal. Design: [docs/whiteboard-architecture.md](docs/whiteboard-architecture.md). **Feature-complete** — the milestones:
 - [x] **Pan mode** — a dedicated pan tool (✋) that's the default tool; left-drag pans with a grab cursor (double-click recenters, middle-drag still pans)
 - [x] **Multiple page management** — boards are first-class pages now: "New" makes a distinct board (`create_whiteboard`), a "Whiteboards" sidebar section lists them (open / rename / delete / favorite), and they're searchable by title (`wb:` + a Whiteboards chip)
 - [x] **Keyboard shortcuts** — tool keys (H/V/P/R/O/L/A/T), ⌫/Del to delete the selection, ⌘Z / ⌘⇧Z undo-redo, Esc to deselect; the board takes focus on a canvas click, and tooltips show the keys
@@ -738,7 +738,7 @@ The freeform `gpui-whiteboard` canvas — a reusable, host-agnostic crate (like 
 - [x] **Rich text formatting** — per-character **bold / italic / underline / strikethrough / highlight** on any board text (free text *or* shape labels), over a selection or armed for typing with none. Three entry points share one ✓-marked panel: keyboard (⌘B / ⌘I / ⌘U / ⇧⌘X / ⇧⌘H), a right-click **Text ▸** fly-out, and a toolbar **A** fly-out. Stored as style runs in the scene; italic + bold are synthetic (a shear + a stroke over the solid fill) so they work with any uploaded face. See `crates/gpui-whiteboard` (`RunStyle` / `StyleSpan`, `font::layout_styled`)
 
 ### Performance
-- [x] **Journal feed cost at scale** — DONE (2026-07-03): the content-keyed parse cache shipped in `gpui-markdown` (`parse_cached`: exact-source key, Arc'd mdast, 64-entry LRU, thread-local so all windows share it) — feed re-renders now cache-hit every non-editing day. True windowing remains unexplored (and likely unneeded). Original analysis: — lower priority now that lazy-load bounds the common case: the feed starts at 14 days and only grows by `FEED_CHUNK` (7) on scroll-to-bottom / "Load older days", capped at `FEED_MAX_DAYS` (3650), so a typical session mounts only a couple dozen days. The latent issue is the *per-day* cost, not the day count: `journal::render` mounts every loaded day in a plain `for i in 0..loaded_days` loop (gpui lays out all children — Taffy doesn't virtualize a plain div — and culls only *paint*), and `MarkdownView` is `RenderOnce` with **no parse cache**, so every feed re-render re-parses every non-editing day's markdown (`to_mdast`), i.e. O(loaded_days × content). Fine at tens of days; a heavy scroller (hundreds of days) who then interacts pays a full re-parse each render. **Cheaper first step than true virtualization:** a content-keyed parse cache in `gpui-markdown` (memoize the mdast / built element by source hash) kills the dominant cost without touching the scroll model. True windowing is a poorer fit — days are variable-height, so gpui's `uniform_list` doesn't apply; it'd need `gpui::list` or a custom windowing scheme.
+- [x] **Journal feed cost at scale** — DONE (2026-07-03): the content-keyed parse cache shipped in `zorite-markdown` (`parse_cached`: exact-source key, Arc'd mdast, 64-entry LRU, thread-local so all windows share it) — feed re-renders now cache-hit every non-editing day. True windowing remains unexplored (and likely unneeded). Original analysis: — lower priority now that lazy-load bounds the common case: the feed starts at 14 days and only grows by `FEED_CHUNK` (7) on scroll-to-bottom / "Load older days", capped at `FEED_MAX_DAYS` (3650), so a typical session mounts only a couple dozen days. The latent issue is the *per-day* cost, not the day count: `journal::render` mounts every loaded day in a plain `for i in 0..loaded_days` loop (gpui lays out all children — Taffy doesn't virtualize a plain div — and culls only *paint*), and `MarkdownView` is `RenderOnce` with **no parse cache**, so every feed re-render re-parses every non-editing day's markdown (`to_mdast`), i.e. O(loaded_days × content). Fine at tens of days; a heavy scroller (hundreds of days) who then interacts pays a full re-parse each render. **Cheaper first step than true virtualization:** a content-keyed parse cache in `zorite-markdown` (memoize the mdast / built element by source hash) kills the dominant cost without touching the scroll model. True windowing is a poorer fit — days are variable-height, so gpui's `uniform_list` doesn't apply; it'd need `gpui::list` or a custom windowing scheme.
 - [x] **Lighter `list_pages`** — the page list loads `id`/`title` only (not content): ~4× faster and memory-flat at scale (50k pages: 103 ms → 28 ms; RAM ~flat 10k→50k). See the [Performance](README.md#performance) section
 - [x] **Full-text search index** — a trigram FTS5 index over page title + content (external-content, kept in sync by triggers) replaces the old `LIKE` table scan: same case-insensitive *substring* matching, now indexed so it scales. Migration `v4→v5` populates existing pages; queries < 3 chars (trigram's minimum) fall back to LIKE. See `src/db.rs`
 

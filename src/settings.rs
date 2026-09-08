@@ -2618,7 +2618,7 @@ impl Render for SettingsView {
 /// that response — and it's handed to `open`/`explorer`, which happily take a
 /// local path or a leading `-` as a flag. Require https before spawning.
 fn open_url(url: &str) {
-    if !gpui_markdown::syntax::is_safe_external_url(url) {
+    if !zorite_markdown::syntax::is_safe_external_url(url) {
         log::warn!("refusing to open non-https url from release metadata");
         return;
     }

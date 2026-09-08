@@ -3,7 +3,11 @@ name = "ratex-gpui"
 version = "0.1.0"
 edition = "2024"
 description = "A structural (MathQuill-style) math editor for GPUI, built on the RaTeX typesetting engine."
-license = "GPL-3.0-or-later"
+license = "MIT"
+repository = "https://github.com/packetThrower/zorite"
+homepage = "https://packetthrower.github.io/zorite/reference/crates/ratex-gpui/"
+keywords = ["gpui", "latex", "math", "mathquill", "ratex"]
+categories = ["gui", "mathematics"]
 
 [features]
 default = ["editor"]
@@ -37,10 +41,14 @@ image = "0.25"
 
 [dev-dependencies]
 # Opens a real window for `examples/editor.rs` (shared workspace gpui). The Linux backends are
-# harmless no-ops on macOS; mirrors gpui-editor's example setup.
+# harmless no-ops on macOS; mirrors zorite-editor's example setup.
 gpui_platform = { workspace = true }
 
 # The interactive example needs the editor feature (a render-only build skips it).
 [[example]]
 name = "editor"
 required-features = ["editor"]
+
+# docs.rs builds with every feature so the whole API is documented.
+[package.metadata.docs.rs]
+all-features = true

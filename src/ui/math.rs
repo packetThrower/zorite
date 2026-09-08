@@ -1,5 +1,5 @@
-//! Rendering a `$$…$$` math block. `gpui-markdown` detects the block and hands the LaTeX
-//! here (via [`gpui_markdown::MathRenderer`]); the app owns the render so the renderer stays
+//! Rendering a `$$…$$` math block. `zorite-markdown` detects the block and hands the LaTeX
+//! here (via [`zorite_markdown::MathRenderer`]); the app owns the render so the renderer stays
 //! host-agnostic. Shows the cached formula, a "typesetting…" placeholder (which kicks off the
 //! off-thread render the first time it paints), or the raw LaTeX on failure.
 
@@ -12,7 +12,7 @@ use gpui::{
     AnyElement, Bounds, ImageSource, InteractiveElement, IntoElement, MouseButton, ParentElement,
     Pixels, SharedString, Styled, WeakEntity, canvas, div, img, px,
 };
-use gpui_markdown::MathRenderer;
+use zorite_markdown::MathRenderer;
 
 use crate::app::AppView;
 use crate::math::MathStore;
@@ -32,7 +32,7 @@ pub fn renderer(app: &AppView, cx: &mut gpui::Context<AppView>) -> MathRenderer 
 /// larger display em), or `None` while it's still rasterizing — the raw `$…$` shows until then.
 /// The day's editor state pre-renders every formula on creation (`ensure_content_math`), so no
 /// off-thread kick-off is needed here.
-pub fn inline_renderer(app: &AppView) -> gpui_markdown::InlineMathRenderer {
+pub fn inline_renderer(app: &AppView) -> zorite_markdown::InlineMathRenderer {
     let store = app.math_store();
     Rc::new(move |source: SharedString| {
         let (img, w, h) = store.borrow().get(&source)?;

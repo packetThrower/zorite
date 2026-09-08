@@ -725,7 +725,7 @@ fn is_internal_prop(key: &str) -> bool {
     )
 }
 
-use gpui_markdown::syntax::property as parse_prop;
+use zorite_markdown::syntax::property as parse_prop;
 
 /// The import-side identity of a block carrying an `id::` property.
 struct BlockRef {

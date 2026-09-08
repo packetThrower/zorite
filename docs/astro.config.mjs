@@ -107,17 +107,17 @@ export default defineConfig({
 							label: 'Crates',
 							items: [
 								{
-									label: 'gpui-editor',
+									label: 'zorite-editor',
 									items: [
-										{ label: 'Overview', slug: 'reference/crates/gpui-editor' },
-										{ label: 'API reference', slug: 'reference/crates/gpui-editor-api' },
+										{ label: 'Overview', slug: 'reference/crates/zorite-editor' },
+										{ label: 'API reference', slug: 'reference/crates/zorite-editor-api' },
 									],
 								},
 								{
-									label: 'gpui-markdown',
+									label: 'zorite-markdown',
 									items: [
-										{ label: 'Overview', slug: 'reference/crates/gpui-markdown' },
-										{ label: 'API reference', slug: 'reference/crates/gpui-markdown-api' },
+										{ label: 'Overview', slug: 'reference/crates/zorite-markdown' },
+										{ label: 'API reference', slug: 'reference/crates/zorite-markdown-api' },
 									],
 								},
 								{

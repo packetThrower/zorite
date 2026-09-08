@@ -11,7 +11,7 @@ use gpui_component::Sizable;
 use gpui_component::input::Input;
 use gpui_component::scroll::Scrollbar;
 use gpui_component::{Icon, IconName};
-use gpui_editor::EditorState;
+use zorite_editor::EditorState;
 
 use crate::app::{self, AppView};
 use crate::slash::SlashTarget;
@@ -251,7 +251,7 @@ fn day_section(
     // unfocused, reveals on caret while editing). Off → the classic flow: the
     // reader view, swapped for the editor only while editing this day.
     let body = if app.wysiwyg() || app.is_editing_day(date) {
-        // gpui-editor has no chrome of its own; the wrapper sets the ambient
+        // zorite-editor has no chrome of its own; the wrapper sets the ambient
         // text style (size/color) the editor inherits when it shapes lines.
         // With line numbers on, the day's gutter rail hangs left into the
         // feed's (widened) padding — numbering restarts per day, since each
@@ -328,7 +328,7 @@ fn day_open_area(i: usize, date: &str, cx: &mut Context<AppView>) -> impl IntoEl
 }
 
 /// A non-editing day in the reader view (WYSIWYG off): rendered markdown via
-/// gpui-markdown (or a placeholder when empty), clickable to enter edit mode.
+/// zorite-markdown (or a placeholder when empty), clickable to enter edit mode.
 fn rendered_day(
     app: &AppView,
     i: usize,
@@ -354,7 +354,7 @@ fn rendered_day(
         let fold_content = content.to_string();
         let embeds = app.build_embed_map(&content);
         let fold_date = d.clone();
-        let mut md = gpui_markdown::MarkdownView::new(format!("day-md-{i}"), content)
+        let mut md = zorite_markdown::MarkdownView::new(format!("day-md-{i}"), content)
             .set_labels(crate::i18n::reader_labels())
             .style({
                 let mut st = theme::markdown_style(app.list_indent(), app.text_size());
@@ -404,7 +404,7 @@ fn rendered_day(
             }))
             // Click a task checkbox → toggle it in the source + persist immediately.
             .on_task_toggle(std::rc::Rc::new(move |offset, _window, cx| {
-                if let Some(new) = gpui_markdown::toggle_task_at(&toggle_content, offset) {
+                if let Some(new) = zorite_markdown::toggle_task_at(&toggle_content, offset) {
                     let _ = toggle_weak.update(cx, |this, cx| {
                         this.save_journal(&toggle_date, &new, cx);
                         this.signal_doc_changed(cx);
@@ -414,7 +414,7 @@ fn rendered_day(
             // Click a foldable callout's title → flip its `-`/`+` in the source.
             .on_alert_toggle(std::rc::Rc::new(move |offset, _window, cx| {
                 if let Some(new) =
-                    gpui_markdown::syntax::toggle_alert_fold_at(&fold_content, offset)
+                    zorite_markdown::syntax::toggle_alert_fold_at(&fold_content, offset)
                 {
                     let _ = fold_weak.update(cx, |this, cx| {
                         this.save_journal(&fold_date, &new, cx);

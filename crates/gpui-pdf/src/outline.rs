@@ -177,7 +177,7 @@ pub fn page_links(doc: &Pdf) -> Vec<Vec<PdfLink>> {
 /// rejection, not something to trim: openers strip them, so ` javascript:…`
 /// would otherwise walk past the prefix check.
 ///
-/// Deliberately duplicated from `gpui_markdown::syntax::is_safe_external_url`
+/// Deliberately duplicated from `zorite_markdown::syntax::is_safe_external_url`
 /// — five lines is cheaper than the cross-crate dependency the crates rule
 /// forbids. Keep the two in step.
 fn is_safe_external_uri(uri: &str) -> bool {
