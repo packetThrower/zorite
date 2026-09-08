@@ -1,6 +1,6 @@
 [package]
 name = "zorite-markdown"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2024"
 description = "Markdown rendering for GPUI with clickable wiki-links."
 license = "GPL-3.0-or-later"

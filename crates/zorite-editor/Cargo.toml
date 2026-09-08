@@ -1,6 +1,6 @@
 [package]
 name = "zorite-editor"
-version = "0.1.0"
+version = "0.10.0"
 edition = "2024"
 description = "A from-scratch multi-line text editor for GPUI — the basis for Zorite's note editor (built on gpui's EntityInputHandler + text-shaping primitives, no gpui-component)."
 license = "GPL-3.0-or-later"
@@ -21,7 +21,7 @@ unicode-segmentation = "1"
 # table styles, heading scales — so WYSIWYG and the reader can never drift
 # apart on what a construct IS. The one sanctioned sibling-crate dependency
 # (see AGENTS.md); rendering stays entirely this crate's own.
-zorite-markdown = { path = "../zorite-markdown", version = "0.1", default-features = false }
+zorite-markdown = { path = "../zorite-markdown", version = "0.9", default-features = false }
 
 # Bidi index↔x mapping (#66). gpui's own `x_for_index` / `index_for_x` assume
 # byte index and x rise together, which is false for a right-to-left line — so

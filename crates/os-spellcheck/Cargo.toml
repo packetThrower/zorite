@@ -1,6 +1,6 @@
 [package]
 name = "os-spellcheck"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Native OS spell-check — NSSpellChecker on macOS, ISpellChecker on Windows; a no-op elsewhere. Returns misspelled byte ranges + the OS's suggestions. Host-agnostic (no gpui)."
 license = "MIT"
