@@ -1930,7 +1930,14 @@ impl Element for EditorElement {
                     point(img_x, origin.y + px(IMG_ROW_PAD / 2.)),
                     size(img_w, img_h),
                 );
-                let _ = window.paint_image(img_bounds, img_bounds, Corners::default(), w.img.clone(), 0, false);
+                let _ = window.paint_image(
+                    img_bounds,
+                    img_bounds,
+                    Corners::default(),
+                    w.img.clone(),
+                    0,
+                    false,
+                );
                 // A draggable corner grip (accent square) + the resize cursor over it,
                 // via the hitbox inserted in prepaint. Recorded in `image_rects` for the
                 // next frame's grip hit-testing. Skipped for non-resizable blocks (math),
@@ -2049,8 +2056,14 @@ impl Element for EditorElement {
                         let b = Bounds::new(point(x, y), size(im.width, im.height));
                         inline_math_rects.push((im.source.clone(), im.latex.clone(), b));
                         if editing_inline.as_ref() != Some(&im.source) {
-                            let _ =
-                                window.paint_image(b, b, Corners::default(), im.img.clone(), 0, false);
+                            let _ = window.paint_image(
+                                b,
+                                b,
+                                Corners::default(),
+                                im.img.clone(),
+                                0,
+                                false,
+                            );
                         }
                     }
                 }

@@ -17,12 +17,17 @@ updates:
     open-pull-requests-limit: 5
     # gpui pins these internally (resvg via gpui itself, sha2 via its
     # http_client); bumping our copy past gpui's compiles TWO versions into
-    # the binary. They move only in lockstep with a gpui upgrade.
+    # the binary. They move only in lockstep with a gpui upgrade — and the
+    # gpui family itself (the `gpui-pre` crates, weekly zed snapshots) plus
+    # GPUI Kit's crates are exact-pinned and moved together by hand (see the
+    # gpui comment in Cargo.toml), so Dependabot must not bump them singly.
     ignore:
       - dependency-name: "resvg"
       - dependency-name: "sha2"
-      - dependency-name: "gpui"
+      - dependency-name: "gpui-pre"
+      - dependency-name: "gpui-pre-platform"
       - dependency-name: "gpui-component"
+      - dependency-name: "gpui-kit-assets"
     groups:
       # One PR for the routine patch/minor sweep instead of a dozen; majors
       # still come through individually so they get a proper look.
