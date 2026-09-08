@@ -9,6 +9,7 @@ work is collected under [Completed](#completed) at the bottom.
 - [Notebooks (multiple data folders)](#notebooks-multiple-data-folders)
 - [Performance](#performance)
 - [Cditor audit (2026-07-17)](#cditor-audit-2026-07-17)
+- [gpui-kit adoption](#gpui-kit-adoption-06-scoped-2026-09-08)
 - [App & polish](#app--polish)
 - [Import & export](#import--export)
 - [Crates](#crates)
@@ -315,6 +316,52 @@ this is about the CHROME, if an Arabic/Hebrew/Persian locale ever lands):
 - [ ] Labels/buttons render RTL strings as single shaped runs — spot-check a
   few chrome surfaces with Arabic text before promising anything (the #66
   work was editor/reader-only; plain gpui labels are believed fine).
+
+## gpui-kit adoption (0.6, scoped 2026-09-08)
+
+gpui-component became **GPUI Kit** (crates.io `gpui-kit` / `gpui-base` /
+`gpui-component` / `gpui-kit-assets` 0.6; gpui itself ships as the `gpui-pre`
+family). The dependency move is its own PR. What 0.6 adds that Zorite should
+*use*, ranked — and, first, what it does NOT replace, so this isn't re-argued:
+
+**Keep our engines** (verified against the 0.6.0 sources):
+- `gpui-markdown` stays: gpui-base's `TextView` has no wiki-links/tags/embeds/
+  properties/block-refs/alert folding/table-style markers, renders `$math$` as
+  *code* (no engine), has **zero** RTL/bidi handling, and its plugin API is
+  block-level only (inline plugins `panic!`). It also shares no recognition
+  with `gpui-editor`, which the cross-view rule depends on. Revisit only if
+  inline plugins land. The one fit: foreign markdown (the updater's release
+  notes preview).
+- `gpui-editor` stays: the new `Editor` is a code editor (LSP, folding, multi
+  cursor) — no WYSIWYG / live preview. `os-spellcheck` stays: no spell-check
+  upstream. `gpui-bidi` stays (and is a plausible upstream contribution —
+  `TextView` has the same problem).
+
+**Adopt, in this order:**
+- [ ] **`HoverCard` → wiki-link previews**: hover a `[[Page]]` / block ref and
+  see the target's first lines. Cheap; both views already have link hitboxes.
+  Cross-view rule: reader AND WYSIWYG.
+- [ ] **`Command` palette (⌘K)**: searchable actions with keybinding hints —
+  Zorite has dozens of actions and only the slash menu today.
+- [ ] **`setting::Settings` page builder** (`SettingPage → SettingGroup →
+  SettingItem → field`: switch/checkbox/input/dropdown/number, `default_value`,
+  `on_reset`). Would replace most of `settings.rs`'s hand-rolled cards and add
+  reset-to-default; the custom `SECTIONS` search filter needs re-plumbing.
+  Large — its own project.
+- [ ] **Accessibility**: 0.6 gives roles/labels/values on every gpui-component
+  control for free (plus a macOS hit-test forwarder in gpui-base). The custom
+  editor + reader get nothing automatically — separate work if a11y matters.
+- [ ] **`NativeMenu`** for right-click menus — OS-drawn, so it isn't clipped by
+  the window like `PopupMenu`. Check icon + i18n support before switching.
+- [ ] Polish, near-free: `Shimmer`/`Skeleton` while PDF pages and images
+  rasterize; `Kbd` chips on the shortcuts tab; `Combobox` (searchable font
+  picker) / `NumberInput` (text size) in Settings. Scrollbar visuals and
+  trackpad axis-locking arrive with the upgrade itself.
+- [ ] Dev tooling: `gpui-fps` HUD for the next #60-style hitch;
+  `gpui_kit::test` headless UI tests for chrome flows verified by hand today.
+
+Skip: dock/tiles, charts, chat components, `NavStack` (tabs cover it),
+`gpui-shell` JS extensions (interesting later, not now).
 
 ## App & polish
 - [ ] **Graph-node context menu** — nodes hit-test inside one
