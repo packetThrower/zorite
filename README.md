@@ -71,9 +71,19 @@ Developed in close collaboration with Claude (Anthropic).
   placeholders. Brackets auto-pair, and an optional auto-linker turns existing
   page titles into links as you type.
 - Inline `$…$` and display `$$…$$` LaTeX render as typeset math. Clicking into
-  a formula opens a structural editor for fractions, roots, and matrices, in
-  the style of MathQuill; formulas can be copied as LaTeX or exported as
-  PNG/SVG.
+  a formula opens a structural editor in the style of MathQuill: fractions,
+  roots, matrices, delimiters, and accents (`\hat`, `\bar`, `\vec`, …) are
+  live slots you arrow through; type `\` for an autocomplete of commands, or
+  select part of a formula with the mouse and wrap it. Formulas can be copied
+  as LaTeX or exported as PNG/SVG.
+- **Right-to-left text.** Arabic, Hebrew, Persian, and mixed-direction notes
+  lay out correctly in both the editor and the reading view — paragraphs,
+  headings, lists and tasks, tables (columns mirror), quotes, alerts,
+  properties, links, and inline math — with the caret, selection, and clicks
+  following the visual order.
+- Lines can be reordered by dragging the six-dot grip in the gutter, and
+  Copy puts formatted rich text on the clipboard alongside the Markdown, so a
+  paste into a mail client or document keeps headings, bold, and lists.
 
 *Details: [Journal & pages](https://packetthrower.github.io/zorite/usage/journal/)
 · [Math](https://packetthrower.github.io/zorite/usage/math/)*
@@ -83,16 +93,19 @@ Developed in close collaboration with Claude (Anthropic).
 - Wiki links create pages on first use. Every page lists its backlinks, plus
   unlinked mentions that can be converted with a click. `Projects::Tasks`
   titles form a namespace tree, and renaming a namespace renames its children.
-- Any line can be given a ` ^id` anchor and linked with `[[Note#^id]]`;
-  headings can be linked directly. `![[Note]]` embeds another note (or one of
-  its sections or blocks) and updates live when the source changes. Both the
-  reading view and the editor render all of this.
+- Any line can be given a ` ^id` anchor and linked with `[[Note#^id]]`, or
+  type `((` and pick any block from a searchable list, Logseq-style; headings
+  can be linked directly. `![[Note]]` embeds another note (or one of its
+  sections or blocks) and updates live when the source changes. A page's
+  `alias::` names complete in `[[` too. Both the reading view and the editor
+  render all of this.
 - `key:: value` lines render as a properties panel with per-key icons; tags and
   links in values are clickable. Panels are edited in place, and a Properties
   page indexes every key and value across the database.
 - For navigation there's an all-pages list, a graph view, a calendar marking
   days with entries, favorites, and tabs that can be torn off into separate
-  windows.
+  windows (and restored on relaunch). Right-click any page — in the sidebar,
+  a tab, a link, search results — for the same page menu.
 
 *Details: [Journal & pages](https://packetthrower.github.io/zorite/usage/journal/)
 · [All pages & the graph](https://packetthrower.github.io/zorite/usage/navigate/)*
@@ -104,15 +117,18 @@ Developed in close collaboration with Claude (Anthropic).
   thumbnail. Duplicate files are stored once, and unused files can be swept.
 - The PDF viewer virtualizes pages, so long documents open and scroll without
   loading everything. It has a table of contents, text search, password
-  support, drag-to-highlight annotations that link back to notes, and AcroForm
-  form filling — checkboxes, text fields, Tab between fields — with saved files
+  support, fit-width / fit-page zoom, drag-to-highlight annotations (text
+  or a drawn area) that link back to notes, and AcroForm form filling —
+  checkboxes, text fields, dropdowns, Tab between fields — with saved files
   that render correctly in other viewers. A file that can't be opened says
-  why instead of loading forever.
+  why instead of loading forever, and offers to open it in the system viewer.
 - `⌘P` exports the current note as a styled PDF, including tables, images,
   math, and diagrams. No browser involved. (One quirk: the export writes
   glyphs directly, so font ligatures render in the app but not in the PDF.)
 - Whiteboards are infinite pan-and-zoom canvases with shapes, arrows, freehand
-  drawing, images, text, templates, and cards that link back to pages.
+  drawing, images, text, templates, and cards that link back to pages —
+  plus mindmap and flowchart connectors that stay attached when you move
+  things.
 
 *Details: [PDF & images](https://packetthrower.github.io/zorite/usage/pdf/)
 · [Whiteboards](https://packetthrower.github.io/zorite/usage/whiteboards/)*
@@ -121,12 +137,12 @@ Developed in close collaboration with Claude (Anthropic).
 
 - Full-text search runs on a trigram index and updates on every keystroke,
   staying fast into the tens of thousands of pages (numbers below). Results are
-  grouped by type — pages, PDFs, images, whiteboards — with filter chips, and
-  `⌘F` searches within the open page.
+  grouped by type — pages, PDFs, images, whiteboards — with filter chips.
+  `⌘F` finds within the open page or across the journal feed, while you edit.
 
 *Details: [Search](https://packetthrower.github.io/zorite/usage/search/)*
 
-### Privacy and customization
+### Privacy, customization, and languages
 
 - More than one set of notes? **Notebooks** are self-contained data folders
   (a work set, a personal set, a folder in Dropbox) switched from a chip at
@@ -140,12 +156,25 @@ Developed in close collaboration with Claude (Anthropic).
   the source. And the way out is just as open: File → Export Notebook as
   Markdown writes the whole notebook as plain markdown + assets (whiteboards
   as JSON Canvas), readable by any other app.
-- Appearance: built-in and JSON-file themes, light/dark/auto, any installed or
-  imported font, and an adjustable text size.
+- The app speaks **English and 简体中文** (Settings → General → Language);
+  the Chinese localization is community-contributed. Translations are plain
+  YAML files, so adding a language is a pull request, not a rebuild.
+- Appearance: built-in and JSON-file themes, light/dark/auto (Auto follows the
+  OS), any installed or imported font, an adjustable text size, an optional
+  line-number gutter, a sidebar that docks left or right, and custom mouse
+  cursor themes (any XCursor pack) — all without forking the UI toolkit.
+- Every keyboard shortcut is listed under Settings → Shortcuts, grouped by
+  where it applies (app, editing, whiteboard, PDF). The app checks for updates
+  on launch (pre-releases opt-in) and links to the release notes.
+- Hardened by a security audit: links open only `http`, `https`, and `mailto`;
+  imports and exports can't read or write outside their folders; the database
+  and data folder are created private to your user.
 
 *Details: [Password & encryption](https://packetthrower.github.io/zorite/usage/security/)
 · [Import your notes](https://packetthrower.github.io/zorite/usage/import/)
-· [Themes](https://packetthrower.github.io/zorite/customize/themes/)*
+· [Themes](https://packetthrower.github.io/zorite/customize/themes/)
+· [Cursors](https://packetthrower.github.io/zorite/customize/cursors/)
+· [Shortcuts](https://packetthrower.github.io/zorite/usage/shortcuts/)*
 
 ## Templates
 
@@ -239,7 +268,9 @@ nix run github:packetThrower/zorite
 winget carries **stable only**; for pre-release builds on Windows use Scoop or
 the [Releases](https://github.com/packetThrower/zorite/releases) page directly.
 Linux users grab the matching `.deb` / `.rpm` / `.AppImage` / `.pkg.tar.zst`
-from Releases (`pacman -U` for the Arch package).
+from Releases (`pacman -U` for the Arch package). The AppImage carries update
+information and ships a `.zsync`, so AppImageUpdate, AppImageLauncher, and
+friends can delta-update it (from 0.11.0 onward).
 
 To install by hand, download from Releases and drag `Zorite.app` to
 `/Applications` on macOS, or run the installer on Windows. The macOS builds are
