@@ -2,17 +2,17 @@
 
 [![crates.io](https://img.shields.io/crates/v/gpui-pdf.svg)](https://crates.io/crates/gpui-pdf) [![docs.rs](https://docs.rs/gpui-pdf/badge.svg)](https://docs.rs/gpui-pdf) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**Page-virtualized PDF viewing for [GPUI](https://www.gpui.rs/)**, built on the
-pure-Rust [`hayro`](https://crates.io/crates/hayro) rasterizer — no native libraries,
-no system-font dependency, so it builds and runs the same on macOS, Linux, and
+A PDF viewer for [GPUI](https://www.gpui.rs/), rendered in pure Rust with
+[`hayro`](https://crates.io/crates/hayro). There are no native libraries and no
+system-font dependency, so it builds and behaves the same on macOS, Linux, and
 Windows.
 
-It comes in two layers: low-level primitives (`parse`, `page_dims`, `render_page`,
-`keep_window`) you can build your own viewer on, and a ready-made `PdfView`
-component that handles loading, scrolling, rendering, and memory on its own.
+Use the ready-made `PdfView`, which handles loading, scrolling, rendering, and
+memory on its own, or build your own viewer on the lower-level functions
+(`parse`, `page_dims`, `render_page`, `keep_window`). Text search, highlights,
+and fillable forms are optional features.
 
-**📖 Full reference:** every public item, with signatures, parameter tables,
-return contracts, edge cases, and cost notes, lives in [API.md](API.md).
+The complete API reference is in [API.md](API.md).
 
 ## Overview
 

@@ -135,6 +135,12 @@ winget submission fires automatically when it completes on a stable tag
 if a run flakes). Homebrew tap + Scoop bucket bumps stay manual (version +
 hashes from the release's SHA256SUMS).
 
+**Crate descriptions and README intros** are written for a person skimming crates.io:
+one plain sentence saying what the crate is and does, no internal jargon (say "custom
+cursors", not "NSCursor swizzling" — the mechanism belongs in a "How it works" section),
+no marketing. The docs site takes each crate's description from its Cargo.toml, so
+there is one place to edit.
+
 **Crate releases** are independent of app releases: bump `version` in
 `crates/<name>/Cargo.toml` (and the `version` requirement in any workspace crate that
 depends on it — path deps carry one so they publish), update the README's dependency

@@ -2,26 +2,16 @@
 
 [![crates.io](https://img.shields.io/crates/v/os-cursors.svg)](https://crates.io/crates/os-cursors) [![docs.rs](https://docs.rs/os-cursors/badge.svg)](https://docs.rs/os-cursors) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Per-app **custom mouse cursors** without forking the UI toolkit:
+Custom mouse cursors for your app on macOS, Windows, and Linux, without
+changing the UI toolkit.
 
-- **macOS** — the `NSCursor` class factory methods (`+arrowCursor`, …) are
-  swizzled via the objc runtime, so every AppKit caller in the process —
-  your toolkit included — vends your cursors.
-- **Windows** — a thread-scoped `WH_CALLWNDPROCRET` hook watches
-  `WM_SETCURSOR` and swaps the standard `IDC_*` cursor the toolkit just set
-  for yours.
-- **Linux** — the platform already themes per process: `use_xcursor_theme`
-  sets `XCURSOR_THEME` / `XCURSOR_PATH` / `XCURSOR_SIZE`, which libXcursor
-  and libwayland-cursor honor. Per-image install is a no-op there.
+Cursor packs are standard **XCursor theme directories**, the Linux cursor-theme
+format, so any existing theme works as it is. The
+[`xcursor`](API.md#module-xcursor) module reads and writes those files in pure
+Rust, hotspots included. Apart from the per-platform system bindings there are
+no dependencies, and no `gpui` dependency.
 
-The pack currency is the **XCursor theme directory** — the standard Linux
-cursor-theme format — so every existing theme is drop-in content. The
-[`xcursor`](API.md#module-xcursor) module parses and writes the binary
-files in pure Rust, hotspots included; there are no dependencies beyond the
-per-platform system bindings, and **no `gpui` dependency**.
-
-**📖 Full reference:** every public item, with signatures, contracts, and
-platform caveats, lives in [API.md](API.md).
+The complete API reference is in [API.md](API.md).
 
 ## How it works
 

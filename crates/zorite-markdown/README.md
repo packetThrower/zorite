@@ -2,31 +2,29 @@
 
 [![crates.io](https://img.shields.io/crates/v/zorite-markdown.svg)](https://crates.io/crates/zorite-markdown) [![docs.rs](https://docs.rs/zorite-markdown/badge.svg)](https://docs.rs/zorite-markdown) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A small **Markdown renderer for [GPUI](https://www.gpui.rs/)**, built on gpui's own
-`StyledText` / `InteractiveText` so paragraphs wrap properly and links are clickable
-through a real **callback** — unlike renderers that only `cx.open_url` externally.
+A Markdown reading view for [GPUI](https://www.gpui.rs/). It is built on gpui's
+own `StyledText` and `InteractiveText`, so paragraphs wrap properly and links
+call back into your app instead of only opening a browser.
 
-It is host-agnostic: styling comes in via `MarkdownStyle`, and the host supplies
-closures for clicking a `[[wiki-link]]`/`#tag`, rendering an image, rendering a
-mermaid diagram, syntax-highlighting code, and click-to-caret. Standard
-`[text](url)` links open externally.
+Styling comes in through `MarkdownStyle`; the host supplies callbacks for
+clicking a `[[wiki-link]]` or `#tag`, rendering an image or a Mermaid diagram,
+syntax-highlighting code, and click-to-caret. Standard `[text](url)` links open
+externally.
 
-**📖 Full reference:** every public item, with signatures, parameter tables,
-return contracts, edge cases, and cost notes, lives in [API.md](API.md).
+The crate has two layers:
 
-This is **the** markdown crate of the Zorite workspace, in two layers:
+- **`zorite_markdown::syntax`**, always compiled and dependency-free: the
+  shared recognition of constructs (links, GitHub alert kinds and fold
+  characters, table styles, heading scales, `key:: value` properties,
+  ` ^block-id` anchors, `#Heading` / `#^id` link targets, and `![[embed]]`
+  lines). The reading view, the [`zorite-editor`](../zorite-editor/README.md)
+  WYSIWYG view, and Zorite's PDF exporter all use it, so each construct is
+  defined once.
+- **The reading view**, `MarkdownView`, behind the default-on `view` feature,
+  which owns the `gpui` and `markdown` dependencies. Consumers that only need
+  recognition depend with `default-features = false`.
 
-- **`zorite_markdown::syntax`** — always compiled, **dependency-free**: the shared
-  construct *recognition* (linkables, GitHub alert kinds + fold chars, table
-  styles, heading scales, `key:: value` properties, ` ^block-id` anchors,
-  `#Heading` / `#^id` link-target splitting, and `![[embed]]` lines with
-  block/section extraction) that this reader, the
-  [`zorite-editor`](../zorite-editor/README.md) WYSIWYG
-  view, and the PDF exporter all consume, so what a construct IS is defined once.
-- **The reader view** — `MarkdownView` and everything around it, behind the
-  default-on **`view`** feature, which owns the `gpui` + `markdown` dependencies.
-  Consumers that only need recognition (like zorite-editor) depend with
-  `default-features = false`.
+The complete API reference is in [API.md](API.md).
 
 ## Features
 

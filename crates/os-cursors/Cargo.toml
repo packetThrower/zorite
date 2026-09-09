@@ -2,7 +2,7 @@
 name = "os-cursors"
 version = "0.1.0"
 edition = "2024"
-description = "Per-app custom mouse cursors without forking the UI toolkit — NSCursor swizzling on macOS, a WM_SETCURSOR hook on Windows, XCURSOR_* environment on Linux. Packs are standard XCursor theme directories; pure-Rust XCursor parse/write included."
+description = "Custom mouse cursors for your app on macOS, Windows, and Linux, using standard XCursor themes. No changes to the UI toolkit required."
 license = "MIT"
 repository = "https://github.com/packetThrower/zorite"
 homepage = "https://packetthrower.github.io/zorite/reference/crates/os-cursors/"

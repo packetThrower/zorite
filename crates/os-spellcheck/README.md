@@ -2,18 +2,19 @@
 
 [![crates.io](https://img.shields.io/crates/v/os-spellcheck.svg)](https://crates.io/crates/os-spellcheck) [![docs.rs](https://docs.rs/os-spellcheck/badge.svg)](https://docs.rs/os-spellcheck) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Native **OS spell-checking** with a tiny, host-agnostic API:
+Spell-checking through the operating system's own checker, with a small API
+that any Rust app can use.
 
-- **macOS** — Apple's `NSSpellChecker` (AppKit).
-- **Windows** — the Win32 Spell Checking API (`ISpellChecker`, Windows 8+).
-- **Everywhere else** (currently Linux) — a no-op that returns empty results.
+- **macOS**: Apple's `NSSpellChecker`.
+- **Windows**: the Win32 Spell Checking API (`ISpellChecker`, Windows 8 and
+  later).
+- **Everywhere else** (currently Linux): a no-op that returns empty results, so
+  callers need no platform `#[cfg]`s of their own.
 
-Plain `&str` and UTF-8 byte ranges in and out — **no `gpui` dependency** — so any
-app can use it. Because the unsupported platform is a no-op, callers never need
-their own `#[cfg]`s.
+Text goes in as `&str`; misspellings come back as UTF-8 byte ranges together
+with the OS's suggestions. No `gpui` dependency.
 
-**📖 Full reference:** every public item, with signatures, parameter tables,
-return contracts, edge cases, and cost notes, lives in [API.md](API.md).
+The complete API reference is in [API.md](API.md).
 
 ## Overview
 

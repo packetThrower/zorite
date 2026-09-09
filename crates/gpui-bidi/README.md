@@ -2,12 +2,19 @@
 
 [![crates.io](https://img.shields.io/crates/v/gpui-bidi.svg)](https://crates.io/crates/gpui-bidi) [![docs.rs](https://docs.rs/gpui-bidi/badge.svg)](https://docs.rs/gpui-bidi) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Bidirectional text for [GPUI](https://www.gpui.rs): read a shaped line's
-already-reordered glyphs correctly, break a paragraph into rows in reading
-order, and paint a styled row without the colours collapsing.
+Right-to-left and mixed-direction text for [GPUI](https://www.gpui.rs).
 
-Built for [Zorite](https://github.com/packetThrower/zorite), but it depends on
-`gpui` alone and knows nothing about the app.
+GPUI shapes Arabic, Hebrew, and Persian correctly, but its line-layout lookups
+assume that text position and x coordinate grow together, which stops being
+true once glyphs are reordered. This crate reads a shaped line the way it
+actually is, so the caret, the selection, and a click land on the right
+character. It also breaks a paragraph into rows in reading order and paints a
+styled row without gpui collapsing its colors.
+
+Built for [Zorite](https://github.com/packetThrower/zorite); it depends on
+`gpui` alone.
+
+The complete API reference is in [API.md](API.md).
 
 ## Why it exists
 

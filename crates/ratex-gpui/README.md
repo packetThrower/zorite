@@ -2,24 +2,23 @@
 
 [![crates.io](https://img.shields.io/crates/v/ratex-gpui.svg)](https://crates.io/crates/ratex-gpui) [![docs.rs](https://docs.rs/ratex-gpui/badge.svg)](https://docs.rs/ratex-gpui) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A **structural, [MathQuill](https://mathquill.com/)-style math editor for [GPUI](https://www.gpui.rs/)**,
-built on the [RaTeX](https://crates.io/crates/ratex-parser) typesetting engine. RaTeX is the
-engine (parse → layout → rasterize); this crate is the **editor + display layer** for gpui.
+Math for [GPUI](https://www.gpui.rs/), built on the
+[RaTeX](https://crates.io/crates/ratex-parser) typesetting engine. RaTeX parses,
+lays out, and rasterizes LaTeX; this crate adds the display and editing layer.
 
-Two halves, usable independently:
+Two parts, usable independently:
 
-1. **Static rendering** (the `render` module) — turn a LaTeX string into a
-   `gpui::RenderImage`, or a PNG / self-contained SVG for export.
-2. **An interactive structural editor** — `MathEditor`, a gpui view that edits a formula
-   **two-dimensionally** (a fraction is a real stacked box, the caret moves *into* a
-   numerator), Casio-Natural-Display / MathQuill style — not by editing raw LaTeX text.
-   It serializes back to LaTeX on demand.
+1. **Rendering** (the `render` module): turn a LaTeX string into a
+   `gpui::RenderImage`, or into a PNG or self-contained SVG for export.
+2. **A structural editor**: `MathEditor`, a gpui view that edits a formula as a
+   two-dimensional structure in the style of MathQuill. A fraction is a stacked
+   box and the caret moves into its numerator, rather than along a line of
+   LaTeX. It serializes back to LaTeX on demand.
 
-The editing **core is GUI-free** (`editor::{model, cursor, geometry, input, latex}`) —
-the gpui glue (`editor::view`) is layered on top.
+The editing core (`editor::{model, cursor, geometry, input, latex}`) has no GUI
+dependency; `editor::view` is the gpui glue on top.
 
-**📖 Full reference:** every public item, with signatures, parameter tables, return
-contracts, edge cases, and cost notes, lives in [API.md](API.md).
+The complete API reference is in [API.md](API.md).
 
 ## Features
 

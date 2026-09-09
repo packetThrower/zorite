@@ -27,48 +27,14 @@ const GH = 'https://github.com/packetThrower/zorite';
 // baked in — Astro does not prepend it to plain Markdown hrefs.
 const DOCS = '/zorite/reference/crates';
 
-const crates = [
-	{
-		name: 'gpui-bidi',
-		description:
-			"Bidirectional text for GPUI: index↔x over reordered glyphs, logical-order row layout, and a row painter that keeps a styled line's colours.",
-	},
-	{
-		name: 'zorite-editor',
-		description:
-			"A from-scratch multi-line text editor for GPUI — the engine behind Zorite's Word-like note editor.",
-	},
-	{
-		name: 'zorite-markdown',
-		description:
-			'A host-agnostic Markdown renderer for GPUI: wrapping text, clickable links, images, mermaid, and in-page find.',
-	},
-	{
-		name: 'gpui-pdf',
-		description:
-			'Page-virtualized PDF viewing for GPUI, rasterized with the pure-Rust hayro engine.',
-	},
-	{
-		name: 'gpui-whiteboard',
-		description:
-			'An infinite, pannable and zoomable freeform whiteboard canvas for GPUI.',
-	},
-	{
-		name: 'os-cursors',
-		description:
-			'Per-app custom mouse cursors without forking the UI toolkit — NSCursor swizzling, a WM_SETCURSOR hook, XCURSOR_* environment; packs are standard XCursor themes.',
-	},
-	{
-		name: 'os-spellcheck',
-		description:
-			'Native OS spell-checking (NSSpellChecker / ISpellChecker) with a tiny, host-agnostic API.',
-	},
-	{
-		name: 'ratex-gpui',
-		description:
-			'A structural (MathQuill-style) math editor for GPUI, plus a LaTeX → image / PNG / SVG renderer, built on the RaTeX engine.',
-	},
-];
+// The crate list; each page's description is the crate's own Cargo.toml
+// `description`, so crates.io and the docs site say the same thing.
+const crates = ['gpui-bidi', 'zorite-editor', 'zorite-markdown', 'gpui-pdf', 'gpui-whiteboard', 'os-cursors', 'os-spellcheck', 'ratex-gpui'].map((name) => ({
+	name,
+	description: readFileSync(resolve(repo, 'crates', name, 'Cargo.toml'), 'utf8')
+		.match(/^description = "(.*)"$/m)[1]
+		.replace(/\\"/g, '"'),
+}));
 
 mkdirSync(outDir, { recursive: true });
 

@@ -2,7 +2,7 @@
 name = "zorite-editor"
 version = "0.10.0"
 edition = "2024"
-description = "A from-scratch multi-line text editor for GPUI — the basis for Zorite's note editor (built on gpui's EntityInputHandler + text-shaping primitives, no gpui-component)."
+description = "A multi-line text editor for GPUI with live Markdown preview, tables, images, and math. The editor behind Zorite's notes."
 license = "MIT"
 repository = "https://github.com/packetThrower/zorite"
 homepage = "https://packetthrower.github.io/zorite/reference/crates/zorite-editor/"

@@ -2,21 +2,21 @@
 
 [![crates.io](https://img.shields.io/crates/v/gpui-whiteboard.svg)](https://crates.io/crates/gpui-whiteboard) [![docs.rs](https://docs.rs/gpui-whiteboard/badge.svg)](https://docs.rs/gpui-whiteboard) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**An infinite, pannable/zoomable whiteboard canvas for [GPUI](https://www.gpui.rs/).**
-Shapes, lines, arrows, freehand ink, text, images, and "page cards" on a boundless
-board — with select / move / resize / rotate / z-order, a built-in toolbar + color
-picker, templates, copy-paste, and undo/redo.
+An infinite whiteboard canvas for [GPUI](https://www.gpui.rs/): shapes, lines,
+arrows, freehand drawing, text, images, and page cards on a board you can pan
+and zoom without limit. Elements can be selected, moved, resized, rotated, and
+reordered; a toolbar, color picker, templates, copy and paste, and undo/redo
+are built in.
 
-Host-agnostic: its only dependencies are `gpui`, `serde` / `serde_json`, `log`, and
-`ttf-parser` (**no `gpui-component`, no native libraries**), so it drops into any
-GPUI app on macOS, Linux, or Windows. It comes in two layers:
+It depends on `gpui`, `serde`/`serde_json`, `log`, and `ttf-parser` only, with
+no native libraries, so it drops into any GPUI app on macOS, Linux, or Windows.
+There are two layers:
 
-- a plain, serializable **scene model** ([`Scene`](#the-scene-model) / [`Element`] / …)
-  that you persist as an opaque JSON string in your own store, and
-- a ready-made **[`WhiteboardView`](#whiteboardview)** entity that renders the board
-  *and its whole editing UI* (toolbar, flyouts, color picker, templates gallery,
-  right-click menu) and drives all interaction — you supply a theme and a handful of
-  optional callbacks.
+- a plain, serializable **scene model** ([`Scene`](#the-scene-model) /
+  [`Element`] / …) that you store as a JSON string wherever you like, and
+- a ready-made **[`WhiteboardView`](#whiteboardview)** that renders the board
+  and its whole editing UI (toolbar, flyouts, color picker, templates gallery,
+  right-click menu). You supply a theme and a few optional callbacks.
 
 ## Features
 
@@ -243,7 +243,7 @@ text / document embedding.
 | --- | --- | --- |
 | `new` | `fn new(scene: Scene, style: WhiteboardStyleFn, cx: &mut Context<Self>) -> Self` | Build a read-only embedded board preview. |
 | `board` | `fn board(&self) -> Entity<WhiteboardView>` | Access the inner board entity for host-driven inspection or updates. |
-| `set_on_expand` | `fn set_on_expand(&mut self, f: ExpandEmbedFn)` | Install the callback fired when the embed's "编辑" button is clicked. |
+| `set_on_expand` | `fn set_on_expand(&mut self, f: ExpandEmbedFn)` | Install the callback fired when the embed's "Edit" button is clicked. |
 
 ### `BoardThumbnailView`
 

@@ -2,7 +2,7 @@
 name = "os-spellcheck"
 version = "0.2.0"
 edition = "2024"
-description = "Native OS spell-check — NSSpellChecker on macOS, ISpellChecker on Windows; a no-op elsewhere. Returns misspelled byte ranges + the OS's suggestions. Host-agnostic (no gpui)."
+description = "Spell-checking through the operating system's own checker on macOS and Windows. Returns misspelled ranges and suggestions; no GUI dependencies."
 license = "MIT"
 repository = "https://github.com/packetThrower/zorite"
 homepage = "https://packetthrower.github.io/zorite/reference/crates/os-spellcheck/"

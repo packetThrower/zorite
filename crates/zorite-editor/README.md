@@ -2,20 +2,20 @@
 
 [![crates.io](https://img.shields.io/crates/v/zorite-editor.svg)](https://crates.io/crates/zorite-editor) [![docs.rs](https://docs.rs/zorite-editor/badge.svg)](https://docs.rs/zorite-editor) [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-A from-scratch, multi-line **text editor for [GPUI](https://github.com/zed-industries/zed)** —
-the basis for [Zorite](https://github.com/packetThrower/zorite)'s note editor.
+A multi-line text editor for [GPUI](https://www.gpui.rs/) with live Markdown
+preview. It is the editor behind [Zorite](https://github.com/packetThrower/zorite)'s
+notes.
 
-Host-agnostic: it depends on `gpui` (+ `unicode-segmentation`), **not** on
-`gpui-component` — plus one sibling, [`zorite-markdown`](../zorite-markdown/README.md)
-with default features off, which contributes only `zorite_markdown::syntax`: the
-**dependency-free** construct-recognition module (what counts as a link / alert /
-table style) shared with the reader so the two views can never drift apart. It's built directly on GPUI's text primitives — an
-`EntityInputHandler` for keyboard + IME input, `shape_line` for per-line text
-shaping, and a custom `Element` that lays out and paints the lines, caret, and
-selection.
+It is built directly on GPUI's text primitives: an `EntityInputHandler` for
+keyboard and IME input, `shape_line` for per-line shaping, and a custom
+`Element` that lays out and paints the lines, caret, and selection. It depends
+on `gpui` and `unicode-segmentation`, plus one sibling crate,
+[`zorite-markdown`](../zorite-markdown/README.md) with default features off,
+for its dependency-free `syntax` module. That module decides what counts as a
+link, an alert, or a table style; sharing it keeps the editor and the reading
+view in agreement.
 
-**📖 Full reference:** every public item, with signatures, parameter tables,
-return contracts, edge cases, and the seat/commit protocols, lives in
+The complete API reference, including the seat/commit protocols, is in
 [API.md](API.md).
 
 ## Overview

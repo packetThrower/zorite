@@ -2,7 +2,7 @@
 name = "gpui-whiteboard"
 version = "0.5.0"
 edition = "2024"
-description = "An infinite, pannable/zoomable whiteboard canvas for GPUI."
+description = "An infinite whiteboard canvas for GPUI: shapes, arrows, freehand drawing, text, images, and templates, with a built-in toolbar."
 license = "MIT"
 repository = "https://github.com/packetThrower/zorite"
 homepage = "https://packetthrower.github.io/zorite/reference/crates/gpui-whiteboard/"
