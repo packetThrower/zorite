@@ -196,6 +196,28 @@ folded section reveals it while you edit.
 **Find in page** searches the rendered text of the current note, with a
 highlight and a match count — see [Search](/zorite/usage/search/).
 
+## Right-to-left text
+
+Notes in **Arabic, Hebrew, Persian**, or a mix of directions lay out the way a
+reader expects, in both the editor and the reading view. Direction is decided
+per block from its first strong character (the Unicode rule), so an
+English note can hold a Persian quote and an Arabic note an English URL:
+
+- **Paragraphs and headings** align to the right, wrap in reading order, and
+  keep a Latin word or link running left-to-right inside the line.
+- **Lists and tasks** put the bullet, number, or checkbox on the right;
+  **quotes and alerts** put their bar and title there.
+- **Tables** mirror — the first column sits on the right — and **properties**
+  panels mirror their key/value rows.
+- **Links, tags, and inline math** keep their color, hover cursor, and click
+  targets inside the reordered text.
+- The **caret, selection, and clicks** follow what you see: `→` moves right on
+  screen, and clicking a letter puts the caret beside that letter.
+
+There is nothing to switch on — a block is right-to-left when its text is.
+The app's own chrome stays left-to-right (the sidebar can dock on the right if
+you prefer; see below).
+
 ## Tabs & multiple windows
 
 Open pages, PDFs, and boards in tabs; the journal is the pinned first tab.
@@ -210,3 +232,6 @@ The sidebar collapses to a slim icon rail. It carries a **Favorites** group
 (days with entries are **dotted**), an [All pages browser](/zorite/usage/navigate/)
 with a graph view, collapsible sections, and a recently-viewed page tree with
 namespace nesting.
+
+It docks on the **left by default**; **Settings → Appearance → Sidebar on the
+right** moves it — and its collapse caret and icon row — to the right edge.

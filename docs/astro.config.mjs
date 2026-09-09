@@ -96,6 +96,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Themes', slug: 'customize/themes' },
 						{ label: 'Mouse cursors', slug: 'customize/cursors' },
+						{ label: 'Language', slug: 'customize/language' },
 					],
 				},
 				{

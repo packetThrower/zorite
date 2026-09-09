@@ -36,13 +36,19 @@ LaTeX.
 - **Type naturally** — letters and operators insert as symbols; `^` starts a
   superscript and `_` a subscript, and the caret descends into the new box.
 - **`\command` autocomplete** — type `\` and a name (`\alpha`, `\sqrt`, `\frac`, …)
-  for a scrollable menu of ~100 commands; `Enter` or `Tab` inserts the highlighted
-  one.
+  for a scrollable menu of ~100 commands; `Enter`, `Tab`, `Space`, or `{` inserts
+  the highlighted one — so `\hat{` opens the accent's slot just as it would in
+  LaTeX.
+- **Accents** — `\hat`, `\widehat`, `\bar`, `\vec`, `\tilde`, `\dot`, `\ddot`,
+  `\check`, `\breve` (by command, or the palette's bottom row) place an editable
+  base under the mark; the caret drops into it. `Backspace` just after an accent
+  peels the mark off and keeps what was under it.
 - **Symbol palette** — a floating panel of one-click structures and symbols
   (fractions, roots, matrices, the Greek alphabet, relations, big operators, …).
-- **Select and wrap** — select a sub-expression (Shift-arrows or drag; double-click
-  a cell, triple-click a row), then apply a fraction, root, or delimiter to **wrap
-  it** instead of inserting an empty one.
+- **Select and wrap** — select a sub-expression (Shift-arrows or drag with the
+  mouse; double-click a cell, triple-click a row), then apply a fraction, root,
+  delimiter, or accent — from the palette or by typing its `\command` — to
+  **wrap it** instead of inserting an empty one.
 - **Matrices** — insert a grid and add or remove rows and columns as you go.
 - **Undo / redo** — `⌘Z`, `⌘⇧Z`, `⌘Y` (`Ctrl` on Windows and Linux).
 
@@ -71,9 +77,9 @@ symbol, accents, blackboard-bold and script fonts, `align` / `cases` environment
 and more.
 
 The **2-D editor** handles the common core — fractions, roots, super/subscripts,
-matrices, delimiters, and ~100 symbols. A formula that uses something outside that
-(an accent like `\hat`, a font like `\mathbb`, a multi-line environment) still
-**renders perfectly**; you just edit it as raw `$…$` LaTeX rather than in the
-structural editor. See the
+matrices, delimiters, accents, and ~100 symbols. A formula that uses something
+outside that (a font like `\mathbb`, a multi-line environment) still **renders
+perfectly**; you just edit it as raw `$…$` LaTeX rather than in the structural
+editor. See the
 [`ratex-gpui` reference](/zorite/reference/crates/ratex-gpui/) for the full coverage
 breakdown.

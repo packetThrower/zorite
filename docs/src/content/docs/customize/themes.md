@@ -17,6 +17,15 @@ Open **Settings** (the ⚙ in the title bar) to choose a theme and set the mode:
 
 A quick light/dark toggle also lives in the title bar for switching on the fly.
 
+## Other appearance settings
+
+The same **Appearance** tab holds the rest of the look: the **font** (any
+installed face, or a `.ttf`/`.otf` you import — see [Fonts](#fonts)), the
+**text size** notes are written and read at (headings and inline math scale
+with it), an optional **line-number gutter** beside the editor, **Sidebar on
+the right** to dock the sidebar on the other edge, and the
+[mouse cursor theme](/zorite/customize/cursors/).
+
 ## Custom themes
 
 Drop a `.json` file in your themes folder (**Settings → Reveal themes folder**)
