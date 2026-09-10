@@ -338,9 +338,9 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
   `TextView` has the same problem).
 
 **Adopt, in this order:**
-- [ ] **`HoverCard` → wiki-link previews**: hover a `[[Page]]` / block ref and
-  see the target's first lines. Cheap; both views already have link hitboxes.
-  Cross-view rule: reader AND WYSIWYG.
+- [x] **`HoverCard` → link previews** — DONE 2026-09-10: wiki-links, tags,
+  block refs, URLs, and property pills in both views (`EditorEvent::HoverLink`,
+  `MarkdownView::on_link_hover`). Left: links inside table cells.
 - [ ] **`Command` palette (⌘K)**: searchable actions with keybinding hints —
   Zorite has dozens of actions and only the slash menu today.
 - [x] **`setting::Settings` page builder** — DONE 2026-09-10 (branch
