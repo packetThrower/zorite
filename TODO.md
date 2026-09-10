@@ -343,11 +343,10 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
   Cross-view rule: reader AND WYSIWYG.
 - [ ] **`Command` palette (⌘K)**: searchable actions with keybinding hints —
   Zorite has dozens of actions and only the slash menu today.
-- [ ] **`setting::Settings` page builder** (`SettingPage → SettingGroup →
-  SettingItem → field`: switch/checkbox/input/dropdown/number, `default_value`,
-  `on_reset`). Would replace most of `settings.rs`'s hand-rolled cards and add
-  reset-to-default; the custom `SECTIONS` search filter needs re-plumbing.
-  Large — its own project.
+- [x] **`setting::Settings` page builder** — DONE 2026-09-10 (branch
+  `feat/settings-component`): pages/groups/typed fields with defaults + Reset,
+  component sidebar search (titles, descriptions, synonyms, option labels,
+  shortcut labels); `settings.rs` 2,837 → ~2,180 lines, SelectState plumbing gone.
 - [ ] **Accessibility**: 0.6 gives roles/labels/values on every gpui-component
   control for free (plus a macOS hit-test forwarder in gpui-base). The custom
   editor + reader get nothing automatically — separate work if a11y matters.
