@@ -560,6 +560,9 @@ pub struct AppView {
     prop_edit: Option<PropEdit>,
     // Right-click context menu on a rendered formula (Copy LaTeX / Export SVG / Export PNG).
     ctx_menu: Option<CtxMenu>,
+    /// The link under the pointer in any view + its window-space box, for the
+    /// hover preview card (see `link_hover_card`). Both renderers report here.
+    link_hover: Option<(zorite_markdown::syntax::LinkHit, Bounds<Pixels>)>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
     // what's in flight, capped at `MAX_IMAGE_DECODES`). The bound keeps the
     // transient full-resolution buffers in check — decoding a 12 MP photo briefly
@@ -881,6 +884,7 @@ impl AppView {
             math_edit: None,
             prop_edit: None,
             ctx_menu: None,
+            link_hover: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
             pdf_views: HashMap::new(),
@@ -1194,6 +1198,7 @@ impl AppView {
                         cx,
                     );
                 }
+                EditorEvent::HoverLink(hover) => this.set_link_hover(hover.clone(), cx),
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
                 }
@@ -1454,6 +1459,72 @@ impl AppView {
             Ok(Some(page)) => self.open_page_foreground(page, window, cx),
             Ok(None) => log::warn!("page {id} not found"),
             Err(e) => log::error!("open page {id}: {e}"),
+        }
+    }
+
+    /// A view reported the link under the pointer (or that there is none) —
+    /// see [`Self::link_hover_card`]. Both renderers call this; only a change
+    /// repaints.
+    pub fn set_link_hover(
+        &mut self,
+        hover: Option<(zorite_markdown::syntax::LinkHit, Bounds<Pixels>)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.link_hover != hover {
+            self.link_hover = hover;
+            cx.notify();
+        }
+    }
+
+    /// The hover preview for the link under the pointer: gpui-component's
+    /// `HoverCard` over an invisible trigger the size of the link (so the card
+    /// owns its open/close timing and stays while the pointer is on it), showing
+    /// the target page's first lines — or the URL, the way a browser's status
+    /// bar does.
+    fn link_hover_card(&self, cx: &App) -> Option<gpui::AnyElement> {
+        let (hit, bounds) = self.link_hover.clone()?;
+        let preview = self.link_preview(&hit, cx);
+        Some(
+            gpui::deferred(
+                gpui::anchored().position(bounds.origin).child(
+                    gpui_component::hover_card::HoverCard::new("link-preview")
+                        .anchor(gpui::Anchor::TopLeft)
+                        .open_delay(std::time::Duration::from_millis(450))
+                        .trigger(div().w(bounds.size.width).h(bounds.size.height))
+                        .content(move |_, _, _| preview.clone().render()),
+                ),
+            )
+            .into_any_element(),
+        )
+    }
+
+    /// What the preview card shows for `hit`: the page's title and first lines
+    /// (anchors stripped, aliases resolved), a block reference's id, or the URL.
+    fn link_preview(&self, hit: &zorite_markdown::syntax::LinkHit, _cx: &App) -> LinkPreview {
+        use zorite_markdown::syntax::{LinkHit, split_block_anchor, split_heading_anchor};
+        match hit {
+            LinkHit::Url(u) => LinkPreview::Url(u.clone()),
+            LinkHit::BlockRef(id) => LinkPreview::Block(id.clone()),
+            LinkHit::Page(target) => {
+                let (base, _) = split_block_anchor(target);
+                let (base, _) = split_heading_anchor(base);
+                let page = self
+                    .db
+                    .get_page_by_title(base)
+                    .ok()
+                    .flatten()
+                    .or_else(|| self.db.get_page_by_alias(base).ok().flatten());
+                match page {
+                    Some(p) => LinkPreview::Page {
+                        title: p.title,
+                        excerpt: Some(excerpt(&p.content)),
+                    },
+                    None => LinkPreview::Page {
+                        title: base.to_string(),
+                        excerpt: None,
+                    },
+                }
+            }
         }
     }
 
@@ -2021,6 +2092,7 @@ impl AppView {
                         cx,
                     );
                 }
+                EditorEvent::HoverLink(hover) => this.set_link_hover(hover.clone(), cx),
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
                 }
@@ -6983,6 +7055,7 @@ impl Render for AppView {
                 .into_any_element()
             });
 
+        let link_hover_overlay = self.link_hover_card(cx);
         let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
             // Action ids: 0..=2 formula copy/export, 3 day/page Edit, 4..=6 align L/C/R (only
             // while editing the formula, where the in-line editor can re-justify it live).
@@ -7349,6 +7422,7 @@ impl Render for AppView {
             .children(mermaid_lightbox)
             .children(image_lightbox)
             .children(ctx_menu_overlay)
+            .children(link_hover_overlay)
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.
@@ -7858,4 +7932,75 @@ mod auto_link_tests {
         assert_eq!(auto_link_match(&t, "not-a-match"), None);
         assert_eq!(auto_link_match(&t, "meetings "), None); // trailing ws = no word completed
     }
+}
+
+/// The data behind the link hover card (see `AppView::link_hover_card`).
+#[derive(Clone)]
+enum LinkPreview {
+    /// A wiki target; `excerpt` is `None` when no such page exists yet.
+    Page {
+        title: String,
+        excerpt: Option<String>,
+    },
+    Block(String),
+    Url(String),
+}
+
+impl LinkPreview {
+    fn render(self) -> gpui::Div {
+        let body = div().max_w(px(380.0)).flex().flex_col().gap(px(4.0));
+        match self {
+            LinkPreview::Page { title, excerpt } => body
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_secondary())
+                        .child(excerpt.unwrap_or_else(|| t!("link_preview.no_page").into_owned())),
+                ),
+            LinkPreview::Block(id) => body.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_secondary())
+                    .child(format!("(({id}))")),
+            ),
+            LinkPreview::Url(url) => body.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_secondary())
+                    .truncate()
+                    .child(url),
+            ),
+        }
+    }
+}
+
+/// The first few content lines of a page for its hover card: blank lines and
+/// hidden marker comments skipped, capped so the card stays a glance.
+fn excerpt(content: &str) -> String {
+    let mut out = String::new();
+    for line in content
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with("<!--"))
+        .take(8)
+    {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        if out.chars().count() > 360 {
+            break;
+        }
+    }
+    if out.chars().count() > 360 {
+        out = out.chars().take(360).collect();
+        out.push('…');
+    }
+    out
 }

@@ -443,7 +443,7 @@ impl TableMenuAction {
 
 /// Events the editor emits so a host can react. Subscribe with
 /// `cx.subscribe(&editor, …)` — e.g. to re-run spell-check after an edit.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum EditorEvent {
     /// The document text changed via a user edit (typing, delete, paste, IME,
     /// applying a suggestion). Not emitted for programmatic `set_text`.
@@ -494,6 +494,11 @@ pub enum EditorEvent {
     /// An inline `![](src)` image was left-clicked — the host opens a full-size
     /// preview. The text is untouched.
     PreviewImage(SharedString),
+    /// The pointer moved onto an inline link (`Some` — the target and the
+    /// link's window-space box, from this frame's layout) or off every link
+    /// (`None`). Emitted only on change, so a host can show a preview card
+    /// anchored to the link.
+    HoverLink(Option<(zorite_markdown::syntax::LinkHit, Bounds<Pixels>)>),
 }
 
 /// A table column's text alignment, for the host-driven alignment toolbar
@@ -953,6 +958,11 @@ pub struct EditorState {
     /// Painted bounds + target of each property-panel pill (from the last paint),
     /// so a left-click opens it (`OpenWikiLink` / `OpenLink`).
     prop_pill_rects: Vec<(Bounds<Pixels>, zorite_markdown::syntax::LinkHit)>,
+    /// Inline links' painted boxes + targets from the last paint (the same
+    /// geometry as the hand-cursor hitboxes), for hover → `HoverLink`.
+    link_rects: Vec<(Bounds<Pixels>, zorite_markdown::syntax::LinkHit)>,
+    /// The link under the pointer, if any — `HoverLink` fires on change.
+    hovered_link: Option<(zorite_markdown::syntax::LinkHit, Bounds<Pixels>)>,
     /// Painted bounds of each property-panel row (from the last paint), so
     /// `on_mouse_move` repaints when the hovered row changes (the panel's hover
     /// border reads the live pointer during paint).
@@ -1090,6 +1100,8 @@ impl EditorState {
             inline_math_rects: Vec::new(),
             editing_inline: None,
             prop_pill_rects: Vec::new(),
+            link_rects: Vec::new(),
+            hovered_link: None,
             prop_row_rects: Vec::new(),
             prop_hover_row: None,
             folded_headings: std::collections::HashSet::new(),
@@ -3322,6 +3334,18 @@ impl EditorState {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Link under the pointer → `HoverLink` on change (a host shows a preview
+        // card there). Painted boxes from the last frame, like the hand cursor.
+        let over_link = self
+            .link_rects
+            .iter()
+            .chain(self.prop_pill_rects.iter())
+            .find(|(b, _)| b.contains(&event.position))
+            .map(|(b, hit)| (hit.clone(), *b));
+        if over_link != self.hovered_link {
+            self.hovered_link = over_link.clone();
+            cx.emit(EditorEvent::HoverLink(over_link));
+        }
         // While dragging an image's grip, track the pointer: the new width is the
         // grab width plus the horizontal travel, floored at `IMG_MIN_W` and capped
         // to the content width left of the image's inset (so a bulleted image's cap

@@ -89,6 +89,9 @@ slash:
     link: Link
     wiki_link: Wiki link
     image: Image
+link_preview:
+  no_page: Not created yet
+
 settings:
   title: Settings
   filter_placeholder: "Filter settings…"

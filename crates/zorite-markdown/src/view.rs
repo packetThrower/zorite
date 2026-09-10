@@ -13,10 +13,10 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use gpui::{
     AnyElement, App, Bounds, ClipboardItem, Corners, ElementId, FontStyle, FontWeight,
     HighlightStyle, Hsla, InteractiveElement, InteractiveText, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement, Pixels, Point, RenderImage, RenderOnce, ScrollHandle,
-    SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText, TextLayout,
-    TextRun, Window, canvas, div, point, prelude::FluentBuilder, px, relative, rgb, rgba, size,
-    svg,
+    MouseDownEvent, MouseMoveEvent, ParentElement, Pixels, Point, RenderImage, RenderOnce,
+    ScrollHandle, SharedString, StatefulInteractiveElement, StrikethroughStyle, Styled, StyledText,
+    TextLayout, TextRun, Window, canvas, div, point, prelude::FluentBuilder, px, relative, rgb,
+    rgba, size, svg,
 };
 use markdown::mdast;
 
@@ -442,6 +442,12 @@ pub type ClickSourceHandler = Rc<dyn Fn(usize, Pixels, &mut Window, &mut App)>;
 /// full-size preview. Set via [`MarkdownView::on_image_preview`].
 pub type ImagePreviewHandler = Rc<dyn Fn(SharedString, &mut Window, &mut App)>;
 
+/// Host callback as the pointer moves onto a link (`Some` — its target and its
+/// window-space box) or off every link (`None`), so the host can show a
+/// preview card anchored to it. Set via [`MarkdownView::on_link_hover`].
+pub type LinkHoverHandler =
+    Rc<dyn Fn(Option<(crate::syntax::LinkHit, Bounds<Pixels>)>, &mut Window, &mut App)>;
+
 /// Toggle the task checkbox of a clicked list item — the argument is the source
 /// byte offset of that task item (feed it to [`toggle_task_at`]). Set via
 /// [`MarkdownView::on_task_toggle`].
@@ -499,6 +505,7 @@ pub struct MarkdownView {
     /// Click-to-caret: maps a click on the rendered text to its source offset.
     on_click_source: Option<ClickSourceHandler>,
     on_image_preview: Option<ImagePreviewHandler>,
+    on_link_hover: Option<LinkHoverHandler>,
     /// Click a task checkbox to toggle it (the host applies + persists).
     on_task_toggle: Option<TaskToggleHandler>,
     on_alert_toggle: Option<TaskToggleHandler>,
@@ -529,6 +536,7 @@ impl MarkdownView {
             current_match: 0,
             block_scroll: None,
             on_click_source: None,
+            on_link_hover: None,
             on_image_preview: None,
             on_task_toggle: None,
             on_alert_toggle: None,
@@ -628,6 +636,14 @@ impl MarkdownView {
     }
 
     /// Supply a handler for a click on an inline image (opens a preview).
+    /// Report the link under the pointer (and its box) as the mouse moves, for
+    /// a host-drawn preview card. Both text directions; property pills and
+    /// table-cell links don't report yet.
+    pub fn on_link_hover(mut self, handler: LinkHoverHandler) -> Self {
+        self.on_link_hover = Some(handler);
+        self
+    }
+
     pub fn on_image_preview(mut self, handler: ImagePreviewHandler) -> Self {
         self.on_image_preview = Some(handler);
         self
@@ -962,6 +978,7 @@ impl RenderOnce for MarkdownView {
             match_ix: 0,
             on_click_source: self.on_click_source,
             on_image_preview: self.on_image_preview,
+            on_link_hover: self.on_link_hover,
             on_task_toggle: self.on_task_toggle,
             on_alert_toggle: self.on_alert_toggle,
             on_embed: self.on_embed,
@@ -1064,6 +1081,7 @@ struct Ctx {
     match_ix: usize,
     on_click_source: Option<ClickSourceHandler>,
     on_image_preview: Option<ImagePreviewHandler>,
+    on_link_hover: Option<LinkHoverHandler>,
     on_task_toggle: Option<TaskToggleHandler>,
     on_alert_toggle: Option<TaskToggleHandler>,
     on_embed: Option<EmbedProvider>,
@@ -1900,6 +1918,14 @@ impl TextHandle {
 /// Open a link target. Shared by both directions: LTR goes through
 /// `InteractiveText`, RTL hit-tests through its own layout, but what a click
 /// DOES must not depend on which.
+/// A paragraph link as the shared recognition type the hover callback reports.
+fn link_hit(target: &LinkTarget) -> crate::syntax::LinkHit {
+    match target {
+        LinkTarget::Wiki(t) => crate::syntax::LinkHit::Page(t.to_string()),
+        LinkTarget::Url(u) => crate::syntax::LinkHit::Url(u.to_string()),
+    }
+}
+
 fn follow_link(
     target: Option<&LinkTarget>,
     on_wiki: &Option<WikiLinkHandler>,
@@ -2070,6 +2096,10 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
             let ranges = link_ranges.clone();
             let targets = targets.clone();
             let on_wiki = ctx.on_wiki_link.clone();
+            let hover_hit = hit.clone();
+            let hover_ranges = link_ranges.clone();
+            let hover_targets = targets.clone();
+            let on_hover = ctx.on_link_hover.clone();
             div()
                 .child(rtl)
                 .on_mouse_down(MouseButton::Left, move |ev: &MouseDownEvent, window, cx| {
@@ -2080,6 +2110,24 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
                         cx.stop_propagation();
                         follow_link(targets.get(k), &on_wiki, window, cx);
                     }
+                })
+                .when_some(on_hover, |el, on_hover| {
+                    el.on_mouse_move(move |ev: &MouseMoveEvent, window, cx| {
+                        // Same lookup as the click: the row layout that painted the
+                        // glyphs maps the pointer to a byte, then to a link's boxes.
+                        let hit = hover_hit
+                            .index_for_position(ev.position)
+                            .ok()
+                            .and_then(|ix| hover_ranges.iter().position(|r| r.contains(&ix)))
+                            .and_then(|k| {
+                                let b = hover_hit
+                                    .rects_for_range(hover_ranges[k].clone())
+                                    .into_iter()
+                                    .next()?;
+                                Some((link_hit(hover_targets.get(k)?), b))
+                            });
+                        on_hover(hit, window, cx);
+                    })
                 })
                 .into_any_element()
         };
@@ -2096,12 +2144,39 @@ fn inline_element(nodes: &[mdast::Node], ctx: &mut Ctx) -> AnyElement {
             ctx.counter += 1;
             let id = ElementId::Name(format!("{}-{}", ctx.id_base, ctx.counter).into());
             let on_wiki = ctx.on_wiki_link.clone();
+            let hover_layout = styled.layout().clone();
+            let hover_ranges = link_ranges.clone();
+            let hover_targets = targets.clone();
+            let on_hover = ctx.on_link_hover.clone();
             InteractiveText::new(id, styled)
                 .on_click(link_ranges.clone(), move |ix, window, cx| {
                     // The click was on a link range; consume it so it doesn't also reach
                     // a surrounding host handler (e.g. the click-to-caret below).
                     cx.stop_propagation();
                     follow_link(targets.get(ix), &on_wiki, window, cx);
+                })
+                .when_some(on_hover, |el, on_hover| {
+                    el.on_hover(move |ix, _ev, window, cx| {
+                        // The hovered char → its link range → that range's box on the
+                        // row it starts on (a wrapped link reports its first row).
+                        let hit = ix
+                            .and_then(|ix| hover_ranges.iter().position(|r| r.contains(&ix)))
+                            .and_then(|k| {
+                                let r = &hover_ranges[k];
+                                let start = hover_layout.position_for_index(r.start)?;
+                                let end = hover_layout.position_for_index(r.end);
+                                let right = match end {
+                                    Some(e) if e.y == start.y => e.x,
+                                    _ => hover_layout.bounds().right(),
+                                };
+                                let b = Bounds::new(
+                                    start,
+                                    size((right - start.x).max(px(0.)), hover_layout.line_height()),
+                                );
+                                Some((link_hit(hover_targets.get(k)?), b))
+                            });
+                        on_hover(hit, window, cx);
+                    })
                 })
                 .into_any_element()
         };
@@ -2952,6 +3027,8 @@ fn render_property_table(
         .id(SharedString::from(format!("{}-props-{id}", ctx.id_base)))
         .flex()
         .flex_col();
+    // Hover needs a stateful element: one id per pill within this panel.
+    let mut pill_n = 0usize;
     for (key, value, _v_off) in rows.into_iter() {
         // Value: plain runs, plus tags/wiki-links as clickable pills.
         let mut val = div()
@@ -2984,40 +3061,75 @@ fn render_property_table(
                     let mut bg = color;
                     bg.a = 0.16;
                     let on_wiki = ctx.on_wiki_link.clone();
+                    // The pill's painted box, for the hover preview's anchor:
+                    // a div doesn't learn its bounds, so a zero-cost canvas
+                    // laid over it records them each paint.
+                    let pill_bounds: Rc<std::cell::Cell<Option<Bounds<Pixels>>>> = Rc::default();
+                    let probe_bounds = pill_bounds.clone();
+                    let hover_target = target.clone();
+                    let on_hover = ctx.on_link_hover.clone();
+                    pill_n += 1;
                     val = val.child(
                         div()
-                            .px(px(7.0))
-                            .py(px(1.0))
-                            .rounded(px(6.0))
-                            .bg(bg)
-                            .text_color(color)
-                            .cursor_pointer()
-                            .child(SharedString::from(label))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                move |_: &MouseDownEvent, window, cx| {
-                                    cx.stop_propagation();
-                                    match &target {
-                                        crate::syntax::LinkHit::Page(t) => {
-                                            if let Some(h) = &on_wiki {
-                                                h(t.clone().into(), window, cx);
+                            .id(SharedString::from(format!(
+                                "{}-props-{id}-pill-{pill_n}",
+                                ctx.id_base
+                            )))
+                            .relative()
+                            .when_some(on_hover, |d, on_hover| {
+                                d.on_hover(move |hovered: &bool, window, cx| {
+                                    let hit = hovered
+                                        .then(|| pill_bounds.get())
+                                        .flatten()
+                                        .map(|b| (hover_target.clone(), b));
+                                    on_hover(hit, window, cx);
+                                })
+                            })
+                            .child(
+                                canvas(
+                                    |_, _, _| {},
+                                    move |bounds, _: (), _window, _cx| {
+                                        probe_bounds.set(Some(bounds));
+                                    },
+                                )
+                                .absolute()
+                                .inset_0(),
+                            )
+                            .child(
+                                div()
+                                    .px(px(7.0))
+                                    .py(px(1.0))
+                                    .rounded(px(6.0))
+                                    .bg(bg)
+                                    .text_color(color)
+                                    .cursor_pointer()
+                                    .child(SharedString::from(label))
+                                    .on_mouse_down(
+                                        MouseButton::Left,
+                                        move |_: &MouseDownEvent, window, cx| {
+                                            cx.stop_propagation();
+                                            match &target {
+                                                crate::syntax::LinkHit::Page(t) => {
+                                                    if let Some(h) = &on_wiki {
+                                                        h(t.clone().into(), window, cx);
+                                                    }
+                                                }
+                                                crate::syntax::LinkHit::BlockRef(id) => {
+                                                    if let Some(h) = &on_wiki {
+                                                        h(format!("#^{id}").into(), window, cx);
+                                                    }
+                                                }
+                                                // Same allowlist as the inline-link
+                                                // click above: property values are
+                                                // untrusted markdown too.
+                                                crate::syntax::LinkHit::Url(u) => {
+                                                    if crate::syntax::is_safe_external_url(u) {
+                                                        cx.open_url(u);
+                                                    }
+                                                }
                                             }
-                                        }
-                                        crate::syntax::LinkHit::BlockRef(id) => {
-                                            if let Some(h) = &on_wiki {
-                                                h(format!("#^{id}").into(), window, cx);
-                                            }
-                                        }
-                                        // Same allowlist as the inline-link
-                                        // click above: property values are
-                                        // untrusted markdown too.
-                                        crate::syntax::LinkHit::Url(u) => {
-                                            if crate::syntax::is_safe_external_url(u) {
-                                                cx.open_url(u);
-                                            }
-                                        }
-                                    }
-                                },
+                                        },
+                                    ),
                             ),
                     );
                 }

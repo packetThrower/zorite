@@ -382,6 +382,12 @@ fn page_rendered(app: &AppView, pe: &PageEditor, cx: &mut Context<AppView>) -> i
             .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
                 let _ = weak.update(cx, |this, cx| this.open_page_title(&title, window, cx));
             }))
+            .on_link_hover({
+                let weak = cx.entity().downgrade();
+                std::rc::Rc::new(move |hover, _window, cx| {
+                    let _ = weak.update(cx, |this, cx| this.set_link_hover(hover, cx));
+                })
+            })
             // Click the rendered text → enter edit mode with the caret at the click.
             // Deferred so we don't swap to the editor mid-click.
             .on_click_source(std::rc::Rc::new(move |offset, click_y, window, cx| {

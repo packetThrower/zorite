@@ -89,6 +89,9 @@ slash:
     link: 链接
     wiki_link: Wiki 链接
     image: 图片
+link_preview:
+  no_page: 尚未创建
+
 settings:
   title: 设置
   filter_placeholder: "筛选设置…"
