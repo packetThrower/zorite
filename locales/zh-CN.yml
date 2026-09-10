@@ -211,6 +211,19 @@ settings:
     current_password: "当前密码"
     new_password: "新密码"
     confirm_password: "确认新密码"
+  item:
+    enabled: 启用
+    show_gutter: 显示行号栏
+    dock_right: 停靠在右侧
+    theme: 主题
+    mode: 模式
+    family: 字体
+    size: 大小
+    quality: 质量
+    spaces_per_level: 每级空格数
+    language: 语言
+    format: 格式
+    lock_after: 锁定延迟
   note:
     set_password_first: "请先设置密码。"
     cursor_relaunch: "光标更改将在重新启动后生效。"
