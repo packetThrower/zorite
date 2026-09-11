@@ -2446,3 +2446,13 @@ mod keys {
         vec![MOD, SHIFT, "Z"]
     }
 }
+#[cfg(not(target_os = "macos"))]
+mod keys {
+    pub const MOD: &str = "Ctrl";
+    pub const CTRL: &str = "Ctrl";
+    pub const SHIFT: &str = "Shift";
+    pub const ALT: &str = "Alt";
+    pub fn redo() -> Vec<&'static str> {
+        vec!["Ctrl", "Y"]
+    }
+}
