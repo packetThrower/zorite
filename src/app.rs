@@ -7950,19 +7950,42 @@ impl LinkPreview {
     fn render(self) -> gpui::Div {
         let body = div().max_w(px(380.0)).flex().flex_col().gap(px(4.0));
         match self {
-            LinkPreview::Page { title, excerpt } => body
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(gpui::FontWeight::SEMIBOLD)
-                        .child(title),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(theme::text_secondary())
-                        .child(excerpt.unwrap_or_else(|| t!("link_preview.no_page").into_owned())),
-                ),
+            LinkPreview::Page { title, excerpt } => {
+                let text = excerpt.unwrap_or_else(|| t!("link_preview.no_page").into_owned());
+                // #66: gpui wraps a paragraph containing right-to-left text
+                // backwards (rows sliced from reordered glyphs), so such an
+                // excerpt goes through the bidi row layout, one line per
+                // paragraph the way the reader does it. The card follows the
+                // excerpt's base direction so an Arabic page reads from the
+                // right edge; a definite width gives the rows an edge to align to.
+                let bidi = zorite_markdown::syntax::contains_rtl(&text);
+                let rtl = zorite_markdown::syntax::base_direction(&text).is_rtl();
+                body.when(rtl, |b| b.w(px(380.0)).text_right())
+                    .child(
+                        div()
+                            .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::SEMIBOLD)
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(theme::text_secondary())
+                            .map(|el| {
+                                if bidi {
+                                    el.flex().flex_col().children(text.lines().map(|line| {
+                                        gpui_bidi::paragraph::RtlText::new(line.to_string())
+                                            .with_base_rtl(
+                                                zorite_markdown::syntax::base_direction(line)
+                                                    .is_rtl(),
+                                            )
+                                    }))
+                                } else {
+                                    el.child(text)
+                                }
+                            }),
+                    )
+            }
             LinkPreview::Block(id) => body.child(
                 div()
                     .text_size(px(12.0))
