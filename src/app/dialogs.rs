@@ -3,9 +3,205 @@
 //! DB-error modal) and their submit helpers — split from `app.rs`.
 
 use super::*;
+use gpui_component::{h_flex, kbd::Kbd};
 use rust_i18n::t;
 
 impl AppView {
+    /// ⌘⇧P — gpui-component's `Command` palette over every menu command
+    /// (`actions::palette_groups`) plus, on a page tab, that page's context-menu
+    /// verbs under its title, in a chrome-less dialog. Confirm closes the
+    /// dialog FIRST and dispatches after: an item's built-in `.action` would
+    /// fire before the close, whose focus restore then lands on top of
+    /// whatever the command focused (the find bar, the search box).
+    pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        let mut groups = crate::actions::palette_groups();
+        let nav: Vec<crate::actions::PaletteCommand> = vec![
+            (
+                t!("command_palette.go_to_today").into(),
+                Box::new(GoToToday),
+            ),
+            (
+                t!("command_palette.jump_to_date").into(),
+                Box::new(JumpToDate),
+            ),
+            (
+                t!("command_palette.all_pages").into(),
+                Box::new(OpenAllPages),
+            ),
+            (t!("command_palette.graph").into(), Box::new(OpenGraph)),
+            (
+                if self.sidebar_collapsed {
+                    t!("command_palette.sidebar_show")
+                } else {
+                    t!("command_palette.sidebar_hide")
+                }
+                .into(),
+                Box::new(ToggleSidebar),
+            ),
+        ];
+        groups.push((t!("command_palette.navigate").into(), nav));
+        // Quick settings, worded as the change they make; the theme mode the
+        // app is already in is left out.
+        let mut quick: Vec<crate::actions::PaletteCommand> = vec![
+            (
+                if self.wysiwyg() {
+                    t!("command_palette.wysiwyg_off")
+                } else {
+                    t!("command_palette.wysiwyg_on")
+                }
+                .into(),
+                Box::new(ToggleWysiwyg),
+            ),
+            (
+                if self.line_numbers() {
+                    t!("command_palette.gutter_hide")
+                } else {
+                    t!("command_palette.gutter_show")
+                }
+                .into(),
+                Box::new(ToggleLineNumbers),
+            ),
+            (
+                if self.sidebar_right {
+                    t!("command_palette.sidebar_left")
+                } else {
+                    t!("command_palette.sidebar_right")
+                }
+                .into(),
+                Box::new(ToggleSidebarSide),
+            ),
+        ];
+        let modes: [(theme::Mode, &str, Box<dyn gpui::Action>); 3] = [
+            (
+                theme::Mode::Light,
+                "command_palette.theme_light",
+                Box::new(ThemeLight),
+            ),
+            (
+                theme::Mode::Dark,
+                "command_palette.theme_dark",
+                Box::new(ThemeDark),
+            ),
+            (
+                theme::Mode::Auto,
+                "command_palette.theme_auto",
+                Box::new(ThemeAuto),
+            ),
+        ];
+        let current = self.theme_mode();
+        quick.extend(
+            modes
+                .into_iter()
+                .filter(|(mode, _, _)| *mode != current)
+                .map(|(_, key, action)| (t!(key).into(), action)),
+        );
+        groups.push((t!("command_palette.settings").into(), quick));
+        // The page verbs read their target from `context_page` (armed by a
+        // right-click); the palette arms it with the active page on confirm.
+        let page = match self.tabs.get(self.active) {
+            Some(
+                tab @ OpenTab {
+                    kind: TabKind::Page(id),
+                    ..
+                },
+            ) => {
+                let fav = if self.is_favorite(*id) {
+                    t!("page_ctx.remove_favorite")
+                } else {
+                    t!("page_ctx.add_favorite")
+                };
+                let verbs: Vec<crate::actions::PaletteCommand> = vec![
+                    (fav.into(), Box::new(ToggleFavorite)),
+                    (
+                        t!("page_ctx.open_new_window").into(),
+                        Box::new(OpenInNewWindow),
+                    ),
+                    (t!("page_ctx.copy_link").into(), Box::new(CopyPageLink)),
+                    (
+                        t!("page_ctx.copy_contents").into(),
+                        Box::new(CopyPageContents),
+                    ),
+                    (
+                        t!("page_ctx.copy_contents_md").into(),
+                        Box::new(CopyPageContentsMarkdown),
+                    ),
+                    (t!("page_ctx.new_sub_page").into(), Box::new(NewSubPage)),
+                    (t!("page_ctx.rename_page").into(), Box::new(RenamePage)),
+                    (t!("page_ctx.delete_page").into(), Box::new(DeletePage)),
+                ];
+                let title = tab.display_title();
+                groups.push((title.clone(), verbs));
+                Some((groups.len() - 1, *id, title))
+            }
+            _ => None,
+        };
+        let groups = Rc::new(groups);
+        let focus = state.clone();
+        let weak = cx.entity().downgrade();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let on_confirm = groups.clone();
+            let page = page.clone();
+            let weak = weak.clone();
+            let command = groups.iter().fold(
+                Command::new(&state)
+                    .bordered(false)
+                    .placeholder(t!("command_palette.placeholder"))
+                    .on_confirm(move |ix, window, cx| {
+                        window.close_dialog(cx);
+                        if let Some((section, id, title)) = &page
+                            && ix.section == *section
+                        {
+                            let _ = weak
+                                .update(cx, |this, _| this.set_context_page(*id, title.clone()));
+                        }
+                        if let Some((_, action)) = on_confirm
+                            .get(ix.section)
+                            .and_then(|(_, items)| items.get(ix.row))
+                        {
+                            window.dispatch_action(action.boxed_clone(), cx);
+                        }
+                    }),
+                |command, (label, items)| {
+                    command.group(
+                        CommandGroup::new()
+                            .label(label.clone())
+                            .items(items.iter().map(|(name, action)| {
+                                let (name, action) = (name.clone(), action.boxed_clone());
+                                CommandItem::new()
+                                    .label(name.clone())
+                                    .child(move |window, _cx| {
+                                        // The default row would draw this hint itself, but only
+                                        // for an item carrying `.action` — see above.
+                                        h_flex()
+                                            .flex_1()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(div().flex_1().truncate().child(name.clone()))
+                                            .children(Kbd::binding_for_action(
+                                                action.as_ref(),
+                                                None,
+                                                window,
+                                            ))
+                                    })
+                            })),
+                    )
+                },
+            );
+            // Raised surface + the visible rule token, so the palette stands off
+            // the page on a theme whose content and window are the same color
+            // (CRT: black on black, where the stock border all but vanishes).
+            dialog
+                .w(px(480.0))
+                .close_button(false)
+                .bg(theme::elevated())
+                .border_color(theme::divider())
+                .child(command)
+        });
+        focus.update(cx, |state, cx| state.focus(window, cx));
+    }
+
     /// Open the "insert page card" dialog, then place the chosen page as a card
     /// at world `(x, y)` on board `board_id`.
     pub(super) fn place_embed_dialog(

@@ -1,6 +1,6 @@
 ---
 title: Keyboard shortcuts
-description: 'Keyboard shortcuts in Zorite — new tab, new window, close tab, tab switching, settings, find in page, search all notes, and the slash command menu.'
+description: 'Keyboard shortcuts in Zorite — the command palette, new tab, new window, close tab, tab switching, settings, find in page, search all notes, and the slash command menu.'
 ---
 
 One binding works on every OS: the modifier shown as **⌘** below is **Cmd** on
@@ -10,6 +10,7 @@ macOS and **Ctrl** on Windows and Linux.
 
 | Action | macOS | Windows / Linux |
 |---|---|---|
+| Command palette | `⌘⇧P` | `Ctrl+Shift+P` |
 | New tab (new page) | `⌘T` | `Ctrl+T` |
 | New window | `⌘N` | `Ctrl+N` |
 | Close tab | `⌘W` | `Ctrl+W` |
@@ -21,6 +22,10 @@ macOS and **Ctrl** on Windows and Linux.
 | Open settings | `⌘,` | `Ctrl+,` |
 | Quit | `⌘Q` | `Ctrl+Q` |
 
+**Command palette** lists every menu command with its shortcut and, on a page
+tab, that page's actions (favorite, copy link, rename, delete…), plus
+navigation (today, jump to date, All pages, Graph, sidebar) and quick
+settings (WYSIWYG, theme, line numbers, sidebar side) — type to filter, `↑` / `↓` to pick, `Enter` to run, `Esc` to close.
 **Find in page** searches the current page (reading view or editor); on the
 Journal it opens the feed's find bar, matching across every loaded day.
 **Search all notes** opens the note-wide search (see

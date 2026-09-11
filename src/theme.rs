@@ -527,6 +527,15 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.slider_thumb = p.accent;
     // Focus ring on inputs/selects — stock is a bright near-white in dark mode.
     t.ring = p.accent;
+    // The Settings window's page list is gpui-component's Sidebar, with a
+    // token family of its own (stock: near-white labels on every theme).
+    t.sidebar = p.bg_sidebar;
+    t.sidebar_foreground = p.text_primary;
+    t.sidebar_border = p.border_subtle;
+    t.sidebar_accent = p.hover;
+    t.sidebar_accent_foreground = p.text_primary;
+    t.sidebar_primary = p.accent;
+    t.sidebar_primary_foreground = on_accent;
     // gpui-component is mid-migration to a parallel `tokens` color store;
     // newer widget paths (Button, Slider, some Tab styles) read
     // `theme.tokens.*` instead of the legacy fields above — without this,

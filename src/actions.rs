@@ -13,7 +13,7 @@
 //! `ToggleFavorite` have no keybinding — they're dispatched by right-click
 //! context menus (sidebar pages and tabs) and handled on `AppView`.
 
-use gpui::{App, KeyBinding, Menu, MenuItem, actions};
+use gpui::{Action, App, KeyBinding, Menu, MenuItem, SharedString, actions};
 use rust_i18n::t;
 
 actions!(
@@ -48,6 +48,22 @@ actions!(
         NextTab,
         PrevTab,
         OpenSettings,
+        // ⌘⇧P: the searchable list of every menu command (`palette_groups`).
+        OpenCommandPalette,
+        // Quick settings, reachable from the palette only (no keybindings):
+        // handlers on `AppView` flip the same setters the Settings window uses.
+        ToggleWysiwyg,
+        ToggleLineNumbers,
+        ToggleSidebarSide,
+        ThemeLight,
+        ThemeDark,
+        ThemeAuto,
+        // Navigation, palette-only likewise.
+        GoToToday,
+        JumpToDate,
+        OpenAllPages,
+        OpenGraph,
+        ToggleSidebar,
         Quit,
         // Find: in the current page's rendered text, or the global note search.
         FindInPage,
@@ -136,6 +152,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-w", CloseTab, None),
         KeyBinding::new("secondary-p", ExportActivePdf, None),
         KeyBinding::new("secondary-,", OpenSettings, None),
+        KeyBinding::new("secondary-shift-p", OpenCommandPalette, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         // Find-in-page (a Page tab's rendered text) vs the global note search.
@@ -216,8 +233,41 @@ fn build_app_menus() -> Vec<Menu> {
             items: vec![
                 MenuItem::action(t!("menu.next_tab"), NextTab),
                 MenuItem::action(t!("menu.prev_tab"), PrevTab),
+                MenuItem::separator(),
+                MenuItem::action(t!("menu.command_palette"), OpenCommandPalette),
             ],
             disabled: false,
         },
     ]
+}
+
+/// One palette entry: its menu label and the action it dispatches.
+pub type PaletteCommand = (SharedString, Box<dyn Action>);
+
+/// The command palette's entries, grouped by menu: every menu-bar command,
+/// so the palette and the menus can't drift apart. Only the app's own
+/// actions — the Edit menu's clipboard/undo items are gpui-component input
+/// actions that, run from the palette, would act on its own search field —
+/// and not the palette itself.
+pub fn palette_groups() -> Vec<(SharedString, Vec<PaletteCommand>)> {
+    build_app_menus()
+        .into_iter()
+        .map(|menu| {
+            let items: Vec<_> = menu
+                .items
+                .into_iter()
+                .filter_map(|item| match item {
+                    MenuItem::Action { name, action, .. }
+                        if action.name().starts_with("zorite::")
+                            && action.name() != OpenCommandPalette.name() =>
+                    {
+                        Some((name, action))
+                    }
+                    _ => None,
+                })
+                .collect();
+            (menu.name, items)
+        })
+        .filter(|(_, items)| !items.is_empty())
+        .collect()
 }

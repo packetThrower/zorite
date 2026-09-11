@@ -11,6 +11,12 @@ publish = false
 name = "zorite"
 path = "src/main.rs"
 
+[features]
+# `cargo run --features fps`: gpui-fps' performance HUD (frame trace, P95,
+# dropped frames, CPU/GPU/memory) in the main window — for the next #60-style
+# hitch. Dev-only; never in a release build.
+fps = ["dep:gpui-fps"]
+
 [workspace]
 members = ["crates/gpui-bidi", "crates/zorite-editor", "crates/zorite-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-cursors", "crates/os-spellcheck", "crates/ratex-gpui"]
 resolver = "2"
@@ -164,6 +170,10 @@ gpui-component = { version = "=0.6.0", features = [
 # same version so the icon set tracks the `IconName` enum in gpui-component.
 gpui-kit-assets = "=0.6.0"
 
+# The `fps` feature's HUD (GPUI Kit's, depends on gpui only). Same gpui-pre
+# family, so it unifies with the pin above; move it with the other three.
+gpui-fps = { version = "0.6", optional = true }
+
 # Parse `file://` URLs into filesystem paths correctly across platforms (Windows
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.
 url = "2"
@@ -280,3 +290,8 @@ signing-identity = "-"
 # Distinct from every other packetThrower app. Never change once an installer ships.
 upgrade-guid = "B73F422B-02A5-4E09-A278-E810B2F7B903"
 include = ["packaging/windows/wix/main.wxs"]
+
+[dev-dependencies]
+# Headless UI tests (`src/app/ui_tests.rs`): gpui's `TestAppContext` /
+# `VisualTestContext` and the `#[gpui::test]` macro.
+gpui = { workspace = true, features = ["test-support"] }

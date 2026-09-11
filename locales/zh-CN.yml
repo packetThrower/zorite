@@ -89,6 +89,9 @@ slash:
     link: 链接
     wiki_link: Wiki 链接
     image: 图片
+link_preview:
+  no_page: 尚未创建
+
 settings:
   title: 设置
   filter_placeholder: "筛选设置…"
@@ -211,6 +214,19 @@ settings:
     current_password: "当前密码"
     new_password: "新密码"
     confirm_password: "确认新密码"
+  item:
+    enabled: 启用
+    show_gutter: 显示行号栏
+    dock_right: 停靠在右侧
+    theme: 主题
+    mode: 模式
+    family: 字体
+    size: 大小
+    quality: 质量
+    spaces_per_level: 每级空格数
+    language: 语言
+    format: 格式
+    lock_after: 锁定延迟
   note:
     set_password_first: "请先设置密码。"
     cursor_relaunch: "光标更改将在重新启动后生效。"
@@ -275,6 +291,7 @@ settings:
     fit_images: "使超大图片适应视图"
     export_pdf: "将当前标签页导出为 PDF"
     open_settings: "打开设置"
+    command_palette: "打开命令面板"
     quit: "退出"
     slash_menu: "打开斜杠命令菜单"
     menu_nav: "在菜单中上/下移动"
@@ -704,6 +721,26 @@ menu:
   fit_images: "将图像适应到视图"
   next_tab: "下一个标签页"
   prev_tab: "上一个标签页"
+  command_palette: "命令面板…"
+command_palette:
+  placeholder: "输入命令…"
+  navigate: 导航
+  go_to_today: "转到今天"
+  jump_to_date: "跳转到日期…"
+  all_pages: "打开所有页面"
+  graph: "打开图谱"
+  sidebar_show: "显示侧边栏"
+  sidebar_hide: "隐藏侧边栏"
+  settings: 设置
+  wysiwyg_on: "开启所见即所得编辑"
+  wysiwyg_off: "关闭所见即所得编辑"
+  gutter_show: "显示行号"
+  gutter_hide: "隐藏行号"
+  sidebar_left: "将侧边栏停靠在左侧"
+  sidebar_right: "将侧边栏停靠在右侧"
+  theme_light: "主题：浅色"
+  theme_dark: "主题：深色"
+  theme_auto: "主题：自动（跟随系统）"
 paths:
   not_a_folder: "这不是一个文件夹。"
   nested_or_parent: "请选择既不在当前数据文件夹内、也不是其父级的文件夹。"

@@ -48,6 +48,7 @@ impl Render for EmbedView {
         let app = self.app.clone();
         let nav = self.nav_target.clone();
         let wiki_app = self.app.clone();
+        let hover_app = self.app.clone();
         // Hover-revealed scrollbar thumb, exact from the handle's last-painted
         // geometry (content height = viewport + max scroll).
         let thumb = {
@@ -80,6 +81,12 @@ impl Render for EmbedView {
         .on_wiki_link(std::rc::Rc::new(move |title, window, cx| {
             let _ = wiki_app.update(cx, |this, cx| this.open_page_title(&title, window, cx));
         }))
+        .on_link_hover({
+            let app = hover_app;
+            std::rc::Rc::new(move |hover, _window, cx| {
+                let _ = app.update(cx, |this, cx| this.set_link_hover(hover, cx));
+            })
+        })
         // The full renderer set, like the note this content came from — images
         // arrive through the read-only path (see `EmbedView::image`).
         .on_image(self.image.clone())

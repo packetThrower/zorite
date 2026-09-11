@@ -89,6 +89,9 @@ slash:
     link: Link
     wiki_link: Wiki link
     image: Image
+link_preview:
+  no_page: Not created yet
+
 settings:
   title: Settings
   filter_placeholder: "Filter settings…"
@@ -211,6 +214,19 @@ settings:
     current_password: "Current password"
     new_password: "New password"
     confirm_password: "Confirm new password"
+  item:
+    enabled: Enabled
+    show_gutter: Show gutter
+    dock_right: Dock on the right
+    theme: Theme
+    mode: Mode
+    family: Family
+    size: Size
+    quality: Quality
+    spaces_per_level: Spaces per level
+    language: Language
+    format: Format
+    lock_after: Lock after
   note:
     set_password_first: "Set a password first."
     cursor_relaunch: "Cursor changes take effect after a relaunch."
@@ -275,6 +291,7 @@ settings:
     fit_images: "Fit oversized images to view"
     export_pdf: "Export active tab as PDF"
     open_settings: "Open settings"
+    command_palette: "Open the command palette"
     quit: "Quit"
     slash_menu: "Open the slash command menu"
     menu_nav: "Move up / down in the menu"
@@ -704,6 +721,26 @@ menu:
   fit_images: "Fit Images to View"
   next_tab: "Next Tab"
   prev_tab: "Previous Tab"
+  command_palette: "Command Palette…"
+command_palette:
+  placeholder: "Type a command…"
+  navigate: Navigate
+  go_to_today: "Go to today"
+  jump_to_date: "Jump to date…"
+  all_pages: "Open All pages"
+  graph: "Open the Graph"
+  sidebar_show: "Show sidebar"
+  sidebar_hide: "Hide sidebar"
+  settings: Settings
+  wysiwyg_on: "Turn on WYSIWYG editing"
+  wysiwyg_off: "Turn off WYSIWYG editing"
+  gutter_show: "Show line numbers"
+  gutter_hide: "Hide line numbers"
+  sidebar_left: "Dock the sidebar on the left"
+  sidebar_right: "Dock the sidebar on the right"
+  theme_light: "Theme: Light"
+  theme_dark: "Theme: Dark"
+  theme_auto: "Theme: Auto (follow system)"
 paths:
   not_a_folder: "That isn't a folder."
   nested_or_parent: "Pick a folder that's neither inside nor the parent of the current data folder."

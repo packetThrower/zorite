@@ -338,16 +338,18 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
   `TextView` has the same problem).
 
 **Adopt, in this order:**
-- [ ] **`HoverCard` → wiki-link previews**: hover a `[[Page]]` / block ref and
-  see the target's first lines. Cheap; both views already have link hitboxes.
-  Cross-view rule: reader AND WYSIWYG.
-- [ ] **`Command` palette (⌘K)**: searchable actions with keybinding hints —
-  Zorite has dozens of actions and only the slash menu today.
-- [ ] **`setting::Settings` page builder** (`SettingPage → SettingGroup →
-  SettingItem → field`: switch/checkbox/input/dropdown/number, `default_value`,
-  `on_reset`). Would replace most of `settings.rs`'s hand-rolled cards and add
-  reset-to-default; the custom `SECTIONS` search filter needs re-plumbing.
-  Large — its own project.
+- [x] **`HoverCard` → link previews** — DONE 2026-09-10: wiki-links, tags,
+  block refs, URLs, and property pills in both views (`EditorEvent::HoverLink`,
+  `MarkdownView::on_link_hover`). Left: links inside table cells.
+- [x] **`Command` palette** — DONE 2026-09-11 (⌘⇧P / Ctrl+Shift+P, View menu):
+  every menu command grouped by menu with its shortcut, from one list
+  (`actions::palette_groups`), the active page's context-menu verbs,
+  navigation (today, jump to date, All pages, Graph, sidebar), and quick
+  settings (WYSIWYG, theme mode, line numbers, sidebar side).
+- [x] **`setting::Settings` page builder** — DONE 2026-09-10 (branch
+  `feat/settings-component`): pages/groups/typed fields with defaults + Reset,
+  component sidebar search (titles, descriptions, synonyms, option labels,
+  shortcut labels); `settings.rs` 2,837 → ~2,180 lines, SelectState plumbing gone.
 - [ ] **Accessibility**: 0.6 gives roles/labels/values on every gpui-component
   control for free (plus a macOS hit-test forwarder in gpui-base). The custom
   editor + reader get nothing automatically — separate work if a11y matters.
@@ -357,8 +359,10 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
   rasterize; `Kbd` chips on the shortcuts tab; `Combobox` (searchable font
   picker) / `NumberInput` (text size) in Settings. Scrollbar visuals and
   trackpad axis-locking arrive with the upgrade itself.
-- [ ] Dev tooling: `gpui-fps` HUD for the next #60-style hitch;
-  `gpui_kit::test` headless UI tests for chrome flows verified by hand today.
+- [x] Dev tooling — DONE 2026-09-11: `cargo run --features fps` shows the
+  gpui-fps HUD; headless UI tests on gpui's test context in
+  `src/app/ui_tests.rs` (first: the command palette flow), with
+  `paths::data_dir` a throwaway dir under `cfg(test)`.
 
 Skip: dock/tiles, charts, chat components, `NavStack` (tabs cover it),
 `gpui-shell` JS extensions (interesting later, not now).

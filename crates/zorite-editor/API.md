@@ -1094,6 +1094,15 @@ An inline (mid-text) image thumbnail was left-clicked; the payload is its
 
 **Host obligation:** open a full-size preview.
 
+### `HoverLink(Option<(LinkHit, Bounds<Pixels>)>)`
+
+The pointer moved onto an inline link or a property-panel pill (`Some` — the
+`zorite_markdown::syntax::LinkHit` and the link's window-space box, from the
+last paint's layout) or off every link (`None`). Emitted only when the hovered
+link changes, so it is cheap to subscribe to.
+
+**Host obligation:** none. Zorite anchors a hover preview card to the box.
+
 ---
 
 ## `struct SyntaxStyle`

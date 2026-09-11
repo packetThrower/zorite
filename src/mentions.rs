@@ -40,7 +40,9 @@ pub fn unlinked_mention_ranges(content: &str, title: &str) -> Vec<Range<usize>> 
         while let Some(rel) = hay[from..].find(&needle) {
             let start = from + rel;
             let end = start + needle.len();
-            from = start + 1;
+            // Step past the match's first character, not its first byte —
+            // a title starting with a multi-byte letter would slice mid-char.
+            from = start + needle.chars().next().map_or(1, char::len_utf8);
             // Word boundaries — but only where the title itself starts/ends
             // with a word character ("C++" needs no trailing boundary).
             let bounded_left = !needle.as_bytes()[0].is_ascii_alphanumeric()
@@ -140,6 +142,14 @@ fn inline_code_ranges(line: &str) -> Vec<Range<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn non_ascii_title_does_not_slice_mid_char() {
+        let content = "امروز یادداشت فارسی را خواندم\n[[یادداشت فارسی]]";
+        let hits = unlinked_mention_ranges(content, "یادداشت فارسی");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(&content[hits[0].clone()], "یادداشت فارسی");
+    }
 
     #[test]
     fn finds_plain_mentions_only() {

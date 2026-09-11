@@ -75,6 +75,7 @@ isn't public. Feature `—` = always compiled (`zorite_markdown::syntax`);
 | [`MarkdownView::track_blocks`](#markdownviewtrack_blocks) | builder | `fn track_blocks(self, handle: ScrollHandle) -> Self` | Track-scroll the block column (scroll-to-match) | `view` |
 | [`MarkdownView::on_click_source`](#markdownviewon_click_source) | builder | `fn on_click_source(self, handler: ClickSourceHandler) -> Self` | Click-to-caret (source offset of a click) | `view` |
 | [`MarkdownView::on_image_preview`](#markdownviewon_image_preview) | builder | `fn on_image_preview(self, handler: ImagePreviewHandler) -> Self` | Handle inline-thumbnail clicks | `view` |
+| [`MarkdownView::on_link_hover`](#markdownviewon_link_hover) | builder | `fn on_link_hover(self, handler: LinkHoverHandler) -> Self` | Report the link under the pointer + its box (hover previews) | `view` |
 | [`MarkdownView::on_task_toggle`](#markdownviewon_task_toggle) | builder | `fn on_task_toggle(self, handler: TaskToggleHandler) -> Self` | Make task checkboxes clickable | `view` |
 | [`MarkdownView::on_alert_toggle`](#markdownviewon_alert_toggle) | builder | `fn on_alert_toggle(self, handler: TaskToggleHandler) -> Self` | Handle foldable-callout title clicks | `view` |
 | [`MarkdownView::on_embed`](#markdownviewon_embed) | builder | `fn on_embed(self, provider: EmbedProvider) -> Self` | Resolve standalone `![[target]]` transclusions | `view` |
@@ -97,6 +98,7 @@ isn't public. Feature `—` = always compiled (`zorite_markdown::syntax`);
 | [`InlineImageRenderer`](#inlineimagerenderer) | type alias | `Rc<dyn Fn(SharedString) -> Option<(Arc<RenderImage>, f32, f32)>>` | Mid-text image → raster + logical size | `view` |
 | [`ClickSourceHandler`](#clicksourcehandler) | type alias | `Rc<dyn Fn(usize, Pixels, &mut Window, &mut App)>` | Click-to-caret callback (source offset, window y) | `view` |
 | [`ImagePreviewHandler`](#imagepreviewhandler) | type alias | `Rc<dyn Fn(SharedString, &mut Window, &mut App)>` | Inline-thumbnail click callback (src) | `view` |
+| [`LinkHoverHandler`](#linkhoverhandler) | type alias | `Rc<dyn Fn(Option<(LinkHit, Bounds<Pixels>)>, &mut Window, &mut App)>` | Link-hover callback: target + window-space box, or `None` off every link | `view` |
 | [`TaskToggleHandler`](#tasktogglehandler) | type alias | `Rc<dyn Fn(usize, &mut Window, &mut App)>` | Task / callout toggle callback (source offset) | `view` |
 | [`HeadingToggleHandler`](#headingtogglehandler) | type alias | `Rc<dyn Fn(&str, &mut Window, &mut App)>` | Heading fold-chevron callback (fold key) | `view` |
 | [`EmbedProvider`](#embedprovider) | type alias | `Rc<dyn Fn(&str) -> Option<(SharedString, SharedString)>>` | Resolve `![[target]]` → `(label, content)` | `view` |
@@ -1066,6 +1068,26 @@ pub fn on_image_preview(self, handler: ImagePreviewHandler) -> Self
 Handle a click on an inline thumbnail — open a full-size preview (see
 [`ImagePreviewHandler`](#imagepreviewhandler)).
 
+### `MarkdownView::on_link_hover`
+
+```rust
+pub fn on_link_hover(self, handler: LinkHoverHandler) -> Self
+```
+
+Report the link under the pointer as the mouse moves, so the host can show a
+preview card anchored to it (see [`LinkHoverHandler`](#linkhoverhandler)).
+Covers paragraph links in both text directions (a wrapped link reports the
+row it starts on) and property-panel pills. Links inside table cells don't
+report yet.
+
+**Guarantees & edge cases**
+
+- Fires on every pointer move over the paragraph, including repeated `None`s
+  off links — hosts should compare against their last value before
+  repainting.
+- The box is window-space, from this frame's layout; it goes stale if the
+  content scrolls without the pointer moving.
+
 ### `MarkdownView::on_task_toggle`
 
 ```rust
@@ -1443,6 +1465,19 @@ opens a full-size preview. Set via
 [`on_image_preview`](#markdownviewon_image_preview).
 
 ---
+
+## `LinkHoverHandler`
+
+```rust
+pub type LinkHoverHandler =
+    Rc<dyn Fn(Option<(LinkHit, Bounds<Pixels>)>, &mut Window, &mut App)>;
+```
+
+The pointer moved onto a link (`Some` — its [`LinkHit`](#enum-linkhit) and its
+window-space box) or off every link (`None`). Set via
+[`on_link_hover`](#markdownviewon_link_hover). A `[[wiki]]` / `#tag` arrives
+as `LinkHit::Page`, a URL as `LinkHit::Url`, a pill's `((id))` as
+`LinkHit::BlockRef`.
 
 ## `TaskToggleHandler`
 

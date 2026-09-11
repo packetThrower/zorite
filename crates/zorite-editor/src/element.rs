@@ -65,6 +65,8 @@ pub(crate) struct PrepaintState {
     /// Pointer-cursor hitboxes over inline links (`[[wiki]]` / `#tag` /
     /// `[text](url)`), so hovering a clickable link shows a hand.
     link_grips: Vec<Hitbox>,
+    /// The links' boxes + targets, committed to the editor for hover → `HoverLink`.
+    link_rects: Vec<(Bounds<Pixels>, zorite_markdown::syntax::LinkHit)>,
     /// Pointer-cursor hitboxes over clickable property-panel pills, so hovering
     /// a pill shows a hand (like `link_grips`).
     prop_pill_grips: Vec<Hitbox>,
@@ -747,6 +749,7 @@ impl Element for EditorElement {
         // a 3+-row link are skipped). Widget/code/table rows carry no inline
         // links (images and chips have their own machinery).
         let mut link_grips = Vec::new();
+        let mut link_rects: Vec<(Bounds<Pixels>, zorite_markdown::syntax::LinkHit)> = Vec::new();
         let mut inline_image_grips = Vec::new();
         if editor.markdown_style.is_some() && !editor.content.is_empty() {
             let starts = editor.line_starts();
@@ -775,10 +778,11 @@ impl Element for EditorElement {
                             .filter(|(_, id)| f(id) > 0)
                             .map(|(at, _)| at..line.len())
                     });
-                for range in markdown_syntax::links(line)
+                // `None` = the badge (clickable, but not a link to preview).
+                for (range, hit) in markdown_syntax::links(line)
                     .into_iter()
-                    .map(|(r, _)| r)
-                    .chain(badge)
+                    .map(|(r, h)| (r, Some(h)))
+                    .chain(badge.map(|r| (r, None)))
                 {
                     let map = maps.get(i).and_then(Option::as_ref);
                     let d1 = display_col_in(map, range.start);
@@ -793,6 +797,7 @@ impl Element for EditorElement {
                         continue; // fully hidden (e.g. collapsed markers)
                     }
                     let origin = point(bounds.origin.x + inset, bounds.origin.y + line_tops[i]);
+                    let hit_ref = hit;
                     if p1.y == p2.y {
                         // An RTL link ends to the LEFT of where it starts, so
                         // the box spans min→max x rather than p1→p2.
@@ -801,6 +806,9 @@ impl Element for EditorElement {
                             size((p2.x - p1.x).abs(), *lh),
                         );
                         link_grips.push(window.insert_hitbox(hit, HitboxBehavior::Normal));
+                        if let Some(h) = hit_target(&hit_ref) {
+                            link_rects.push((hit, h));
+                        }
                     } else {
                         // Wrapped: head runs to the row's end, tail from its row's start.
                         let head = Bounds::new(
@@ -810,6 +818,10 @@ impl Element for EditorElement {
                         let tail = Bounds::new(point(origin.x, origin.y + p2.y), size(p2.x, *lh));
                         link_grips.push(window.insert_hitbox(head, HitboxBehavior::Normal));
                         link_grips.push(window.insert_hitbox(tail, HitboxBehavior::Normal));
+                        if let Some(h) = hit_target(&hit_ref) {
+                            link_rects.push((head, h.clone()));
+                            link_rects.push((tail, h));
+                        }
                     }
                 }
                 // Inline images on this line get a pointer-cursor hitbox (they
@@ -1421,6 +1433,7 @@ impl Element for EditorElement {
             heading_fold_grips,
             heading_row_rects,
             link_grips,
+            link_rects,
             prop_pill_grips,
             inline_image_grips,
             alert_icons: editor
@@ -2373,6 +2386,7 @@ impl Element for EditorElement {
             editor.image_rects = image_rects;
             editor.inline_math_rects = inline_math_rects;
             editor.prop_pill_rects = prop_pill_rects;
+            editor.link_rects = std::mem::take(&mut prepaint.link_rects);
             editor.prop_row_rects = prop_row_rects;
             editor.checkbox_rects = checkbox_rects;
             editor.table_thumbs = prepaint.table_thumbs.iter().map(|(t, _)| *t).collect();
@@ -4338,4 +4352,12 @@ fn paint_chip(
         window,
         cx,
     );
+}
+
+/// The previewable target of a link range: a real link, or `None` for the
+/// reference-count badge that rides along in the same loop.
+fn hit_target(
+    hit: &Option<zorite_markdown::syntax::LinkHit>,
+) -> Option<zorite_markdown::syntax::LinkHit> {
+    hit.clone()
 }

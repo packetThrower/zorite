@@ -36,10 +36,12 @@ use zorite_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
     CloseTab, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
-    ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, ImportLogseq,
-    ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenInNewTab,
-    OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel,
-    SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, GoToToday,
+    ImportLogseq, ImportObsidian, InsertTab, JumpToDate, NewPage, NewSubPage, NewWhiteboard,
+    NextTab, OpenAllPages, OpenCommandPalette, OpenGraph, OpenInNewTab, OpenInNewWindow,
+    OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
+    SlashUp, ThemeAuto, ThemeDark, ThemeLight, ToggleFavorite, ToggleLineNumbers, ToggleSidebar,
+    ToggleSidebarSide, ToggleWysiwyg,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -57,6 +59,8 @@ mod importing;
 mod math;
 mod persistence;
 mod stores;
+#[cfg(test)]
+mod ui_tests;
 
 pub use find::{FeedFind, PageFind};
 use math::MathEdit;
@@ -560,6 +564,9 @@ pub struct AppView {
     prop_edit: Option<PropEdit>,
     // Right-click context menu on a rendered formula (Copy LaTeX / Export SVG / Export PNG).
     ctx_menu: Option<CtxMenu>,
+    /// The link under the pointer in any view + its window-space box, for the
+    /// hover preview card (see `link_hover_card`). Both renderers report here.
+    link_hover: Option<(zorite_markdown::syntax::LinkHit, Bounds<Pixels>)>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
     // what's in flight, capped at `MAX_IMAGE_DECODES`). The bound keeps the
     // transient full-resolution buffers in check — decoding a 12 MP photo briefly
@@ -881,6 +888,7 @@ impl AppView {
             math_edit: None,
             prop_edit: None,
             ctx_menu: None,
+            link_hover: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
             pdf_views: HashMap::new(),
@@ -1194,6 +1202,7 @@ impl AppView {
                         cx,
                     );
                 }
+                EditorEvent::HoverLink(hover) => this.set_link_hover(hover.clone(), cx),
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
                 }
@@ -1454,6 +1463,103 @@ impl AppView {
             Ok(Some(page)) => self.open_page_foreground(page, window, cx),
             Ok(None) => log::warn!("page {id} not found"),
             Err(e) => log::error!("open page {id}: {e}"),
+        }
+    }
+
+    /// A view reported the link under the pointer (or that there is none) —
+    /// see [`Self::link_hover_card`]. Both renderers call this; only a change
+    /// repaints.
+    pub fn set_link_hover(
+        &mut self,
+        hover: Option<(zorite_markdown::syntax::LinkHit, Bounds<Pixels>)>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.link_hover != hover {
+            self.link_hover = hover;
+            cx.notify();
+        }
+    }
+
+    /// The hover preview for the link under the pointer: gpui-component's
+    /// `HoverCard` over an invisible trigger the size of the link (so the card
+    /// owns its open/close timing and stays while the pointer is on it), showing
+    /// the target page's first lines — or the URL, the way a browser's status
+    /// bar does.
+    fn link_hover_card(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let (hit, bounds) = self.link_hover.clone()?;
+        let preview = self.link_preview(&hit, cx);
+        // The excerpt renders as real markdown through the reader, with the
+        // same renderer set an embed gets, so images/math/mermaid in the
+        // preview look like the page they came from. Warm their stores first
+        // (idempotent — `upsert_embed` does the same each pass).
+        if let LinkPreview::Page {
+            excerpt: Some(md), ..
+        } = &preview
+        {
+            self.ensure_content_images(md, cx);
+            self.ensure_content_mermaid(md, cx);
+            self.ensure_content_math(md, cx);
+            self.ensure_content_parsed(md, cx);
+        }
+        let style = theme::markdown_style(self.list_indent(), px(13.0));
+        let image = crate::ui::image::embed_renderer(self, cx);
+        let mermaid = crate::ui::mermaid::renderer(self, cx);
+        let math = crate::ui::math::renderer(self, cx);
+        let inline_math = crate::ui::math::inline_renderer(self);
+        let highlight = self.highlighter_fn();
+        let markdown = move |source: String| {
+            zorite_markdown::MarkdownView::new("link-preview", source)
+                .set_labels(crate::i18n::reader_labels())
+                .style(style.clone())
+                .on_image(image.clone())
+                .on_embed_image(image.clone())
+                .on_mermaid(mermaid.clone())
+                .on_math(math.clone())
+                .on_inline_math(inline_math.clone())
+                .on_highlight(highlight.clone())
+                .into_any_element()
+        };
+        Some(
+            gpui::deferred(
+                gpui::anchored().position(bounds.origin).child(
+                    gpui_component::hover_card::HoverCard::new("link-preview")
+                        .anchor(gpui::Anchor::TopLeft)
+                        .open_delay(std::time::Duration::from_millis(450))
+                        .trigger(div().w(bounds.size.width).h(bounds.size.height))
+                        .content(move |_, _, _| preview.clone().render(&markdown)),
+                ),
+            )
+            .into_any_element(),
+        )
+    }
+
+    /// What the preview card shows for `hit`: the page's title and first lines
+    /// (anchors stripped, aliases resolved), a block reference's id, or the URL.
+    fn link_preview(&self, hit: &zorite_markdown::syntax::LinkHit, _cx: &App) -> LinkPreview {
+        use zorite_markdown::syntax::{LinkHit, split_block_anchor, split_heading_anchor};
+        match hit {
+            LinkHit::Url(u) => LinkPreview::Url(u.clone()),
+            LinkHit::BlockRef(id) => LinkPreview::Block(id.clone()),
+            LinkHit::Page(target) => {
+                let (base, _) = split_block_anchor(target);
+                let (base, _) = split_heading_anchor(base);
+                let page = self
+                    .db
+                    .get_page_by_title(base)
+                    .ok()
+                    .flatten()
+                    .or_else(|| self.db.get_page_by_alias(base).ok().flatten());
+                match page {
+                    Some(p) => LinkPreview::Page {
+                        title: p.title,
+                        excerpt: Some(excerpt(&p.content)),
+                    },
+                    None => LinkPreview::Page {
+                        title: base.to_string(),
+                        excerpt: None,
+                    },
+                }
+            }
         }
     }
 
@@ -2021,6 +2127,7 @@ impl AppView {
                         cx,
                     );
                 }
+                EditorEvent::HoverLink(hover) => this.set_link_hover(hover.clone(), cx),
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
                 }
@@ -6983,6 +7090,7 @@ impl Render for AppView {
                 .into_any_element()
             });
 
+        let link_hover_overlay = self.link_hover_card(cx);
         let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
             // Action ids: 0..=2 formula copy/export, 3 day/page Edit, 4..=6 align L/C/R (only
             // while editing the formula, where the in-line editor can re-justify it live).
@@ -7141,6 +7249,9 @@ impl Render for AppView {
                             this.slash = None;
                             cx.notify();
                         }
+                        // An open dialog (the command palette, a prompt) owns Esc —
+                        // otherwise editing a note underneath would blur instead.
+                        None if window.has_active_dialog(cx) => cx.propagate(),
                         // A seated PDF form field drops without writing.
                         None if this.pdf_field_edit.is_some() => this.cancel_pdf_field_edit(cx),
                         // An open find bar takes Esc first (closes it).
@@ -7198,6 +7309,68 @@ impl Render for AppView {
                     let view = cx.entity();
                     window.defer(cx, move |_, cx| AppView::open_settings(view, cx));
                 }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &OpenCommandPalette, window, cx| {
+                    this.open_command_palette(window, cx)
+                }),
+            )
+            // Quick settings from the palette — the Settings window's setters.
+            .on_action(cx.listener(|this: &mut AppView, _: &ToggleWysiwyg, _, cx| {
+                let on = !this.wysiwyg();
+                this.set_wysiwyg(on, cx);
+            }))
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ToggleLineNumbers, _, cx| {
+                    let on = !this.line_numbers();
+                    this.set_line_numbers(on, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ToggleSidebarSide, _, cx| {
+                    let right = !this.sidebar_right;
+                    this.set_sidebar_right(right, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ThemeLight, window, cx| {
+                    this.set_theme_mode(theme::Mode::Light, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ThemeDark, window, cx| {
+                    this.set_theme_mode(theme::Mode::Dark, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ThemeAuto, window, cx| {
+                    this.set_theme_mode(theme::Mode::Auto, window, cx);
+                }),
+            )
+            // Navigation from the palette.
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &GoToToday, window, cx| {
+                    let today = date_for_offset(0);
+                    this.open_journal_day(&today, window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this: &mut AppView, _: &JumpToDate, _, cx| {
+                if !this.show_calendar {
+                    this.toggle_calendar(cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &OpenAllPages, window, cx| {
+                    this.open_all_pages(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &OpenGraph, window, cx| {
+                    this.open_graph(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)),
             )
             .on_action(
                 cx.listener(|this: &mut AppView, _: &FindInPage, window, cx| {
@@ -7349,6 +7522,8 @@ impl Render for AppView {
             .children(mermaid_lightbox)
             .children(image_lightbox)
             .children(ctx_menu_overlay)
+            .children(link_hover_overlay)
+            .children(fps_hud(window, cx))
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.
@@ -7858,4 +8033,98 @@ mod auto_link_tests {
         assert_eq!(auto_link_match(&t, "not-a-match"), None);
         assert_eq!(auto_link_match(&t, "meetings "), None); // trailing ws = no word completed
     }
+}
+
+/// The `fps` feature's performance HUD (`cargo run --features fps`), over the
+/// main window's content. `None` in every other build.
+#[cfg(feature = "fps")]
+fn fps_hud(window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
+    Some(gpui_fps::fps_monitor(window, cx).into_any_element())
+}
+#[cfg(not(feature = "fps"))]
+fn fps_hud(_window: &mut Window, _cx: &mut App) -> Option<gpui::AnyElement> {
+    None
+}
+
+/// The data behind the link hover card (see `AppView::link_hover_card`).
+#[derive(Clone)]
+enum LinkPreview {
+    /// A wiki target; `excerpt` is `None` when no such page exists yet.
+    Page {
+        title: String,
+        excerpt: Option<String>,
+    },
+    Block(String),
+    Url(String),
+}
+
+impl LinkPreview {
+    /// `markdown` renders a page excerpt through the reader (see
+    /// `AppView::link_hover_card`, which supplies the renderer set).
+    fn render(self, markdown: &dyn Fn(String) -> gpui::AnyElement) -> gpui::Div {
+        let body = div().max_w(px(380.0)).flex().flex_col().gap(px(4.0));
+        match self {
+            LinkPreview::Page { title, excerpt } => body
+                .w(px(380.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(match excerpt {
+                    Some(md) => markdown(md),
+                    None => div()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_secondary())
+                        .child(t!("link_preview.no_page").into_owned())
+                        .into_any_element(),
+                }),
+            LinkPreview::Block(id) => body.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_secondary())
+                    .child(format!("(({id}))")),
+            ),
+            LinkPreview::Url(url) => body.child(
+                div()
+                    .text_size(px(12.0))
+                    .text_color(theme::text_secondary())
+                    .truncate()
+                    .child(url),
+            ),
+        }
+    }
+}
+
+/// The first few content lines of a page for its hover card, as markdown
+/// source: hidden marker comments skipped, blank lines kept (they separate
+/// paragraphs) but not counted, capped so the card stays a glance.
+fn excerpt(content: &str) -> String {
+    let mut out = String::new();
+    let mut kept = 0;
+    for line in content
+        .lines()
+        .map(str::trim_end)
+        .filter(|l| !l.trim_start().starts_with("<!--"))
+    {
+        if !line.is_empty() {
+            kept += 1;
+            if kept > 8 {
+                break;
+            }
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(line);
+        if out.chars().count() > 360 {
+            break;
+        }
+    }
+    if out.chars().count() > 360 {
+        out = out.chars().take(360).collect();
+        out.push('…');
+    }
+    out
 }
