@@ -8,34 +8,85 @@ use rust_i18n::t;
 
 impl AppView {
     /// ⌘⇧P — gpui-component's `Command` palette over every menu command
-    /// (`actions::palette_groups`), in a chrome-less dialog. Confirm closes
-    /// the dialog FIRST and dispatches after: an item's built-in `.action`
-    /// would fire before the close, whose focus restore then lands on top of
+    /// (`actions::palette_groups`) plus, on a page tab, that page's context-menu
+    /// verbs under its title, in a chrome-less dialog. Confirm closes the
+    /// dialog FIRST and dispatches after: an item's built-in `.action` would
+    /// fire before the close, whose focus restore then lands on top of
     /// whatever the command focused (the find bar, the search box).
     pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
         let state = cx.new(|cx| CommandState::new(window, cx));
-        let groups = Rc::new(crate::actions::palette_groups());
+        let mut groups = crate::actions::palette_groups();
+        // The page verbs read their target from `context_page` (armed by a
+        // right-click); the palette arms it with the active page on confirm.
+        let page = match self.tabs.get(self.active) {
+            Some(
+                tab @ OpenTab {
+                    kind: TabKind::Page(id),
+                    ..
+                },
+            ) => {
+                let fav = if self.is_favorite(*id) {
+                    t!("page_ctx.remove_favorite")
+                } else {
+                    t!("page_ctx.add_favorite")
+                };
+                let verbs: Vec<crate::actions::PaletteCommand> = vec![
+                    (fav.into(), Box::new(ToggleFavorite)),
+                    (
+                        t!("page_ctx.open_new_window").into(),
+                        Box::new(OpenInNewWindow),
+                    ),
+                    (t!("page_ctx.copy_link").into(), Box::new(CopyPageLink)),
+                    (
+                        t!("page_ctx.copy_contents").into(),
+                        Box::new(CopyPageContents),
+                    ),
+                    (
+                        t!("page_ctx.copy_contents_md").into(),
+                        Box::new(CopyPageContentsMarkdown),
+                    ),
+                    (t!("page_ctx.new_sub_page").into(), Box::new(NewSubPage)),
+                    (t!("page_ctx.rename_page").into(), Box::new(RenamePage)),
+                    (t!("page_ctx.delete_page").into(), Box::new(DeletePage)),
+                ];
+                let title = tab.display_title();
+                groups.push((title.clone(), verbs));
+                Some((groups.len() - 1, *id, title))
+            }
+            _ => None,
+        };
+        let groups = Rc::new(groups);
         let focus = state.clone();
+        let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let on_confirm = groups.clone();
-            let command =
-                groups.iter().fold(
-                    Command::new(&state)
-                        .bordered(false)
-                        .placeholder(t!("command_palette.placeholder"))
-                        .on_confirm(move |ix, window, cx| {
-                            window.close_dialog(cx);
-                            if let Some((_, action)) = on_confirm
-                                .get(ix.section)
-                                .and_then(|(_, items)| items.get(ix.row))
-                            {
-                                window.dispatch_action(action.boxed_clone(), cx);
-                            }
-                        }),
-                    |command, (label, items)| {
-                        command.group(CommandGroup::new().label(label.clone()).items(
-                            items.iter().map(|(name, action)| {
+            let page = page.clone();
+            let weak = weak.clone();
+            let command = groups.iter().fold(
+                Command::new(&state)
+                    .bordered(false)
+                    .placeholder(t!("command_palette.placeholder"))
+                    .on_confirm(move |ix, window, cx| {
+                        window.close_dialog(cx);
+                        if let Some((section, id, title)) = &page
+                            && ix.section == *section
+                        {
+                            let _ = weak
+                                .update(cx, |this, _| this.set_context_page(*id, title.clone()));
+                        }
+                        if let Some((_, action)) = on_confirm
+                            .get(ix.section)
+                            .and_then(|(_, items)| items.get(ix.row))
+                        {
+                            window.dispatch_action(action.boxed_clone(), cx);
+                        }
+                    }),
+                |command, (label, items)| {
+                    command.group(
+                        CommandGroup::new()
+                            .label(label.clone())
+                            .items(items.iter().map(|(name, action)| {
                                 let (name, action) = (name.clone(), action.boxed_clone());
                                 CommandItem::new()
                                     .label(name.clone())
@@ -53,10 +104,10 @@ impl AppView {
                                                 window,
                                             ))
                                     })
-                            }),
-                        ))
-                    },
-                );
+                            })),
+                    )
+                },
+            );
             dialog.w(px(480.0)).close_button(false).child(command)
         });
         focus.update(cx, |state, cx| state.focus(window, cx));

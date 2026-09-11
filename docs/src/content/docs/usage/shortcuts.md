@@ -22,7 +22,8 @@ macOS and **Ctrl** on Windows and Linux.
 | Open settings | `⌘,` | `Ctrl+,` |
 | Quit | `⌘Q` | `Ctrl+Q` |
 
-**Command palette** lists every menu command with its shortcut — type to
+**Command palette** lists every menu command with its shortcut and, on a page
+tab, that page's actions (favorite, copy link, rename, delete…) — type to
 filter, `↑` / `↓` to pick, `Enter` to run, `Esc` to close.
 **Find in page** searches the current page (reading view or editor); on the
 Journal it opens the feed's find bar, matching across every loaded day.

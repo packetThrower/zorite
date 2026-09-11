@@ -343,7 +343,7 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
   `MarkdownView::on_link_hover`). Left: links inside table cells.
 - [x] **`Command` palette** — DONE 2026-09-11 (⌘⇧P / Ctrl+Shift+P, View menu):
   every menu command grouped by menu with its shortcut, from one list
-  (`actions::palette_groups`). Left: page/sidebar verbs that need a target.
+  (`actions::palette_groups`), plus the active page's context-menu verbs.
 - [x] **`setting::Settings` page builder** — DONE 2026-09-10 (branch
   `feat/settings-component`): pages/groups/typed fields with defaults + Reset,
   component sidebar search (titles, descriptions, synonyms, option labels,
