@@ -46,9 +46,6 @@ gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = [
 [dependencies]
 # Our own markdown renderer (clickable wiki-links), a workspace crate.
 zorite-markdown = { path = "crates/zorite-markdown" }
-# Right-to-left rows for the link hover card's excerpt (#66): plain gpui text
-# wraps a bidi paragraph backwards, the same bug both renderers route around.
-gpui-bidi = { path = "crates/gpui-bidi" }
 # PDF export (src/export.rs): `markdown` parses (same crate zorite-markdown uses),
 # oxidize-pdf writes — pure Rust; with default features off it adds only a
 # handful of small crates (cipher primitives) to the tree.

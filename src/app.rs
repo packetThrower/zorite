@@ -1481,9 +1481,40 @@ impl AppView {
     /// owns its open/close timing and stays while the pointer is on it), showing
     /// the target page's first lines — or the URL, the way a browser's status
     /// bar does.
-    fn link_hover_card(&self, cx: &App) -> Option<gpui::AnyElement> {
+    fn link_hover_card(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let (hit, bounds) = self.link_hover.clone()?;
         let preview = self.link_preview(&hit, cx);
+        // The excerpt renders as real markdown through the reader, with the
+        // same renderer set an embed gets, so images/math/mermaid in the
+        // preview look like the page they came from. Warm their stores first
+        // (idempotent — `upsert_embed` does the same each pass).
+        if let LinkPreview::Page {
+            excerpt: Some(md), ..
+        } = &preview
+        {
+            self.ensure_content_images(md, cx);
+            self.ensure_content_mermaid(md, cx);
+            self.ensure_content_math(md, cx);
+            self.ensure_content_parsed(md, cx);
+        }
+        let style = theme::markdown_style(self.list_indent(), px(13.0));
+        let image = crate::ui::image::embed_renderer(self, cx);
+        let mermaid = crate::ui::mermaid::renderer(self, cx);
+        let math = crate::ui::math::renderer(self, cx);
+        let inline_math = crate::ui::math::inline_renderer(self);
+        let highlight = self.highlighter_fn();
+        let markdown = move |source: String| {
+            zorite_markdown::MarkdownView::new("link-preview", source)
+                .set_labels(crate::i18n::reader_labels())
+                .style(style.clone())
+                .on_image(image.clone())
+                .on_embed_image(image.clone())
+                .on_mermaid(mermaid.clone())
+                .on_math(math.clone())
+                .on_inline_math(inline_math.clone())
+                .on_highlight(highlight.clone())
+                .into_any_element()
+        };
         Some(
             gpui::deferred(
                 gpui::anchored().position(bounds.origin).child(
@@ -1491,7 +1522,7 @@ impl AppView {
                         .anchor(gpui::Anchor::TopLeft)
                         .open_delay(std::time::Duration::from_millis(450))
                         .trigger(div().w(bounds.size.width).h(bounds.size.height))
-                        .content(move |_, _, _| preview.clone().render()),
+                        .content(move |_, _, _| preview.clone().render(&markdown)),
                 ),
             )
             .into_any_element(),
@@ -7947,45 +7978,27 @@ enum LinkPreview {
 }
 
 impl LinkPreview {
-    fn render(self) -> gpui::Div {
+    /// `markdown` renders a page excerpt through the reader (see
+    /// `AppView::link_hover_card`, which supplies the renderer set).
+    fn render(self, markdown: &dyn Fn(String) -> gpui::AnyElement) -> gpui::Div {
         let body = div().max_w(px(380.0)).flex().flex_col().gap(px(4.0));
         match self {
-            LinkPreview::Page { title, excerpt } => {
-                let text = excerpt.unwrap_or_else(|| t!("link_preview.no_page").into_owned());
-                // #66: gpui wraps a paragraph containing right-to-left text
-                // backwards (rows sliced from reordered glyphs), so such an
-                // excerpt goes through the bidi row layout, one line per
-                // paragraph the way the reader does it. The card follows the
-                // excerpt's base direction so an Arabic page reads from the
-                // right edge; a definite width gives the rows an edge to align to.
-                let bidi = zorite_markdown::syntax::contains_rtl(&text);
-                let rtl = zorite_markdown::syntax::base_direction(&text).is_rtl();
-                body.when(rtl, |b| b.w(px(380.0)).text_right())
-                    .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(title),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme::text_secondary())
-                            .map(|el| {
-                                if bidi {
-                                    el.flex().flex_col().children(text.lines().map(|line| {
-                                        gpui_bidi::paragraph::RtlText::new(line.to_string())
-                                            .with_base_rtl(
-                                                zorite_markdown::syntax::base_direction(line)
-                                                    .is_rtl(),
-                                            )
-                                    }))
-                                } else {
-                                    el.child(text)
-                                }
-                            }),
-                    )
-            }
+            LinkPreview::Page { title, excerpt } => body
+                .w(px(380.0))
+                .child(
+                    div()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .child(title),
+                )
+                .child(match excerpt {
+                    Some(md) => markdown(md),
+                    None => div()
+                        .text_size(px(12.0))
+                        .text_color(theme::text_secondary())
+                        .child(t!("link_preview.no_page").into_owned())
+                        .into_any_element(),
+                }),
             LinkPreview::Block(id) => body.child(
                 div()
                     .text_size(px(12.0))
@@ -8003,16 +8016,23 @@ impl LinkPreview {
     }
 }
 
-/// The first few content lines of a page for its hover card: blank lines and
-/// hidden marker comments skipped, capped so the card stays a glance.
+/// The first few content lines of a page for its hover card, as markdown
+/// source: hidden marker comments skipped, blank lines kept (they separate
+/// paragraphs) but not counted, capped so the card stays a glance.
 fn excerpt(content: &str) -> String {
     let mut out = String::new();
+    let mut kept = 0;
     for line in content
         .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with("<!--"))
-        .take(8)
+        .map(str::trim_end)
+        .filter(|l| !l.trim_start().starts_with("<!--"))
     {
+        if !line.is_empty() {
+            kept += 1;
+            if kept > 8 {
+                break;
+            }
+        }
         if !out.is_empty() {
             out.push('\n');
         }

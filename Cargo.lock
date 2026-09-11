@@ -10614,7 +10614,6 @@ dependencies = [
  "base64 0.22.1",
  "embed-resource",
  "env_logger",
- "gpui-bidi",
  "gpui-component",
  "gpui-kit-assets",
  "gpui-pdf",
