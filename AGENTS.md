@@ -62,6 +62,7 @@ features — the legend is in that crate's `lib.rs` top doc.
 
 ```
 cargo run                                            # launch the app (root bin: zorite)
+cargo run --features fps                             # + gpui-fps performance HUD (dev only)
 ```
 
 Before every commit, run what CI runs (`.github/workflows/ci.yml`) — these must pass:
@@ -116,6 +117,10 @@ change must stay cross-platform.
 
 - Unit tests live in-file under `#[cfg(test)]`; cover non-trivial logic (import parsers,
   editor/whiteboard geometry, DB and link-rewriting).
+- Headless UI tests of chrome flows live in `src/app/ui_tests.rs`: a real `AppView` in
+  gpui's test window (`#[gpui::test]`, `VisualTestContext`), actions dispatched, keys
+  simulated, state read back. `paths::data_dir` is a throwaway dir under `cfg(test)`, so
+  they never open a real notebook. Add one when a chrome flow gets verified by hand.
 - Live-testing the GUI: synthetic **keyboard** input does not reach a GPUI window (mouse
   does) — verify shortcuts by hand. Kill all running instances before relaunching, and
   close the app before touching its SQLite DB (it opens a real one in the platform data dir).

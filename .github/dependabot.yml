@@ -28,6 +28,7 @@ updates:
       - dependency-name: "gpui-pre-platform"
       - dependency-name: "gpui-component"
       - dependency-name: "gpui-kit-assets"
+      - dependency-name: "gpui-fps"
     groups:
       # One PR for the routine patch/minor sweep instead of a dozen; majors
       # still come through individually so they get a proper look.

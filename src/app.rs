@@ -59,6 +59,8 @@ mod importing;
 mod math;
 mod persistence;
 mod stores;
+#[cfg(test)]
+mod ui_tests;
 
 pub use find::{FeedFind, PageFind};
 use math::MathEdit;
@@ -7521,6 +7523,7 @@ impl Render for AppView {
             .children(image_lightbox)
             .children(ctx_menu_overlay)
             .children(link_hover_overlay)
+            .children(fps_hud(window, cx))
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
             // delete-page confirm) stay invisible.
@@ -8030,6 +8033,17 @@ mod auto_link_tests {
         assert_eq!(auto_link_match(&t, "not-a-match"), None);
         assert_eq!(auto_link_match(&t, "meetings "), None); // trailing ws = no word completed
     }
+}
+
+/// The `fps` feature's performance HUD (`cargo run --features fps`), over the
+/// main window's content. `None` in every other build.
+#[cfg(feature = "fps")]
+fn fps_hud(window: &mut Window, cx: &mut App) -> Option<gpui::AnyElement> {
+    Some(gpui_fps::fps_monitor(window, cx).into_any_element())
+}
+#[cfg(not(feature = "fps"))]
+fn fps_hud(_window: &mut Window, _cx: &mut App) -> Option<gpui::AnyElement> {
+    None
 }
 
 /// The data behind the link hover card (see `AppView::link_hover_card`).

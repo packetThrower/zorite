@@ -359,8 +359,10 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
   rasterize; `Kbd` chips on the shortcuts tab; `Combobox` (searchable font
   picker) / `NumberInput` (text size) in Settings. Scrollbar visuals and
   trackpad axis-locking arrive with the upgrade itself.
-- [ ] Dev tooling: `gpui-fps` HUD for the next #60-style hitch;
-  `gpui_kit::test` headless UI tests for chrome flows verified by hand today.
+- [x] Dev tooling — DONE 2026-09-11: `cargo run --features fps` shows the
+  gpui-fps HUD; headless UI tests on gpui's test context in
+  `src/app/ui_tests.rs` (first: the command palette flow), with
+  `paths::data_dir` a throwaway dir under `cfg(test)`.
 
 Skip: dock/tiles, charts, chat components, `NavStack` (tabs cover it),
 `gpui-shell` JS extensions (interesting later, not now).

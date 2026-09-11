@@ -52,6 +52,7 @@ fn default_data_dir() -> PathBuf {
 /// 1. `ZORITE_DATA` — a full override for throwaway/dev data sets.
 /// 2. The user-chosen directory from the location-pointer file.
 /// 3. The OS default ([`default_data_dir`]).
+#[cfg_attr(test, allow(dead_code))] // `data_dir` bypasses it under test
 fn resolve_data_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("ZORITE_DATA") {
         return PathBuf::from(dir);
@@ -71,7 +72,17 @@ fn resolve_data_dir() -> PathBuf {
 /// pending move runs (before the database is opened).
 pub fn data_dir() -> PathBuf {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
-    DIR.get_or_init(resolve_data_dir).clone()
+    DIR.get_or_init(|| {
+        // Under test, one throwaway directory per process: the headless UI
+        // tests open a real `AppView` (and so a real database) and must never
+        // land in the user's notebook, whatever `ZORITE_DATA` or the pointer
+        // file say.
+        #[cfg(test)]
+        return std::env::temp_dir().join(format!("zorite-test-{}", std::process::id()));
+        #[cfg(not(test))]
+        resolve_data_dir()
+    })
+    .clone()
 }
 
 // --- Window-bounds persistence (Settings → General toggle) ---
