@@ -567,6 +567,10 @@ pub struct AppView {
     /// The link under the pointer in any view + its window-space box, for the
     /// hover preview card (see `link_hover_card`). Both renderers report here.
     link_hover: Option<(zorite_markdown::syntax::LinkHit, Bounds<Pixels>)>,
+    /// The custom color picker a selection menu's `…` swatch opened (see
+    /// `open_color_picker`): gpui-component's picker, popover open, anchored
+    /// where the menu was; the pick applies when it closes.
+    color_pick: Option<ColorPick>,
     // Pending image decodes, run a bounded few at a time (`image_decodes` counts
     // what's in flight, capped at `MAX_IMAGE_DECODES`). The bound keeps the
     // transient full-resolution buffers in check — decoding a 12 MP photo briefly
@@ -889,6 +893,7 @@ impl AppView {
             prop_edit: None,
             ctx_menu: None,
             link_hover: None,
+            color_pick: None,
             image_queue: std::collections::VecDeque::new(),
             image_decodes: 0,
             pdf_views: HashMap::new(),
@@ -1203,6 +1208,10 @@ impl AppView {
                     );
                 }
                 EditorEvent::HoverLink(hover) => this.set_link_hover(hover.clone(), cx),
+                EditorEvent::PickColor {
+                    highlight,
+                    position,
+                } => this.open_color_picker(st.clone(), *highlight, *position, window, cx),
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
                 }
@@ -2128,6 +2137,10 @@ impl AppView {
                     );
                 }
                 EditorEvent::HoverLink(hover) => this.set_link_hover(hover.clone(), cx),
+                EditorEvent::PickColor {
+                    highlight,
+                    position,
+                } => this.open_color_picker(st.clone(), *highlight, *position, window, cx),
                 EditorEvent::PreviewImage(src) => {
                     this.open_image_lightbox(src.clone(), window, cx);
                 }
@@ -7091,6 +7104,14 @@ impl Render for AppView {
             });
 
         let link_hover_overlay = self.link_hover_card(cx);
+        let color_pick_overlay = self.color_pick.as_ref().map(|pick| {
+            gpui::deferred(
+                gpui::anchored()
+                    .position(pick.position)
+                    .child(gpui_component::color_picker::ColorPicker::new(&pick.state).small()),
+            )
+            .into_any_element()
+        });
         let ctx_menu_overlay = self.ctx_menu.as_ref().map(|menu| {
             // Action ids: 0..=2 formula copy/export, 3 day/page Edit, 4..=6 align L/C/R (only
             // while editing the formula, where the in-line editor can re-justify it live).
@@ -7523,6 +7544,7 @@ impl Render for AppView {
             .children(image_lightbox)
             .children(ctx_menu_overlay)
             .children(link_hover_overlay)
+            .children(color_pick_overlay)
             .children(fps_hud(window, cx))
             // gpui-component's `Root` tracks dialog state but does NOT render
             // the dialog layer — the host view must, or dialogs (like the
@@ -8033,6 +8055,15 @@ mod auto_link_tests {
         assert_eq!(auto_link_match(&t, "not-a-match"), None);
         assert_eq!(auto_link_match(&t, "meetings "), None); // trailing ws = no word completed
     }
+}
+
+/// A custom color pick in progress (`AppView::color_pick`).
+struct ColorPick {
+    state: Entity<gpui_component::color_picker::ColorPickerState>,
+    editor: Entity<EditorState>,
+    kind: zorite_editor::ColorKind,
+    position: Point<Pixels>,
+    _observe: Subscription,
 }
 
 /// The `fps` feature's performance HUD (`cargo run --features fps`), over the

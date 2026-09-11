@@ -7,6 +7,57 @@ use gpui_component::{h_flex, kbd::Kbd};
 use rust_i18n::t;
 
 impl AppView {
+    /// The selection menu's `…` swatch: gpui-component's color picker, popover
+    /// already open, anchored where the menu was (no dialog around it). The
+    /// pick applies when the popover closes — a palette swatch closes it, and
+    /// so does clicking outside after adjusting the HSLA sliders — as a
+    /// `<span style="color">` / `<mark style="background">` wrap via
+    /// `EditorState::color_selection`.
+    pub(super) fn open_color_picker(
+        &mut self,
+        editor: Entity<EditorState>,
+        highlight: bool,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use gpui_component::color_picker::ColorPickerState;
+        let kind = if highlight {
+            zorite_editor::ColorKind::Highlight
+        } else {
+            zorite_editor::ColorKind::Text
+        };
+        let state = cx.new(|cx| ColorPickerState::new(window, cx));
+        state.update(cx, |s, cx| s.set_open(true, cx));
+        // Closing is the commit.
+        let observe = cx.observe(&state, |this, state, cx| {
+            if !state.read(cx).is_open() {
+                this.finish_color_pick(cx);
+            }
+        });
+        self.color_pick = Some(ColorPick {
+            state,
+            editor,
+            kind,
+            position,
+            _observe: observe,
+        });
+        cx.notify();
+    }
+
+    /// The picker closed: apply its value (if any) to the editor's selection.
+    fn finish_color_pick(&mut self, cx: &mut Context<Self>) {
+        let Some(pick) = self.color_pick.take() else {
+            return;
+        };
+        if let Some(c) = pick.state.read(cx).value() {
+            let rgba = rgba_u32(c);
+            pick.editor
+                .update(cx, |e, cx| e.color_selection(pick.kind, Some(rgba), cx));
+        }
+        cx.notify();
+    }
+
     /// ⌘⇧P — gpui-component's `Command` palette over every menu command
     /// (`actions::palette_groups`) plus, on a page tab, that page's context-menu
     /// verbs under its title, in a chrome-less dialog. Confirm closes the
@@ -900,4 +951,12 @@ impl AppView {
             }
         }
     }
+}
+
+/// A picked color as `0xRRGGBBAA`, the form `zorite_markdown::syntax::hex_color`
+/// writes into a `style` attribute.
+fn rgba_u32(c: gpui::Hsla) -> u32 {
+    let c: gpui::Rgba = c.into();
+    let ch = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    ch(c.r) << 24 | ch(c.g) << 16 | ch(c.b) << 8 | ch(c.a)
 }

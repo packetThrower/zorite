@@ -42,6 +42,14 @@ isn't public. Feature `—` = always compiled (`zorite_markdown::syntax`);
 | [`content_direction`](#content_direction) | fn | `fn content_direction(line: &str) -> Direction` | Direction of a markdown line's CONTENT, ignoring its markers | — |
 | [`content_direction_opt`](#content_direction) | fn | `fn content_direction_opt(line: &str) -> Option<Direction>` | Same, `None` when the line has no strong character | — |
 | [`contains_rtl`](#contains_rtl) | fn | `fn contains_rtl(text: &str) -> bool` | Does the text hold ANY right-to-left character? | — |
+| [`highlight_close`](#highlights-and-colors) | fn | `fn highlight_close(line: &str, open: usize) -> Option<usize>` | Closing `==` for the highlight opener at `open` | — |
+| [`highlight_markers`](#highlights-and-colors) | fn | `fn highlight_markers(line: &str) -> Vec<usize>` | Offsets of every valid `==` marker in a line | — |
+| [`StyledKind`](#highlights-and-colors) | enum | `Mark \| Span \| Underline` | Which styling tag; `close()` gives its closer | — |
+| [`StyledTag`](#highlights-and-colors) | struct | `{ kind, color: Option<u32>, background: Option<u32> }` | A parsed `<mark>` / `<span style>` / `<u>` opener | — |
+| [`styled_tag`](#highlights-and-colors) | fn | `fn styled_tag(tag: &str) -> Option<StyledTag>` | Parse a styling opener (`0xRRGGBBAA` colors) | — |
+| [`styled_close`](#highlights-and-colors) | fn | `fn styled_close(tag: &str) -> Option<StyledKind>` | Which kind a `</…>` closes | — |
+| [`css_color`](#highlights-and-colors) | fn | `fn css_color(s: &str) -> Option<u32>` | `#hex`, `rgb()`/`rgba()`, basic names → `0xRRGGBBAA` | — |
+| [`hex_color`](#highlights-and-colors) | fn | `fn hex_color(rgba: u32) -> String` | `0xRRGGBBAA` → `#rrggbb` / `#rrggbbaa` | — |
 | [`wiki_target_display`](#wiki_target_display) | fn | `fn wiki_target_display(inner: &str) -> (&str, &str)` | Split `target\|label` into `(target, display)` | — |
 | [`is_tag_char`](#is_tag_char--is_word_char) | fn | `fn is_tag_char(c: u8) -> bool` | Byte valid inside a `#tag` name | — |
 | [`is_word_char`](#is_tag_char--is_word_char) | fn | `fn is_word_char(c: u8) -> bool` | Word byte for boundary checks | — |
@@ -531,6 +539,43 @@ whether a line needs bidi layout at all, while `base_direction` decides which
 way it aligns.
 
 **Cost** — one pass over the chars, early-exit on the first hit; no allocation.
+
+---
+
+## Highlights and colors
+
+```rust
+pub fn highlight_close(line: &str, open: usize) -> Option<usize>
+pub fn highlight_markers(line: &str) -> Vec<usize>
+pub enum StyledKind { Mark, Span, Underline }
+impl StyledKind { pub fn close(self) -> &'static str }
+pub struct StyledTag { pub kind: StyledKind, pub color: Option<u32>, pub background: Option<u32> }
+pub fn styled_tag(tag: &str) -> Option<StyledTag>
+pub fn styled_close(tag: &str) -> Option<StyledKind>
+pub fn css_color(s: &str) -> Option<u32>
+pub fn hex_color(rgba: u32) -> String
+```
+
+`==text==` is the highlight most markdown apps agree on; `<mark>` is its
+inline-HTML twin. A *chosen* color has no markdown spelling, so it rides the
+HTML Obsidian writes: `<mark style="background:#ffd54f80">` and
+`<span style="color:#e5484d">`. Both views recognize all of these here, so
+they cannot disagree.
+
+- `highlight_close` / `highlight_markers` pair `==` under emphasis-like rules
+  (markdown-it-mark's): the opener is followed by a non-space that isn't `=`,
+  the closer is preceded by a non-space and is exactly two `=`, the body is
+  non-empty. So `a == b == c` and `====` stay literal. `highlight_markers`
+  skips backtick code spans and backslash escapes and returns every opener
+  and closer offset, ascending — what both views hide.
+- `styled_tag` parses an opening tag (including its angle brackets) into the
+  kind and the `color:` / `background(-color):` of its `style` attribute, as
+  `0xRRGGBBAA`. A bare `<mark>` has no background (the theme's tint); a
+  `<span>` that sets neither color is `None` — literal HTML, as before.
+- `css_color` reads `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()`/`rgba()`,
+  and sixteen basic names; `hex_color` writes the shortest CSS hex back.
+
+**Cost** — single passes, no allocation except the returned `Vec`/`String`.
 
 ---
 

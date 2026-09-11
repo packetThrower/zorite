@@ -473,6 +473,11 @@ fn marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla) {
 /// A formatting marker that NEVER reveals (not even with the caret inside its
 /// construct) — see [`Style::always_hide`]. The construct's opener and closer
 /// share `pair_id` (see [`fmt_marker_pairs`]).
+/// `0xRRGGBBAA` (from `syntax::css_color`) as a gpui color.
+fn hsla_of(rgba: u32) -> Hsla {
+    gpui::rgba(rgba).into()
+}
+
 fn fmt_marker(out: &mut Vec<Span>, range: Range<usize>, color: Hsla, pair_id: u16) {
     out.push(Span {
         range,
@@ -838,6 +843,35 @@ fn scan_inline(
                 continue;
             }
         }
+        // Highlight: ==text== — the pairing rules are the reading view's
+        // (`syntax::highlight_close`), so `a == b == c` stays literal in both.
+        if c == b'='
+            && !is_backslash_escaped(b, i)
+            && i + 1 < end
+            && b[i + 1] == b'='
+            && let Some(close) = zorite_markdown::syntax::highlight_close(&text[..end], i)
+        {
+            let id = *next_id;
+            *next_id += 1;
+            fmt_marker(out, i..i + 2, st.marker, id);
+            scan_styled_body(
+                text,
+                i + 2,
+                close,
+                st,
+                out,
+                Style {
+                    bg: Some(st.mark_bg),
+                    ..Default::default()
+                }
+                .over(base),
+                depth,
+                next_id,
+            );
+            fmt_marker(out, close..close + 2, st.marker, id);
+            i = close + 2;
+            continue;
+        }
         // Strikethrough: ~~text~~
         if c == b'~'
             && !is_backslash_escaped(b, i)
@@ -1057,62 +1091,40 @@ fn scan_inline(
             i = rb2 + 1;
             continue;
         }
-        // <mark>…</mark>: a highlight — a safe inline-HTML tag the reading
-        // view honors. Tags hidden, body gets a highlight background.
+        // Styled inline HTML — `<mark>` / `<mark style="background:…">`,
+        // `<span style="color:…">`, `<u>` — the tags hidden, the body styled.
+        // Recognition is the reading view's (`syntax::styled_tag`), so the two
+        // views can't disagree about which tags count.
         if c == b'<'
-            && b[i..end].starts_with(b"<mark>")
-            && let Some(rel) = text[i + 6..end].find("</mark>")
+            && let Some(gt) = text[i..end].find('>')
+            && let Some(tag) = zorite_markdown::syntax::styled_tag(&text[i..i + gt + 1])
+            && let Some(rel) = text[i + gt + 1..end].find(tag.kind.close())
         {
-            let body = i + 6;
+            use zorite_markdown::syntax::StyledKind;
+            let body = i + gt + 1;
             let close = body + rel;
+            let close_len = tag.kind.close().len();
             let id = *next_id;
             *next_id += 1;
             fmt_marker(out, i..body, st.marker, id);
-            scan_styled_body(
-                text,
-                body,
-                close,
-                st,
-                out,
-                Style {
-                    bg: Some(st.mark_bg),
+            let style = match tag.kind {
+                StyledKind::Mark => Style {
+                    bg: Some(tag.background.map_or(st.mark_bg, hsla_of)),
                     ..Default::default()
-                }
-                .over(base),
-                depth,
-                next_id,
-            );
-            fmt_marker(out, close..close + 7, st.marker, id);
-            i = close + 7;
-            continue;
-        }
-        // <u>…</u>: underline (markdown has none natively) — the other safe
-        // inline-HTML tag, same treatment as <mark>.
-        if c == b'<'
-            && b[i..end].starts_with(b"<u>")
-            && let Some(rel) = text[i + 3..end].find("</u>")
-        {
-            let body = i + 3;
-            let close = body + rel;
-            let id = *next_id;
-            *next_id += 1;
-            fmt_marker(out, i..body, st.marker, id);
-            scan_styled_body(
-                text,
-                body,
-                close,
-                st,
-                out,
-                Style {
+                },
+                StyledKind::Span => Style {
+                    color: tag.color.map(hsla_of),
+                    bg: tag.background.map(hsla_of),
+                    ..Default::default()
+                },
+                StyledKind::Underline => Style {
                     underline: true,
                     ..Default::default()
-                }
-                .over(base),
-                depth,
-                next_id,
-            );
-            fmt_marker(out, close..close + 4, st.marker, id);
-            i = close + 4;
+                },
+            };
+            scan_styled_body(text, body, close, st, out, style.over(base), depth, next_id);
+            fmt_marker(out, close..close + close_len, st.marker, id);
+            i = close + close_len;
             continue;
         }
         // Bare URL: colored like a link (it clicks like one — see the shared
@@ -2358,6 +2370,59 @@ mod tests {
         // The shruggie's arms are backslash-escaped underscores.
         assert_eq!(emphasis_spans(r"¯\_(ツ)_/¯"), vec![]);
         assert_eq!(emphasis_spans(r"\_not italic\_"), vec![]);
+    }
+
+    #[test]
+    fn double_equals_highlight_hides_markers_and_tints_the_body() {
+        let text = "an ==important== word, a == b == c";
+        let st = test_style();
+        let mut out = Vec::new();
+        scan_line(text, 0, text.len(), &st, &mut out);
+        let open = 3;
+        let body = open + 2;
+        let close = text.find("== word").unwrap();
+        assert!(out.iter().any(|s| s.range == (open..body) && s.style.hide));
+        assert!(
+            out.iter()
+                .any(|s| s.range == (close..close + 2) && s.style.hide)
+        );
+        assert!(
+            out.iter()
+                .any(|s| s.range.start == body && s.style.bg == Some(st.mark_bg))
+        );
+        // The spaced `==`s after it are prose: nothing hidden past the closer.
+        assert!(
+            !out.iter()
+                .any(|s| s.range.start > close + 2 && s.style.hide)
+        );
+    }
+
+    #[test]
+    fn colored_mark_and_span_tags_style_their_body() {
+        let text =
+            r#"a <mark style="background:#ff0000">hi</mark> <span style="color:#00ff00">go</span>"#;
+        let st = test_style();
+        let mut out = Vec::new();
+        scan_line(text, 0, text.len(), &st, &mut out);
+        let hi = text.find("hi<").unwrap();
+        let go = text.find("go<").unwrap();
+        assert!(
+            out.iter()
+                .any(|s| s.range.start == hi && s.style.bg == Some(hsla_of(0xff0000ff)))
+        );
+        assert!(
+            out.iter()
+                .any(|s| s.range.start == go && s.style.color == Some(hsla_of(0x00ff00ff)))
+        );
+        // Both tag pairs are hidden markers.
+        assert!(
+            out.iter()
+                .any(|s| s.range.start == 2 && s.range.end == hi && s.style.hide)
+        );
+        assert!(
+            out.iter()
+                .any(|s| s.range == (hi + 2..hi + 9) && s.style.hide)
+        );
     }
 
     #[test]

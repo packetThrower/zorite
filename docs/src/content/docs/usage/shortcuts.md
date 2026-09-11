@@ -46,6 +46,7 @@ The tab-switch chords are `Ctrl+Tab` / `Ctrl+Shift+Tab` on every platform
 | Indent / nest list item | `Tab` |
 | Outdent | `Shift+Tab` |
 | Bold / italic / inline code | `⌘B` / `⌘I` / `⌘E` |
+| Highlight (`==text==`) | `⌘⇧H` / `Ctrl+Shift+H` |
 | Copy | `⌘C` / `Ctrl+C` |
 | Cut | `⌘X` / `Ctrl+X` |
 | Paste (image-aware) | `⌘V` / `Ctrl+V` |

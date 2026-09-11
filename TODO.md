@@ -121,8 +121,12 @@ His `ding-board` whiteboard fork is already adopted. Costs: S/M/L.
 - [ ] **⌘D duplicate** keybinding + shortcut hints rendered in menu rows. (S)
 - [x] Wide-table **horizontal scroll** instead of scaling columns down — UX
   decision; his tables scroll in-place with their own scrollbar. (M)
-- Skipped (no markdown representation): text/background color marks, cell
-  merge/split, per-cell backgrounds, header *columns*, toggle-list containers.
+- Skipped (no markdown representation): cell merge/split, per-cell
+  backgrounds, header *columns*, toggle-list containers. Text/background
+  color marks landed 2026-09-11 after all — as `==text==` plus Obsidian's
+  `<mark style="background">` / `<span style="color">`, with swatch rows and a
+  custom color picker in the selection menu (both views, PDF export strips,
+  Logseq `^^` imports as `==`).
 
 **Ultrareview of PR #52 (2026-07-18)** — non-blocking findings (the two
 blockers, occluded grip presses + turn-into grammar, were fixed in 3c050f6):
