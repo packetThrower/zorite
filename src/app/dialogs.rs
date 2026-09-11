@@ -189,7 +189,15 @@ impl AppView {
                     )
                 },
             );
-            dialog.w(px(480.0)).close_button(false).child(command)
+            // Raised surface + the visible rule token, so the palette stands off
+            // the page on a theme whose content and window are the same color
+            // (CRT: black on black, where the stock border all but vanishes).
+            dialog
+                .w(px(480.0))
+                .close_button(false)
+                .bg(theme::elevated())
+                .border_color(theme::divider())
+                .child(command)
         });
         focus.update(cx, |state, cx| state.focus(window, cx));
     }
