@@ -1872,6 +1872,10 @@ fn keyboard_page() -> SettingPage {
         .keywords(labels)
     }
     let app_rows: Vec<(String, Vec<&'static str>)> = vec![
+        (
+            t!("settings.kb.command_palette").to_string(),
+            vec![keys::MOD, keys::SHIFT, "P"],
+        ),
         (t!("settings.kb.new_tab").to_string(), vec![keys::MOD, "T"]),
         (
             t!("settings.kb.new_window").to_string(),

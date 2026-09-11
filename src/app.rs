@@ -37,9 +37,9 @@ use zorite_editor::{Diagnostic, EditorEvent, EditorState};
 use crate::actions::{
     CloseTab, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
     ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, ImportLogseq,
-    ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenInNewTab,
-    OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel,
-    SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenCommandPalette,
+    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
+    SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -7245,6 +7245,9 @@ impl Render for AppView {
                             this.slash = None;
                             cx.notify();
                         }
+                        // An open dialog (the command palette, a prompt) owns Esc —
+                        // otherwise editing a note underneath would blur instead.
+                        None if window.has_active_dialog(cx) => cx.propagate(),
                         // A seated PDF form field drops without writing.
                         None if this.pdf_field_edit.is_some() => this.cancel_pdf_field_edit(cx),
                         // An open find bar takes Esc first (closes it).
@@ -7301,6 +7304,11 @@ impl Render for AppView {
                     // must not be mid-update (same reason the gear defers).
                     let view = cx.entity();
                     window.defer(cx, move |_, cx| AppView::open_settings(view, cx));
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &OpenCommandPalette, window, cx| {
+                    this.open_command_palette(window, cx)
                 }),
             )
             .on_action(

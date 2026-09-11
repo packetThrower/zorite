@@ -291,6 +291,7 @@ settings:
     fit_images: "Fit oversized images to view"
     export_pdf: "Export active tab as PDF"
     open_settings: "Open settings"
+    command_palette: "Open the command palette"
     quit: "Quit"
     slash_menu: "Open the slash command menu"
     menu_nav: "Move up / down in the menu"
@@ -720,6 +721,9 @@ menu:
   fit_images: "Fit Images to View"
   next_tab: "Next Tab"
   prev_tab: "Previous Tab"
+  command_palette: "Command Palette…"
+command_palette:
+  placeholder: "Type a command…"
 paths:
   not_a_folder: "That isn't a folder."
   nested_or_parent: "Pick a folder that's neither inside nor the parent of the current data folder."

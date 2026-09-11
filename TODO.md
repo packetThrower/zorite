@@ -341,8 +341,9 @@ family). The dependency move is its own PR. What 0.6 adds that Zorite should
 - [x] **`HoverCard` → link previews** — DONE 2026-09-10: wiki-links, tags,
   block refs, URLs, and property pills in both views (`EditorEvent::HoverLink`,
   `MarkdownView::on_link_hover`). Left: links inside table cells.
-- [ ] **`Command` palette (⌘K)**: searchable actions with keybinding hints —
-  Zorite has dozens of actions and only the slash menu today.
+- [x] **`Command` palette** — DONE 2026-09-11 (⌘⇧P / Ctrl+Shift+P, View menu):
+  every menu command grouped by menu with its shortcut, from one list
+  (`actions::palette_groups`). Left: page/sidebar verbs that need a target.
 - [x] **`setting::Settings` page builder** — DONE 2026-09-10 (branch
   `feat/settings-component`): pages/groups/typed fields with defaults + Reset,
   component sidebar search (titles, descriptions, synonyms, option labels,

@@ -291,6 +291,7 @@ settings:
     fit_images: "使超大图片适应视图"
     export_pdf: "将当前标签页导出为 PDF"
     open_settings: "打开设置"
+    command_palette: "打开命令面板"
     quit: "退出"
     slash_menu: "打开斜杠命令菜单"
     menu_nav: "在菜单中上/下移动"
@@ -720,6 +721,9 @@ menu:
   fit_images: "将图像适应到视图"
   next_tab: "下一个标签页"
   prev_tab: "上一个标签页"
+  command_palette: "命令面板…"
+command_palette:
+  placeholder: "输入命令…"
 paths:
   not_a_folder: "这不是一个文件夹。"
   nested_or_parent: "请选择既不在当前数据文件夹内、也不是其父级的文件夹。"

@@ -3,9 +3,65 @@
 //! DB-error modal) and their submit helpers — split from `app.rs`.
 
 use super::*;
+use gpui_component::{h_flex, kbd::Kbd};
 use rust_i18n::t;
 
 impl AppView {
+    /// ⌘⇧P — gpui-component's `Command` palette over every menu command
+    /// (`actions::palette_groups`), in a chrome-less dialog. Confirm closes
+    /// the dialog FIRST and dispatches after: an item's built-in `.action`
+    /// would fire before the close, whose focus restore then lands on top of
+    /// whatever the command focused (the find bar, the search box).
+    pub(super) fn open_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        let groups = Rc::new(crate::actions::palette_groups());
+        let focus = state.clone();
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let on_confirm = groups.clone();
+            let command =
+                groups.iter().fold(
+                    Command::new(&state)
+                        .bordered(false)
+                        .placeholder(t!("command_palette.placeholder"))
+                        .on_confirm(move |ix, window, cx| {
+                            window.close_dialog(cx);
+                            if let Some((_, action)) = on_confirm
+                                .get(ix.section)
+                                .and_then(|(_, items)| items.get(ix.row))
+                            {
+                                window.dispatch_action(action.boxed_clone(), cx);
+                            }
+                        }),
+                    |command, (label, items)| {
+                        command.group(CommandGroup::new().label(label.clone()).items(
+                            items.iter().map(|(name, action)| {
+                                let (name, action) = (name.clone(), action.boxed_clone());
+                                CommandItem::new()
+                                    .label(name.clone())
+                                    .child(move |window, _cx| {
+                                        // The default row would draw this hint itself, but only
+                                        // for an item carrying `.action` — see above.
+                                        h_flex()
+                                            .flex_1()
+                                            .gap_2()
+                                            .items_center()
+                                            .child(div().flex_1().truncate().child(name.clone()))
+                                            .children(Kbd::binding_for_action(
+                                                action.as_ref(),
+                                                None,
+                                                window,
+                                            ))
+                                    })
+                            }),
+                        ))
+                    },
+                );
+            dialog.w(px(480.0)).close_button(false).child(command)
+        });
+        focus.update(cx, |state, cx| state.focus(window, cx));
+    }
+
     /// Open the "insert page card" dialog, then place the chosen page as a card
     /// at world `(x, y)` on board `board_id`.
     pub(super) fn place_embed_dialog(
