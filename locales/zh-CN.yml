@@ -724,6 +724,16 @@ menu:
   command_palette: "命令面板…"
 command_palette:
   placeholder: "输入命令…"
+  settings: 设置
+  wysiwyg_on: "开启所见即所得编辑"
+  wysiwyg_off: "关闭所见即所得编辑"
+  gutter_show: "显示行号"
+  gutter_hide: "隐藏行号"
+  sidebar_left: "将侧边栏停靠在左侧"
+  sidebar_right: "将侧边栏停靠在右侧"
+  theme_light: "主题：浅色"
+  theme_dark: "主题：深色"
+  theme_auto: "主题：自动（跟随系统）"
 paths:
   not_a_folder: "这不是一个文件夹。"
   nested_or_parent: "请选择既不在当前数据文件夹内、也不是其父级的文件夹。"

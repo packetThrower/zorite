@@ -17,6 +17,62 @@ impl AppView {
         use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
         let state = cx.new(|cx| CommandState::new(window, cx));
         let mut groups = crate::actions::palette_groups();
+        // Quick settings, worded as the change they make; the theme mode the
+        // app is already in is left out.
+        let mut quick: Vec<crate::actions::PaletteCommand> = vec![
+            (
+                if self.wysiwyg() {
+                    t!("command_palette.wysiwyg_off")
+                } else {
+                    t!("command_palette.wysiwyg_on")
+                }
+                .into(),
+                Box::new(ToggleWysiwyg),
+            ),
+            (
+                if self.line_numbers() {
+                    t!("command_palette.gutter_hide")
+                } else {
+                    t!("command_palette.gutter_show")
+                }
+                .into(),
+                Box::new(ToggleLineNumbers),
+            ),
+            (
+                if self.sidebar_right {
+                    t!("command_palette.sidebar_left")
+                } else {
+                    t!("command_palette.sidebar_right")
+                }
+                .into(),
+                Box::new(ToggleSidebarSide),
+            ),
+        ];
+        let modes: [(theme::Mode, &str, Box<dyn gpui::Action>); 3] = [
+            (
+                theme::Mode::Light,
+                "command_palette.theme_light",
+                Box::new(ThemeLight),
+            ),
+            (
+                theme::Mode::Dark,
+                "command_palette.theme_dark",
+                Box::new(ThemeDark),
+            ),
+            (
+                theme::Mode::Auto,
+                "command_palette.theme_auto",
+                Box::new(ThemeAuto),
+            ),
+        ];
+        let current = self.theme_mode();
+        quick.extend(
+            modes
+                .into_iter()
+                .filter(|(mode, _, _)| *mode != current)
+                .map(|(_, key, action)| (t!(key).into(), action)),
+        );
+        groups.push((t!("command_palette.settings").into(), quick));
         // The page verbs read their target from `context_page` (armed by a
         // right-click); the palette arms it with the active page on confirm.
         let page = match self.tabs.get(self.active) {

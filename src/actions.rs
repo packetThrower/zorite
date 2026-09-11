@@ -50,6 +50,14 @@ actions!(
         OpenSettings,
         // ⌘⇧P: the searchable list of every menu command (`palette_groups`).
         OpenCommandPalette,
+        // Quick settings, reachable from the palette only (no keybindings):
+        // handlers on `AppView` flip the same setters the Settings window uses.
+        ToggleWysiwyg,
+        ToggleLineNumbers,
+        ToggleSidebarSide,
+        ThemeLight,
+        ThemeDark,
+        ThemeAuto,
         Quit,
         // Find: in the current page's rendered text, or the global note search.
         FindInPage,

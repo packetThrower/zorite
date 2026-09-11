@@ -39,7 +39,8 @@ use crate::actions::{
     ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, ImportLogseq,
     ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenCommandPalette,
     OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
-    SlashCancel, SlashConfirm, SlashDown, SlashUp, ToggleFavorite,
+    SlashCancel, SlashConfirm, SlashDown, SlashUp, ThemeAuto, ThemeDark, ThemeLight,
+    ToggleFavorite, ToggleLineNumbers, ToggleSidebarSide, ToggleWysiwyg,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -7309,6 +7310,38 @@ impl Render for AppView {
             .on_action(
                 cx.listener(|this: &mut AppView, _: &OpenCommandPalette, window, cx| {
                     this.open_command_palette(window, cx)
+                }),
+            )
+            // Quick settings from the palette — the Settings window's setters.
+            .on_action(cx.listener(|this: &mut AppView, _: &ToggleWysiwyg, _, cx| {
+                let on = !this.wysiwyg();
+                this.set_wysiwyg(on, cx);
+            }))
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ToggleLineNumbers, _, cx| {
+                    let on = !this.line_numbers();
+                    this.set_line_numbers(on, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ToggleSidebarSide, _, cx| {
+                    let right = !this.sidebar_right;
+                    this.set_sidebar_right(right, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ThemeLight, window, cx| {
+                    this.set_theme_mode(theme::Mode::Light, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ThemeDark, window, cx| {
+                    this.set_theme_mode(theme::Mode::Dark, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ThemeAuto, window, cx| {
+                    this.set_theme_mode(theme::Mode::Auto, window, cx);
                 }),
             )
             .on_action(

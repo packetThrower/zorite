@@ -724,6 +724,16 @@ menu:
   command_palette: "Command Palette…"
 command_palette:
   placeholder: "Type a command…"
+  settings: Settings
+  wysiwyg_on: "Turn on WYSIWYG editing"
+  wysiwyg_off: "Turn off WYSIWYG editing"
+  gutter_show: "Show line numbers"
+  gutter_hide: "Hide line numbers"
+  sidebar_left: "Dock the sidebar on the left"
+  sidebar_right: "Dock the sidebar on the right"
+  theme_light: "Theme: Light"
+  theme_dark: "Theme: Dark"
+  theme_auto: "Theme: Auto (follow system)"
 paths:
   not_a_folder: "That isn't a folder."
   nested_or_parent: "Pick a folder that's neither inside nor the parent of the current data folder."
