@@ -17,6 +17,31 @@ impl AppView {
         use gpui_component::command::{Command, CommandGroup, CommandItem, CommandState};
         let state = cx.new(|cx| CommandState::new(window, cx));
         let mut groups = crate::actions::palette_groups();
+        let nav: Vec<crate::actions::PaletteCommand> = vec![
+            (
+                t!("command_palette.go_to_today").into(),
+                Box::new(GoToToday),
+            ),
+            (
+                t!("command_palette.jump_to_date").into(),
+                Box::new(JumpToDate),
+            ),
+            (
+                t!("command_palette.all_pages").into(),
+                Box::new(OpenAllPages),
+            ),
+            (t!("command_palette.graph").into(), Box::new(OpenGraph)),
+            (
+                if self.sidebar_collapsed {
+                    t!("command_palette.sidebar_show")
+                } else {
+                    t!("command_palette.sidebar_hide")
+                }
+                .into(),
+                Box::new(ToggleSidebar),
+            ),
+        ];
+        groups.push((t!("command_palette.navigate").into(), nav));
         // Quick settings, worded as the change they make; the theme mode the
         // app is already in is left out.
         let mut quick: Vec<crate::actions::PaletteCommand> = vec![

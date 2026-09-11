@@ -36,11 +36,12 @@ use zorite_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
     CloseTab, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
-    ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, ImportLogseq,
-    ImportObsidian, InsertTab, NewPage, NewSubPage, NewWhiteboard, NextTab, OpenCommandPalette,
-    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
-    SlashCancel, SlashConfirm, SlashDown, SlashUp, ThemeAuto, ThemeDark, ThemeLight,
-    ToggleFavorite, ToggleLineNumbers, ToggleSidebarSide, ToggleWysiwyg,
+    ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, GoToToday,
+    ImportLogseq, ImportObsidian, InsertTab, JumpToDate, NewPage, NewSubPage, NewWhiteboard,
+    NextTab, OpenAllPages, OpenCommandPalette, OpenGraph, OpenInNewTab, OpenInNewWindow,
+    OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
+    SlashUp, ThemeAuto, ThemeDark, ThemeLight, ToggleFavorite, ToggleLineNumbers, ToggleSidebar,
+    ToggleSidebarSide, ToggleWysiwyg,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -7343,6 +7344,31 @@ impl Render for AppView {
                 cx.listener(|this: &mut AppView, _: &ThemeAuto, window, cx| {
                     this.set_theme_mode(theme::Mode::Auto, window, cx);
                 }),
+            )
+            // Navigation from the palette.
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &GoToToday, window, cx| {
+                    let today = date_for_offset(0);
+                    this.open_journal_day(&today, window, cx);
+                }),
+            )
+            .on_action(cx.listener(|this: &mut AppView, _: &JumpToDate, _, cx| {
+                if !this.show_calendar {
+                    this.toggle_calendar(cx);
+                }
+            }))
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &OpenAllPages, window, cx| {
+                    this.open_all_pages(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &OpenGraph, window, cx| {
+                    this.open_graph(window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this: &mut AppView, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)),
             )
             .on_action(
                 cx.listener(|this: &mut AppView, _: &FindInPage, window, cx| {

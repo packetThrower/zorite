@@ -58,6 +58,12 @@ actions!(
         ThemeLight,
         ThemeDark,
         ThemeAuto,
+        // Navigation, palette-only likewise.
+        GoToToday,
+        JumpToDate,
+        OpenAllPages,
+        OpenGraph,
+        ToggleSidebar,
         Quit,
         // Find: in the current page's rendered text, or the global note search.
         FindInPage,

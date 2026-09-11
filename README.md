@@ -163,9 +163,9 @@ Developed in close collaboration with Claude (Anthropic).
   OS), any installed or imported font, an adjustable text size, an optional
   line-number gutter, a sidebar that docks left or right, and custom mouse
   cursor themes (any XCursor pack) — all without forking the UI toolkit.
-- A command palette (`⌘⇧P`) runs any menu command, current-page action, or
-  quick setting (WYSIWYG, theme, line numbers, sidebar side) by name, showing
-  its shortcut. Every keyboard shortcut is listed under Settings → Shortcuts,
+- A command palette (`⌘⇧P`) runs any menu command, current-page action,
+  navigation (today, a date, All pages, Graph), or quick setting (WYSIWYG,
+  theme, line numbers, sidebar) by name, showing its shortcut. Every keyboard shortcut is listed under Settings → Shortcuts,
   grouped by where it applies (app, editing, whiteboard, PDF). The app checks for updates
   on launch (pre-releases opt-in) and links to the release notes.
 - Hardened by a security audit: links open only `http`, `https`, and `mailto`;

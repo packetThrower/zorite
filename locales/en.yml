@@ -724,6 +724,13 @@ menu:
   command_palette: "Command Palette…"
 command_palette:
   placeholder: "Type a command…"
+  navigate: Navigate
+  go_to_today: "Go to today"
+  jump_to_date: "Jump to date…"
+  all_pages: "Open All pages"
+  graph: "Open the Graph"
+  sidebar_show: "Show sidebar"
+  sidebar_hide: "Hide sidebar"
   settings: Settings
   wysiwyg_on: "Turn on WYSIWYG editing"
   wysiwyg_off: "Turn off WYSIWYG editing"

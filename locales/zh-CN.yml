@@ -724,6 +724,13 @@ menu:
   command_palette: "命令面板…"
 command_palette:
   placeholder: "输入命令…"
+  navigate: 导航
+  go_to_today: "转到今天"
+  jump_to_date: "跳转到日期…"
+  all_pages: "打开所有页面"
+  graph: "打开图谱"
+  sidebar_show: "显示侧边栏"
+  sidebar_hide: "隐藏侧边栏"
   settings: 设置
   wysiwyg_on: "开启所见即所得编辑"
   wysiwyg_off: "关闭所见即所得编辑"
