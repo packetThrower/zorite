@@ -26,12 +26,19 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         .menu(true)
         .track_scroll(&app.tab_scroll)
         .selected_index(app.active)
-        // The overflow dropdown (and only it) reports picks through the
-        // bar-level handler — the per-`Tab` on_click below never fires for
-        // menu items, so without this an overflow pick did nothing.
+        // Every tab click lands here, the overflow dropdown's picks included:
+        // with a bar-level handler set, gpui-component ignores each `Tab`'s
+        // own `on_click`.
         .on_click(move |ix: &usize, window, cx| {
             let ix = *ix;
-            let _ = weak.update(cx, |this, cx| this.activate_tab(ix, window, cx));
+            let _ = weak.update(cx, |this, cx| {
+                // Five quick clicks on the Journal tab open the arcade (the
+                // second door to `/play`) — and that fifth click is the
+                // game's, not the journal's.
+                if !this.note_journal_tab_click(ix, window, cx) {
+                    this.activate_tab(ix, window, cx);
+                }
+            });
         });
 
     for (i, tab) in app.tabs.iter().enumerate() {
@@ -56,9 +63,10 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         // tooltip can't ride a bare `Tab` (`context_menu` returns a wrapper that
         // isn't `Into<Tab>`), so they live on a transparent overlay child that
         // covers the label. The close × (suffix) sits outside it, and a left-click
-        // bubbles through to the tab's `on_click`.
+        // bubbles through to the tab (reported by the bar's `on_click`).
         let mut overlay = div()
             .id(("tab-label", i))
+            .debug_selector(|| format!("tab-{i}"))
             .absolute()
             .left_0()
             .right_0()
@@ -139,18 +147,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     move |_, _| div().text_color(danger).child(t!("tab_bar.delete_page")),
                 )
         });
-        let mut t = Tab::new()
-            .label(display)
-            .child(overlay)
-            .on_click(cx.listener(move |this: &mut AppView, _ev, window, cx| {
-                // Five quick clicks on the Journal tab open the arcade (the
-                // second door to `/play`) — and that fifth click is the
-                // game's, not the journal's.
-                if this.note_journal_tab_click(i, window, cx) {
-                    return;
-                }
-                this.activate_tab(i, window, cx);
-            }));
+        let mut t = Tab::new().label(display).child(overlay);
         // The pinned Journal (index 0) has no close × and isn't draggable. Every
         // other tab can be dragged to reorder (drop on another tab) or torn off
         // into a new window (drop in the content area).
