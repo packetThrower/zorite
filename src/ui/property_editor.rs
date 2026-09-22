@@ -12,24 +12,28 @@
 //! segment as raw text), matched to the note's text size and the panel's
 //! content-fit column widths, so opening the editor doesn't visibly jump.
 
-use std::{cell::RefCell, collections::HashMap, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, ops::Range, rc::Rc};
 
 use gpui::{
-    App, Bounds, Context, FocusHandle, Focusable, InteractiveElement, IntoElement, KeyDownEvent,
-    MouseButton, MouseDownEvent, ParentElement, Pixels, Render, SharedString,
-    StatefulInteractiveElement, Styled, Window, canvas, deferred, div, prelude::FluentBuilder, px,
-    svg,
+    App, Bounds, ClipboardItem, Context, FocusHandle, Focusable, InteractiveElement, IntoElement,
+    KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, Pixels,
+    Point, Render, SharedString, StatefulInteractiveElement, Styled, Window, anchored, canvas,
+    deferred, div, prelude::FluentBuilder, px, svg,
 };
 
 use crate::theme;
 use rust_i18n::t;
 
-/// Emitted when the user exits the form from the keyboard (Enter, or the last
-/// Escape) — the host commits and seats the note caret after the block.
 /// Line height of the "Add property" button (see `PropertyEditor::height`).
 const ADD_LINE_H: f32 = 18.0;
 
-pub struct PropExit;
+/// Emitted when the user exits the form from the keyboard — the host commits
+/// and seats the note caret beside the block: after it (`after`: Enter, the
+/// last Escape, Down off the last row, Right past the last value) or before it
+/// (Up off the first row, Left past the first key).
+pub struct PropExit {
+    pub after: bool,
+}
 
 pub struct PropertyEditor {
     rows: Vec<Row>,
@@ -47,6 +51,12 @@ pub struct PropertyEditor {
     /// Each field's painted x origin (captured at paint), keyed by
     /// `(row, is_key)` — lets a click map its x to a caret position.
     field_origins: Rc<RefCell<HashMap<(usize, bool), Pixels>>>,
+    /// The field a left-button drag started in: moves extend its selection.
+    drag: Option<(usize, bool)>,
+    /// The right-click menu's window-space position, while it's open. Drawn by
+    /// the form itself: a separate popup would take focus, and losing focus
+    /// commits the form.
+    menu: Option<Point<Pixels>>,
     focus: FocusHandle,
 }
 
@@ -61,11 +71,13 @@ struct Row {
     value: Field,
 }
 
-/// A single editable text field: its content and the caret's byte offset.
+/// A single editable text field: its content, the caret's byte offset, and
+/// the selection's other end (`anchor`) while text is selected.
 #[derive(Default)]
 struct Field {
     text: String,
     caret: usize,
+    anchor: Option<usize>,
 }
 
 impl Field {
@@ -73,15 +85,44 @@ impl Field {
         Self {
             text: s.to_string(),
             caret: s.len(),
+            anchor: None,
         }
     }
 
+    /// The selected byte range, if any text is selected.
+    fn selection(&self) -> Option<Range<usize>> {
+        self.anchor
+            .filter(|a| *a != self.caret)
+            .map(|a| a.min(self.caret)..a.max(self.caret))
+    }
+
+    fn selected_text(&self) -> Option<&str> {
+        self.selection().map(|r| &self.text[r])
+    }
+
+    /// Remove the selected text; `false` when nothing was selected.
+    fn delete_selection(&mut self) -> bool {
+        let Some(r) = self.selection() else {
+            self.anchor = None;
+            return false;
+        };
+        self.text.replace_range(r.clone(), "");
+        self.caret = r.start;
+        self.anchor = None;
+        true
+    }
+
+    /// Type or paste `s`, replacing the selection.
     fn insert(&mut self, s: &str) {
+        self.delete_selection();
         self.text.insert_str(self.caret, s);
         self.caret += s.len();
     }
 
     fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.caret > 0 {
             let prev = prev_boundary(&self.text, self.caret);
             self.text.replace_range(prev..self.caret, "");
@@ -90,29 +131,74 @@ impl Field {
     }
 
     fn delete(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.caret < self.text.len() {
             let next = next_boundary(&self.text, self.caret);
             self.text.replace_range(self.caret..next, "");
         }
     }
 
+    /// Put the caret at `i`; `extend` (Shift) grows the selection instead of
+    /// dropping it.
+    fn move_to(&mut self, i: usize, extend: bool) {
+        if extend {
+            self.anchor.get_or_insert(self.caret);
+        } else {
+            self.anchor = None;
+        }
+        self.caret = i;
+    }
+
     /// Move the caret left; returns `false` when already at the start (so the
-    /// caller can hop to the previous field).
-    fn left(&mut self) -> bool {
+    /// caller can hop to the previous field). Without `extend`, a selection
+    /// collapses to its start first.
+    fn left(&mut self, extend: bool) -> bool {
+        if !extend && let Some(r) = self.selection() {
+            self.move_to(r.start, false);
+            return true;
+        }
         if self.caret == 0 {
             return false;
         }
-        self.caret = prev_boundary(&self.text, self.caret);
+        self.move_to(prev_boundary(&self.text, self.caret), extend);
         true
     }
 
     /// Move the caret right; returns `false` when already at the end.
-    fn right(&mut self) -> bool {
+    fn right(&mut self, extend: bool) -> bool {
+        if !extend && let Some(r) = self.selection() {
+            self.move_to(r.end, false);
+            return true;
+        }
         if self.caret >= self.text.len() {
             return false;
         }
-        self.caret = next_boundary(&self.text, self.caret);
+        self.move_to(next_boundary(&self.text, self.caret), extend);
         true
+    }
+
+    fn select_all(&mut self) {
+        self.anchor = Some(0);
+        self.caret = self.text.len();
+    }
+
+    /// Select the word around the caret (a double-click).
+    fn select_word(&mut self) {
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let start = self.text[..self.caret]
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| is_word(*c))
+            .last()
+            .map_or(self.caret, |(i, _)| i);
+        let end = self.text[self.caret..]
+            .char_indices()
+            .find(|(_, c)| !is_word(*c))
+            .map_or(self.text.len(), |(i, _)| self.caret + i);
+        self.anchor = Some(start);
+        self.caret = end;
     }
 }
 
@@ -142,6 +228,8 @@ impl PropertyEditor {
             menu_scroll: gpui::ScrollHandle::new(),
             text_size,
             field_origins: Rc::new(RefCell::new(HashMap::new())),
+            drag: None,
+            menu: None,
             focus: cx.focus_handle(),
         }
     }
@@ -170,7 +258,7 @@ impl PropertyEditor {
         } else {
             0
         };
-        self.rows[row].value.caret = caret;
+        self.rows[row].value.move_to(caret, false);
         self.active = Some((row, false));
         self.focus.focus(window, cx);
         cx.notify();
@@ -185,7 +273,7 @@ impl PropertyEditor {
             if r.key.text == "key" {
                 r.key = Field::default();
             } else {
-                r.key.caret = r.key.text.len();
+                r.key.move_to(r.key.text.len(), false);
             }
             self.active = Some((i, true));
             self.dropdown_suppressed = false;
@@ -227,7 +315,8 @@ impl PropertyEditor {
     /// end of the target field, for leftward moves; false = start).
     fn go(&mut self, row: usize, is_key: bool, caret_end: bool) {
         if let Some(f) = self.field_mut(row, is_key) {
-            f.caret = if caret_end { f.text.len() } else { 0 };
+            let at = if caret_end { f.text.len() } else { 0 };
+            f.move_to(at, false);
             self.active = Some((row, is_key));
             self.dropdown_suppressed = false;
         }
@@ -237,9 +326,36 @@ impl PropertyEditor {
     /// click's x. The field is shaped as its raw text — for pill-y values that's
     /// an approximation (pills render compressed), but the field reflows to
     /// near-raw on activation anyway and arrows refine.
-    fn click_field(&mut self, row: usize, is_key: bool, x: Pixels, window: &mut Window) {
+    fn click_field(
+        &mut self,
+        row: usize,
+        is_key: bool,
+        x: Pixels,
+        extend: bool,
+        clicks: usize,
+        window: &mut Window,
+    ) {
+        let caret = self.index_at(row, is_key, x, window);
+        // Shift-click extends only within the field already being edited.
+        let extend = extend && self.active == Some((row, is_key));
+        if let Some(f) = self.field_mut(row, is_key) {
+            match clicks {
+                2 => {
+                    f.move_to(caret, false);
+                    f.select_word();
+                }
+                n if n >= 3 => f.select_all(),
+                _ => f.move_to(caret, extend),
+            }
+            self.active = Some((row, is_key));
+            self.dropdown_suppressed = false;
+        }
+    }
+
+    /// The byte offset in field `(row, is_key)` nearest window-space `x`.
+    fn index_at(&self, row: usize, is_key: bool, x: Pixels, window: &mut Window) -> usize {
         let origin = self.field_origins.borrow().get(&(row, is_key)).copied();
-        let caret = match (origin, self.field(row, is_key)) {
+        match (origin, self.field(row, is_key)) {
             (Some(ox), Some(f)) if !f.text.is_empty() => {
                 let fs = px(self.text_size);
                 let run = gpui::TextRun {
@@ -256,12 +372,121 @@ impl PropertyEditor {
                     .closest_index_for_x(x - ox)
             }
             _ => self.field(row, is_key).map_or(0, |f| f.text.len()),
-        };
-        if let Some(f) = self.field_mut(row, is_key) {
-            f.caret = caret;
-            self.active = Some((row, is_key));
-            self.dropdown_suppressed = false;
         }
+    }
+
+    /// Copy the active field's selection to the clipboard.
+    fn copy(&self, cx: &mut Context<Self>) {
+        if let Some((row, is_key)) = self.active
+            && let Some(t) = self.field(row, is_key).and_then(Field::selected_text)
+        {
+            cx.write_to_clipboard(ClipboardItem::new_string(t.to_string()));
+        }
+    }
+
+    fn cut(&mut self, cx: &mut Context<Self>) {
+        self.copy(cx);
+        if let Some((row, is_key)) = self.active
+            && let Some(f) = self.field_mut(row, is_key)
+            && f.delete_selection()
+        {
+            self.dropdown_suppressed &= !is_key;
+            cx.notify();
+        }
+    }
+
+    /// Paste clipboard text at the caret. A property is one line, so line
+    /// breaks become spaces.
+    fn paste(&mut self, cx: &mut Context<Self>) {
+        let Some(text) = cx.read_from_clipboard().and_then(|c| c.text()) else {
+            return;
+        };
+        let text = text.replace("\r\n", " ").replace(['\n', '\r'], " ");
+        if let Some((row, is_key)) = self.active
+            && let Some(f) = self.field_mut(row, is_key)
+        {
+            f.insert(&text);
+            self.dropdown_suppressed &= !is_key;
+            cx.notify();
+        }
+    }
+
+    fn select_all(&mut self, cx: &mut Context<Self>) {
+        if let Some((row, is_key)) = self.active
+            && let Some(f) = self.field_mut(row, is_key)
+        {
+            f.select_all();
+            cx.notify();
+        }
+    }
+
+    /// The form's own right-click menu: Cut / Copy / Paste / Select all on the
+    /// active field, at `pos` (window space).
+    fn context_menu(&self, pos: Point<Pixels>, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let has_sel = self
+            .active
+            .and_then(|(r, k)| self.field(r, k))
+            .is_some_and(|f| f.selection().is_some());
+        let item = |id: &'static str, label: SharedString, enabled: bool| {
+            div()
+                .id(id)
+                .px(px(10.0))
+                .py(px(3.0))
+                .rounded(px(4.0))
+                .when(enabled, |d| {
+                    d.cursor_pointer().hover(|s| s.bg(theme::hover()))
+                })
+                .when(!enabled, |d| d.text_color(theme::text_tertiary()))
+                .child(label)
+        };
+        let act = |f: fn(&mut PropertyEditor, &mut Context<PropertyEditor>)| {
+            cx.listener(
+                move |this: &mut PropertyEditor, _: &MouseDownEvent, _w, cx| {
+                    cx.stop_propagation();
+                    this.menu = None;
+                    f(this, cx);
+                    cx.notify();
+                },
+            )
+        };
+        let menu = div()
+            .occlude()
+            .min_w(px(160.0))
+            .p(px(4.0))
+            .flex()
+            .flex_col()
+            .bg(theme::elevated())
+            .border_1()
+            .border_color(theme::border_subtle())
+            .rounded(px(6.0))
+            .shadow_md()
+            .text_size(px(13.0))
+            .text_color(theme::text_primary())
+            .on_mouse_down_out(cx.listener(|this, _: &MouseDownEvent, _w, cx| {
+                this.menu = None;
+                cx.notify();
+            }))
+            .child(
+                item("prop-menu-cut", t!("menu.cut").into(), has_sel).when(has_sel, |d| {
+                    d.on_mouse_down(MouseButton::Left, act(Self::cut))
+                }),
+            )
+            .child(
+                item("prop-menu-copy", t!("menu.copy").into(), has_sel).when(has_sel, |d| {
+                    d.on_mouse_down(MouseButton::Left, act(|this, cx| this.copy(cx)))
+                }),
+            )
+            .child(
+                item("prop-menu-paste", t!("menu.paste").into(), true)
+                    .on_mouse_down(MouseButton::Left, act(Self::paste)),
+            )
+            .child(
+                item("prop-menu-select-all", t!("menu.select_all").into(), true)
+                    .on_mouse_down(MouseButton::Left, act(Self::select_all)),
+            );
+        deferred(anchored().position(pos).child(menu))
+            .with_priority(1)
+            .into_any_element()
     }
 
     /// Step to the next (`forward`) or previous field: key → value → next row's
@@ -335,6 +560,12 @@ impl PropertyEditor {
         // then leave the field, then exit the form (the host commits + returns
         // the caret to the note). Handled before the active guard so the final
         // escape works with nothing focused.
+        // Any key closes the right-click menu; Escape does only that.
+        if self.menu.take().is_some() && ev.keystroke.key == "escape" {
+            cx.notify();
+            cx.stop_propagation();
+            return;
+        }
         if ev.keystroke.key == "escape" {
             match self.active {
                 Some((_, true)) if !self.dropdown_suppressed => {
@@ -342,7 +573,7 @@ impl PropertyEditor {
                 }
                 Some(_) => self.active = None,
                 None => {
-                    cx.emit(PropExit);
+                    cx.emit(PropExit { after: true });
                     return;
                 }
             }
@@ -366,36 +597,59 @@ impl PropertyEditor {
                     .field(row, is_key)
                     .is_some_and(|f| zorite_markdown::syntax::content_direction(&f.text).is_rtl());
                 let forward = (key == "right") != rtl;
-                let moved = self
-                    .field_mut(row, is_key)
-                    .is_some_and(|f| if forward { f.right() } else { f.left() });
-                if !moved {
+                let moved = self.field_mut(row, is_key).is_some_and(|f| {
+                    if forward {
+                        f.right(m.shift)
+                    } else {
+                        f.left(m.shift)
+                    }
+                });
+                // Shift at a field's edge just stops: a selection never spans fields.
+                if !moved && !m.shift {
                     if forward {
                         if is_key {
                             self.go(row, false, false);
                         } else if row + 1 < n {
                             self.go(row + 1, true, false);
+                        } else {
+                            // Past the last value: out of the form, below it.
+                            cx.emit(PropExit { after: true });
+                            return;
                         }
                     } else if !is_key {
                         // Hop to the preceding field, caret at its end.
                         self.go(row, true, true);
                     } else if row > 0 {
                         self.go(row - 1, false, true);
+                    } else {
+                        // Before the first key: out of the form, above it.
+                        cx.emit(PropExit { after: false });
+                        return;
                     }
                 }
             }
             "up" if row > 0 => self.go(row - 1, is_key, true),
             "down" if row + 1 < n => self.go(row + 1, is_key, true),
+            // Off the first / last row: out of the form, like leaving a table.
+            "up" => {
+                cx.emit(PropExit { after: false });
+                return;
+            }
+            "down" => {
+                cx.emit(PropExit { after: true });
+                return;
+            }
             // Tab / Shift+Tab arrive as the PropNextField / PropPrevField actions
             // (see `crate::actions`) so the default focus traversal can't grab them.
             "home" => {
                 if let Some(f) = self.field_mut(row, is_key) {
-                    f.caret = 0;
+                    f.move_to(0, m.shift);
                 }
             }
             "end" => {
                 if let Some(f) = self.field_mut(row, is_key) {
-                    f.caret = f.text.len();
+                    let end = f.text.len();
+                    f.move_to(end, m.shift);
                 }
             }
             "backspace" => {
@@ -413,7 +667,7 @@ impl PropertyEditor {
             }
             "enter" => {
                 // Done: the host commits and seats the note caret after the block.
-                cx.emit(PropExit);
+                cx.emit(PropExit { after: true });
                 return;
             }
             _ => {
@@ -498,6 +752,45 @@ impl Render for PropertyEditor {
                     this.tab(false, cx);
                 }),
             )
+            .on_action(cx.listener(|this, _: &crate::actions::PropCopy, _w, cx| {
+                this.copy(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::actions::PropCut, _w, cx| {
+                this.cut(cx);
+            }))
+            .on_action(cx.listener(|this, _: &crate::actions::PropPaste, _w, cx| {
+                this.paste(cx);
+            }))
+            .on_action(
+                cx.listener(|this, _: &crate::actions::PropSelectAll, _w, cx| {
+                    this.select_all(cx);
+                }),
+            )
+            // A drag that began in a field extends that field's selection.
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| {
+                let Some((row, is_key)) = this.drag else {
+                    return;
+                };
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    this.drag = None;
+                    return;
+                }
+                let i = this.index_at(row, is_key, ev.position.x, window);
+                if let Some(f) = this.field_mut(row, is_key)
+                    && f.caret != i
+                {
+                    f.move_to(i, true);
+                    cx.notify();
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _w, _cx| this.drag = None),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _w, _cx| this.drag = None),
+            )
             .flex()
             .flex_col()
             // Match the rendered panel: the note's text size, rows stacked with
@@ -530,6 +823,7 @@ impl Render for PropertyEditor {
                         }),
                     ),
             )
+            .children(self.menu.map(|pos| self.context_menu(pos, cx)))
     }
 }
 
@@ -638,8 +932,37 @@ impl PropertyEditor {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
-                    this.click_field(i, is_key, ev.position.x, window);
+                    this.menu = None;
+                    this.click_field(
+                        i,
+                        is_key,
+                        ev.position.x,
+                        ev.modifiers.shift,
+                        ev.click_count,
+                        window,
+                    );
+                    this.drag = Some((i, is_key));
                     this.focus.focus(window, cx);
+                    cx.notify();
+                }),
+            )
+            // Right-click keeps a selection it lands in (so Copy acts on it);
+            // anywhere else it moves the caret first, like a text editor.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, ev: &MouseDownEvent, window, cx| {
+                    let at = this.index_at(i, is_key, ev.position.x, window);
+                    let inside = this.active == Some((i, is_key))
+                        && this
+                            .field(i, is_key)
+                            .and_then(Field::selection)
+                            .is_some_and(|r| r.contains(&at));
+                    if !inside {
+                        this.click_field(i, is_key, ev.position.x, false, 1, window);
+                    }
+                    this.menu = Some(ev.position);
+                    this.focus.focus(window, cx);
+                    cx.stop_propagation();
                     cx.notify();
                 }),
             );
@@ -651,14 +974,10 @@ impl PropertyEditor {
         // The field's OWN text decides here, not the panel: a Latin key next
         // to a Persian value must not be reversed along with it.
         let f_rtl = zorite_markdown::syntax::content_direction(&f.text).is_rtl();
-        if active && is_key {
-            // Key: plain text split at the caret (keys aren't pills).
-            let (before, after) = f.text.split_at(f.caret);
-            cell.when(f_rtl, |d| d.flex_row_reverse())
-                .child(before.to_string())
-                .child(caret_bar(sz))
-                .child(after.to_string())
-                .into_any_element()
+        if active && (is_key || f.selection().is_some()) {
+            // A key (keys aren't pills), or a value with a selection: plain
+            // text around the caret, the selection tinted.
+            cell.child(raw_field(f, sz, f_rtl)).into_any_element()
         } else if active {
             // Value: pills, revealing the segment under the caret as raw text.
             cell.child(active_value(f, sz, f_rtl)).into_any_element()
@@ -785,6 +1104,48 @@ impl PropertyEditor {
 /// A blinkless caret bar sized to the text.
 fn caret_bar(text_size: f32) -> impl IntoElement {
     div().w(px(1.5)).h(px(text_size * 1.2)).bg(theme::accent())
+}
+
+/// An active field as plain text: the part before the selection, the
+/// selection tinted, the part after, and the caret at whichever end of the
+/// selection it sits (with no selection, simply at the caret).
+fn raw_field(f: &Field, text_size: f32, rtl: bool) -> impl IntoElement {
+    let sel = f.selection().unwrap_or(f.caret..f.caret);
+    let caret = || caret_bar(text_size).into_any_element();
+    let mut kids: Vec<gpui::AnyElement> = Vec::new();
+    if sel.start > 0 {
+        kids.push(
+            div()
+                .child(f.text[..sel.start].to_string())
+                .into_any_element(),
+        );
+    }
+    if f.caret == sel.start {
+        kids.push(caret());
+    }
+    if !sel.is_empty() {
+        kids.push(
+            div()
+                .bg(theme::accent_tint())
+                .child(f.text[sel.clone()].to_string())
+                .into_any_element(),
+        );
+        if f.caret == sel.end {
+            kids.push(caret());
+        }
+    }
+    if sel.end < f.text.len() {
+        kids.push(
+            div()
+                .child(f.text[sel.end..].to_string())
+                .into_any_element(),
+        );
+    }
+    div()
+        .flex()
+        .when(rtl, |d| d.flex_row_reverse())
+        .items_center()
+        .children(kids)
 }
 
 /// The focused value, rendered like the panel (tags/wiki-links as pills) except
@@ -967,14 +1328,40 @@ mod tests {
     fn field_edits_at_the_caret() {
         let mut f = Field::new("ab");
         assert_eq!(f.caret, 2);
-        assert!(f.left()); // between a|b
+        assert!(f.left(false)); // between a|b
         f.insert("X");
         assert_eq!(f.text, "aXb");
         assert_eq!(f.caret, 2);
         f.backspace(); // a|b (caret at 1)
         assert_eq!(f.text, "ab");
         assert_eq!(f.caret, 1);
-        assert!(f.left()); // |ab
-        assert!(!f.left()); // at start → caller hops fields
+        assert!(f.left(false)); // |ab
+        assert!(!f.left(false)); // at start → caller hops fields
+    }
+
+    #[test]
+    fn field_selects_and_replaces() {
+        let mut f = Field::new("hello world");
+        // Shift+Left ×5 selects "world"; typing replaces it.
+        for _ in 0..5 {
+            assert!(f.left(true));
+        }
+        assert_eq!(f.selected_text(), Some("world"));
+        f.insert("there");
+        assert_eq!(f.text, "hello there");
+        assert_eq!(f.selection(), None);
+        // Left without Shift collapses a selection to its start first.
+        f.select_all();
+        assert!(f.left(false));
+        assert_eq!((f.caret, f.selection()), (0, None));
+        // Double-click selects the word; Backspace deletes just the selection.
+        f.move_to(2, false);
+        f.select_word();
+        assert_eq!(f.selected_text(), Some("hello"));
+        f.backspace();
+        assert_eq!(f.text, " there");
+        // Shift at the edge doesn't report a move (the caller won't hop fields).
+        f.move_to(0, false);
+        assert!(!f.left(true));
     }
 }

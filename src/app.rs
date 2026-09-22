@@ -3258,14 +3258,26 @@ impl AppView {
             })
             .ok();
         });
-        // Enter / the final Escape exit from the keyboard: commit and seat the
-        // note caret on the line after the block (like leaving a math block).
+        // A keyboard exit (Enter, the final Escape, an arrow off the form's
+        // edge): commit and seat the note caret on the line before or after
+        // the block (like leaving a math block).
         let exit_sub = cx.subscribe_in(
             &editor,
             window,
-            |this, _ed, _: &crate::ui::property_editor::PropExit, window, cx| {
+            |this, _ed, ev: &crate::ui::property_editor::PropExit, window, cx| {
+                // Nothing sits above a block that opens the note — the caret
+                // would land on its first row and reveal it raw — so Up / Left
+                // there stays in the form.
+                let at_top = this
+                    .prop_edit
+                    .as_ref()
+                    .and_then(|p| p.source.read(cx).editing_block_range())
+                    .is_some_and(|r| r.start == 0);
+                if !ev.after && at_top {
+                    return;
+                }
                 if let Some((source, block)) = this.commit_prop_edit(cx) {
-                    source.update(cx, |e, cx| e.exit_math(block, true, window, cx));
+                    source.update(cx, |e, cx| e.exit_math(block, ev.after, window, cx));
                 }
             },
         );
@@ -3294,8 +3306,24 @@ impl AppView {
             return None;
         };
         let new_range = range.start..range.start + new_block.len();
-        edit.source
-            .update(cx, |e, cx| e.replace_range(range, &new_block, cx));
+        // A click-away has already put the note's caret where the user
+        // clicked; `replace_range` would park it at the block's end instead
+        // (leaving the block raw under a caret nobody asked for). Keep it,
+        // shifted by the rewrite when it lies after the block. A caret still
+        // inside the old block (focus left the window, or a keyboard exit,
+        // which re-seats it anyway) lands at the new block's end as before.
+        let caret = edit.source.read(cx).cursor();
+        let caret = if caret >= range.end {
+            caret - range.len() + new_block.len()
+        } else if caret > range.start {
+            new_range.end
+        } else {
+            caret
+        };
+        edit.source.update(cx, |e, cx| {
+            e.replace_range(range, &new_block, cx);
+            e.set_cursor(caret, cx);
+        });
         let new = edit.source.read(cx).text().to_string();
         match &edit.target {
             SlashTarget::Day(key) => self.save_journal(key, &new, cx),

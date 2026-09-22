@@ -80,6 +80,12 @@ actions!(
         // its own key context so they override the default focus traversal).
         PropNextField,
         PropPrevField,
+        // …and its clipboard keys, in the same context so they beat the note
+        // editor's own Copy/Paste bindings.
+        PropCopy,
+        PropCut,
+        PropPaste,
+        PropSelectAll,
         // The shared page context menu's copy verbs (`[[Title]]` / markdown
         // body to the clipboard); no keybindings.
         CopyPageLink,
@@ -124,6 +130,10 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", PropNextField, Some("PropertyEditor")),
         KeyBinding::new("shift-tab", PropPrevField, Some("PropertyEditor")),
+        KeyBinding::new("secondary-c", PropCopy, Some("PropertyEditor")),
+        KeyBinding::new("secondary-x", PropCut, Some("PropertyEditor")),
+        KeyBinding::new("secondary-v", PropPaste, Some("PropertyEditor")),
+        KeyBinding::new("secondary-a", PropSelectAll, Some("PropertyEditor")),
     ]);
     // Paste-image: bind the platform's real paste chord — Cmd+V on macOS, Ctrl+V on
     // Windows/Linux. gpui treats `cmd-` and `ctrl-` as distinct chords, so a bare
