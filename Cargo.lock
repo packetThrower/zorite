@@ -5604,9 +5604,9 @@ dependencies = [
 
 [[package]]
 name = "oxidize-pdf"
-version = "4.9.0"
+version = "5.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "086438b1e07895f1ca4646d0001d9e95e65c35ade7864267a5b37146e9ce7400"
+checksum = "13b9798ead41198f17e9acd7c4f102d024dfd74abbf2b08814e58f6f49c00b67"
 dependencies = [
  "aes 0.8.4",
  "bitflags 2.13.1",
@@ -5618,6 +5618,7 @@ dependencies = [
  "lazy_static",
  "libc",
  "md5",
+ "memchr",
  "num_cpus",
  "quick-xml",
  "rand 0.10.2",
@@ -8016,7 +8017,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -10750,7 +10751,7 @@ name = "zorite"
 version = "0.1.0"
 dependencies = [
  "arboard",
- "base64 0.22.1",
+ "base64 0.23.1",
  "embed-resource",
  "env_logger",
  "gpui-component",
