@@ -8,6 +8,15 @@
 use super::*;
 use gpui::{TestAppContext, VisualTestContext};
 
+/// Run the UI tests one at a time. They share this process's one throwaway
+/// data dir (`paths::data_dir` resolves once), so two opening its database at
+/// once can hit "database is locked" — and the app's DB-error dialog then
+/// swallows the clicks and keys the test sends.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// What `main` sets up before the window opens, minus the platform bits
 /// (assets, cursors, fonts): the widget library, the keymap, and the globals
 /// `AppView::new` reads.
@@ -45,6 +54,7 @@ fn dialog_open(cx: &mut VisualTestContext) -> bool {
 
 #[gpui::test]
 fn command_palette_opens_closes_and_runs_a_command(cx: &mut TestAppContext) {
+    let _serial = serial();
     let (app, cx) = boot(cx);
 
     // ⌘⇧P's action opens the palette as a dialog…
@@ -69,4 +79,20 @@ fn command_palette_opens_closes_and_runs_a_command(cx: &mut TestAppContext) {
         cx.update(|_, cx| app.read(cx).sidebar_collapsed),
         "the confirmed command should have run"
     );
+}
+
+#[gpui::test]
+fn five_clicks_on_the_journal_tab_open_the_game(cx: &mut TestAppContext) {
+    let _serial = serial();
+    let (app, cx) = boot(cx);
+    let tab = cx.debug_bounds("tab-0").expect("the Journal tab paints");
+    // Four clicks just (re)select the journal…
+    for _ in 0..4 {
+        cx.simulate_click(tab.center(), gpui::Modifiers::default());
+    }
+    assert!(cx.update(|_, cx| app.read(cx).game.is_none()));
+    // …the fifth opens the arcade. Through a real click, since the counter
+    // once sat in a handler gpui-component silently ignored.
+    cx.simulate_click(tab.center(), gpui::Modifiers::default());
+    assert!(cx.update(|_, cx| app.read(cx).game.is_some()));
 }
