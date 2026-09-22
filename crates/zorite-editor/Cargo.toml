@@ -1,6 +1,6 @@
 [package]
 name = "zorite-editor"
-version = "0.11.0"
+version = "0.11.1"
 edition = "2024"
 description = "A multi-line text editor for GPUI with live Markdown preview, tables, images, and math. The editor behind Zorite's notes."
 license = "MIT"
