@@ -1458,6 +1458,13 @@ impl EditorState {
         self.editing_block.as_ref().map(|eb| eb.range.clone())
     }
 
+    /// The height reserved for the open block edit (what the host last passed to
+    /// [`Self::set_editing_block`]), so a host re-reserving on a resize can skip
+    /// a no-op. `None` when no block edit is open.
+    pub fn editing_block_height(&self) -> Option<Pixels> {
+        self.editing_block.as_ref().map(|eb| eb.height)
+    }
+
     /// End an in-line math edit (the host has committed / cancelled). Returns the block's
     /// byte range, so the host can overwrite it.
     pub fn end_editing_block(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>> {
