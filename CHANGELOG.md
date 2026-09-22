@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.12.0] - 2026-09-22
+
+The toolkit release: Zorite moves onto GPUI Kit and puts its new pieces to
+work — a command palette, link previews on hover, a rebuilt Settings window —
+plus highlights and colored text, and property fields that behave like real
+text fields.
+
+### Added
+
+- **Command palette** — ⌘⇧P (Ctrl+Shift+P), or View → Command Palette….
+  Type to run any menu command, the current page's actions (favorite, copy
+  link, rename, delete…), navigation (today, jump to date, All pages, the
+  Graph, show or hide the sidebar), or a quick setting (WYSIWYG, theme, line
+  numbers, sidebar side). Each command shows its shortcut.
+- **Link previews on hover.** Rest the pointer on a wiki link, tag, block
+  reference, URL, or property pill — in either view — and a card shows where
+  it goes: a page's opening lines rendered as markdown (right-to-left pages
+  included), or the full address of a web link, so you can see where a link
+  really points before clicking it.
+- **Highlights and colored text.** `==text==` highlights in the theme's
+  color. For a chosen color, select text and right-click: two rows of
+  swatches set the text color or the highlight, ✕ clears it, and `…` opens a
+  full color picker. ⌘⇧H (Ctrl+Shift+H) toggles a highlight. Colors are saved
+  in the same form Obsidian uses, so they carry over between the two apps.
+- **Property fields work like text fields.** Select with the mouse (drag,
+  double-click a word, triple-click the field) or Shift with the arrow keys;
+  cut, copy, paste, and select all with the usual shortcuts or a right-click
+  menu. The arrow keys now move out of the block at its edges, as they do
+  in tables.
+- **A rebuilt Settings window**, with a sidebar search that also finds
+  shortcut names and dropdown options — search "pan" to reach the whiteboard
+  keys.
+- Logseq imports turn `^^highlights^^` into `==highlights==`; Obsidian
+  imports keep `==highlights==` as they are.
+
+### Fixed
+
+- Opening a page whose title starts with a non-English letter (Persian,
+  Arabic, Hebrew…) could crash the app.
+- A template ending in a bullet (`* `) lost its trailing space, so the bullet
+  didn't appear until you typed a space.
+- Editing properties left a gap under "+ Add property", and clicking back into
+  the note afterwards left the caret stuck in the property block instead of
+  where you clicked.
+- Five clicks on the Journal tab open the game again.
+- The Settings sidebar and the command palette follow custom themes (the CRT
+  theme showed white labels and a borderless palette).
+- Esc closes an open dialog even while a note is being edited.
+
+### Changed
+
+- The UI toolkit moved from gpui-component to the
+  [GPUI Kit](https://github.com/longbridge/gpui-kit) crates on crates.io.
+- PDF export uses oxidize-pdf 5; exported documents look the same.
+- Zorite's eight reusable crates are published on
+  crates.io under the MIT license
+  ([list](https://github.com/packetThrower/zorite/tree/main/crates)).
+
 ## [0.11.0] - 2026-08-30
 
 The international release: the app speaks Simplified Chinese, and notes lay
