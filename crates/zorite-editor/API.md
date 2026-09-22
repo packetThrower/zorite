@@ -57,6 +57,7 @@ crate root; nothing from `zorite-markdown` is re-exported.)
 | [`EditorState::set_block_math_em`](#set_block_math_em) | method | `fn set_block_math_em(&mut self, em: f32)` | Provider's em size; enables inline `$…$` |
 | [`EditorState::set_code_highlighter`](#set_code_highlighter) | method | `fn set_code_highlighter(&mut self, impl Fn(&str, &str) -> Vec<(Range<usize>, HighlightStyle)> + 'static)` | Token colors for fenced code |
 | [`EditorState::set_editing_block`](#set_editing_block) | method | `fn set_editing_block(&mut self, range: Range<usize>, view: AnyView, height: Pixels, cx: &mut Context<Self>)` | Seat a host editor in a block's gap |
+| [`EditorState::editing_block_height`](#editing_block_height) | method | `fn editing_block_height(&self) -> Option<Pixels>` | The height reserved for the open block seat |
 | [`EditorState::end_editing_block`](#end_editing_block) | method | `fn end_editing_block(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>>` | Unseat it; returns the range to overwrite |
 | [`EditorState::set_editing_inline`](#set_editing_inline) | method | `fn set_editing_inline(&mut self, range: Range<usize>, view: AnyView, cx: &mut Context<Self>)` | Seat a host editor over an inline `$…$` span |
 | [`EditorState::end_editing_inline`](#end_editing_inline) | method | `fn end_editing_inline(&mut self, cx: &mut Context<Self>) -> Option<Range<usize>>` | Unseat it; returns the range to overwrite |
@@ -713,7 +714,18 @@ Begin an in-line structural edit of the block at `range`: the editor reserves
 a gap of `height` at the block's spot and paints `view` (the host's editor)
 there. Pass the block's currently displayed height so the formula stays put
 instead of jumping to a fixed size. The host focuses `view` itself. One block
-seat at a time — a second call replaces the first.
+seat at a time — a second call replaces the first, which is also how a host
+resizes the gap when its view grows or shrinks (same `range`, new `height`).
+
+#### `editing_block_height`
+
+```rust
+pub fn editing_block_height(&self) -> Option<Pixels>
+```
+
+The height last passed to [`set_editing_block`](#set_editing_block) for the
+open seat — `None` when nothing is seated. Lets a host that re-reserves on
+every change of its view skip the no-op calls.
 
 #### `end_editing_block`
 

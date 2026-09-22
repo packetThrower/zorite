@@ -367,6 +367,8 @@ struct PropEdit {
     _blur_sub: gpui::Subscription,
     /// Commits + seats the note caret on a keyboard exit (Enter / final Escape).
     _exit_sub: gpui::Subscription,
+    /// Re-reserves the note's gap when the form gains or loses a row.
+    _resize_sub: gpui::Subscription,
 }
 
 /// A PDF form text field under edit: which file and field, where the input
@@ -3220,15 +3222,25 @@ impl AppView {
             crate::ui::property_editor::PropertyEditor::new(&block, keys, text_size, window, cx)
         });
         let focus = editor.read(cx).focus_handle(cx);
-        // Reserve a gap tall enough for the rows + the add-property button.
-        let n = block
-            .lines()
-            .filter(|l| zorite_markdown::syntax::property(l).is_some())
-            .count()
-            .max(1);
-        let height = px(n as f32 * 34.0 + 44.0);
+        // Reserve exactly the form's height (rows + the add-property button),
+        // and re-reserve when a row is added or removed.
+        let height = editor.read(cx).height();
         source.update(cx, |e, cx| {
             e.set_editing_block(range, editor.clone().into(), height, cx)
+        });
+        let resize_sub = cx.observe(&editor, |this, editor, cx| {
+            let Some(p) = this.prop_edit.as_ref() else {
+                return;
+            };
+            let height = editor.read(cx).height();
+            let view: gpui::AnyView = editor.clone().into();
+            p.source.update(cx, |e, cx| {
+                if let Some(range) = e.editing_block_range()
+                    && e.editing_block_height() != Some(height)
+                {
+                    e.set_editing_block(range, view, height, cx);
+                }
+            });
         });
         editor.update(cx, |ed, cx| ed.focus_end(at_end, row, window, cx));
         // Commit when the form loses focus (guarded on identity, like math).
@@ -3263,6 +3275,7 @@ impl AppView {
             target,
             _blur_sub: blur_sub,
             _exit_sub: exit_sub,
+            _resize_sub: resize_sub,
         });
         cx.notify();
     }

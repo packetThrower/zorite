@@ -26,6 +26,9 @@ use rust_i18n::t;
 
 /// Emitted when the user exits the form from the keyboard (Enter, or the last
 /// Escape) — the host commits and seats the note caret after the block.
+/// Line height of the "Add property" button (see `PropertyEditor::height`).
+const ADD_LINE_H: f32 = 18.0;
+
 pub struct PropExit;
 
 pub struct PropertyEditor {
@@ -282,6 +285,18 @@ impl PropertyEditor {
         cx.notify();
     }
 
+    /// One property row's height (see `render_row`).
+    fn row_height(&self) -> Pixels {
+        px(self.text_size * 1.45 + 8.0)
+    }
+
+    /// The form's laid-out height: the rows plus the "Add property" button.
+    /// The host reserves exactly this in the note (and re-reserves when a row
+    /// is added or removed), so the text below sits right under the form.
+    pub fn height(&self) -> Pixels {
+        self.row_height() * self.rows.len().max(1) as f32 + px(2.0 + 3.0 * 2.0 + ADD_LINE_H)
+    }
+
     fn add_row(&mut self, cx: &mut Context<Self>) {
         // A new row sits at the same outline position as the one above it.
         let prefix = self.rows.last().map_or(String::new(), |r| {
@@ -502,6 +517,8 @@ impl Render for PropertyEditor {
                     .px(px(6.0))
                     .py(px(3.0))
                     .text_size(px(12.0))
+                    // Explicit, so `height()` knows this row's size exactly.
+                    .line_height(px(ADD_LINE_H))
                     .text_color(theme::accent())
                     .cursor_pointer()
                     .hover(|s| s.text_color(theme::text_primary()))
@@ -532,7 +549,7 @@ impl PropertyEditor {
             .then(|| self.key_autocomplete(i, cx))
             .flatten();
         let icon_sz = px(self.text_size * 0.95);
-        let row_h = px(self.text_size * 1.45 + 8.0);
+        let row_h = self.row_height();
 
         div()
             .flex()
