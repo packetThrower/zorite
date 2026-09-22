@@ -171,7 +171,11 @@ One undo step reverts a wrap you didn't want.
 ## Markdown & diagrams
 
 The rendered view is CommonMark + GFM: headings, **bold** / *italic* / `code`,
-lists, quotes, tables, ~~strikethrough~~, and `<mark>` highlights. **GitHub
+lists, quotes, tables, ~~strikethrough~~, and `==highlights==` (or `<mark>`).
+Colored text and highlights use the HTML Obsidian writes —
+`<span style="color:#e5484d">` and `<mark style="background:#ffd54f80">` — so
+they travel between the two apps; you never type it: select text, right-click,
+and pick a swatch (or `…` for a custom color) from the menu. **GitHub
 alerts** (`> [!NOTE]` through `[!CAUTION]`) render with icons and themeable
 colors, and fenced code blocks get **syntax highlighting** for the common
 languages. **Mermaid diagrams** (flowchart, sequence, class) render pure-Rust,

@@ -626,7 +626,7 @@ fn sanitize(word: &str) -> String {
 fn flatten(nodes: &[mdast::Node], style: Style, out: &mut Vec<(String, Style)>) {
     for node in nodes {
         match node {
-            mdast::Node::Text(t) => out.push((t.value.clone(), style)),
+            mdast::Node::Text(t) => out.push((strip_highlight_markers(&t.value), style)),
             mdast::Node::Strong(s) => flatten(
                 &s.children,
                 Style {
@@ -676,11 +676,13 @@ fn flatten(nodes: &[mdast::Node], style: Style, out: &mut Vec<(String, Style)>) 
             }
             mdast::Node::Break(_) => out.push(("\n".to_string(), style)),
             mdast::Node::FootnoteReference(r) => out.push((format!("[^{}]", r.identifier), style)),
-            // `<mark>` tags vanish (the highlight has no PDF twin here) and
-            // comments never print; other raw HTML prints literally.
+            // The styling tags both views honor (`<mark>`, `<span style>`,
+            // `<u>`, their closers) vanish — tints and colors have no PDF
+            // twin here — and comments never print; other raw HTML prints
+            // literally.
             mdast::Node::Html(h)
-                if h.value != "<mark>"
-                    && h.value != "</mark>"
+                if zorite_markdown::syntax::styled_tag(&h.value).is_none()
+                    && zorite_markdown::syntax::styled_close(&h.value).is_none()
                     && !h.value.trim_start().starts_with("<!--") =>
             {
                 out.push((h.value.clone(), style));
@@ -688,6 +690,24 @@ fn flatten(nodes: &[mdast::Node], style: Style, out: &mut Vec<(String, Style)>) 
             _ => {}
         }
     }
+}
+
+/// `==` highlight markers drop out of print (the tint has no PDF twin). Per
+/// text node, so a highlight wrapping nested emphasis (`==**b**==`) keeps its
+/// markers — a rare shape, left as is.
+fn strip_highlight_markers(text: &str) -> String {
+    let marks = zorite_markdown::syntax::highlight_markers(text);
+    if marks.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for m in marks {
+        out.push_str(&text[last..m]);
+        last = m + 2;
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 /// GitHub alert detection — recognition shared with both views

@@ -392,6 +392,26 @@ as a normal undo step instead of clobbering history.
 - Does **not** emit `Changed` — the host made the edit.
 - Caret lands at `range.start + text.len()`; selection collapses.
 
+### Inline color
+
+```rust
+pub enum ColorKind { Text, Highlight }
+pub const TEXT_COLORS: [u32; 7];
+pub const HIGHLIGHT_COLORS: [u32; 7];
+pub fn color_selection(&mut self, kind: ColorKind, rgba: Option<u32>, cx: &mut Context<Self>)
+```
+
+Colors the selection with the spellings Obsidian reads: `Some(rgba)`
+(`0xRRGGBBAA`) wraps it in `<span style="color:#…">` (`Text`) or
+`<mark style="background:#…">` (`Highlight`), replacing any same-kind color
+already on it (and, for a highlight, a plain `==…==`); `None` removes that
+color. No-op on an empty selection. The two palettes are the swatches the
+selection menu shows; its `…` swatch emits [`PickColor`](#pickcolor--highlight-bool-position-pointpixels-)
+for a host picker.
+
+The `Highlight` action (⌘⇧H / Ctrl+Shift+H) toggles the plain `==…==`
+highlight, like `Bold`/`Italic`/`Strike` toggle theirs.
+
 ### Caret & geometry
 
 #### `cursor`
@@ -1037,6 +1057,17 @@ left-clicked; the payload is the target page title. It may carry a
 `split_heading_anchor` / `split_block_anchor`).
 
 **Host obligation:** navigate to that page (and scroll to the anchor).
+
+### `PickColor { highlight: bool, position: Point<Pixels> }`
+
+The selection menu's "custom color…" (`…`) swatch was clicked — on the
+highlight row (`highlight: true`) or the text-color row; `position` is the
+menu's window-space top-left, to anchor a picker at. The selection is
+untouched meanwhile.
+
+**Host obligation:** show a color picker and hand the pick to
+[`EditorState::color_selection`](#inline-color) with the matching
+[`ColorKind`](#inline-color).
 
 ### `SelectionChanged`
 

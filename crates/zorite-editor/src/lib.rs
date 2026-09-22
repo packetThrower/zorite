@@ -91,6 +91,7 @@ actions!(
         Italic,
         Underline,
         Strike,
+        Highlight,
         Code,
         Dismiss,
     ]
@@ -144,9 +145,34 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-x", Strike, ctx),
         KeyBinding::new("cmd-u", Underline, ctx),
         KeyBinding::new("ctrl-u", Underline, ctx),
+        KeyBinding::new("cmd-shift-h", Highlight, ctx),
+        KeyBinding::new("ctrl-shift-h", Highlight, ctx),
         KeyBinding::new("escape", Dismiss, ctx),
     ]);
 }
+
+/// Which inline color [`EditorState::color_selection`] sets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorKind {
+    /// `<span style="color:…">` around the selection.
+    Text,
+    /// `<mark style="background:…">` around the selection. (The plain
+    /// `==…==` highlight is the theme's tint — the `Highlight` action.)
+    Highlight,
+}
+
+/// The selection menu's text-color swatches (`0xRRGGBBAA`): mid-tones that
+/// read on light and dark themes alike.
+pub const TEXT_COLORS: [u32; 7] = [
+    0xe5484dff, 0xf76b15ff, 0xd4a017ff, 0x30a46cff, 0x3e63ddff, 0x8e4ec6ff, 0x8b8d98ff,
+];
+
+/// The selection menu's highlight swatches (`0xRRGGBBAA`): translucent, so
+/// the text under them stays legible on either theme — the same reason the
+/// theme's own `mark_bg` carries alpha.
+pub const HIGHLIGHT_COLORS: [u32; 7] = [
+    0xffd54f80, 0xffab4080, 0xa5d6a780, 0x90caf980, 0xce93d880, 0xf48fb180, 0xbdbdbd80,
+];
 
 /// Cap on undo history (full snapshots) to bound memory.
 const UNDO_LIMIT: usize = 256;
@@ -494,6 +520,15 @@ pub enum EditorEvent {
     /// An inline `![](src)` image was left-clicked — the host opens a full-size
     /// preview. The text is untouched.
     PreviewImage(SharedString),
+    /// The selection menu's "custom color…" (`…`) swatch was clicked, on the
+    /// highlight row (`highlight`) or the text-color row; `position` is the
+    /// menu's window-space top-left, to anchor a picker at. The host shows its
+    /// color picker and hands the pick to [`EditorState::color_selection`];
+    /// the selection is untouched meanwhile.
+    PickColor {
+        highlight: bool,
+        position: Point<Pixels>,
+    },
     /// The pointer moved onto an inline link (`Some` — the target and the
     /// link's window-space box, from this frame's layout) or off every link
     /// (`None`). Emitted only on change, so a host can show a preview card
@@ -2432,14 +2467,217 @@ impl EditorState {
                     sel.start + ol..sel.end + ol,
                 )
             };
+        self.splice(range, new, new_sel);
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    /// The edit every wrap/unwrap ends in: replace `range` with `new`, select
+    /// `new_sel`, keep undo and diagnostics in step. Callers emit `Changed`.
+    fn splice(&mut self, range: Range<usize>, new: String, new_sel: Range<usize>) {
         self.record_edit(&range, &new);
         self.content.replace_range(range.clone(), &new);
         self.selected_range = new_sel;
         self.selection_reversed = false;
         self.goal_x = None;
         self.remap_diagnostics(&range, new.len());
-        cx.emit(EditorEvent::Changed);
-        cx.notify();
+    }
+
+    /// Is the selection wrapped by `open`…`close` — the markers just inside or
+    /// just outside it (the two shapes [`Self::toggle_wrap_pair`] unwraps)?
+    fn wrapped_by(&self, open: &str, close: &str) -> bool {
+        let sel = &self.selected_range;
+        let text = &self.content[sel.clone()];
+        (text.len() >= open.len() + close.len() && text.starts_with(open) && text.ends_with(close))
+            || (self.content[..sel.start].ends_with(open)
+                && self.content[sel.end..].starts_with(close))
+    }
+
+    /// Strip a `kind`-colored tag wrapping the selection (just inside or just
+    /// outside it), whatever its color. `true` when one was removed; the
+    /// caller emits `Changed`.
+    fn strip_color(&mut self, kind: ColorKind) -> bool {
+        use zorite_markdown::syntax::{StyledKind, styled_tag};
+        let sel = self.selected_range.clone();
+        if sel.is_empty() {
+            return false;
+        }
+        let want = match kind {
+            ColorKind::Text => StyledKind::Span,
+            ColorKind::Highlight => StyledKind::Mark,
+        };
+        let is_tag = |tag: &str| styled_tag(tag).is_some_and(|t| t.kind == want);
+        let close = want.close();
+        // Markers just outside: `<span …>` ending at the selection, `</span>` after it.
+        let before = &self.content[..sel.start];
+        if let Some(lt) = before.rfind('<')
+            && is_tag(&before[lt..])
+            && self.content[sel.end..].starts_with(close)
+        {
+            let inner = self.content[sel.clone()].to_string();
+            let len = inner.len();
+            self.splice(lt..sel.end + close.len(), inner, lt..lt + len);
+            return true;
+        }
+        // Markers just inside: the selection IS `<span …>body</span>`.
+        let text = &self.content[sel.clone()];
+        if text.starts_with('<')
+            && let Some(gt) = text.find('>')
+            && is_tag(&text[..=gt])
+            && text.ends_with(close)
+            && text.len() >= gt + 1 + close.len()
+        {
+            let inner = text[gt + 1..text.len() - close.len()].to_string();
+            let len = inner.len();
+            self.splice(sel.clone(), inner, sel.start..sel.start + len);
+            return true;
+        }
+        false
+    }
+
+    /// Color the selection. `Some(rgba)` (`0xRRGGBBAA`) wraps it in the tag for
+    /// `kind` — `<span style="color:#…">` or `<mark style="background:#…">`,
+    /// the spellings Obsidian reads too — replacing any same-kind color
+    /// already on it (and, for a highlight, a plain `==…==`); `None` removes
+    /// that color. No-op on an empty selection.
+    pub fn color_selection(&mut self, kind: ColorKind, rgba: Option<u32>, cx: &mut Context<Self>) {
+        if self.selected_range.is_empty() {
+            return;
+        }
+        let stripped = self.strip_color(kind);
+        if kind == ColorKind::Highlight && self.wrapped_by("==", "==") {
+            self.toggle_wrap_pair("==", "==", cx);
+        }
+        match rgba {
+            Some(c) => {
+                let hex = zorite_markdown::syntax::hex_color(c);
+                let (open, close) = match kind {
+                    ColorKind::Text => (format!("<span style=\"color:{hex}\">"), "</span>"),
+                    ColorKind::Highlight => {
+                        (format!("<mark style=\"background:{hex}\">"), "</mark>")
+                    }
+                };
+                self.toggle_wrap_pair(&open, close, cx);
+            }
+            None if stripped => {
+                cx.emit(EditorEvent::Changed);
+                cx.notify();
+            }
+            None => {}
+        }
+    }
+
+    /// ⌘⇧H: toggle the plain `==…==` highlight on the selection. A colored
+    /// highlight already on it gives way to the plain one.
+    fn highlight(&mut self, _: &Highlight, _: &mut Window, cx: &mut Context<Self>) {
+        self.strip_color(ColorKind::Highlight);
+        self.toggle_wrap("==", cx);
+    }
+
+    /// One swatch row of the selection menu: `Text` draws an "A" in each
+    /// color, `Highlight` a filled box (first the theme tint — the plain
+    /// `==…==`); then clear (✕) and custom color (…, → `PickColor`).
+    fn color_row(
+        kind: ColorKind,
+        mark_bg: Option<Hsla>,
+        border: Hsla,
+        hover: Hsla,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
+        let colors: &[u32] = match kind {
+            ColorKind::Text => &TEXT_COLORS,
+            ColorKind::Highlight => &HIGHLIGHT_COLORS,
+        };
+        let tag = match kind {
+            ColorKind::Text => "menu-text-color",
+            ColorKind::Highlight => "menu-highlight",
+        };
+        let cell = move |id: (&'static str, usize)| {
+            div()
+                .id(id)
+                .w(px(22.))
+                .h(px(22.))
+                .rounded(px(4.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+        };
+        let box_swatch = move |fill: Hsla| {
+            div()
+                .w(px(14.))
+                .h(px(14.))
+                .rounded(px(3.))
+                .bg(fill)
+                .border_1()
+                .border_color(border)
+        };
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.))
+            .px(px(6.))
+            .py(px(3.));
+        if let Some(bg) = mark_bg {
+            row = row.child(cell((tag, 100)).child(box_swatch(bg)).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|editor, _: &MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    editor.menu = None;
+                    editor.highlight(&Highlight, window, cx);
+                }),
+            ));
+        }
+        for (i, &c) in colors.iter().enumerate() {
+            let fill: Hsla = rgba(c).into();
+            let swatch = match kind {
+                ColorKind::Text => div()
+                    .text_color(fill)
+                    .font_weight(FontWeight::BOLD)
+                    .text_size(px(14.))
+                    .child("A"),
+                ColorKind::Highlight => box_swatch(fill),
+            };
+            row = row.child(cell((tag, i)).child(swatch).on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    editor.menu = None;
+                    editor.color_selection(kind, Some(c), cx);
+                }),
+            ));
+        }
+        row.child(
+            cell((tag, 200))
+                .text_size(px(12.))
+                .child("\u{2715}")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        editor.menu = None;
+                        editor.color_selection(kind, None, cx);
+                    }),
+                ),
+        )
+        .child(
+            cell((tag, 201))
+                .text_size(px(12.))
+                .child("\u{2026}")
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |editor, _: &MouseDownEvent, _, cx| {
+                        cx.stop_propagation();
+                        let position = editor.menu.take().map(|m| m.anchor).unwrap_or_default();
+                        cx.emit(EditorEvent::PickColor {
+                            highlight: kind == ColorKind::Highlight,
+                            position,
+                        });
+                    }),
+                ),
+        )
     }
 
     fn bold(&mut self, _: &Bold, _: &mut Window, cx: &mut Context<Self>) {
@@ -5013,6 +5251,7 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::italic))
             .on_action(cx.listener(Self::underline))
             .on_action(cx.listener(Self::strike))
+            .on_action(cx.listener(Self::highlight))
             .on_action(cx.listener(Self::code))
             .on_action(cx.listener(Self::indent))
             .on_action(cx.listener(Self::outdent))
@@ -5273,6 +5512,29 @@ impl Render for EditorState {
                         )
                 });
 
+                // Color swatches under the format bar: text colors, then
+                // highlights (theme tint first, then colored `<mark>`s).
+                let mark_bg = st.map_or(rgba(0xFFD60066).into(), |s| s.mark_bg);
+                let color_rows = has_sel.then(|| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .child(Self::color_row(
+                            ColorKind::Text,
+                            None,
+                            menu_border,
+                            hover,
+                            cx,
+                        ))
+                        .child(Self::color_row(
+                            ColorKind::Highlight,
+                            Some(mark_bg),
+                            menu_border,
+                            hover,
+                            cx,
+                        ))
+                });
+
                 // "Turn into" block conversion (Cditor-style): a row whose
                 // hover opens a kind-list flyout beside the menu, the caret
                 // block's current kind checked.
@@ -5386,6 +5648,7 @@ impl Render for EditorState {
                                     },
                                 ))
                                 .children(format_bar)
+                                .children(color_rows)
                                 .children(has_sel.then(|| div().h(px(1.)).bg(menu_border)))
                                 .children((count > 0).then(|| {
                                     // The scroll viewport: shows ~6 rows, the rest scroll.

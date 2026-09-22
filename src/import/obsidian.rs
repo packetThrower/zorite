@@ -428,8 +428,8 @@ impl Converter<'_> {
         if let Some(conv) = convert_callout(line) {
             return conv;
         }
+        // `==highlight==` comes across as-is: both views read it.
         let line = strip_comments(line);
-        let line = convert_highlights(&line);
         self.convert_embeds_and_links(&line)
     }
 
@@ -1007,31 +1007,6 @@ fn strip_comments(line: &str) -> String {
     out
 }
 
-/// `==text==` → `<mark>text</mark>` (skips `====` and empty spans).
-fn convert_highlights(line: &str) -> String {
-    let mut out = String::with_capacity(line.len());
-    let mut rest = line;
-    while let Some(open) = rest.find("==") {
-        let before = &rest[..open];
-        let after = &rest[open + 2..];
-        if let Some(close) = after.find("==")
-            && close > 0
-        {
-            out.push_str(before);
-            out.push_str("<mark>");
-            out.push_str(&after[..close]);
-            out.push_str("</mark>");
-            rest = &after[close + 2..];
-        } else {
-            out.push_str(before);
-            out.push_str("==");
-            rest = after;
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
 /// Split a wiki target into `(name, Some(alias))` on the first `|`.
 fn split_alias(inner: &str) -> (&str, Option<&str>) {
     match inner.split_once('|') {
@@ -1341,9 +1316,7 @@ mod tests {
     }
 
     #[test]
-    fn highlights_and_comments() {
-        assert_eq!(convert_highlights("a ==b== c"), "a <mark>b</mark> c");
-        assert_eq!(convert_highlights("nope ==="), "nope ===");
+    fn comments_are_stripped() {
         assert_eq!(strip_comments("keep %%drop this%% keep"), "keep  keep");
         assert_eq!(strip_comments("no comment here"), "no comment here");
     }

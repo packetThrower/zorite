@@ -942,6 +942,7 @@ impl Converter {
         let line = convert_macros(line, &self.id_map);
         let line = convert_block_refs(&line, &self.id_map);
         let line = convert_wiki_links(&line);
+        let line = convert_caret_highlights(&line);
         self.convert_assets(&line)
     }
 
@@ -1122,6 +1123,31 @@ fn short_block_id(uuid: &str) -> &str {
 
 /// `[[A/B]]` → `[[A::B]]` (segments trimmed) and `#[[multi word]]` →
 /// `[[multi word]]`. URLs inside `[[…]]` are left alone.
+/// Logseq's `^^text^^` highlight → the `==text==` most other apps (and both
+/// Zorite views) read.
+fn convert_caret_highlights(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(open) = rest.find("^^") {
+        let after = &rest[open + 2..];
+        match after.find("^^") {
+            Some(close) if close > 0 => {
+                out.push_str(&rest[..open]);
+                out.push_str("==");
+                out.push_str(&after[..close]);
+                out.push_str("==");
+                rest = &after[close + 2..];
+            }
+            _ => {
+                out.push_str(&rest[..open + 2]);
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 fn convert_wiki_links(line: &str) -> String {
     let line = line.replace("#[[", "[[");
     let mut out = String::new();
@@ -1801,6 +1827,12 @@ mod tests {
     }
 
     // -- inline conversions --
+
+    #[test]
+    fn carets_become_double_equals_highlights() {
+        assert_eq!(convert_caret_highlights("a ^^b^^ c"), "a ==b== c");
+        assert_eq!(convert_caret_highlights("no ^^ pair"), "no ^^ pair");
+    }
 
     #[test]
     fn wiki_links_convert_namespaces() {
