@@ -598,7 +598,7 @@ pub fn parse_templates(content: &str) -> Vec<Template> {
             if let Some((n, body)) = current.take() {
                 out.push(Template {
                     name: n,
-                    body: body.join("\n").trim().to_string(),
+                    body: template_body(&body),
                 });
             }
             current = Some((name.to_string(), Vec::new()));
@@ -609,11 +609,26 @@ pub fn parse_templates(content: &str) -> Vec<Template> {
     if let Some((n, body)) = current {
         out.push(Template {
             name: n,
-            body: body.join("\n").trim().to_string(),
+            body: template_body(&body),
         });
     }
     out.retain(|t| !t.body.is_empty());
     out
+}
+
+/// A template's lines with the blank lines around them dropped — but each
+/// kept line verbatim: a body ending `* ` must keep that space, or the
+/// inserted `*` isn't a list item until the user types it back (and a first
+/// line's indentation is content too).
+fn template_body(lines: &[&str]) -> String {
+    let blank = |l: &&str| l.trim().is_empty();
+    match (
+        lines.iter().position(|l| !blank(l)),
+        lines.iter().rposition(|l| !blank(l)),
+    ) {
+        (Some(first), Some(last)) => lines[first..=last].join("\n"),
+        _ => String::new(),
+    }
 }
 
 fn template_header(line: &str) -> Option<&str> {
@@ -1025,6 +1040,17 @@ mod tests {
         assert_eq!(t[0].body, "## Notes\n- a");
         assert_eq!(t[1].name, "standup");
         assert_eq!(t[1].body, "- yesterday\n- today");
+    }
+
+    #[test]
+    fn template_body_keeps_trailing_and_leading_spaces() {
+        // The `#meeting` template ends in an indented bullet waiting for text.
+        let t = parse_templates("!meeting\n\n#meeting with\n- Notes:\n    * \n\n!next\nx");
+        assert_eq!(t[0].body, "#meeting with\n- Notes:\n    * ");
+        let t = parse_templates("!indented\n  - a\n   \n");
+        assert_eq!(t[0].body, "  - a");
+        // Whitespace-only bodies still don't count as templates.
+        assert!(parse_templates("!empty\n  \n\n").is_empty());
     }
 
     #[test]
