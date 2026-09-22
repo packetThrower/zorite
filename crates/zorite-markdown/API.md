@@ -1239,7 +1239,7 @@ sets only `text_size` — set the font family on a parent element if needed.
 | `muted_color` | `Hsla` | Blockquotes, list markers, table borders, footnote definitions, raw HTML |
 | `rule_color` | `Hsla` | Thematic break (`---`) divider |
 | `guide_color` | `Hsla` | Nested-list indent guide — a hairline, fainter than `rule_color` |
-| `mark_bg` | `Hsla` | `<mark>…</mark>` highlight background (translucent so text stays readable) |
+| `mark_bg` | `Hsla` | Highlight background for `==text==` and a bare `<mark>` (translucent so text stays readable; a `<mark style="background:…">` uses its own color) |
 | `search_bg` | `Hsla` | In-page find: every match (translucent) |
 | `search_current_bg` | `Hsla` | In-page find: the active match |
 | `list_indent` | `Pixels` | Horizontal indent per nested list level — size to your editor's literal indent so reading + editing line up (default `px(18.0)`) |

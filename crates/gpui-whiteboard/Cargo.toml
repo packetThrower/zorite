@@ -1,6 +1,6 @@
 [package]
 name = "gpui-whiteboard"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 description = "An infinite whiteboard canvas for GPUI: shapes, arrows, freehand drawing, text, images, and templates, with a built-in toolbar."
 license = "MIT"

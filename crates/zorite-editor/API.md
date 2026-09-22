@@ -82,13 +82,16 @@ crate root; nothing from `zorite-markdown` is re-exported.)
 | [`EditorState::duplicate_table_row`](#duplicate_table_row) | method | `fn duplicate_table_row(&mut self, cx: &mut Context<Self>)` | Copy the caret's row below itself |
 | [`EditorState::copy_table`](#copy_table) | method | `fn copy_table(&mut self, cx: &mut Context<Self>)` | Whole table to the clipboard (markdown) |
 | [`EditorState::set_table_style`](#set_table_style) | method | `fn set_table_style(&mut self, name: Option<&'static str>, cx: &mut Context<Self>)` | Rewrite the table's style marker |
-| [`EditorEvent`](#enum-editorevent) | enum | 8 variants | Everything the editor asks the host to do |
+| [`EditorState::color_selection`](#inline-color) | method | `fn color_selection(&mut self, kind: ColorKind, rgba: Option<u32>, cx: &mut Context<Self>)` | Color / highlight the selection (or clear it) |
+| [`EditorEvent`](#enum-editorevent) | enum | 10 variants | Everything the editor asks the host to do |
 | [`SyntaxStyle`](#struct-syntaxstyle) | struct | 25 public fields | Colors + fonts + icon hooks for WYSIWYG — incl. `block_label: Option<Rc<dyn Fn(&str, &str) -> Option<String>>>` (block-link display resolver) + `block_label_gen: u64` (bumped when labels change, re-keys the line cache) + `block_ref_count: Option<BlockRefCountFn>` (id → referencing-page count; >0 paints a superscript badge over the hidden ` ^id` anchor whose click emits `OpenWikiLink("refs:^id")`) |
 | [`AlertIcons`](#struct-alerticons) | struct | 5 public fields | SVG asset paths for alert title icons |
 | [`Diagnostic`](#struct-diagnostic) | struct | `pub range: Range<usize>` | A flagged (underlined) span |
 | [`CellAlign`](#enum-cellalign) | enum | `Left · Center · Right` | A table column's alignment |
 | [`MathAlign`](#enum-mathalign) | enum | `Left · Center (default) · Right` | A `$$` block's horizontal alignment |
 | [`PropertyIconFn`](#type-propertyiconfn) | type | `Rc<dyn Fn(&str) -> Option<SharedString>>` | Property key → icon asset path |
+| [`ColorKind`](#inline-color) | enum | `Text · Highlight` | Which color `color_selection` sets |
+| [`TEXT_COLORS`](#inline-color) / [`HIGHLIGHT_COLORS`](#inline-color) | const | `[u32; 7]` (`0xRRGGBBAA`) | The selection menu's swatches |
 
 `EditorState` also implements `Render`, `Focusable`,
 `EventEmitter<EditorEvent>`, and `EntityInputHandler` (the IME plumbing) — so
@@ -117,6 +120,7 @@ home/end; `shift-` + any movement to extend the selection;
 `cmd-c`/`cmd-x`/`cmd-v`; `cmd-z` undo, `cmd-shift-z`/`ctrl-y` redo;
 `tab`/`shift-tab` indent/outdent; `cmd-b`/`cmd-i`/`cmd-u`/`cmd-e`/
 `cmd-shift-x` bold/italic/underline (`<u>`)/inline-code/strikethrough;
+`cmd-shift-h` the `==highlight==`;
 `ctrl-cmd-space` character palette; `escape` dismisses the built-in
 right-click menus.
 
@@ -1058,17 +1062,6 @@ left-clicked; the payload is the target page title. It may carry a
 
 **Host obligation:** navigate to that page (and scroll to the anchor).
 
-### `PickColor { highlight: bool, position: Point<Pixels> }`
-
-The selection menu's "custom color…" (`…`) swatch was clicked — on the
-highlight row (`highlight: true`) or the text-color row; `position` is the
-menu's window-space top-left, to anchor a picker at. The selection is
-untouched meanwhile.
-
-**Host obligation:** show a color picker and hand the pick to
-[`EditorState::color_selection`](#inline-color) with the matching
-[`ColorKind`](#inline-color).
-
 ### `SelectionChanged`
 
 The caret or selection moved **without** a text change (arrows, click,
@@ -1134,6 +1127,17 @@ link changes, so it is cheap to subscribe to.
 
 **Host obligation:** none. Zorite anchors a hover preview card to the box.
 
+### `PickColor { highlight: bool, position: Point<Pixels> }`
+
+The selection menu's "custom color…" (`…`) swatch was clicked — on the
+highlight row (`highlight: true`) or the text-color row; `position` is the
+menu's window-space top-left, to anchor a picker at. The selection is
+untouched meanwhile.
+
+**Host obligation:** show a color picker and hand the pick to
+[`EditorState::color_selection`](#inline-color) with the matching
+[`ColorKind`](#inline-color).
+
 ---
 
 ## `struct SyntaxStyle`
@@ -1163,7 +1167,7 @@ every field explicit. All fields are `gpui::Hsla` unless noted.
 | `alert_caution` | `Hsla` | `> [!CAUTION]` bar + title |
 | `alert_icons` | `Option<AlertIcons>` | SVG asset paths for the alert title icons; `None` = bold label only |
 | `rule` | `Hsla` | thematic break (`---`) divider |
-| `mark_bg` | `Hsla` | `<mark>` highlight background |
+| `mark_bg` | `Hsla` | Highlight background for `==text==` and a bare `<mark>` (a `<mark style="background:…">` uses its own color) |
 | `popover_bg` | `Hsla` | built-in menu (table ops, spell suggestions) surface |
 | `popover_border` | `Hsla` | menu border |
 | `popover_fg` | `Hsla` | menu text |

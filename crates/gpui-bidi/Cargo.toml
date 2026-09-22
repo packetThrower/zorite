@@ -1,6 +1,6 @@
 [package]
 name = "gpui-bidi"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Right-to-left and mixed-direction text for GPUI: correct caret, selection, and click positions over reordered glyphs, plus row layout and painting."
 license = "MIT"

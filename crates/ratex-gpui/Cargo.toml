@@ -1,6 +1,6 @@
 [package]
 name = "ratex-gpui"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 description = "Math for GPUI: render LaTeX to images, and edit formulas in a structural, MathQuill-style editor. Built on the RaTeX engine."
 license = "MIT"
