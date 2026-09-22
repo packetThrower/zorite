@@ -26,7 +26,8 @@ The complete API reference, including the seat/commit protocols, is in
   word-wise navigation, visual-row up/down, copy / cut / paste, IME, undo / redo
   (coalesced), click + drag selection, double-click word / triple-click line.
   **Lists continue on Enter** (an empty item exits the list), and **bold /
-  italic / inline-code** toggles (`cmd`/`ctrl`-`b`/`i`/`e`).
+  italic / underline / strikethrough / inline-code / highlight** toggles
+  (`cmd`/`ctrl`-`b`/`i`/`u`, `-shift-x`, `-e`, `-shift-h`).
 - **Soft-wrap** with content-driven height. A line containing right-to-left
   text is instead broken in *logical* order and laid out row by row via
   [`gpui-bidi`](../gpui-bidi/README.md) — gpui's own wrapping slices the
@@ -42,8 +43,8 @@ The complete API reference, including the seat/commit protocols, is in
   bold / italic / strikethrough, inline code, links / wiki-links / tags
   (clickable, emitting `OpenLink` / `OpenWikiLink`), blockquotes, lists,
   clickable task checkboxes, fenced code blocks, thematic rules, footnotes,
-  reference links, `<mark>` — with the raw Markdown markers hidden and
-  revealed only around the caret. **GitHub alerts** render with a colored bar
+  reference links, `==highlights==`, `<u>` — with the raw Markdown markers
+  hidden and revealed only around the caret. **GitHub alerts** render with a colored bar
   and title (Obsidian's foldable `> [!NOTE]-`/`+` collapses on a chevron
   click, the flip written back to the source), and **headings fold** — hover
   one for a chevron that collapses its section (view-local state,
@@ -66,6 +67,14 @@ The complete API reference, including the seat/commit protocols, is in
 - **Tables:** rendered as a grid and edited *in the cells* — arrow keys move
   cell-to-cell keeping the column and Enter drops to the row below; host-driven
   column alignment, row/column insert/delete, and whole-table delete.
+- **Text color and highlights:** colored text and highlights render in place,
+  using the HTML Obsidian writes (`<span style="color:…">`,
+  `<mark style="background:…">`). With a selection, the right-click menu shows
+  two swatch rows under the format bar — text colors and highlights — plus
+  clear and a custom-color swatch that emits `PickColor` for a host picker;
+  `color_selection` applies the pick.
+- **Link hover:** moving onto a link, tag, or property pill (or off every link)
+  emits `HoverLink` with the target and its box, so a host can show a preview.
 
 ## Adding the dependency
 
@@ -73,7 +82,7 @@ Published on [crates.io](https://crates.io/crates/zorite-editor):
 
 ```toml
 [dependencies]
-zorite-editor = "0.10"
+zorite-editor = "0.11"
 ```
 
 > **gpui version:** the crate depends on GPUI as published on crates.io — the
@@ -179,7 +188,8 @@ equivalent.
 | `alt-←` / `alt-→` | word left / right |
 | `shift-` + any move | extend selection |
 | `cmd-a` | select all |
-| `cmd-b` / `cmd-i` / `cmd-e` | bold / italic / inline code (toggle on selection) |
+| `cmd-b` / `cmd-i` / `cmd-u` / `cmd-e` | bold / italic / underline (`<u>`) / inline code (toggle on selection) |
+| `cmd-shift-x` / `cmd-shift-h` | strikethrough / `==highlight==` (toggle on selection) |
 | `tab` / `shift-tab` | indent / outdent (list-aware) |
 | `cmd-c` / `cmd-x` / `cmd-v` | copy / cut / paste |
 | `cmd-z` / `cmd-shift-z` (`ctrl-y`) | undo / redo |
@@ -207,6 +217,8 @@ editor asks the host to do:
 | `MathMenu { … }` | A formula was right-clicked — show a context menu. |
 | `EditProperties { … }` | A property panel was entered — seat a property editor. |
 | `PreviewImage(src)` | An inline image thumbnail was clicked — show a preview. |
+| `HoverLink(hit)` | The pointer moved onto a link (target + box) or off every link — show or hide a preview. |
+| `PickColor { … }` | The selection menu's custom-color swatch was clicked — show a picker, then call `color_selection`. |
 
 The exact fields, host obligations, and the seat/commit protocol behind
 `EditMath` / `EditProperties` are in [API.md](API.md#enum-editorevent).

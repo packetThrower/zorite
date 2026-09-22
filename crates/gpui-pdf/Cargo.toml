@@ -1,6 +1,6 @@
 [package]
 name = "gpui-pdf"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 description = "A PDF viewer for GPUI, rendered in pure Rust with hayro: virtualized pages, text search, highlights, and fillable forms."
 license = "MIT"

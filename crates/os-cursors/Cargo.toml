@@ -1,6 +1,6 @@
 [package]
 name = "os-cursors"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Custom mouse cursors for your app on macOS, Windows, and Linux, using standard XCursor themes. No changes to the UI toolkit required."
 license = "MIT"

@@ -16,8 +16,8 @@ The crate has two layers:
 - **`zorite_markdown::syntax`**, always compiled and dependency-free: the
   shared recognition of constructs (links, GitHub alert kinds and fold
   characters, table styles, heading scales, `key:: value` properties,
-  ` ^block-id` anchors, `#Heading` / `#^id` link targets, and `![[embed]]`
-  lines). The reading view, the [`zorite-editor`](../zorite-editor/README.md)
+  ` ^block-id` anchors, `#Heading` / `#^id` link targets, `![[embed]]`
+  lines, and `==highlight==` / colored-HTML recognition). The reading view, the [`zorite-editor`](../zorite-editor/README.md)
   WYSIWYG view, and Zorite's PDF exporter all use it, so each construct is
   defined once.
 - **The reading view**, `MarkdownView`, behind the default-on `view` feature,
@@ -29,7 +29,10 @@ The complete API reference is in [API.md](API.md).
 ## Features
 
 - Headings, paragraphs, **bold** / *italic* / ~~strikethrough~~ / `inline code` /
-  `<mark>` highlight, hard breaks
+  `==highlight==` (or `<mark>`) / `<u>` underline, hard breaks
+- **Text color and highlights** — the HTML Obsidian writes for chosen colors,
+  `<span style="color:…">` and `<mark style="background:…">`, renders in its
+  color (hex, `rgb()`/`rgba()`, basic names)
 - Bullet / numbered / nested / **task** lists (`- [ ]` / `- [x]`), blockquotes,
   fenced code blocks, thematic breaks
 - GFM **tables** — content-measured columns, column alignment, plus **per-table
@@ -71,6 +74,9 @@ The complete API reference is in [API.md](API.md).
   literally (never executed)
 - `[[wiki-links]]` (and `[[target|label]]` aliases) and `#tags` → clickable,
   dispatched to your callback
+- **Link hover** — `on_link_hover` reports the link (or property pill) under
+  the pointer with its window-space box, and `None` off every link, so a host
+  can show a preview card
 - **Images**, **mermaid diagrams**, and **math** — `$$…$$` blocks and inline
   `$…$` formulas — rendered by host-supplied closures (the host owns loading /
   async render / interaction); each falls back gracefully (math → its raw LaTeX)
@@ -90,7 +96,7 @@ Published on [crates.io](https://crates.io/crates/zorite-markdown):
 
 ```toml
 [dependencies]
-zorite-markdown = "0.9"
+zorite-markdown = "0.10"
 ```
 
 > **gpui version:** the crate depends on GPUI as published on crates.io — the
@@ -150,8 +156,9 @@ Every node `ParseOptions::gfm()` produces is rendered: headings, paragraphs,
 bold/italic/strikethrough/inline-code, links (inline, autolink, reference-style),
 images, ordered/unordered/nested/task lists, blockquotes (nested), fenced code,
 thematic breaks, tables (with alignment + the per-table designs above), footnotes
-(references + definitions), and raw HTML (shown literally — except `<mark>…</mark>`,
-honored as a highlight). Plus **math** — `$$…$$` blocks (`math_flow`) and inline
+(references + definitions), and raw HTML (shown literally — except the styling
+tags `<mark>`, `<span style="color/background:…">`, and `<u>`, honored as a
+highlight, a color, and an underline). Plus **math** — `$$…$$` blocks (`math_flow`) and inline
 `$…$` (`math_text`), typeset by a host renderer — and Zorite-style
 `[[wiki-links]]` and `#tags`.
 
@@ -159,8 +166,9 @@ Not handled (not enabled by `gfm()`): frontmatter (YAML/TOML) and MDX. Footnote
 references render as `[label]` markers but aren't click-to-jump (that would need
 anchors this text-based renderer doesn't have).
 
-Also rendered: **GitHub alerts** on blockquotes (both marker forms, plus the
-foldable `-`/`+` variant), Zorite-style `[[wiki-links]]` and `#tags`
+Also rendered: `==highlight==` (the common extension, under emphasis-like
+pairing rules so `a == b == c` stays literal), **GitHub alerts** on
+blockquotes (both marker forms, plus the foldable `-`/`+` variant), Zorite-style `[[wiki-links]]` and `#tags`
 (namespaced `#a/b` included — the grammar is the shared `syntax` module's),
 `[[Note#Heading]]` / `[[Note#^id]]` anchors (displayed as `Note → anchor`),
 trailing ` ^block-id` markers (hidden), `key:: value` **property panels**,
