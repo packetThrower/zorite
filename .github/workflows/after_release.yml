@@ -132,7 +132,7 @@ jobs:
       # emulation (winget falls back to x64) or the native build on the
       # Releases page / Scoop. Same x64-only stance as packetThrower.Baudrun.
       - name: Open winget-pkgs PR
-        uses: vedantmgoyal9/winget-releaser@b3a5dae0047c6180023acba3f548c55fdf6b7193 # v2
+        uses: vedantmgoyal9/winget-releaser@a8fff44b123f115ce4c21543edf8b677376fc7e0 # v2
         with:
           identifier: packetThrower.Zorite
           release-tag: ${{ github.event.workflow_run.head_branch || inputs.tag_name }}
