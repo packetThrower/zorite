@@ -27,9 +27,13 @@ use rust_i18n::t;
 /// Line height of the "Add property" button (see `PropertyEditor::height`).
 const ADD_LINE_H: f32 = 18.0;
 
-/// Emitted when the user exits the form from the keyboard (Enter, or the last
-/// Escape) — the host commits and seats the note caret after the block.
-pub struct PropExit;
+/// Emitted when the user exits the form from the keyboard — the host commits
+/// and seats the note caret beside the block: after it (`after`: Enter, the
+/// last Escape, Down off the last row, Right past the last value) or before it
+/// (Up off the first row, Left past the first key).
+pub struct PropExit {
+    pub after: bool,
+}
 
 pub struct PropertyEditor {
     rows: Vec<Row>,
@@ -569,7 +573,7 @@ impl PropertyEditor {
                 }
                 Some(_) => self.active = None,
                 None => {
-                    cx.emit(PropExit);
+                    cx.emit(PropExit { after: true });
                     return;
                 }
             }
@@ -607,17 +611,34 @@ impl PropertyEditor {
                             self.go(row, false, false);
                         } else if row + 1 < n {
                             self.go(row + 1, true, false);
+                        } else {
+                            // Past the last value: out of the form, below it.
+                            cx.emit(PropExit { after: true });
+                            return;
                         }
                     } else if !is_key {
                         // Hop to the preceding field, caret at its end.
                         self.go(row, true, true);
                     } else if row > 0 {
                         self.go(row - 1, false, true);
+                    } else {
+                        // Before the first key: out of the form, above it.
+                        cx.emit(PropExit { after: false });
+                        return;
                     }
                 }
             }
             "up" if row > 0 => self.go(row - 1, is_key, true),
             "down" if row + 1 < n => self.go(row + 1, is_key, true),
+            // Off the first / last row: out of the form, like leaving a table.
+            "up" => {
+                cx.emit(PropExit { after: false });
+                return;
+            }
+            "down" => {
+                cx.emit(PropExit { after: true });
+                return;
+            }
             // Tab / Shift+Tab arrive as the PropNextField / PropPrevField actions
             // (see `crate::actions`) so the default focus traversal can't grab them.
             "home" => {
@@ -646,7 +667,7 @@ impl PropertyEditor {
             }
             "enter" => {
                 // Done: the host commits and seats the note caret after the block.
-                cx.emit(PropExit);
+                cx.emit(PropExit { after: true });
                 return;
             }
             _ => {

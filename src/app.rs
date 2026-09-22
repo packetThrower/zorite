@@ -3258,14 +3258,26 @@ impl AppView {
             })
             .ok();
         });
-        // Enter / the final Escape exit from the keyboard: commit and seat the
-        // note caret on the line after the block (like leaving a math block).
+        // A keyboard exit (Enter, the final Escape, an arrow off the form's
+        // edge): commit and seat the note caret on the line before or after
+        // the block (like leaving a math block).
         let exit_sub = cx.subscribe_in(
             &editor,
             window,
-            |this, _ed, _: &crate::ui::property_editor::PropExit, window, cx| {
+            |this, _ed, ev: &crate::ui::property_editor::PropExit, window, cx| {
+                // Nothing sits above a block that opens the note — the caret
+                // would land on its first row and reveal it raw — so Up / Left
+                // there stays in the form.
+                let at_top = this
+                    .prop_edit
+                    .as_ref()
+                    .and_then(|p| p.source.read(cx).editing_block_range())
+                    .is_some_and(|r| r.start == 0);
+                if !ev.after && at_top {
+                    return;
+                }
                 if let Some((source, block)) = this.commit_prop_edit(cx) {
-                    source.update(cx, |e, cx| e.exit_math(block, true, window, cx));
+                    source.update(cx, |e, cx| e.exit_math(block, ev.after, window, cx));
                 }
             },
         );
