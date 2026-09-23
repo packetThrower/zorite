@@ -69,14 +69,22 @@ jobs:
       )
     steps:
       # Pre-step before the action runs: sync the maintainer's fork of
-      # microsoft/winget-pkgs against upstream master. wingetcreate (which
-      # the winget-releaser action wraps) opens the PR from a branch on
-      # that fork; if the fork has drifted behind upstream, the PR open
-      # fails with a merge-conflict or non-fast-forward error. The
-      # /merge-upstream endpoint does a GitHub-side fast-forward when
-      # possible, no-ops when already current, and fails benignly when
-      # the fork doesn't exist (logged + ignored — the action will
-      # surface a useful error in that case).
+      # microsoft/winget-pkgs against upstream master. The winget-releaser
+      # action opens the PR from a branch on that fork and runs its own
+      # `komac sync-fork` first, which fails on a fork that can't be
+      # brought current. The /merge-upstream endpoint fast-forwards the
+      # fork GitHub-side and returns success when it's already current, so
+      # any error here is real — and it's the one the action would hit
+      # next, reported less clearly. Fail with the reason instead.
+      #
+      # The usual one (v0.11.0, v0.12.0): upstream keeps changing its own
+      # `.github/workflows/`, and GitHub refuses to write workflow files
+      # into the fork with a token lacking the `workflow` scope (422). The
+      # fix is on the token, not here: give WINGET_TOKEN the `workflow`
+      # scope (classic PAT), or "Workflows: Read and write" on the fork
+      # (fine-grained). Until then, `gh repo sync packetThrower/winget-pkgs`
+      # from a machine logged in with that scope, then re-run this
+      # workflow with `gh workflow run after_release.yml -f tag_name=…`.
       - name: Sync fork against upstream
         shell: pwsh
         run: |
@@ -88,11 +96,18 @@ jobs:
           $body = @{ branch = "master" } | ConvertTo-Json
           $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY_OWNER/winget-pkgs/merge-upstream"
           try {
-            Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -ContentType "application/json"
-            Write-Host "Synced winget-pkgs fork against upstream master"
+            $res = Invoke-RestMethod -Uri $uri -Method Post -Headers $headers -Body $body -ContentType "application/json"
+            Write-Host "winget-pkgs fork: $($res.message)"
           } catch {
-            Write-Host "Fork sync skipped (already up to date or fork missing): $_"
-            Write-Host "Continuing — the winget-releaser action will surface a real error if the fork is genuinely unreachable"
+            $detail = "$_"
+            # The API's message quotes the scope name with a backtick, which
+            # the error text may carry raw or as the JSON escape \u0060.
+            if ($detail -match "without .{1,6}workflow.{1,6} scope") {
+              Write-Host "::error title=WINGET_TOKEN needs the workflow scope::Upstream winget-pkgs changed its workflow files, and GitHub won't sync them into the fork with this token. Add the 'workflow' scope to WINGET_TOKEN (fine-grained: Workflows read/write on the fork), or run 'gh repo sync $env:GITHUB_REPOSITORY_OWNER/winget-pkgs' locally and re-run this workflow."
+            } else {
+              Write-Host "::error title=winget-pkgs fork sync failed::$detail"
+            }
+            exit 1
           }
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
