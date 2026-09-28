@@ -24,6 +24,9 @@ workspace (edition 2024): the app at the root, plus eight reusable crates under 
 - `crates/os-cursors` — custom mouse cursors (no gpui fork; Linux XCursor / macOS / Windows).
 - `crates/os-spellcheck` — native OS spell-check (no deps; macOS/Windows, Linux no-op).
 - `docs/` — Astro Starlight docs site (auto-deploys on push to `main`).
+- `vendor/gpui-pre-wgpu` — gpui's Linux text system, vendored via `[patch.crates-io]`
+  for one upstream bug (combining marks drawn at the pen position, #108). Not ours:
+  excluded from the workspace; see its `ZORITE-PATCH.md` for when to drop it.
 
 ## The three views
 
