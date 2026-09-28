@@ -725,9 +725,21 @@ impl CosmicTextSystemState {
                 continue;
             }
 
+            // ZORITE PATCH (#108): `x`/`y` are only the pen position. A glyph
+            // the shaper places relative to another — a combining mark over
+            // its base, like the dots Noto Sans Arabic draws as separate
+            // glyphs, or a macron over `v` — also carries `x_offset` /
+            // `y_offset` (in em, y up). Dropping them painted every such mark
+            // at the pen position instead: Arabic dots slid left of their
+            // letters, a Latin macron sat beside its `v`. cosmic-text's own
+            // `LayoutGlyph::physical` applies them the same way, and the
+            // macOS/Windows text systems already report offset positions.
             let shaped_glyph = ShapedGlyph {
                 id: GlyphId(glyph.glyph_id as u32),
-                position: point(glyph.x.into(), glyph.y.into()),
+                position: point(
+                    (glyph.x + glyph.x_offset * glyph.font_size).into(),
+                    (glyph.y - glyph.y_offset * glyph.font_size).into(),
+                ),
                 index: glyph.start,
                 is_emoji,
             };

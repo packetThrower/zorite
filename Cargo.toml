@@ -18,6 +18,9 @@ path = "src/main.rs"
 fps = ["dep:gpui-fps"]
 
 [workspace]
+# The vendored gpui crate (see [patch.crates-io] below) is upstream code, not
+# ours to lint or test: keep it out of `--workspace`.
+exclude = ["vendor"]
 members = ["crates/gpui-bidi", "crates/zorite-editor", "crates/zorite-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-cursors", "crates/os-spellcheck", "crates/ratex-gpui"]
 resolver = "2"
 
@@ -295,3 +298,10 @@ include = ["packaging/windows/wix/main.wxs"]
 # Headless UI tests (`src/app/ui_tests.rs`): gpui's `TestAppContext` /
 # `VisualTestContext` and the `#[gpui::test]` macro.
 gpui = { workspace = true, features = ["test-support"] }
+
+# gpui's Linux text system, vendored with one fix: combining marks (Arabic and
+# Persian dots, maddas, a macron over `v`) were drawn at the pen position
+# instead of over their letter (#108). See vendor/gpui-pre-wgpu/ZORITE-PATCH.md
+# — remove this when a gpui-pre release carries the fix.
+[patch.crates-io]
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
