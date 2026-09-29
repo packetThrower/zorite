@@ -529,6 +529,17 @@ jobs:
 
           cd target/release
           "./$NAME" --appimage-extract >/dev/null
+          # cargo-packager ships AppRun as 0744, and the image stores every
+          # file as root-owned, so for anyone but root it's read-only. The
+          # AppImage runtime's FUSE mount tolerates that; a kernel squashfs
+          # mount doesn't — firejail (the AppImage catalog's test harness)
+          # refused to start it ("AppRun: Permission denied"). Make every
+          # executable runnable by all, and fail the build if one isn't.
+          chmod 0755 squashfs-root/AppRun
+          if find squashfs-root -type f -perm -u=x ! -perm -o=x | grep .; then
+            echo "::error::executables above aren't runnable by other users"
+            exit 1
+          fi
           UPDINFO="gh-releases-zsync|packetThrower|zorite|latest|zorite_*_${ARCH}.AppImage.zsync"
           ARCH="$ARCH" "$TOOL" -u "$UPDINFO" squashfs-root "$NAME"
           test -f "${NAME}.zsync"
