@@ -20,10 +20,9 @@ A Linux fix release.
   This is a bug in the GPUI toolkit's Linux text layout; Zorite carries a fix
   until it's fixed upstream. Reported by
   [@xXDevSShXx](https://github.com/xXDevSShXx) — thank you!
-- **The AppImage starts in sandboxes.** It wouldn't launch under firejail
-  ("AppRun: Permission denied"), or anything else that mounts the image
-  itself rather than through the AppImage runtime, because its launcher was
-  executable only by root.
+- **The AppImage's launcher is executable by every user,** not just root, so
+  it also runs when the image is mounted directly rather than through the
+  AppImage runtime.
 
 ## [0.12.0] - 2026-09-22
 
