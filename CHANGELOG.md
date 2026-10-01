@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [0.12.1] - 2026-10-01
+
+A Linux fix release.
+
+### Fixed
+
+- **Arabic and Persian letters on Linux** — dots and maddas (the dots of
+  ب ت ث پ, the madda of آ) drew shifted to the left of their letters in the
+  sidebar, tooltips, and dialogs. Other combining marks, like an accent over
+  a letter with no precomposed form, sat beside their letter the same way.
+  This is a bug in the GPUI toolkit's Linux text layout; Zorite carries a fix
+  until it's fixed upstream. Reported by
+  [@xXDevSShXx](https://github.com/xXDevSShXx) — thank you!
+- **The AppImage starts in sandboxes.** It wouldn't launch under firejail
+  ("AppRun: Permission denied"), or anything else that mounts the image
+  itself rather than through the AppImage runtime, because its launcher was
+  executable only by root.
+
 ## [0.12.0] - 2026-09-22
 
 The toolkit release: Zorite moves onto GPUI Kit and puts its new pieces to
