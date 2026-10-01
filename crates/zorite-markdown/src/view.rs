@@ -1768,7 +1768,10 @@ fn render_list(list: &mdast::List, ctx: &mut Ctx, depth: usize, window: &mut Win
             Some(mdast::Node::Heading(h)) => heading_scale(h.depth),
             _ => 1.0,
         };
-        let marker_top = px(f32::from(ctx.style.text_size) * (lead_scale - 1.0) * 1.618_034 / 2.0);
+        let marker_top = px(f32::from(ctx.style.text_size)
+            * (lead_scale - 1.0)
+            * std::f32::consts::GOLDEN_RATIO
+            / 2.0);
 
         // The marker is a plain glyph, except a task's box, which is drawn (a
         // rounded square, accent-filled with a white check when done — the
