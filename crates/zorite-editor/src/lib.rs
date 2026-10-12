@@ -5154,10 +5154,18 @@ impl EntityInputHandler for EditorState {
             self.content[0..range.start].to_owned() + new_text + &self.content[range.end..];
         self.marked_range =
             (!new_text.is_empty()).then(|| range.start..range.start + new_text.len());
+        // The selection inside a composition counts UTF-16 units from the start
+        // of `new_text`, not of the document (Windows sends the IME caret this
+        // way; AppKit's `setMarkedText` defines it so too). Converting it
+        // against the document put the caret mid-character as soon as the
+        // composed text was multi-byte — the next edit's slice then panicked,
+        // and a release build aborted on the first Japanese keystroke (#119).
         self.selected_range = new_selected_range_utf16
             .as_ref()
-            .map(|r| self.range_from_utf16(r))
-            .map(|r| r.start + range.start..r.end + range.start)
+            .map(|r| {
+                range.start + utf16_to_byte(new_text, r.start)
+                    ..range.start + utf16_to_byte(new_text, r.end)
+            })
             .unwrap_or_else(|| {
                 let caret = range.start + new_text.len();
                 caret..caret
@@ -6883,6 +6891,19 @@ struct ShapeMemo {
     shaped: ShapedDoc,
 }
 
+/// `utf16` code units into `text`, as a byte offset — clamped to `text.len()`,
+/// and never inside a character.
+fn utf16_to_byte(text: &str, utf16: usize) -> usize {
+    let mut units = 0;
+    for (byte, ch) in text.char_indices() {
+        if units >= utf16 {
+            return byte;
+        }
+        units += ch.len_utf16();
+    }
+    text.len()
+}
+
 /// Whether a just-typed input completes a word: a single boundary character
 /// (space / punctuation / Enter, incl. a list continuation's leading newline)
 /// — the moment the host's auto-replace hook (page-title auto-linking) is
@@ -6899,6 +6920,50 @@ fn word_boundary_input(new_text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::{EditorState, utf16_to_byte};
+    use gpui::{AppContext as _, EntityInputHandler as _};
+
+    #[test]
+    fn utf16_to_byte_counts_within_the_text() {
+        assert_eq!(utf16_to_byte("かな", 0), 0);
+        assert_eq!(utf16_to_byte("かな", 1), 3);
+        assert_eq!(utf16_to_byte("かな", 2), 6);
+        assert_eq!(utf16_to_byte("かな", 9), 6); // clamped
+        assert_eq!(utf16_to_byte("a😀b", 3), 5); // the emoji is two UTF-16 units
+    }
+
+    /// #119: Windows' IME reports the caret inside the composition relative to
+    /// the composed text. With text before it in the note, that offset must not
+    /// be read against the document — it landed mid-character and crashed.
+    #[gpui::test]
+    fn ime_composition_caret_is_relative_to_the_composed_text(cx: &mut gpui::TestAppContext) {
+        let editor = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| EditorState::new(window, cx).with_text("abc"))
+            })
+            .unwrap()
+        });
+        editor
+            .update(cx, |e, window, cx| {
+                e.selected_range = 3..3;
+                // Typing "ka" composes "か" with the caret after it: 1..1 in
+                // UTF-16 units of the composition.
+                e.replace_and_mark_text_in_range(None, "か", Some(1..1), window, cx);
+                assert_eq!(e.content, "abcか");
+                assert_eq!(e.marked_range, Some(3..6));
+                assert_eq!(e.selected_range, 6..6);
+                // The next composition step replaces the marked text cleanly.
+                e.replace_and_mark_text_in_range(None, "かな", Some(2..2), window, cx);
+                assert_eq!(e.content, "abcかな");
+                assert_eq!(e.selected_range, 9..9);
+                // Committing the result ends the composition.
+                e.replace_text_in_range(None, "仮名", window, cx);
+                assert_eq!(e.content, "abc仮名");
+                assert_eq!(e.marked_range, None);
+            })
+            .unwrap();
+    }
+
     #[test]
     fn caret_off_marker_line_cases() {
         use super::caret_off_marker_line;
