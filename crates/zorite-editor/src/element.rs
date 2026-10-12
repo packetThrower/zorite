@@ -92,6 +92,8 @@ pub(crate) struct PrepaintState {
     selections: Vec<PaintQuad>,
     /// Find-match highlight quads, painted beneath the selection.
     search: Vec<PaintQuad>,
+    /// The underline under IME marked text (a composition still in progress).
+    marked: Vec<PaintQuad>,
 }
 
 impl IntoElement for EditorElement {
@@ -1316,6 +1318,29 @@ impl Element for EditorElement {
             }
         }
 
+        // IME composition: underline the marked text, as native text fields
+        // do. Without it an unfinished composition looks committed — and the
+        // arrow keys the input method keeps for itself seem to stick (#119).
+        let marked: Vec<PaintQuad> = editor
+            .marked_range
+            .as_ref()
+            .map(|m| {
+                range_quads(m.start, m.end, text_color, window)
+                    .into_iter()
+                    .map(|q| {
+                        let b = q.bounds;
+                        fill(
+                            Bounds::new(
+                                point(b.left(), b.bottom() - px(3.)),
+                                size(b.size.width, px(1.5)),
+                            ),
+                            text_color,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let (cursor, selections) = if editor.content.is_empty() {
             let c = fill(
                 Bounds::new(
@@ -1449,6 +1474,7 @@ impl Element for EditorElement {
             cursor,
             selections,
             search,
+            marked,
         }
     }
 
@@ -1474,6 +1500,9 @@ impl Element for EditorElement {
         }
         for sel in prepaint.selections.drain(..) {
             window.paint_quad(sel);
+        }
+        for underline in prepaint.marked.drain(..) {
+            window.paint_quad(underline);
         }
 
         let style = window.text_style();

@@ -33,6 +33,8 @@ gpui-bidi = { path = "../gpui-bidi", version = "0.1" }
 # `gpui_platform`, same as the host app). Shared workspace spec, one graph.
 [dev-dependencies]
 gpui_platform = { workspace = true }
+# `#[gpui::test]` + a headless window, for the IME input-handler tests.
+gpui = { workspace = true, features = ["test-support"] }
 
 # The demo wires the editor to the real OS spell checker (M6). Dev-only, so the
 # editor crate itself stays host-agnostic and free of any OS-FFI dependency.
