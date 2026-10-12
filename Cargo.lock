@@ -3596,7 +3596,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 [[package]]
 name = "heic_decoder"
 version = "0.2.0"
-source = "git+https://github.com/ente-io/heic-decoder#2017f4ddaf91017483f6eb71500f520fba47391a"
+source = "git+https://github.com/ente-io/heic-decoder#89aea8bcce977c120e797bf83257f7e34bfd4fcf"
 dependencies = [
  "archmage",
  "brotli",
@@ -8016,7 +8016,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
