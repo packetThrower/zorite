@@ -840,6 +840,18 @@ impl SettingsView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Every main window holds its own connection; re-keying swaps the file
+        // under them (and Windows refuses the swap outright).
+        let open_windows = cx.global::<crate::app::GlobalAppWindows>().0.iter();
+        if open_windows.filter(|(_, w)| w.upgrade().is_some()).count() > 1 {
+            self.alert(
+                t!("settings.alert.close_windows"),
+                t!("settings.alert.close_windows_body").into_owned(),
+                window,
+                cx,
+            );
+            return;
+        }
         if mode != PwMode::Set && !crate::db::Db::verify_key(&current) {
             self.alert(
                 t!("settings.alert.wrong_password"),

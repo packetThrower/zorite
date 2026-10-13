@@ -276,6 +276,8 @@ settings:
     cant_use_folder: "Can’t use that folder"
     wrong_password: "Wrong password"
     wrong_password_body: "The current password doesn't match."
+    close_windows: "Close other windows"
+    close_windows_body: "Close every other Zorite window before changing the password."
     no_password: "No password"
     no_password_body: "The new password is empty."
     pw_mismatch: "Passwords don't match"
