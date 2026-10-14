@@ -117,7 +117,9 @@ copy/paste, undo, bold/italic — is dead.
 The bound set (`cmd-*` and its `ctrl-*` twin are both bound, so the same table
 works on macOS, Windows, and Linux): backspace/delete/enter; arrows,
 home/end; `shift-` + any movement to extend the selection;
-`alt-left`/`alt-right` (± `shift`) word-wise; `cmd-a` select all;
+`alt-left`/`alt-right` and `ctrl-left`/`ctrl-right` (± `shift`) word-wise;
+`alt-`/`ctrl-backspace` and `alt-`/`ctrl-delete` delete a word;
+`ctrl-home`/`ctrl-end` (± `shift`) document start/end; `cmd-a` select all;
 `cmd-c`/`cmd-x`/`cmd-v`; `cmd-z` undo, `cmd-shift-z`/`ctrl-y` redo;
 `tab`/`shift-tab` indent/outdent; `cmd-b`/`cmd-i`/`cmd-u`/`cmd-e`/
 `cmd-shift-x` bold/italic/underline (`<u>`)/inline-code/strikethrough;
