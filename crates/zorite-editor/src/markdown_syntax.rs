@@ -1127,6 +1127,12 @@ fn scan_inline(
             i = close + close_len;
             continue;
         }
+        // Any other HTML tag is literal text — its attributes hold no links
+        // (a CSS `#hex` isn't a `#tag`; matches the `links()` hit-tests).
+        if let Some(gt) = zorite_markdown::syntax::html_tag_end(&text[..end], i) {
+            i = gt;
+            continue;
+        }
         // Bare URL: colored like a link (it clicks like one — see the shared
         // `links()` grammar; `url_end` keeps styling and hit-tests identical).
         // Compare BYTES: `i` walks bytes, so a str slice here would panic
@@ -2423,6 +2429,21 @@ mod tests {
             out.iter()
                 .any(|s| s.range == (hi + 2..hi + 9) && s.style.hide)
         );
+    }
+
+    #[test]
+    fn css_hex_in_an_html_tag_is_not_a_tag() {
+        // Unclosed (so not styled) — the `#e03e3e` still isn't a `#tag`.
+        let text = r#"<span style="color: #e03e3e">red #real"#;
+        let st = test_style();
+        let mut out = Vec::new();
+        scan_line(text, 0, text.len(), &st, &mut out);
+        let tags: Vec<_> = out
+            .iter()
+            .filter(|s| s.style.color == Some(st.tag))
+            .map(|s| &text[s.range.clone()])
+            .collect();
+        assert_eq!(tags, vec!["#real"]);
     }
 
     #[test]
