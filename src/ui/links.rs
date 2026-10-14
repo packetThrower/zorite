@@ -24,6 +24,12 @@ pub fn parse_links(content: &str) -> Vec<String> {
     let bytes = content.as_bytes();
     let mut i = 0;
     while i < content.len() {
+        // An HTML tag's attributes hold no tags: `<span style="color: #e03e3e">`
+        // isn't a link to page `e03e3e` (the renderers agree — see `links()`).
+        if let Some(gt) = zorite_markdown::syntax::html_tag_end(content, i) {
+            i = gt;
+            continue;
+        }
         if bytes[i] == b'#' && (i == 0 || is_boundary(bytes[i - 1])) {
             let mut j = i + 1;
             while j < content.len() && is_tag_char(bytes[j]) {
@@ -58,7 +64,7 @@ fn push_unique(out: &mut Vec<String>, title: &str) {
 }
 
 fn is_boundary(b: u8) -> bool {
-    matches!(b, b' ' | b'\t' | b'\n' | b'(' | b'[')
+    matches!(b, b' ' | b'\t' | b'\n' | b'(' | b'[' | b'>')
 }
 
 fn is_tag_char(b: u8) -> bool {
@@ -128,6 +134,17 @@ mod tests {
     fn tag_needs_boundary_and_chars() {
         assert!(parse_links("a#b is not a tag").is_empty());
         assert!(parse_links("# heading not a tag").is_empty());
+    }
+
+    #[test]
+    fn css_hex_colors_in_html_tags_are_not_tags() {
+        assert_eq!(
+            parse_links(
+                "<span style=\"color: #e03e3e\">#red</span> and\n\
+                 <mark style=\"background: #fff3a0\">hi</mark> #real"
+            ),
+            vec!["red".to_string(), "real".to_string()]
+        );
     }
 
     #[test]
