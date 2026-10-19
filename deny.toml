@@ -18,6 +18,9 @@ ignore = [
     { id = "RUSTSEC-2024-0384", reason = "instant 0.1.13 unmaintained. Transitive via gpui-component and notify -> notify-types. Both upstream; revisit at each gpui-component rev bump." },
     { id = "RUSTSEC-2026-0192", reason = "ttf-parser unmaintained (no safe upgrade). Transitive via fontdb, whose parents are all upstream: usvg (gpui + gpui-component), mermaid-rs-renderer (Zed), and ratex-render/-svg. Clears when upstreams move to skrifa; revisit at each gpui/ratex pull." },
     { id = "RUSTSEC-2026-0206", reason = "rustybuzz unmaintained (no safe upgrade; maintainer points at harfrust). Transitive via usvg <- gpui and gpui-component. Clears when upstream usvg/Zed migrate shapers; revisit at each gpui pull." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained as a standalone crate (folded into zbus). Linux-only, transitive via gpui-pre-linux -> accesskit_unix -> atspi/zbus. Upstream; revisit at each gpui pull." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained as a standalone crate (folded into zbus). Same Linux-only gpui-pre-linux -> atspi/zbus chain as RUSTSEC-2026-0370." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained as a standalone crate (folded into zbus). Same Linux-only gpui-pre-linux -> atspi/zbus chain as RUSTSEC-2026-0370." },
 ]
 
 [licenses]
