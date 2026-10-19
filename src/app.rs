@@ -3901,7 +3901,10 @@ impl AppView {
     /// place and keeps the session key + keychain in sync. `None` decrypts.
     pub fn set_db_password(&mut self, new: Option<&str>) -> Result<(), String> {
         let remembered = crate::security::is_remembered();
-        self.db.set_encryption(new).map_err(|e| e.to_string())?;
+        let old = crate::security::session_key();
+        self.db
+            .set_encryption(old.as_deref(), new)
+            .map_err(|e| e.to_string())?;
         match new {
             Some(pw) => {
                 crate::security::set_session_key(Some(pw.to_string()));
