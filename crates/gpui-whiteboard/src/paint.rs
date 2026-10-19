@@ -784,7 +784,7 @@ pub(crate) fn paint_stroke(
         return;
     }
     let z = cam.zoom.max(MIN_ZOOM);
-    let mut pb = PathBuilder::stroke(px((world_w * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((world_w * z).max(MIN_STROKE_PX)));
     pb.move_to(to_screen(points[0][0], points[0][1], cam, origin));
     for p in &points[1..] {
         pb.line_to(to_screen(p[0], p[1], cam, origin));
@@ -818,7 +818,7 @@ pub(crate) fn paint_rect(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -858,7 +858,7 @@ pub(crate) fn paint_ellipse(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -932,7 +932,7 @@ pub(crate) fn paint_box_polygon(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -978,7 +978,7 @@ pub(crate) fn paint_round_rect(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -999,7 +999,7 @@ pub(crate) fn paint_segment(
     let p2 = to_screen(seg.x2, seg.y2, cam, origin);
     let p1f = [f32::from(p1.x), f32::from(p1.y)];
     let p2f = [f32::from(p2.x), f32::from(p2.y)];
-    let stroke_px = (seg.width * z).max(0.5);
+    let stroke_px = (seg.width * z).max(MIN_STROKE_PX);
     let mut points = vec![p1f];
     let (dxw, _dyw) = (seg.x2 - seg.x1, seg.y2 - seg.y1);
     let (end_dx, end_dy) = match style {
@@ -1114,22 +1114,11 @@ pub(crate) fn paint_polyline(
                 }
                 let ux = dx / len;
                 let uy = dy / len;
-                let mut local = 0.0;
-                while local < len {
-                    let at = traveled + local;
-                    let phase = at % cycle;
-                    let draw = if phase < dash { dash - phase } else { 0.0 };
-                    if draw > 0.0 {
-                        let s = local;
-                        let e = (local + draw).min(len);
-                        let p0 = [a[0] + ux * s, a[1] + uy * s];
-                        let p1 = [a[0] + ux * e, a[1] + uy * e];
-                        pb.move_to(point(px(p0[0]), px(p0[1])));
-                        pb.line_to(point(px(p1[0]), px(p1[1])));
-                        local = e;
-                    } else {
-                        local = (local + (cycle - phase)).min(len);
-                    }
+                for (s, e) in dash_spans(traveled, len, dash, cycle) {
+                    let p0 = [a[0] + ux * s, a[1] + uy * s];
+                    let p1 = [a[0] + ux * e, a[1] + uy * e];
+                    pb.move_to(point(px(p0[0]), px(p0[1])));
+                    pb.line_to(point(px(p1[0]), px(p1[1])));
                 }
                 traveled += len;
             }
@@ -1138,6 +1127,27 @@ pub(crate) fn paint_polyline(
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
     }
+}
+
+/// The dashes along a `len`-long piece starting `traveled` into the line, as
+/// `(start, end)` offsets within the piece. Dash `k` spans `k·cycle ..
+/// k·cycle + dash` of the whole line. Indexing the dashes, rather than
+/// stepping an f32 offset, keeps the count bounded: stepping stalled when a
+/// step rounded to zero, appending dashes until the allocation aborted.
+pub(crate) fn dash_spans(
+    traveled: f32,
+    len: f32,
+    dash: f32,
+    cycle: f32,
+) -> impl Iterator<Item = (f32, f32)> {
+    let first = (traveled / cycle).floor() as i64;
+    let last = ((traveled + len) / cycle).ceil() as i64;
+    (first..last).filter_map(move |k| {
+        let start = k as f32 * cycle - traveled;
+        let s = start.max(0.0);
+        let e = (start + dash).min(len);
+        (e > s).then_some((s, e))
+    })
 }
 
 pub(crate) fn draw_filled_circle(hx: f32, hy: f32, radius: f32, color: Hsla, window: &mut Window) {

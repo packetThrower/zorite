@@ -85,6 +85,14 @@ actions!(
         WordRight,
         SelectWordLeft,
         SelectWordRight,
+        DeleteWordLeft,
+        DeleteWordRight,
+        SelectHome,
+        SelectEnd,
+        DocStart,
+        DocEnd,
+        SelectDocStart,
+        SelectDocEnd,
         Indent,
         Outdent,
         Bold,
@@ -135,6 +143,21 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-right", WordRight, ctx),
         KeyBinding::new("alt-shift-left", SelectWordLeft, ctx),
         KeyBinding::new("alt-shift-right", SelectWordRight, ctx),
+        // Windows / Linux word motion and editing (Ctrl, where macOS uses ⌥).
+        KeyBinding::new("ctrl-left", WordLeft, ctx),
+        KeyBinding::new("ctrl-right", WordRight, ctx),
+        KeyBinding::new("ctrl-shift-left", SelectWordLeft, ctx),
+        KeyBinding::new("ctrl-shift-right", SelectWordRight, ctx),
+        KeyBinding::new("alt-backspace", DeleteWordLeft, ctx),
+        KeyBinding::new("ctrl-backspace", DeleteWordLeft, ctx),
+        KeyBinding::new("alt-delete", DeleteWordRight, ctx),
+        KeyBinding::new("ctrl-delete", DeleteWordRight, ctx),
+        KeyBinding::new("shift-home", SelectHome, ctx),
+        KeyBinding::new("shift-end", SelectEnd, ctx),
+        KeyBinding::new("ctrl-home", DocStart, ctx),
+        KeyBinding::new("ctrl-end", DocEnd, ctx),
+        KeyBinding::new("ctrl-shift-home", SelectDocStart, ctx),
+        KeyBinding::new("ctrl-shift-end", SelectDocEnd, ctx),
         KeyBinding::new("cmd-b", Bold, ctx),
         KeyBinding::new("ctrl-b", Bold, ctx),
         KeyBinding::new("cmd-i", Italic, ctx),
@@ -2179,6 +2202,15 @@ impl EditorState {
     }
 
     fn home(&mut self, _: &Home, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.home_target(), cx);
+    }
+
+    fn select_home(&mut self, _: &SelectHome, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        self.select_to(self.home_target(), cx);
+    }
+
+    fn home_target(&self) -> usize {
         let (row, col) = self.row_col(self.cursor_offset());
         let starts = self.line_starts();
         // Smart Home on a gutter line (list/task/quote): the marker is hidden
@@ -2186,12 +2218,11 @@ impl EditorState {
         // the raw line start would reveal the marker and let typing break it.
         // A second Home (at or inside the prefix) goes to the true start.
         let plen = self.hidden_prefix_len(row);
-        let target = if plen > 0 && col > plen {
+        if plen > 0 && col > plen {
             starts[row] + plen
         } else {
             starts[row]
-        };
-        self.move_to(target, cx);
+        }
     }
 
     /// The hidden marker prefix length of logical `row` — list/task/quote
@@ -2215,6 +2246,30 @@ impl EditorState {
     fn end(&mut self, _: &End, _: &mut Window, cx: &mut Context<Self>) {
         let (row, _) = self.row_col(self.cursor_offset());
         self.move_to(self.line_end(row), cx);
+    }
+
+    fn select_end(&mut self, _: &SelectEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        let (row, _) = self.row_col(self.cursor_offset());
+        self.select_to(self.line_end(row), cx);
+    }
+
+    fn doc_start(&mut self, _: &DocStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(0, cx);
+    }
+
+    fn doc_end(&mut self, _: &DocEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.move_to(self.content.len(), cx);
+    }
+
+    fn select_doc_start(&mut self, _: &SelectDocStart, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        self.select_to(0, cx);
+    }
+
+    fn select_doc_end(&mut self, _: &SelectDocEnd, _: &mut Window, cx: &mut Context<Self>) {
+        self.goal_x = None;
+        self.select_to(self.content.len(), cx);
     }
 
     // --- Editing -------------------------------------------------------------
@@ -4669,6 +4724,32 @@ impl EditorState {
         self.select_to(self.next_word(self.cursor_offset()), cx);
     }
 
+    /// Delete back to the previous word start (or the selection, if any).
+    fn delete_word_left(
+        &mut self,
+        _: &DeleteWordLeft,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.prev_word(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    /// Delete forward to the next word end (or the selection, if any).
+    fn delete_word_right(
+        &mut self,
+        _: &DeleteWordRight,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            self.select_to(self.next_word(self.cursor_offset()), cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
     /// The `src` of a file chip on the row at window `position`, if that row is a
     /// chip (from the last paint) — left-click opens it, right-click edits.
     fn chip_at(&self, position: Point<Pixels>) -> Option<(SharedString, bool)> {
@@ -5260,6 +5341,14 @@ impl Render for EditorState {
             .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::select_word_left))
             .on_action(cx.listener(Self::select_word_right))
+            .on_action(cx.listener(Self::delete_word_left))
+            .on_action(cx.listener(Self::delete_word_right))
+            .on_action(cx.listener(Self::select_home))
+            .on_action(cx.listener(Self::select_end))
+            .on_action(cx.listener(Self::doc_start))
+            .on_action(cx.listener(Self::doc_end))
+            .on_action(cx.listener(Self::select_doc_start))
+            .on_action(cx.listener(Self::select_doc_end))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::newline))
             .on_action(cx.listener(Self::bold))
@@ -6920,7 +7009,10 @@ fn word_boundary_input(new_text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{EditorState, utf16_to_byte};
+    use super::{
+        DeleteWordLeft, DeleteWordRight, DocEnd, DocStart, EditorState, SelectDocStart, SelectHome,
+        utf16_to_byte,
+    };
     use gpui::{AppContext as _, EntityInputHandler as _};
 
     #[test]
@@ -6960,6 +7052,32 @@ mod tests {
                 e.replace_text_in_range(None, "仮名", window, cx);
                 assert_eq!(e.content, "abc仮名");
                 assert_eq!(e.marked_range, None);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn windows_word_and_document_keys(cx: &mut gpui::TestAppContext) {
+        let editor = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| EditorState::new(window, cx).with_text("one two\nthree"))
+            })
+            .unwrap()
+        });
+        editor
+            .update(cx, |e, window, cx| {
+                e.selected_range = 7..7;
+                e.select_home(&SelectHome, window, cx);
+                assert_eq!(e.selected_range, 0..7);
+                e.doc_end(&DocEnd, window, cx);
+                e.select_doc_start(&SelectDocStart, window, cx);
+                assert_eq!(e.selected_range, 0..13);
+                e.selected_range = 7..7;
+                e.delete_word_left(&DeleteWordLeft, window, cx);
+                assert_eq!(e.content, "one \nthree");
+                e.doc_start(&DocStart, window, cx);
+                e.delete_word_right(&DeleteWordRight, window, cx);
+                assert_eq!(e.content, " \nthree");
             })
             .unwrap();
     }

@@ -65,8 +65,17 @@ const GRID: f32 = 24.0;
 const MIN_DOT_SPACING: f32 = 16.0;
 /// Dot size in screen px (constant — dots don't grow with zoom).
 const DOT: f32 = 2.0;
+/// Thinnest on-screen stroke. Thinner, a horizontal or vertical line can fall
+/// between pixel rows and vanish on some renderers (blinking as you zoom).
+const MIN_STROKE_PX: f32 = 1.0;
 /// Screen px per scroll "line" for inexact (`Lines`) scroll deltas.
 const LINE_PX: f32 = 16.0;
+/// Most `Lines` one wheel event may scroll. Windows' "one screen at a time"
+/// wheel setting reports `u32::MAX` lines per notch.
+const MAX_SCROLL_LINES: f32 = 20.0;
+/// Furthest the camera may pan from the origin, in world units. Past ~1e8 a
+/// grid step no longer changes an f32, and the dot-grid loop never ends.
+const MAX_PAN: f32 = 1.0e6;
 const VIEWPORT_CULL_MARGIN_PX: f32 = 96.0;
 
 fn accepts_wheel_input(read_only: bool) -> bool {
@@ -4508,7 +4517,10 @@ impl WhiteboardView {
     fn on_scroll(&mut self, ev: &ScrollWheelEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let (dx, dy) = match ev.delta {
             ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
-            ScrollDelta::Lines(p) => (p.x * LINE_PX, p.y * LINE_PX),
+            ScrollDelta::Lines(p) => {
+                let lines = |l: f32| l.clamp(-MAX_SCROLL_LINES, MAX_SCROLL_LINES) * LINE_PX;
+                (lines(p.x), lines(p.y))
+            }
         };
         if ev.modifiers.platform || ev.modifiers.control {
             let (rx, ry) = self.relative(ev.position);
@@ -7545,6 +7557,29 @@ mod tests {
     }
 
     #[test]
+    fn dash_spans_stay_bounded() {
+        // Bisect D's dashed line (1300 world px, width 4) swept across zoom:
+        // the old f32 stepping stalled from ~0.556 and grew the path forever.
+        let mut z = 0.1f32;
+        while z <= MAX_ZOOM {
+            let stroke = (4.0 * z).max(0.5);
+            let (dash, cycle) = (
+                (stroke * 4.5).max(10.0),
+                (stroke * 4.5).max(10.0) + (stroke * 2.5).max(6.0),
+            );
+            let len = 1300.0 * z;
+            let n = paint::dash_spans(0.0, len, dash, cycle).count();
+            assert!(n as f32 <= len / cycle + 2.0, "zoom {z}: {n} dashes");
+            z *= 1.0007;
+        }
+        // A piece starting mid-gap and mid-dash.
+        let spans: Vec<_> = paint::dash_spans(12.0, 20.0, 10.0, 16.0).collect();
+        assert_eq!(spans, vec![(4.0, 14.0)]);
+        let spans: Vec<_> = paint::dash_spans(5.0, 10.0, 10.0, 16.0).collect();
+        assert_eq!(spans, vec![(0.0, 5.0)]);
+    }
+
+    #[test]
     fn camera_round_trips_through_json() {
         let scene = Scene {
             camera: Camera {
@@ -7557,6 +7592,16 @@ mod tests {
         let restored = Scene::from_json(&scene.to_json());
         assert_eq!(restored.camera.x, 12.5);
         assert_eq!(restored.camera.zoom, 2.0);
+    }
+
+    #[test]
+    fn camera_pan_stays_bounded() {
+        let mut c = Camera::default();
+        c.pan_by(-(u32::MAX as f32) * LINE_PX, 0.0);
+        assert_eq!(c.x, MAX_PAN);
+
+        let scene = Scene::from_json(r#"{"camera":{"x":7e10,"y":-7e10,"zoom":1}}"#);
+        assert_eq!((scene.camera.x, scene.camera.y), (MAX_PAN, -MAX_PAN));
     }
 
     #[test]
