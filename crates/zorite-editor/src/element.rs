@@ -261,10 +261,11 @@ impl Element for EditorElement {
                 {
                     let delta = total - last.size.height;
                     // Layout rounds the painted bounds to device pixels, so
-                    // `last` can differ from `total` by up to one device px
-                    // with nothing changed. Compensating that noise on every
-                    // re-render crept the feed at 1x scale (#122).
-                    if delta.abs() >= px(1.0 / sf) {
+                    // `last` can differ from `total` by just under one device
+                    // px with nothing changed (seen: 0.9998 at 1x). Compensating
+                    // that noise on every re-render crept the feed (#122);
+                    // 1.5 device px leaves margin over it.
+                    if delta.abs() >= px(1.5 / sf) {
                         let n = new_tops.len().min(editor.line_tops.len());
                         let j = (0..n)
                             .find(|&k| (new_tops[k] - editor.line_tops[k]).abs() > px(0.5))
