@@ -784,7 +784,7 @@ pub(crate) fn paint_stroke(
         return;
     }
     let z = cam.zoom.max(MIN_ZOOM);
-    let mut pb = PathBuilder::stroke(px((world_w * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((world_w * z).max(MIN_STROKE_PX)));
     pb.move_to(to_screen(points[0][0], points[0][1], cam, origin));
     for p in &points[1..] {
         pb.line_to(to_screen(p[0], p[1], cam, origin));
@@ -818,7 +818,7 @@ pub(crate) fn paint_rect(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -858,7 +858,7 @@ pub(crate) fn paint_ellipse(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -932,7 +932,7 @@ pub(crate) fn paint_box_polygon(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -978,7 +978,7 @@ pub(crate) fn paint_round_rect(
             window.paint_path(path, fill);
         }
     }
-    let mut pb = PathBuilder::stroke(px((b.width * z).max(0.5)));
+    let mut pb = PathBuilder::stroke(px((b.width * z).max(MIN_STROKE_PX)));
     trace(&mut pb);
     if let Ok(path) = pb.build() {
         window.paint_path(path, ink);
@@ -999,7 +999,7 @@ pub(crate) fn paint_segment(
     let p2 = to_screen(seg.x2, seg.y2, cam, origin);
     let p1f = [f32::from(p1.x), f32::from(p1.y)];
     let p2f = [f32::from(p2.x), f32::from(p2.y)];
-    let stroke_px = (seg.width * z).max(0.5);
+    let stroke_px = (seg.width * z).max(MIN_STROKE_PX);
     let mut points = vec![p1f];
     let (dxw, _dyw) = (seg.x2 - seg.x1, seg.y2 - seg.y1);
     let (end_dx, end_dy) = match style {
