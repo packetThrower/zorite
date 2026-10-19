@@ -7545,6 +7545,29 @@ mod tests {
     }
 
     #[test]
+    fn dash_spans_stay_bounded() {
+        // Bisect D's dashed line (1300 world px, width 4) swept across zoom:
+        // the old f32 stepping stalled from ~0.556 and grew the path forever.
+        let mut z = 0.1f32;
+        while z <= MAX_ZOOM {
+            let stroke = (4.0 * z).max(0.5);
+            let (dash, cycle) = (
+                (stroke * 4.5).max(10.0),
+                (stroke * 4.5).max(10.0) + (stroke * 2.5).max(6.0),
+            );
+            let len = 1300.0 * z;
+            let n = paint::dash_spans(0.0, len, dash, cycle).count();
+            assert!(n as f32 <= len / cycle + 2.0, "zoom {z}: {n} dashes");
+            z *= 1.0007;
+        }
+        // A piece starting mid-gap and mid-dash.
+        let spans: Vec<_> = paint::dash_spans(12.0, 20.0, 10.0, 16.0).collect();
+        assert_eq!(spans, vec![(4.0, 14.0)]);
+        let spans: Vec<_> = paint::dash_spans(5.0, 10.0, 10.0, 16.0).collect();
+        assert_eq!(spans, vec![(0.0, 5.0)]);
+    }
+
+    #[test]
     fn camera_round_trips_through_json() {
         let scene = Scene {
             camera: Camera {
