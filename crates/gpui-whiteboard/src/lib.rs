@@ -65,6 +65,9 @@ const GRID: f32 = 24.0;
 const MIN_DOT_SPACING: f32 = 16.0;
 /// Dot size in screen px (constant — dots don't grow with zoom).
 const DOT: f32 = 2.0;
+/// Thinnest on-screen stroke. Thinner, a horizontal or vertical line can fall
+/// between pixel rows and vanish on some renderers (blinking as you zoom).
+const MIN_STROKE_PX: f32 = 1.0;
 /// Screen px per scroll "line" for inexact (`Lines`) scroll deltas.
 const LINE_PX: f32 = 16.0;
 /// Most `Lines` one wheel event may scroll. Windows' "one screen at a time"
