@@ -526,11 +526,37 @@ pub fn url_end(line: &str, start: usize) -> usize {
     j
 }
 
+/// Where an inline HTML tag (`<span style="color: #e03e3e">`, `</mark>`)
+/// starting at byte `i` ends — one past its `>`, on the same line. `None` if
+/// `i` doesn't open one; an autolink (`<https://…>`) doesn't (a `:` ends the
+/// name). Its attributes are opaque: a CSS `#hex` in one isn't a `#tag`.
+pub fn html_tag_end(line: &str, i: usize) -> Option<usize> {
+    let b = line.as_bytes();
+    if b.get(i) != Some(&b'<') {
+        return None;
+    }
+    let mut j = i + 1 + usize::from(b.get(i + 1) == Some(&b'/'));
+    if !b.get(j)?.is_ascii_alphabetic() {
+        return None;
+    }
+    while b
+        .get(j)
+        .is_some_and(|c| c.is_ascii_alphanumeric() || *c == b'-')
+    {
+        j += 1;
+    }
+    if !matches!(b.get(j)?, b'>' | b'/' | b' ' | b'\t') {
+        return None;
+    }
+    let gt = j + line[j..].find(['>', '\n'])?;
+    (b[gt] == b'>').then_some(gt + 1)
+}
+
 /// Every clickable link in `line`, as `(source byte range, target)`.
 /// Wiki-links (anywhere on one opens its target; the alias is display-only),
 /// inline `[text](url)` links, `#tags`, and bare `http(s)://` URLs. Images
-/// (`![](src)`), footnote refs, and anything inside inline code are opaque —
-/// not links. One grammar for every renderer's click hit-tests, hover
+/// (`![](src)`), footnote refs, and anything inside inline code or an HTML
+/// tag are opaque — not links. One grammar for every renderer's click hit-tests, hover
 /// cursors, and styling.
 pub fn links(line: &str) -> Vec<(std::ops::Range<usize>, LinkHit)> {
     let b = line.as_bytes();
@@ -544,6 +570,11 @@ pub fn links(line: &str) -> Vec<(std::ops::Range<usize>, LinkHit)> {
             && let Some(close) = find1(b, i + 1, end, b'`')
         {
             i = close + 1;
+            continue;
+        }
+        // HTML tag: opaque too (`<span style="color: #e03e3e">` has no tag).
+        if let Some(gt) = html_tag_end(line, i) {
+            i = gt;
             continue;
         }
         // Wiki-link: [[target]] / [[target|alias]].
@@ -1585,6 +1616,16 @@ mod tests {
         );
         // Opaque: code spans, images, footnotes, glued #.
         assert!(links("`https://x.io` ![a](i.png) [^1] word#no").is_empty());
+        // HTML tags too: a CSS `#hex` isn't a tag — but the body and an
+        // autolink still link.
+        let hits = links(r#"<span style="color: #e03e3e">#red</span> <https://a.io/#x>"#);
+        assert_eq!(
+            hits.iter().map(|(_, h)| h).collect::<Vec<_>>(),
+            vec![
+                &LinkHit::Page("red".into()),
+                &LinkHit::Url("https://a.io/#x".into()),
+            ]
+        );
         // Regression: multi-byte text before a URL must not panic the
         // byte-wise walk (it once str-sliced at a continuation byte).
         let hits = links("shrug ¯\\_(ツ)_/¯ then https://a.io done");

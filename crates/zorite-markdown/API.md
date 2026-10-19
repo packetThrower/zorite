@@ -54,6 +54,7 @@ isn't public. Feature `—` = always compiled (`zorite_markdown::syntax`);
 | [`is_tag_char`](#is_tag_char--is_word_char) | fn | `fn is_tag_char(c: u8) -> bool` | Byte valid inside a `#tag` name | — |
 | [`is_word_char`](#is_tag_char--is_word_char) | fn | `fn is_word_char(c: u8) -> bool` | Word byte for boundary checks | — |
 | [`url_end`](#url_end) | fn | `fn url_end(line: &str, start: usize) -> usize` | Where a bare URL ends (GFM-ish) | — |
+| [`html_tag_end`](#html_tag_end) | fn | `fn html_tag_end(line: &str, i: usize) -> Option<usize>` | Where an inline HTML tag ends (opaque to links) | — |
 | [`links`](#links) | fn | `fn links(line: &str) -> Vec<(Range<usize>, LinkHit)>` | Every clickable link in a line, with source ranges | — |
 | [`link_at`](#link_at) | fn | `fn link_at(line: &str, col: usize) -> Option<LinkHit>` | The link under a byte column | — |
 | [`block_id`](#block_id) | fn | `fn block_id(line: &str) -> Option<(usize, &str)>` | Trailing ` ^block-id` anchor on a line | — |
@@ -662,6 +663,23 @@ punctuation (`.` `,` `;` `:` `!` `?` `)` `]`) — GFM-ish autolink trimming.
 
 **Returns** — the end byte offset (exclusive). `start` itself if the URL is
 empty. Never panics for in-range `start`.
+
+---
+
+## `html_tag_end`
+
+```rust
+pub fn html_tag_end(line: &str, i: usize) -> Option<usize>
+```
+
+Where an inline HTML tag (`<span style="color: #e03e3e">`, `</mark>`)
+starting at byte `i` ends. A tag name is an ASCII letter then letters, digits
+or `-`, followed by whitespace, `/` or `>`; so an autolink (`<https://…>`) is
+not a tag. The `>` must be on the same line. `links` treats the whole tag as
+opaque, so a CSS `#hex` in its attributes is not a `#tag`.
+
+**Returns** — one past the tag's `>`, or `None` if `i` doesn't open a tag.
+Never panics.
 
 ---
 
