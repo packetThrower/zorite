@@ -299,9 +299,14 @@ impl Db {
 
     /// Re-encrypt the database in place: SQLCipher-export a sibling copy under
     /// `new_key` (`None` = plaintext), swap it in atomically, and reopen the
-    /// connection. The caller owns UX (confirmations, keychain updates). The
-    /// path comes from the connection itself, so tests run on temp files.
-    pub fn set_encryption(&mut self, new_key: Option<&str>) -> rusqlite::Result<()> {
+    /// connection. `old_key` reopens the untouched original if the swap fails.
+    /// The caller owns UX (confirmations, keychain updates). The path comes
+    /// from the connection itself, so tests run on temp files.
+    pub fn set_encryption(
+        &mut self,
+        old_key: Option<&str>,
+        new_key: Option<&str>,
+    ) -> rusqlite::Result<()> {
         let path: PathBuf = self
             .conn
             .query_row(
@@ -349,13 +354,17 @@ impl Db {
         clear_verified();
         let placeholder = Connection::open_in_memory()?;
         drop(std::mem::replace(&mut self.conn, placeholder));
-        std::fs::rename(&tmp, &path).map_err(|e| {
+        if let Err(e) = std::fs::rename(&tmp, &path) {
             let _ = std::fs::remove_file(&tmp);
-            rusqlite::Error::SqliteFailure(
+            // Windows won't replace a file another connection holds open (a
+            // second window). Reopen the original, or every later write in
+            // this window would land in the in-memory placeholder and vanish.
+            *self = Self::open_at(&path, old_key).map_err(|e| e.source)?;
+            return Err(rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
                 Some(format!("swap re-encrypted database: {e}")),
-            )
-        })?;
+            ));
+        }
         for ext in ["db-wal", "db-shm"] {
             let _ = std::fs::remove_file(path.with_extension(ext));
         }
@@ -1777,14 +1786,14 @@ mod tests {
         let mut db = Db::open_file(&path, None).unwrap();
         let page = db.get_or_create_page("Secret").unwrap();
         db.set_page_content(page.id, "original").unwrap();
-        db.set_encryption(Some("old-pw")).unwrap();
+        db.set_encryption(None, Some("old-pw")).unwrap();
         drop(db);
 
         // Exactly what Settings does: verify the old password (which stashes a
         // connection), then re-key.
         let mut db = Db::open_file(&path, Some("old-pw")).unwrap();
         assert!(Db::verify_key_at(&path, "old-pw"));
-        db.set_encryption(Some("new-pw")).unwrap();
+        db.set_encryption(Some("old-pw"), Some("new-pw")).unwrap();
         // A write after the change — an autosave, in the app.
         db.set_page_content(page.id, "written-after-change")
             .unwrap();
@@ -1864,7 +1873,7 @@ mod tests {
 
         // Encrypt in place: header becomes opaque, data survives, and the
         // connection keeps working.
-        db.set_encryption(Some("hunter2")).unwrap();
+        db.set_encryption(None, Some("hunter2")).unwrap();
         assert!(file_is_encrypted(&path));
         assert_eq!(db.get_page(page.id).unwrap().unwrap().content, "classified");
         drop(db);
@@ -1878,14 +1887,40 @@ mod tests {
         assert_eq!(db.get_page(page.id).unwrap().unwrap().content, "classified");
 
         // Change the password, then remove it: plaintext again.
-        db.set_encryption(Some("correct horse")).unwrap();
+        db.set_encryption(Some("hunter2"), Some("correct horse"))
+            .unwrap();
         drop(db);
         assert!(Db::open_file(&path, Some("hunter2")).is_err());
         let mut db = Db::open_file(&path, Some("correct horse")).unwrap();
-        db.set_encryption(None).unwrap();
+        db.set_encryption(Some("correct horse"), None).unwrap();
         assert!(!file_is_encrypted(&path));
         assert_eq!(db.get_page(page.id).unwrap().unwrap().content, "classified");
         drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A second window holds its own connection, and Windows won't replace a
+    /// file that's open — the swap fails. This connection must come back on
+    /// the original file, not stay on the in-memory placeholder.
+    #[cfg(windows)]
+    #[test]
+    fn failed_swap_keeps_writing_to_disk() {
+        let dir = std::env::temp_dir().join(format!("zorite-swapfail-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("swapfail.db");
+        let _ = std::fs::remove_file(&path);
+
+        let mut db = Db::open_file(&path, None).unwrap();
+        let page = db.get_or_create_page("Notes").unwrap();
+        let other_window = Db::open_file(&path, None).unwrap();
+        assert!(db.set_encryption(None, Some("pw")).is_err());
+        db.set_page_content(page.id, "written-after-failure")
+            .unwrap();
+        assert_eq!(
+            other_window.get_page(page.id).unwrap().unwrap().content,
+            "written-after-failure"
+        );
+        drop((db, other_window));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
