@@ -7819,7 +7819,7 @@ fn make_editor(
         // language switch).
         editor.set_labels(crate::i18n::editor_labels(), cx);
         // Right-click a flagged word → the OS's suggestions, fetched lazily.
-        editor.on_suggest(|word| os_spellcheck::SpellChecker::new().suggestions(word));
+        editor.on_suggest(|word| SPELL_CHECKER.with(|sc| sc.suggestions(word)));
         // Copy/Cut put rendered HTML on the clipboard beside the raw markdown,
         // so rich editors paste formatting (see clipboard::copy_rich).
         editor.set_clipboard_writer(Rc::new(crate::clipboard::copy_rich));
@@ -7908,11 +7908,21 @@ fn make_editor(
 /// diagnostic (a red wavy underline). Detection only — suggestions are fetched
 /// lazily on right-click via the editor's `on_suggest` provider.
 fn spell_diagnostics(text: &str) -> Vec<Diagnostic> {
-    os_spellcheck::SpellChecker::new()
-        .check(text)
-        .into_iter()
-        .map(|range| Diagnostic { range })
-        .collect()
+    SPELL_CHECKER.with(|sc| {
+        sc.check(text)
+            .into_iter()
+            .map(|range| Diagnostic { range })
+            .collect()
+    })
+}
+
+thread_local! {
+    /// One OS spell checker, reused: creating one on Windows is a COM
+    /// instantiation plus a dictionary load, and it ran on every check.
+    /// Thread-local because both backends are main-thread only; leaked so no
+    /// destructor releases the COM object after COM has shut down at exit.
+    static SPELL_CHECKER: &'static os_spellcheck::SpellChecker =
+        Box::leak(Box::new(os_spellcheck::SpellChecker::new()));
 }
 
 /// Relaunch the app so the next boot picks up the re-pointed data dir (a
