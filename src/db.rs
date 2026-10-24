@@ -1116,8 +1116,12 @@ impl Db {
     /// file.
     pub fn content_references(&self, needle: &str) -> rusqlite::Result<bool> {
         self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pages WHERE instr(content, ?1) > 0) \
-             OR EXISTS(SELECT 1 FROM whiteboard_templates WHERE instr(content, ?1) > 0)",
+            // Case-insensitive (ASCII): Windows and default macOS resolve
+            // `images/Pic.PNG` to `pic.png`, so that reference must keep it.
+            // Errs toward keeping a file on case-sensitive filesystems.
+            "SELECT EXISTS(SELECT 1 FROM pages WHERE instr(lower(content), lower(?1)) > 0) \
+             OR EXISTS(SELECT 1 FROM whiteboard_templates \
+                       WHERE instr(lower(content), lower(?1)) > 0)",
             params![needle],
             |r| r.get(0),
         )
@@ -1986,6 +1990,8 @@ mod tests {
         assert!(db.content_references("photo-1.png").unwrap());
         assert!(db.content_references("board-bg.webp").unwrap());
         assert!(!db.content_references("unused.png").unwrap());
+        // A reference differing only in case still counts (the OS opens it).
+        assert!(db.content_references("Photo-1.PNG").unwrap());
     }
 
     #[test]
