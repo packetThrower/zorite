@@ -719,6 +719,9 @@ pub struct WhiteboardView {
     /// signature. Panning and zooming can reuse these directly.
     text_layout_cache: HashMap<u64, CachedTextLayout>,
     label_layout_cache: HashMap<u64, CachedLabelLayout>,
+    /// Pen strokes' cached tessellations, by element id — only the strokes
+    /// painted last frame are kept.
+    stroke_meshes: HashMap<u64, StrokeMesh>,
     tool: Tool,
     /// Keyboard focus — grabbed while editing a text element.
     focus: FocusHandle,
@@ -876,6 +879,7 @@ impl WhiteboardView {
             font: Font::default(),
             text_layout_cache: HashMap::new(),
             label_layout_cache: HashMap::new(),
+            stroke_meshes: HashMap::new(),
             tool: Tool::Pan,
             focus: cx.focus_handle(),
             editing: None,
@@ -5650,6 +5654,8 @@ impl Render for WhiteboardView {
             .collect();
         let text_layout_cache = &mut self.text_layout_cache;
         let label_layout_cache = &mut self.label_layout_cache;
+        let mut old_meshes = std::mem::take(&mut self.stroke_meshes);
+        let mut stroke_meshes: HashMap<u64, StrokeMesh> = HashMap::new();
         let mut layers: Vec<Layer> = Vec::new();
         let mut band: Vec<ElemPaint> = Vec::new();
         for e in self.scene.elements.iter_mut() {
@@ -5866,6 +5872,12 @@ impl Render for WhiteboardView {
                         fill,
                         text,
                         mindmap_connector_style: mindmap_connector_styles.get(&id).copied(),
+                        stroke_mesh: matches!(kind, ElementKind::Draw(_)).then(|| {
+                            stroke_meshes
+                                .entry(id)
+                                .or_insert_with(|| old_meshes.remove(&id).unwrap_or_default())
+                                .clone()
+                        }),
                     });
                 }
             }
@@ -5873,6 +5885,7 @@ impl Render for WhiteboardView {
         if !band.is_empty() {
             layers.push(Layer::Band(band));
         }
+        self.stroke_meshes = stroke_meshes;
 
         // The in-progress element previews in the current active color / fill.
         let pending_ink = self.active_stroke.map_or(ink, u32_to_hsla);
