@@ -118,23 +118,25 @@ pub(crate) fn paint_board(
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
     let (left, top) = (cam.x, cam.y);
+    // Every dot goes into ONE path, two triangles each: thousands of separate
+    // quads cost gpui a draw-order insert apiece, which dominated the frame.
+    let mut dots = gpui::Path::new(point(px(ox), px(oy)));
+    let solid = (point(0., 1.), point(0., 1.), point(0., 1.));
     let mut wx = (left / step).ceil() * step;
     while (wx - left) * z <= w {
         let sx = ox + (wx - left) * z;
         let mut wy = (top / step).ceil() * step;
         while (wy - top) * z <= h {
             let sy = oy + (wy - top) * z;
-            window.paint_quad(fill(
-                Bounds {
-                    origin: point(px(sx - DOT / 2.0), px(sy - DOT / 2.0)),
-                    size: size(px(DOT), px(DOT)),
-                },
-                grid,
-            ));
+            let (x0, y0) = (px(sx - DOT / 2.0), px(sy - DOT / 2.0));
+            let (x1, y1) = (x0 + px(DOT), y0 + px(DOT));
+            dots.push_triangle((point(x0, y0), point(x1, y0), point(x1, y1)), solid);
+            dots.push_triangle((point(x0, y0), point(x1, y1), point(x0, y1)), solid);
             wy += step;
         }
         wx += step;
     }
+    window.paint_path(dots, grid);
 }
 
 /// One element prepared for the paint closure: its geometry + resolved colors,
@@ -357,6 +359,7 @@ pub(crate) fn thumbnail_text_outline(
             selection: Vec::new(),
             sel_color: hsla(0.0, 0.0, 0.0, 0.0),
             decorations: layout.decorations.clone(),
+            mesh: layout.mesh.clone(),
         });
     }
     if is_closed_shape(kind)
@@ -399,6 +402,7 @@ pub(crate) fn thumbnail_text_outline(
             selection: Vec::new(),
             sel_color: hsla(0.0, 0.0, 0.0, 0.0),
             decorations: layout.decorations.clone(),
+            mesh: layout.mesh.clone(),
         });
     }
     None
@@ -464,7 +468,13 @@ pub(crate) struct CachedTextLayout {
     pub(crate) width: f32,
     pub(crate) height: f32,
     pub(crate) line_height: f32,
+    /// The glyph fill's tessellation, shared by every clone of this layout.
+    pub(crate) mesh: GlyphMesh,
 }
+
+/// A text layout's glyph fill, tessellated in text-local space for one zoom
+/// octave (see [`glyph_fill`]); `None` until first painted.
+pub(crate) type GlyphMesh = Rc<std::cell::RefCell<Option<(i32, gpui::Path<Pixels>)>>>;
 
 #[derive(Clone)]
 pub(crate) struct CachedLabelLayout {
@@ -591,6 +601,7 @@ pub(crate) fn prepare_text_layout(
         width: layout.width,
         height: layout.height,
         line_height: layout.line_height,
+        mesh: GlyphMesh::default(),
     }
 }
 
@@ -617,6 +628,8 @@ pub(crate) struct TextOutline {
     pub(crate) sel_color: Hsla,
     /// Underline / strikethrough / highlight runs (text-local), from the styling.
     pub(crate) decorations: Arc<[font::Decoration]>,
+    /// The cached glyph fill tessellation (from the layout cache).
+    pub(crate) mesh: GlyphMesh,
 }
 
 /// Paint a text element's vector outlines (and, when editing, its caret). Local
@@ -628,14 +641,6 @@ pub(crate) fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, wi
     let tf = |p: [f32; 2]| {
         let (rx, ry) = rotate_pt(t.x + p[0], t.y + p[1], cx, cy, t.rotation);
         to_screen(rx, ry, cam, origin)
-    };
-    // Convert the two-thirds-toward-the-control-point so a quadratic Bézier
-    // becomes the equivalent cubic the path builder accepts.
-    let two_thirds = |a: Point<Pixels>, b: Point<Pixels>| {
-        point(
-            px(f32::from(a.x) + (f32::from(b.x) - f32::from(a.x)) * 2.0 / 3.0),
-            px(f32::from(a.y) + (f32::from(b.y) - f32::from(a.y)) * 2.0 / 3.0),
-        )
     };
     // A text-local `[x, y, w, h]` rect → a screen-space fill path (rotated like
     // the glyphs). Shared by highlights, the selection, and under/strike bars.
@@ -662,46 +667,17 @@ pub(crate) fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, wi
             window.paint_path(path, t.sel_color);
         }
     }
-    // Walk glyph segments into `pb` (a fill or a stroke path).
-    let emit = |pb: &mut PathBuilder, segs: &[font::Seg]| {
-        let mut cur = point(px(0.0), px(0.0));
-        for seg in segs {
-            match *seg {
-                font::Seg::Move(p) => {
-                    cur = tf(p);
-                    pb.move_to(cur);
-                }
-                font::Seg::Line(p) => {
-                    cur = tf(p);
-                    pb.line_to(cur);
-                }
-                font::Seg::Quad(c, e) => {
-                    let (sc, se) = (tf(c), tf(e));
-                    pb.cubic_bezier_to(se, two_thirds(cur, sc), two_thirds(se, sc));
-                    cur = se;
-                }
-                font::Seg::Cubic(c1, c2, e) => {
-                    let se = tf(e);
-                    pb.cubic_bezier_to(se, tf(c1), tf(c2));
-                    cur = se;
-                }
-                font::Seg::Close => pb.close(),
-            }
-        }
-    };
-    if !t.segs.is_empty() {
-        let mut pb = PathBuilder::fill();
-        emit(&mut pb, &t.segs);
-        if let Ok(path) = pb.build() {
-            window.paint_path(path, color);
-        }
+    if !t.segs.is_empty()
+        && let Some(path) = glyph_fill(t, cam.zoom.max(MIN_ZOOM), &tf)
+    {
+        window.paint_path(path, color);
     }
     // Synthetic bold: stroke the bold glyphs' outlines over the solid fill (a
     // doubled fill would cancel under even-odd winding and read as hollow).
     if !t.bold_segs.is_empty() {
         let zoom = cam.zoom.max(MIN_ZOOM);
         let mut pb = PathBuilder::stroke(px((t.bold_width * zoom).max(0.5)));
-        emit(&mut pb, &t.bold_segs);
+        emit_segs(&mut pb, &t.bold_segs, &tf);
         if let Ok(path) = pb.build() {
             window.paint_path(path, color);
         }
@@ -722,6 +698,85 @@ pub(crate) fn paint_text(t: &TextOutline, cam: Camera, origin: Point<Pixels>, wi
             window.paint_path(path, color);
         }
     }
+}
+
+/// Walk glyph segments into `pb` (a fill or a stroke path), placing each
+/// text-local point with `tf`.
+fn emit_segs(pb: &mut PathBuilder, segs: &[font::Seg], tf: &dyn Fn([f32; 2]) -> Point<Pixels>) {
+    // Two-thirds toward the control point turns a quadratic Bézier into the
+    // equivalent cubic the path builder accepts.
+    let two_thirds = |a: Point<Pixels>, b: Point<Pixels>| {
+        point(
+            px(f32::from(a.x) + (f32::from(b.x) - f32::from(a.x)) * 2.0 / 3.0),
+            px(f32::from(a.y) + (f32::from(b.y) - f32::from(a.y)) * 2.0 / 3.0),
+        )
+    };
+    let mut cur = point(px(0.0), px(0.0));
+    for seg in segs {
+        match *seg {
+            font::Seg::Move(p) => {
+                cur = tf(p);
+                pb.move_to(cur);
+            }
+            font::Seg::Line(p) => {
+                cur = tf(p);
+                pb.line_to(cur);
+            }
+            font::Seg::Quad(c, e) => {
+                let (sc, se) = (tf(c), tf(e));
+                pb.cubic_bezier_to(se, two_thirds(cur, sc), two_thirds(se, sc));
+                cur = se;
+            }
+            font::Seg::Cubic(c1, c2, e) => {
+                let se = tf(e);
+                pb.cubic_bezier_to(se, tf(c1), tf(c2));
+                cur = se;
+            }
+            font::Seg::Close => pb.close(),
+        }
+    }
+}
+
+/// The text's glyph fill in screen space. Tessellating every glyph every
+/// frame dominated whiteboard paint time, so the fill is tessellated once in
+/// text-local space and its triangles are re-placed each frame by `tf` (the
+/// camera + rotation transform is affine, so triangles stay triangles).
+/// Tessellated at `2^octave ≥ zoom` px per unit, so lyon's flattening
+/// tolerance stays within its 0.1 px on screen; a new zoom octave re-tessellates.
+fn glyph_fill(
+    t: &TextOutline,
+    zoom: f32,
+    tf: &dyn Fn([f32; 2]) -> Point<Pixels>,
+) -> Option<gpui::Path<Pixels>> {
+    let octave = zoom.log2().ceil() as i32;
+    let scale = 2f32.powi(octave);
+    let mut mesh = t.mesh.borrow_mut();
+    if mesh.as_ref().is_none_or(|(o, _)| *o != octave) {
+        let mut pb = PathBuilder::fill();
+        emit_segs(&mut pb, &t.segs, &|p| {
+            point(px(p[0] * scale), px(p[1] * scale))
+        });
+        *mesh = Some((octave, pb.build().ok()?));
+    }
+    let mut path = mesh.as_ref()?.1.clone();
+    let (mut lo, mut hi) = (
+        point(px(f32::MAX), px(f32::MAX)),
+        point(px(f32::MIN), px(f32::MIN)),
+    );
+    for v in &mut path.vertices {
+        let p = tf([
+            f32::from(v.xy_position.x) / scale,
+            f32::from(v.xy_position.y) / scale,
+        ]);
+        lo = point(lo.x.min(p.x), lo.y.min(p.y));
+        hi = point(hi.x.max(p.x), hi.y.max(p.y));
+        v.xy_position = p;
+    }
+    if path.vertices.is_empty() {
+        return None;
+    }
+    path.bounds = Bounds::from_corners(lo, hi);
+    Some(path)
 }
 
 /// Paint one element at the current camera.
@@ -1367,6 +1422,59 @@ pub(crate) fn paint_alignment_guides(
         path.line_to(point(bounds.right(), screen.y));
         if let Ok(path) = path.build() {
             window.paint_path(path, color);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cached, re-placed glyph fill lands where tessellating straight to
+    /// the screen did — across zoom octaves, a camera offset, and rotation.
+    #[test]
+    fn glyph_fill_matches_direct_tessellation() {
+        let layout = prepare_text_layout(&Font::default(), "Hello, g!", 24.0, None, &[], 0);
+        let t = TextOutline {
+            segs: layout.segs.clone(),
+            bold_segs: layout.bold_segs.clone(),
+            bold_width: layout.bold_width,
+            color: hsla(0.0, 0.0, 0.0, 1.0),
+            x: 40.0,
+            y: 30.0,
+            rotation: 0.4,
+            pivot: [80.0, 40.0],
+            line_height: layout.line_height,
+            caret: None,
+            selection: Vec::new(),
+            sel_color: hsla(0.0, 0.0, 0.0, 0.0),
+            decorations: layout.decorations.clone(),
+            mesh: layout.mesh.clone(),
+        };
+        for zoom in [0.3, 1.0, 2.7, 8.0] {
+            let cam = Camera {
+                x: -15.0,
+                y: 22.0,
+                zoom,
+            };
+            let origin = point(px(100.0), px(50.0));
+            let tf = |p: [f32; 2]| {
+                let (rx, ry) = rotate_pt(t.x + p[0], t.y + p[1], 80.0, 40.0, t.rotation);
+                to_screen(rx, ry, cam, origin)
+            };
+            let cached = glyph_fill(&t, zoom, &tf).unwrap();
+            let mut pb = PathBuilder::fill();
+            emit_segs(&mut pb, &t.segs, &tf);
+            let direct = pb.build().unwrap();
+            let (a, b) = (cached.bounds, direct.bounds);
+            for (u, v) in [
+                (a.origin.x, b.origin.x),
+                (a.origin.y, b.origin.y),
+                (a.size.width, b.size.width),
+                (a.size.height, b.size.height),
+            ] {
+                assert!((u - v).abs() < px(0.5), "zoom {zoom}: {a:?} vs {b:?}");
+            }
         }
     }
 }
