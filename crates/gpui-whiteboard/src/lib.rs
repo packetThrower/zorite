@@ -5795,6 +5795,7 @@ impl Render for WhiteboardView {
                             selection,
                             sel_color: sel_fill,
                             decorations: layout.decorations.clone(),
+                            mesh: layout.mesh.clone(),
                         })
                     } else if is_closed_shape(kind)
                         && let Some((bx, by, bw, bh, rot)) = box_like(kind)
@@ -5854,6 +5855,7 @@ impl Render for WhiteboardView {
                             selection,
                             sel_color: sel_fill,
                             decorations: label_layout.text.decorations.clone(),
+                            mesh: label_layout.text.mesh.clone(),
                         })
                     } else {
                         None
