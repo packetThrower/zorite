@@ -82,6 +82,9 @@ fn command_palette_opens_closes_and_runs_a_command(cx: &mut TestAppContext) {
     );
 }
 
+// Finds the tab by its `debug_selector`, which gpui-pre ≥0.3.9 compiles out
+// without debug assertions — and the Nix build runs tests in release.
+#[cfg(debug_assertions)]
 #[gpui::test]
 fn five_clicks_on_the_journal_tab_open_the_game(cx: &mut TestAppContext) {
     let _serial = serial();
