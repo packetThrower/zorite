@@ -4223,9 +4223,9 @@ dependencies = [
 
 [[package]]
 name = "lopdf"
-version = "0.45.0"
+version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfffda0fe1ab0157e1a13c14bebd3f28671f2fccb7922f0722ec53926e6922d3"
+checksum = "d43f64cb8c0d673ff84245a6de9e0172c0cc05dc5dd9d263660b5b4a02b6c4ae"
 dependencies = [
  "aes 0.9.3",
  "bitflags 2.13.1",
@@ -5344,9 +5344,9 @@ dependencies = [
 
 [[package]]
 name = "oxidize-pdf"
-version = "5.4.2"
+version = "5.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eb85baf2cf24b9ba56fface490e5d04bb9827ed33ce21e9f8f5e028d6ee34713"
+checksum = "0cfe2beb2bdd0e7f4fbb43fe21fbb8cae3ff74147fadcf6434a000127f4c7624"
 dependencies = [
  "aes 0.8.4",
  "bitflags 2.13.1",
@@ -5363,6 +5363,7 @@ dependencies = [
  "quick-xml",
  "rand 0.10.2",
  "regex",
+ "roxmltree 0.21.1",
  "serde",
  "sha2 0.10.9",
  "subtle",
