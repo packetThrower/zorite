@@ -38,9 +38,8 @@ edited like an ordinary document rather than an outliner. Notes are Markdown in
 a local SQLite database. Pages link to each other with `[[wiki-links]]`, and
 the app also handles PDFs (viewing, annotating, form filling), images,
 whiteboards, and LaTeX math. There is no cloud and no account; everything stays
-on your machine. Written in Rust with [gpui](https://www.gpui.rs/) (Zed's UI
-framework) and
-[gpui-component](https://github.com/longbridge/gpui-component).
+on your machine. Written in Rust with [GPUI](https://www.gpui.rs/) (Zed's UI
+framework) through [GPUI Kit](https://gpui-kit.com).
 
 Developed in close collaboration with Claude (Anthropic).
 
@@ -117,10 +116,10 @@ Developed in close collaboration with Claude (Anthropic).
   thumbnail. Duplicate files are stored once, and unused files can be swept.
 - The PDF viewer virtualizes pages, so long documents open and scroll without
   loading everything. It has a table of contents, text search, password
-  support, fit-width / fit-page zoom, drag-to-highlight annotations (text
-  or a drawn area) that link back to notes, and AcroForm form filling —
-  checkboxes, text fields, dropdowns, Tab between fields — with saved files
-  that render correctly in other viewers. A file that can't be opened says
+  support, fit-width / fit-page zoom, text you can select and copy,
+  drag-to-highlight annotations (text or a drawn area) that link back to
+  notes, and AcroForm form filling — checkboxes, text fields, dropdowns, Tab
+  between fields — with saved files that render correctly in other viewers. A file that can't be opened says
   why instead of loading forever, and offers to open it in the system viewer.
 - `⌘P` exports the current note as a styled PDF, including tables, images,
   math, and diagrams. No browser involved. (One quirk: the export writes

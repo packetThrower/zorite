@@ -9,29 +9,68 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-29
+
+The Windows release: a full pass of testing on Windows turned up crashes,
+hangs and slow spots, all fixed here, along with the editing keys Windows
+users expect. Zorite also moves to GPUI Kit 0.8, and you can now copy text
+out of PDFs.
+
 ### Added
 
 - **Copy text from PDFs.** Drag over text in the PDF viewer to select it, then
   press ⌘C (Ctrl+C on Windows and Linux). Line breaks are kept. Highlight mode
   works as before.
+- **Windows and Linux editing keys.** Ctrl+← / Ctrl+→ move by word (with Shift
+  to select), Ctrl+Backspace and Ctrl+Delete delete a word, Ctrl+Home and
+  Ctrl+End jump to the start or end of the note, and Shift+Home / Shift+End
+  select to the start or end of the line. On a Mac, ⌥⌫ and ⌥⌦ delete a word.
 
 ### Changed
 
 - **Moved to GPUI Kit 0.8.0** (gpui-pre 0.3.9), in step with Baudrun,
   PortFinder and etch341. Zorite's Linux fix for Arabic dots and other
   combining marks (#108) is carried over to the new version.
+- **Whiteboards draw faster,** especially on modest graphics hardware: text,
+  the dot grid and pen strokes are prepared once and reused while you pan,
+  instead of being rebuilt every frame.
+- **Spell-check is faster,** most noticeably on Windows: Zorite keeps one
+  system spell checker instead of starting a new one for every check.
+- **Security updates** to the TLS libraries (rustls, rustls-webpki,
+  webpki-roots) used by the update check, and to the PDF libraries (hayro 0.8,
+  lopdf 0.46).
 
 ### Fixed
 
+- **Typing Japanese or other IME input no longer crashes Zorite on Windows**
+  when the note has text before the caret. Text you're still composing is now
+  underlined, as in other apps (#119).
 - **Undo no longer crashes Zorite on Windows** when the page has Korean,
   Japanese or other multibyte text after the edit. Undo and redo are also
   saved right away and re-run spell-check, instead of waiting for the next
   keystroke.
-- **Settings → Notebooks buttons show proper labels** (Switch, Rename,
-  Reveal, Remove) instead of raw translation keys.
+- **Whiteboards no longer freeze** when Windows is set to scroll one screen
+  at a time, and dashed lines no longer stall and run out of memory while
+  zooming.
+- **Thin whiteboard lines stay visible** when zoomed out, instead of vanishing
+  or blinking.
 - **Whiteboard text in Korean, Hebrew, Arabic and other scripts** now draws
   from a system font when the board's font lacks it, instead of empty boxes.
   This covers uploaded board fonts too.
+- **Changing the notebook password can't lose your writes** when a second
+  window has the notebook open. If the encrypted copy can't replace the old
+  file, Zorite now keeps using the original and reports the error.
+- **The journal no longer creeps while you move the mouse** on Windows in
+  the editing view.
+- **Colors in HTML (`<span style="color: #e03e3e">`) are no longer read as
+  tags,** so they don't create empty pages named after the color.
+- **Cleaning up unused images keeps images referenced with different
+  capitalization** (`Pic.PNG` vs `pic.png`), which Windows and macOS treat as
+  the same file.
+- **Opening a PDF in the system viewer works for any file name** on Windows,
+  including names with `&`, `%` or `^`.
+- **Settings → Notebooks buttons show proper labels** (Switch, Rename,
+  Reveal, Remove) instead of raw translation keys.
 - **Shortcut hints on Windows and Linux** in the PDF viewer and whiteboard
   tooltips and menus read Ctrl+Shift+Z instead of Mac's ⌘⇧Z.
 

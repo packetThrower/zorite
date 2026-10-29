@@ -53,6 +53,10 @@ The tab-switch chords are `Ctrl+Tab` / `Ctrl+Shift+Tab` on every platform
 | Undo | `⌘Z` / `Ctrl+Z` |
 | Redo | `⌘⇧Z` / `Ctrl+Y` |
 | Select all | `⌘A` / `Ctrl+A` |
+| Move by word (add Shift to select) | `⌥←` `⌥→` / `Ctrl+←` `Ctrl+→` |
+| Delete the word before / after | `⌥⌫` `⌥⌦` / `Ctrl+Backspace` `Ctrl+Delete` |
+| Select to start / end of line | `Shift+Home` / `Shift+End` |
+| Start / end of note (add Shift to select) | `Ctrl+Home` / `Ctrl+End` |
 
 Click into a note to edit its raw Markdown; click away (or press `Esc` out of the
 slash menu and click out) to re-render. `⌘V` / `Ctrl+V` pastes an image from the
@@ -117,8 +121,10 @@ These work while a PDF tab is focused.
 | Next / previous match | `⌘G` / `⌘⇧G` |
 | Go to page… | `⌘⌥G` |
 | Toggle highlight mode | `⌘⇧H` |
+| Copy selected text | `⌘C` |
 
-A PDF's own find (`⌘F`) is separate from the note-wide search — see
+Drag over text to select it for copying; in highlight mode the same drag makes a
+highlight instead. A PDF's own find (`⌘F`) is separate from the note-wide search — see
 [Search](/zorite/usage/search/).
 
 ## Mouse

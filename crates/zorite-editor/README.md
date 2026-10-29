@@ -185,7 +185,9 @@ equivalent.
 | --- | --- |
 | typing, `backspace`, `delete`, `enter` | edit text |
 | `←` `→` `↑` `↓`, `home`, `end` | move caret |
-| `alt-←` / `alt-→` | word left / right |
+| `alt-←` / `alt-→`, `ctrl-←` / `ctrl-→` | word left / right |
+| `alt-backspace` / `alt-delete`, `ctrl-backspace` / `ctrl-delete` | delete word left / right |
+| `ctrl-home` / `ctrl-end` | start / end of the document |
 | `shift-` + any move | extend selection |
 | `cmd-a` | select all |
 | `cmd-b` / `cmd-i` / `cmd-u` / `cmd-e` | bold / italic / underline (`<u>`) / inline code (toggle on selection) |
