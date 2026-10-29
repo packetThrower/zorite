@@ -27,7 +27,7 @@ use gpui::{
     WindowHandle, WindowOptions, div, point, prelude::FluentBuilder as _, px, size,
 };
 use gpui_component::{
-    Root, Sizable, TitleBar, WindowExt,
+    Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariant, ButtonVariants},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputEvent, InputState},
@@ -669,8 +669,8 @@ pub struct AppView {
     /// The rename dialog's text field, the page being renamed, and the
     /// failure line shown inside the dialog (collision / DB error). The error
     /// is an `Rc<RefCell<…>>`, NOT a plain field: the dialog builder runs
-    /// inside this view's own render (`Root::render_dialog_layer`), where
-    /// reading the AppView entity would double-borrow and panic.
+    /// during the window's render (GPUI Kit's dialog layer), so it reads
+    /// shared state instead of borrowing the AppView entity.
     rename_input: Entity<InputState>,
     rename_target: Option<i64>,
     rename_error: Rc<RefCell<Option<SharedString>>>,
@@ -7572,10 +7572,6 @@ impl Render for AppView {
             .children(link_hover_overlay)
             .children(color_pick_overlay)
             .children(fps_hud(window, cx))
-            // gpui-component's `Root` tracks dialog state but does NOT render
-            // the dialog layer — the host view must, or dialogs (like the
-            // delete-page confirm) stay invisible.
-            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
@@ -7697,7 +7693,8 @@ fn predict_caret_row(
     for line in source.split('\n') {
         let line_end = line_start + line.len();
         let fragments = [gpui::LineFragment::text(line)];
-        let boundaries = wrapper.wrap_line(&fragments, wrap_width);
+        let boundaries =
+            wrapper.wrap_line(&fragments, wrap_width, gpui::IndentAdjustment::SameIndent);
         if off <= line_end {
             // The caret's line: wraps at or before the caret's column push it down.
             let col = off - line_start;

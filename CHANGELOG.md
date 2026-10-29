@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Every tagged release also has a GitHub page with installers and the full commit
 log: <https://github.com/packetThrower/zorite/releases>.
 
+## [Unreleased]
+
+### Changed
+
+- **Moved to GPUI Kit 0.8.0** (gpui-pre 0.3.9), in step with Baudrun,
+  PortFinder and etch341. Zorite's Linux fix for Arabic dots and other
+  combining marks (#108) is carried over to the new version.
+
 ## [0.12.1] - 2026-10-01
 
 A Linux fix release.

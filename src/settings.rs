@@ -14,7 +14,7 @@ use gpui::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    Root, Sizable, TitleBar, WindowExt,
+    Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants as _},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputState},
@@ -2053,7 +2053,7 @@ fn keyboard_page() -> SettingPage {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
         let pages = vec![
             self.general_page(&weak),
@@ -2085,10 +2085,6 @@ impl Render for SettingsView {
                         .pages(pages),
                 ),
             )
-            // gpui-component's `Root` stores dialog state but doesn't draw it;
-            // the host view must render the dialog layer (as the main window
-            // does), or the data-location confirm dialog stays invisible.
-            .children(Root::render_dialog_layer(window, cx))
     }
 }
 

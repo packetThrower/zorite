@@ -7,6 +7,7 @@
 
 use super::*;
 use gpui::{TestAppContext, VisualTestContext};
+use gpui_component::Root;
 
 /// Run the UI tests one at a time. They share this process's one throwaway
 /// data dir (`paths::data_dir` resolves once), so two opening its database at
