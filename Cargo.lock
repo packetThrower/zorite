@@ -2650,7 +2650,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pdf"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "gpui-pre",
  "hayro",
@@ -3139,7 +3139,7 @@ checksum = "4b0d73e1bc02eef886a5947f41b8512708792e9e5d3053d181843311a487f96f"
 
 [[package]]
 name = "gpui-whiteboard"
-version = "0.5.1"
+version = "0.5.2"
 dependencies = [
  "gpui-pre",
  "log",
@@ -10305,7 +10305,7 @@ dependencies = [
 
 [[package]]
 name = "zorite-editor"
-version = "0.11.2"
+version = "0.11.3"
 dependencies = [
  "gpui-bidi",
  "gpui-pre",
@@ -10317,7 +10317,7 @@ dependencies = [
 
 [[package]]
 name = "zorite-markdown"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "gpui-bidi",
  "gpui-pre",

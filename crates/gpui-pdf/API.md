@@ -88,6 +88,7 @@ public. Items in the **Feature** column require that Cargo feature (`search` imp
 | [`PageText::locate`](#pagetextlocate) | method | markup | `fn locate(&self, needle: &str, occurrence: usize) -> Vec<NormRect>` | Find the nth occurrence of a quote |
 | [`PageText::find_matches`](#pagetextfind_matches) | method | search | `fn find_matches(&self, needle: &str) -> Vec<Vec<NormRect>>` | All occurrences, reading order |
 | [`PageText::select`](#pagetextselect) | method | markup | `fn select(&self, from: NormPoint, to: NormPoint) -> Option<Selection>` | Resolve a drag into a quote |
+| [`PageText::selected_text`](#pagetextselected_text) | method | markup | `fn selected_text(&self, from: NormPoint, to: NormPoint) -> Option<String>` | A drag's text for copying, line breaks kept |
 | `impl Default for PdfStyle` | trait impl | — | `fn default() -> Self` | Neutral dark palette |
 | `impl EventEmitter<PdfEvent> for PdfView` | trait impl | — | — | Subscribe via `cx.subscribe` |
 | `impl Render for PdfView` | trait impl | — | — | Render the `Entity<PdfView>` as a child view |
@@ -1021,6 +1022,8 @@ Toggle "highlight mode": when on, dragging over text selects it and fires the
 create handler; the color picker pops down (if a palette is set). Turning it off
 cancels any in-progress selection and hides the picker. While on, every visible
 page extracts its text layer so drags can select anywhere. Also bound to ⌘⇧H.
+With it off, a drag selects text instead (a page extracts its text on the first
+mouse-down) and ⌘C / Ctrl+C copies it; the next mouse-down clears it.
 **Parameters** — `cx` only.
 
 ### `PdfView::toggle_area_mode`
@@ -1580,3 +1583,14 @@ selection resolves to only whitespace.
   requires ≥ 0.005 of the page in either axis).
 - The quote is single-spaced and trimmed; `occurrence` counts earlier identical
   quotes on the page, so the stored highlight re-locates to the right match.
+
+### `PageText::selected_text`
+
+```rust
+pub fn selected_text(&self, from: NormPoint, to: NormPoint) -> Option<String>
+```
+
+The text a drag from `from` to `to` covers, for the clipboard. Same run range as
+[`select`](#pagetextselect), but line breaks are kept (`\n`) and each line's
+spaces collapse to one. `None` if the page has no text or the range is only
+whitespace. `PdfView` uses it for ⌘C / Ctrl+C.
