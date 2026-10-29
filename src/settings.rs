@@ -14,7 +14,7 @@ use gpui::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    Root, Sizable, TitleBar, WindowExt,
+    Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants as _},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputState},
@@ -2053,7 +2053,7 @@ fn keyboard_page() -> SettingPage {
 }
 
 impl Render for SettingsView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let weak = cx.entity().downgrade();
         let pages = vec![
             self.general_page(&weak),
@@ -2085,10 +2085,6 @@ impl Render for SettingsView {
                         .pages(pages),
                 ),
             )
-            // gpui-component's `Root` stores dialog state but doesn't draw it;
-            // the host view must render the dialog layer (as the main window
-            // does), or the data-location confirm dialog stays invisible.
-            .children(Root::render_dialog_layer(window, cx))
     }
 }
 
@@ -2254,7 +2250,7 @@ fn notebook_row(nb: crate::paths::Notebook, weak: &WeakEntity<SettingsView>) -> 
     } else {
         actions = actions.child(nb_button(
             SharedString::from(format!("nb-switch:{}", nb.dir)),
-            &t!("settings.nb.switch"),
+            &t!("settings.btn.switch"),
             weak,
             move |this, window, cx| this.switch_notebook(nb_switch.clone(), window, cx),
         ));
@@ -2262,13 +2258,13 @@ fn notebook_row(nb: crate::paths::Notebook, weak: &WeakEntity<SettingsView>) -> 
     actions = actions
         .child(nb_button(
             SharedString::from(format!("nb-rename:{}", nb.dir)),
-            &t!("settings.nb.rename"),
+            &t!("common.rename"),
             weak,
             move |this, window, cx| this.rename_notebook(nb_rename.clone(), window, cx),
         ))
         .child(nb_button(
             SharedString::from(format!("nb-reveal:{}", nb.dir)),
-            &t!("settings.nb.reveal"),
+            &t!("settings.btn.reveal"),
             weak,
             move |_this, _window, _cx| {
                 crate::app::AppView::reveal_folder(&reveal_dir);
@@ -2277,7 +2273,7 @@ fn notebook_row(nb: crate::paths::Notebook, weak: &WeakEntity<SettingsView>) -> 
     if !active {
         actions = actions.child(nb_button(
             SharedString::from(format!("nb-forget:{}", nb.dir)),
-            &t!("settings.nb.remove"),
+            &t!("common.remove"),
             weak,
             move |this, _window, cx| this.forget_notebook(nb_forget.clone(), cx),
         ));

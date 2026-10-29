@@ -9,10 +9,84 @@
 //! default (JetBrains Mono, OFL — see `assets/JetBrainsMono-OFL.txt`) is bundled
 //! so the crate works standalone.
 
+use std::cell::OnceCell;
 use std::sync::{Arc, OnceLock};
 
 /// The bundled default face.
 const DEFAULT_FONT: &[u8] = include_bytes!("../assets/JetBrainsMono-Regular.ttf");
+
+/// System faces tried in order for a char the board's face lacks (Arabic and
+/// Hebrew in a CJK face, Hangul in a Chinese one, anything in an uploaded
+/// face). Each is read only the first time some char needs it. Missing paths
+/// are skipped, so one list serves every platform.
+const FALLBACK_FACES: &[(&str, u32)] = &[
+    // Windows
+    ("C:/Windows/Fonts/segoeui.ttf", 0),
+    ("C:/Windows/Fonts/malgun.ttf", 0),
+    ("C:/Windows/Fonts/YuGothR.ttc", 0),
+    ("C:/Windows/Fonts/msyh.ttc", 0),
+    ("C:/Windows/Fonts/simsun.ttc", 0),
+    ("C:/Windows/Fonts/seguisym.ttf", 0),
+    // macOS
+    ("/System/Library/Fonts/SFArabic.ttf", 0),
+    ("/System/Library/Fonts/SFHebrew.ttf", 0),
+    ("/System/Library/Fonts/AppleSDGothicNeo.ttc", 0),
+    ("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0),
+    // Linux
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 0),
+    (
+        "/usr/share/fonts/truetype/noto/NotoSansArabic-Regular.ttf",
+        0,
+    ),
+    (
+        "/usr/share/fonts/truetype/noto/NotoSansHebrew-Regular.ttf",
+        0,
+    ),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 0),
+    ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", 0),
+];
+
+static FALLBACK_BYTES: [OnceLock<Option<Vec<u8>>>; FALLBACK_FACES.len()] =
+    [const { OnceLock::new() }; FALLBACK_FACES.len()];
+
+/// Fallback `i`, read and parsed (`None` if it's absent or unusable).
+fn fallback_face(i: usize) -> Option<ttf_parser::Face<'static>> {
+    let (path, index) = FALLBACK_FACES[i];
+    let bytes = FALLBACK_BYTES[i].get_or_init(|| std::fs::read(path).ok());
+    ttf_parser::Face::parse(bytes.as_deref()?, index).ok()
+}
+
+/// A font's face plus the system fallbacks (parsed on first use), so a layout
+/// draws each char from the first face that has it. Metrics (ascent, line
+/// height) stay the primary face's.
+struct Faces<'a> {
+    primary: ttf_parser::Face<'a>,
+    fallbacks: [OnceCell<Option<ttf_parser::Face<'static>>>; FALLBACK_FACES.len()],
+}
+
+impl<'a> Faces<'a> {
+    /// The face that has `ch`, its glyph, and its units → world scale at
+    /// `font_size`; the primary's `.notdef` when no face has it.
+    fn glyph(&self, ch: char, font_size: f32) -> (&ttf_parser::Face<'a>, ttf_parser::GlyphId, f32) {
+        let scale = |f: &ttf_parser::Face| {
+            let upem = f.units_per_em() as f32;
+            if upem > 0.0 { font_size / upem } else { 0.0 }
+        };
+        if let Some(g) = self.primary.glyph_index(ch) {
+            return (&self.primary, g, scale(&self.primary));
+        }
+        if !ch.is_whitespace() && !ch.is_control() {
+            for (i, cell) in self.fallbacks.iter().enumerate() {
+                if let Some(f) = cell.get_or_init(|| fallback_face(i))
+                    && let Some(g) = f.glyph_index(ch)
+                {
+                    return (f, g, scale(f));
+                }
+            }
+        }
+        (&self.primary, ttf_parser::GlyphId(0), scale(&self.primary))
+    }
+}
 
 /// Floor for shape-label auto-shrink (world units): a label never shrinks below
 /// this, even if it then slightly overflows a very small box. See [`Font::fit_size`].
@@ -127,6 +201,13 @@ impl Font {
         ttf_parser::Face::parse(&self.bytes, self.index).ok()
     }
 
+    fn faces(&self) -> Option<Faces<'_>> {
+        Some(Faces {
+            primary: self.face()?,
+            fallbacks: Default::default(),
+        })
+    }
+
     /// The line height (top-to-top spacing) at `font_size`, world units.
     fn line_height_of(face: &ttf_parser::Face, scale: f32) -> f32 {
         (face.ascender() as f32 - face.descender() as f32 + face.line_gap() as f32) * scale
@@ -148,7 +229,7 @@ impl Font {
         font_size: f32,
         max_width: Option<f32>,
     ) -> TextLayout {
-        let Some(face) = self.face() else {
+        let Some(faces) = self.faces() else {
             return TextLayout {
                 segs: Vec::new(),
                 width: 0.0,
@@ -157,6 +238,7 @@ impl Font {
                 caret: [0.0, 0.0],
             };
         };
+        let face = &faces.primary;
         let upem = face.units_per_em() as f32;
         let scale = if upem > 0.0 { font_size / upem } else { 0.0 };
         let ascent = face.ascender() as f32 * scale;
@@ -172,7 +254,7 @@ impl Font {
             let baseline = line.top + ascent;
             for (k, ch) in content.get(lstart..lend).unwrap_or("").chars().enumerate() {
                 let pen = line.stops.get(k).map_or(0.0, |&(_, x)| x);
-                let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+                let (gface, gid, scale) = faces.glyph(ch, font_size);
                 let mut b = Outliner {
                     segs: &mut segs,
                     pen,
@@ -180,7 +262,7 @@ impl Font {
                     scale,
                     shear: 0.0,
                 };
-                face.outline_glyph(gid, &mut b);
+                gface.outline_glyph(gid, &mut b);
             }
             width = width.max(line.stops.last().map_or(0.0, |&(_, x)| x));
         }
@@ -210,7 +292,7 @@ impl Font {
         max_width: Option<f32>,
         style_at: impl Fn(usize) -> GlyphStyle,
     ) -> StyledLayout {
-        let Some(face) = self.face() else {
+        let Some(faces) = self.faces() else {
             return StyledLayout {
                 segs: Vec::new(),
                 bold_segs: Vec::new(),
@@ -222,6 +304,7 @@ impl Font {
                 caret: [0.0, 0.0],
             };
         };
+        let face = &faces.primary;
         let upem = face.units_per_em() as f32;
         let scale = if upem > 0.0 { font_size / upem } else { 0.0 };
         let ascent = face.ascender() as f32 * scale;
@@ -247,7 +330,7 @@ impl Font {
             for (k, ch) in content.get(lstart..lend).unwrap_or("").chars().enumerate() {
                 let st = style_at(byte);
                 let pen = line.stops.get(k).map_or(0.0, |&(_, x)| x);
-                let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
+                let (gface, gid, scale) = faces.glyph(ch, font_size);
                 let shear = if st.italic { SHEAR } else { 0.0 };
                 let start = segs.len();
                 {
@@ -258,7 +341,7 @@ impl Font {
                         scale,
                         shear,
                     };
-                    face.outline_glyph(gid, &mut b);
+                    gface.outline_glyph(gid, &mut b);
                 }
                 if st.bold {
                     bold_segs.extend_from_slice(&segs[start..]);
@@ -383,7 +466,7 @@ impl Font {
         font_size: f32,
         max_width: Option<f32>,
     ) -> (Vec<LineStops>, f32) {
-        let Some(face) = self.face() else {
+        let Some(faces) = self.faces() else {
             return (
                 vec![LineStops {
                     top: 0.0,
@@ -392,9 +475,10 @@ impl Font {
                 font_size,
             );
         };
+        let face = &faces.primary;
         let upem = face.units_per_em() as f32;
         let scale = if upem > 0.0 { font_size / upem } else { 0.0 };
-        let line_height = Self::line_height_of(&face, scale);
+        let line_height = Self::line_height_of(face, scale);
         let wrap = max_width.filter(|w| *w > 0.0);
 
         let mut lines = Vec::new();
@@ -409,8 +493,8 @@ impl Font {
             let mut b = byte;
             flat.push((b, 0.0));
             for ch in line.chars() {
-                let gid = face.glyph_index(ch).unwrap_or(ttf_parser::GlyphId(0));
-                pen += face.glyph_hor_advance(gid).unwrap_or(0) as f32 * scale;
+                let (gface, gid, gscale) = faces.glyph(ch, font_size);
+                pen += gface.glyph_hor_advance(gid).unwrap_or(0) as f32 * gscale;
                 b += ch.len_utf8();
                 flat.push((b, pen));
                 space_after.push(ch == ' ');
@@ -730,6 +814,19 @@ impl ttf_parser::OutlineBuilder for Outliner<'_> {
 
 #[cfg(test)]
 mod tests {
+    /// The bundled face is Latin-only: Hangul, Hebrew and Arabic must come
+    /// from a system fallback instead of drawing `.notdef` boxes.
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn missing_glyphs_fall_back_to_system_faces() {
+        let font = Font::from_bytes(DEFAULT_FONT.to_vec(), 0).unwrap();
+        let faces = font.faces().unwrap();
+        for ch in ['가', 'א', 'ب', '東'] {
+            assert_ne!(faces.glyph(ch, 16.0).1, ttf_parser::GlyphId(0), "{ch}");
+        }
+        assert!(std::ptr::eq(faces.glyph('a', 16.0).0, &faces.primary));
+    }
+
     use super::*;
 
     #[test]

@@ -28,10 +28,10 @@ resolver = "2"
 # ONE shared gpui spec for the app and every crate, so Cargo unifies the
 # whole workspace on a single gpui graph. gpui ships on crates.io as the
 # `gpui-pre` family (weekly snapshots of zed; each version = one zed sha —
-# 0.3.2 is zed@801c087), consumed here under the crate name `gpui` so
+# 0.3.9 is zed@93d7456), consumed here under the crate name `gpui` so
 # `gpui::…` paths and `gpui::actions!` are unchanged. The spec is a caret so
 # the published crates don't force consumers onto one snapshot; for THIS
-# workspace the exact snapshot is held by Cargo.lock (0.3.2 = zed@801c087) —
+# workspace the exact snapshot is held by Cargo.lock (0.3.9 = zed@93d7456) —
 # never `cargo update -p gpui-pre` casually: every gpui-pre release is a new
 # zed sha and can change the gpui API under us. To upgrade, take the gpui-kit
 # release you want, read the `gpui-pre` version from ITS Cargo.lock, and move
@@ -140,7 +140,7 @@ gpui_platform = { workspace = true }
 # Widget library — GPUI Kit's styled layer (github.com/longbridge/gpui-kit;
 # we depend on it directly rather than through the `gpui-kit` facade).
 # Exact-pinned so it only moves together with the gpui-pre pin above.
-gpui-component = { version = "=0.6.0", features = [
+gpui-component = { version = "=0.8.0", features = [
     # Code-block syntax highlighting (src/highlight.rs): each feature compiles
     # in one tree-sitter grammar (~0.5-1 MB binary each) — the top languages a
     # note is likely to quote. JSON ships in the base crate already.
@@ -171,11 +171,11 @@ gpui-component = { version = "=0.6.0", features = [
 # Lucide icon SVGs (was `gpui-component-assets`). Without `.with_assets(Assets)`
 # at startup, every gpui-component icon renders as an empty rect. Pin to the
 # same version so the icon set tracks the `IconName` enum in gpui-component.
-gpui-kit-assets = "=0.6.0"
+gpui-kit-assets = "=0.8.0"
 
 # The `fps` feature's HUD (GPUI Kit's, depends on gpui only). Same gpui-pre
 # family, so it unifies with the pin above; move it with the other three.
-gpui-fps = { version = "0.6", optional = true }
+gpui-fps = { version = "0.8", optional = true }
 
 # Parse `file://` URLs into filesystem paths correctly across platforms (Windows
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.

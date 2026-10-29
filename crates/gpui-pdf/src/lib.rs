@@ -1730,7 +1730,7 @@ impl PdfView {
         text: impl Into<SharedString>,
     ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
         let style_fn = self.style.clone();
-        let text = text.into();
+        let text: SharedString = platform_keys(&text.into()).into();
         move |_window, cx| {
             let s = style_fn();
             let text = text.clone();
@@ -2077,7 +2077,11 @@ impl Render for PdfView {
             .child(
                 self.control("pdf-zoom-in", "+")
                     .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx)))
-                    .tooltip(self.tip("Zoom in (⌘+)")),
+                    .tooltip(self.tip(if cfg!(target_os = "macos") {
+                        "Zoom in (⌘+)"
+                    } else {
+                        "Zoom in (Ctrl+=)"
+                    })),
             )
             .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
             .child({
@@ -2788,6 +2792,34 @@ impl Render for Tip {
                 .child(self.text.clone()),
         )
     }
+}
+
+/// Mac shortcut glyphs (`⇧⌘X`) as this platform writes them (`Ctrl+Shift+X`);
+/// unchanged on macOS. Rewrites every shortcut inside `s`, so whole tooltips
+/// like "Zoom in (⌘+)" pass through.
+fn platform_keys(s: &str) -> String {
+    if cfg!(target_os = "macos") {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let (mut ctrl, mut alt, mut shift) = (false, false, false);
+    for c in s.chars() {
+        match c {
+            '⌘' | '⌃' => ctrl = true,
+            '⌥' => alt = true,
+            '⇧' => shift = true,
+            _ => {
+                for (on, name) in [(ctrl, "Ctrl+"), (alt, "Alt+"), (shift, "Shift+")] {
+                    if on {
+                        out.push_str(name);
+                    }
+                }
+                (ctrl, alt, shift) = (false, false, false);
+                out.push(c);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

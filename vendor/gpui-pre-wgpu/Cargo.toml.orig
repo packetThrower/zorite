@@ -1,33 +1,37 @@
 [package]
 name = "gpui-pre-wgpu"
-version = "0.3.2"
+version = "0.3.9"
 edition = { workspace = true }
 publish = true
 license = "Apache-2.0"
-description = "Zed's `gpui_wgpu` crate (gpui-pre snapshot of zed@801c087)"
+description = "Zed's `gpui_wgpu` crate (gpui-pre snapshot of zed@93d7456)"
 repository = "https://github.com/zed-industries/zed"
 
 [package.metadata.gpui-pre]
 zed-crate = "gpui_wgpu"
 zed-version = "0.1.0"
-zed-rev = "801c087af22dd189dc1aa49e2f370b4f04190b19"
+zed-rev = "93d745668805029476e6d7fbb19652116fed51de"
 
 [lib]
 path = "src/gpui_wgpu.rs"
+doctest = false
 name = "gpui_wgpu"
 
 [features]
 default = []
+bench-support = ["gpui/bench-support", "dep:image"]
 font-kit = ["dep:font-kit"]
+test-support = ["gpui/test-support", "dep:image"]
 
 [dependencies]
 gpui = { workspace = true }
 anyhow = { workspace = true }
-bytemuck = "1"
+bytemuck = { workspace = true }
 collections = { workspace = true }
 cosmic-text = "0.19.0"
 etagere = { workspace = true }
 itertools = { workspace = true }
+image = { workspace = true, optional = true }
 log = { workspace = true }
 parking_lot = { workspace = true }
 profiling = { workspace = true }
@@ -37,11 +41,16 @@ swash = { workspace = true }
 unicode-bidi = { workspace = true }
 unicode-segmentation = { workspace = true }
 gpui_util = { workspace = true }
-wgpu = { workspace = true }
-font-kit = { git = "https://github.com/zed-industries/font-kit", rev = "94b0f28166665e8fd2f53ff6d268a14955c82269", package = "zed-font-kit", version = "0.14.1-zed", optional = true }
+font-kit = { workspace = true, optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+wgpu = { workspace = true, features = ["std", "parking_lot", "metal", "gles", "vulkan", "wgsl", "webgpu"] }
+
+[target.'cfg(not(any(target_os = "linux", target_os = "freebsd")))'.dependencies]
+wgpu = { workspace = true, default-features = true }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
-web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+web-sys = { workspace = true, features = ["HtmlCanvasElement"] }
 wgpu = { workspace = true, features = ["webgl"] }
 
 [lints]

@@ -2988,6 +2988,7 @@ impl EditorState {
             self.redo_stack.push(self.snapshot());
             self.restore(prev);
             self.last_edit = EditKind::Other;
+            cx.emit(EditorEvent::Changed);
             cx.notify();
         }
     }
@@ -2997,6 +2998,7 @@ impl EditorState {
             self.undo_stack.push(self.snapshot());
             self.restore(next);
             self.last_edit = EditKind::Other;
+            cx.emit(EditorEvent::Changed);
             cx.notify();
         }
     }
@@ -3017,6 +3019,11 @@ impl EditorState {
         self.selected_range = caret..caret;
         self.selection_reversed = false;
         self.marked_range = None;
+        self.last_edit_keystroke = false;
+        // Spans index the old text; a restore can move every byte after the
+        // edit, and a run ending inside a multibyte char panics DirectWrite. Drop
+        // them — the host re-checks on the `Changed` the caller emits.
+        self.diagnostics.clear();
     }
 
     /// Snapshot the pre-edit state for undo, coalescing a run of single-grapheme
@@ -7052,6 +7059,30 @@ mod tests {
                 e.replace_text_in_range(None, "仮名", window, cx);
                 assert_eq!(e.content, "abc仮名");
                 assert_eq!(e.marked_range, None);
+            })
+            .unwrap();
+    }
+
+    /// Undo restored the text but kept spell-check spans shifted for the
+    /// undone paste; on a later line one ended inside "가" and DirectWrite
+    /// panicked slicing the run. Undo must drop them (the host re-checks).
+    #[gpui::test]
+    fn undo_drops_stale_diagnostics(cx: &mut gpui::TestAppContext) {
+        let editor = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| EditorState::new(window, cx).with_text("今日\n회의가"))
+            })
+            .unwrap()
+        });
+        editor
+            .update(cx, |e, window, cx| {
+                e.set_diagnostics(vec![super::Diagnostic { range: 7..16 }], cx);
+                e.selected_range = 6..6;
+                e.replace_text_in_range(None, "テスト", window, cx);
+                assert_eq!(e.diagnostics[0].range, 16..25);
+                e.undo(&super::Undo, window, cx);
+                assert_eq!(e.content, "今日\n회의가");
+                assert!(e.diagnostics.is_empty());
             })
             .unwrap();
     }

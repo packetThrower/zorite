@@ -1181,7 +1181,7 @@ impl WhiteboardView {
         text: impl Into<SharedString>,
     ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
         let style_fn = self.style.clone();
-        let text = text.into();
+        let text: SharedString = platform_keys(&text.into()).into();
         move |_window, cx| {
             let s = style_fn();
             let text = text.clone();
@@ -4812,7 +4812,12 @@ impl WhiteboardView {
                 .hover(|s| s.bg(grid))
                 .child(div().w(px(12.0)).child(if on { "✓" } else { "" }))
                 .child(div().flex_1().child(label))
-                .child(div().text_size(px(11.0)).text_color(text).child(sc))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(text)
+                        .child(platform_keys(sc)),
+                )
         };
         div()
             .min_w(px(184.0))
@@ -6169,13 +6174,13 @@ impl Render for WhiteboardView {
                 .items_center()
                 .justify_center()
                 .rounded(px(6.0));
+            // No tooltip while the flyout is open: it would sit over the menu.
             if self.font_open {
                 b = b.bg(accent);
             } else {
-                b = b.hover(|s| s.bg(grid));
+                b = b.hover(|s| s.bg(grid)).tooltip(self.tip("Font"));
             }
             b.child(div().text_size(px(15.0)).text_color(ink).child("Aa"))
-                .tooltip(self.tip("Font"))
                 .on_click(cx.listener(|this, _ev, window, cx| {
                     this.focus.focus(window, cx);
                     this.toggle_font(cx);
@@ -6734,7 +6739,12 @@ impl Render for WhiteboardView {
                         .text_color(ink)
                         .hover(|s| s.bg(grid))
                         .child(label)
-                        .child(div().text_size(px(11.0)).text_color(text).child(shortcut))
+                        .child(
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(text)
+                                .child(platform_keys(shortcut)),
+                        )
                 };
                 let divider = || div().my(px(4.0)).mx(px(8.0)).h(px(1.0)).bg(grid);
                 let has_sel = !self.selected.is_empty();
@@ -7469,8 +7479,46 @@ impl Render for WhiteboardView {
     }
 }
 
+/// Mac shortcut glyphs (`⇧⌘X`) as this platform writes them (`Ctrl+Shift+X`);
+/// unchanged on macOS. Rewrites every shortcut inside `s`, so whole tooltips
+/// like "Zoom in (⌘+)" pass through.
+fn platform_keys(s: &str) -> String {
+    if cfg!(target_os = "macos") {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let (mut ctrl, mut alt, mut shift) = (false, false, false);
+    for c in s.chars() {
+        match c {
+            '⌘' | '⌃' => ctrl = true,
+            '⌥' => alt = true,
+            '⇧' => shift = true,
+            _ => {
+                for (on, name) in [(ctrl, "Ctrl+"), (alt, "Alt+"), (shift, "Shift+")] {
+                    if on {
+                        out.push_str(name);
+                    }
+                }
+                (ctrl, alt, shift) = (false, false, false);
+                out.push(c);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn platform_keys_spells_out_modifiers() {
+        use super::platform_keys;
+        assert_eq!(platform_keys("Redo (⌘⇧Z)"), "Redo (Ctrl+Shift+Z)");
+        assert_eq!(platform_keys("⇧⌘H"), "Ctrl+Shift+H");
+        assert_eq!(platform_keys("⌘⌥G"), "Ctrl+Alt+G");
+        assert_eq!(platform_keys("Copy"), "Copy");
+    }
+
     use super::*;
 
     #[test]
