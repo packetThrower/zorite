@@ -9,6 +9,12 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Added
+
+- **Copy text from PDFs.** Drag over text in the PDF viewer to select it, then
+  press ⌘C (Ctrl+C on Windows and Linux). Line breaks are kept. Highlight mode
+  works as before.
+
 ### Changed
 
 - **Moved to GPUI Kit 0.8.0** (gpui-pre 0.3.9), in step with Baudrun,

@@ -606,6 +606,10 @@ pub struct PdfView {
     /// In-progress drag selection: (page, start, current) in normalized coords.
     #[cfg(feature = "markup")]
     sel_drag: Option<(usize, NormPoint, NormPoint)>,
+    /// A finished drag outside highlight mode: text selected for ⌘C. Cleared by
+    /// the next mouse-down.
+    #[cfg(feature = "markup")]
+    text_sel: Option<(usize, NormPoint, NormPoint)>,
     /// Called when a drag-selection finishes, so the host stores the note (markup).
     #[cfg(feature = "markup")]
     on_create: Option<CreateHighlightFn>,
@@ -729,6 +733,8 @@ impl PdfView {
             on_highlight: None,
             #[cfg(feature = "markup")]
             selecting: false,
+            #[cfg(feature = "markup")]
+            text_sel: None,
             #[cfg(feature = "markup")]
             area_mode: false,
             #[cfg(feature = "markup")]
@@ -1862,11 +1868,11 @@ impl Render for PdfView {
                     }
                 }
                 // Live drag feedback: the raw box in area mode, the text
-                // selection's line rects in highlight mode.
-                if let Some((pg, a, b)) = self.sel_drag
+                // selection's line rects otherwise (also a finished copy selection).
+                if let Some((pg, a, b)) = self.sel_drag.or(self.text_sel)
                     && pg == i
                 {
-                    let rects: Vec<NormRect> = if self.area_mode {
+                    let rects: Vec<NormRect> = if self.selecting && self.area_mode {
                         vec![norm_rect_between(a, b)]
                     } else if let Some(TextSlot::Ready(pt)) = self.page_text.get(&i)
                         && let Some(sel) = pt.select(a, b)
@@ -2240,17 +2246,20 @@ impl Render for PdfView {
             .flex()
             .flex_col()
             .bg(style.bg)
-            // Click the viewer to focus it (so keyboard shortcuts work); in highlight
-            // mode a mouse-down also starts a drag selection.
+            // Click the viewer to focus it (so keyboard shortcuts work); a mouse-down
+            // on a page also starts a drag selection — a highlight in highlight
+            // mode, else text to copy.
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _ev: &MouseDownEvent, window, cx| {
                     window.focus(&this.focus, cx);
                     #[cfg(feature = "markup")]
-                    if this.selecting
-                        && let Some((pg, n)) = this.point_to_page(_ev.position)
                     {
-                        this.sel_drag = Some((pg, n, n));
+                        this.text_sel = None;
+                        if let Some((pg, n)) = this.point_to_page(_ev.position) {
+                            this.ensure_page_text(pg, cx);
+                            this.sel_drag = Some((pg, n, n));
+                        }
                         cx.notify();
                     }
                 }),
@@ -2359,6 +2368,17 @@ impl Render for PdfView {
                     this.toggle_select_mode(cx);
                     return;
                 }
+                // ⌘C: copy the selected text.
+                #[cfg(feature = "markup")]
+                if secondary
+                    && key == "c"
+                    && let Some((pg, a, b)) = this.text_sel
+                    && let Some(TextSlot::Ready(pt)) = this.page_text.get(&pg)
+                    && let Some(text) = pt.selected_text(a, b)
+                {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(text));
+                    return;
+                }
                 match key {
                     "pagedown" => this.next_page(cx),
                     "pageup" => this.prev_page(cx),
@@ -2399,6 +2419,12 @@ impl Render for PdfView {
                     // highlight. Threshold is in normalized page coords (~a few pixels).
                     const MIN_DRAG: f32 = 0.005;
                     if (a.x - b.x).abs() < MIN_DRAG && (a.y - b.y).abs() < MIN_DRAG {
+                        cx.notify();
+                        return;
+                    }
+                    // Outside highlight mode the drag just selects text to copy.
+                    if !this.selecting {
+                        this.text_sel = Some((pg, a, b));
                         cx.notify();
                         return;
                     }

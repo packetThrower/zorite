@@ -408,6 +408,20 @@ impl PageText {
             .map_or(0, |s| s.matches(&key).count())
     }
 
+    /// The text a drag from `from` to `to` covers, for copying: line breaks kept,
+    /// each line's spaces collapsed. `None` if there's no text there.
+    pub fn selected_text(&self, from: NormPoint, to: NormPoint) -> Option<String> {
+        let i0 = self.nearest_run(from)?;
+        let i1 = self.nearest_run(to)?;
+        let raw = Self::join_runs(&self.runs[i0.min(i1)..=i0.max(i1)], true);
+        let text = raw
+            .lines()
+            .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!text.trim().is_empty()).then_some(text)
+    }
+
     /// Resolve a drag from `from` to `to` into a [`Selection`]: the run range between
     /// the nearest glyphs (draw order ≈ reading order), its one-line quote, the
     /// occurrence index, and the rects to draw. `None` if there's no text or the
@@ -461,6 +475,17 @@ mod tests {
         // Spans from Hello's x to World's right edge.
         assert!((r.x - 0.10).abs() < 1e-4);
         assert!((r.right() - 0.32).abs() < 1e-4);
+    }
+
+    #[test]
+    fn selected_text_keeps_line_breaks() {
+        let pt = sample();
+        let from = NormPoint { x: 0.11, y: 0.11 };
+        let to = NormPoint { x: 0.2, y: 0.15 };
+        assert_eq!(
+            pt.selected_text(from, to).as_deref(),
+            Some("Hello World\nsecond")
+        );
     }
 
     #[test]
