@@ -800,8 +800,8 @@ mod tests {
             ink
         };
 
-        // Checkbox at (20,140)-(60,180) → pixmap rows 240..280.
-        assert_eq!(ink_in(&before, (20, 240, 60, 280)), 0, "checkbox before");
+        // Checkbox at (20,140)-(60,180) → pixmap rows 240..280. It already has
+        // an /AP, which hayro ≥0.8 draws un-normalized too; normalizing must keep it.
         assert!(ink_in(&after, (20, 240, 60, 280)) > 50, "checkbox after");
         // Merged text field at (20,60)-(220,100) → rows 320..360.
         assert_eq!(ink_in(&before, (20, 320, 220, 360)), 0, "text before");

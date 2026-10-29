@@ -9,13 +9,13 @@
 //! independent of zoom and display DPI. Matching ignores whitespace, so a quote
 //! survives the small spacing quirks of PDF text extraction.
 
-use hayro::hayro_interpret::font::Glyph;
+use hayro::hayro_interpret::font::{Glyph, GlyphRun};
 use hayro::hayro_interpret::hayro_cmap::BfString;
 use hayro::hayro_interpret::{
-    BlendMode, ClipPath, Context, Device, GlyphDrawMode, Image, InterpreterCache,
-    InterpreterSettings, Paint, PathDrawMode, SoftMask, TransformExt, interpret_page,
+    BlendMode, ClipPath, Context, Device, DrawMode, DrawProps, Image, ImageDrawProps,
+    InterpreterCache, InterpreterSettings, SoftMask, TransformExt, interpret_page,
 };
-use kurbo::{Affine, BezPath, Point, Rect, Shape};
+use kurbo::{BezPath, Point, Rect, Shape};
 
 use crate::Document;
 
@@ -82,34 +82,38 @@ struct Collector {
 }
 
 impl<'a> Device<'a> for Collector {
-    fn set_soft_mask(&mut self, _: Option<SoftMask<'a>>) {}
-    fn set_blend_mode(&mut self, _: BlendMode) {}
-    fn draw_path(&mut self, _: &BezPath, _: Affine, _: &Paint<'a>, _: &PathDrawMode) {}
+    fn draw_path(&mut self, _: &BezPath, _: DrawProps<'a>, _: &DrawMode) {}
     fn push_clip_path(&mut self, _: &ClipPath) {}
     fn push_transparency_group(&mut self, _: f32, _: Option<SoftMask<'a>>, _: BlendMode) {}
-    fn draw_image(&mut self, _: Image<'a, '_>, _: Affine) {}
-    fn pop_clip_path(&mut self) {}
+    fn draw_image(&mut self, _: Image<'a, '_>, _: ImageDrawProps<'a>) {}
+    fn pop_clip(&mut self) {}
     fn pop_transparency_group(&mut self) {}
 
-    fn draw_glyph(
+    fn draw_glyph_run(
         &mut self,
-        glyph: &Glyph<'a>,
-        transform: Affine,
-        glyph_transform: Affine,
-        _paint: &Paint<'a>,
+        run: &GlyphRun<'_, 'a>,
+        props: DrawProps<'a>,
         // Note: we record *all* glyphs, including `Invisible` ones — that's the
         // searchable text layer over scanned/OCR'd page images.
-        _draw_mode: &GlyphDrawMode,
+        _draw_mode: &DrawMode,
     ) {
+        for glyph in run.glyphs() {
+            // Mirrors hayro's own renderer: text space → device.
+            self.glyph(glyph, props.transform * glyph.transform());
+        }
+    }
+}
+
+impl Collector {
+    fn glyph(&mut self, glyph: &Glyph<'_>, m: kurbo::Affine) {
         let text = match glyph.as_unicode() {
             Some(BfString::Char(c)) => c.to_string(),
             Some(BfString::String(s)) => s,
             None => return, // no unicode → can't match against a quote; skip
         };
-        // On-page bbox: the glyph outline transformed by `transform * glyph_transform`
-        // (mirrors hayro's own renderer). Device space here is page points with a
-        // top-left origin (we run at scale 1 with `initial_transform(true)`).
-        let m = transform * glyph_transform;
+        // On-page bbox: the glyph outline transformed by `m`. Device space here is
+        // page points with a top-left origin (we run at scale 1 with
+        // `initial_transform(true)`).
         // Keep the PDF's own whitespace glyphs (normalized to one space): they mark
         // real word boundaries, so words aren't run together and — crucially — a font's
         // intra-word letter-spacing isn't mistaken for a space. They have no outline,
