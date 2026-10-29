@@ -1,6 +1,6 @@
 ---
 title: PDF & images
-description: 'Link or drop PDFs into the page-virtualized viewer — zoom, navigation, a TOC, drag-to-highlight markup with note↔PDF jump links, fillable forms, and password-protected files. Plus inline images you can paste, drop, and resize.'
+description: 'Link or drop PDFs into the page-virtualized viewer — zoom, navigation, a TOC, text you can select and copy, drag-to-highlight markup with note↔PDF jump links, fillable forms, and password-protected files. Plus inline images you can paste, drop, and resize.'
 ---
 
 Reference material lives next to your notes. Link a PDF with a wiki-link or drop
@@ -31,6 +31,14 @@ Zoom, page navigation, and a table of contents for jumping around a long
 document. Two **fit modes** live next to the zoom controls: `↔` fits the page
 width to the viewer, `⤢` fits the whole page — both stay in effect as you
 resize the window, until you zoom manually.
+
+### Select and copy text
+
+**Drag over text** to select it, then press `⌘C` (`Ctrl+C` on Windows and Linux)
+to copy it. Line breaks come across as they are on the page. The next click
+clears the selection. With the highlight pen on, the same drag makes a highlight
+instead (below). A scanned page has no text to select unless the PDF carries a
+text layer.
 
 ### Highlight markup
 
