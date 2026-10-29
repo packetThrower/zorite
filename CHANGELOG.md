@@ -23,6 +23,11 @@ log: <https://github.com/packetThrower/zorite/releases>.
   keystroke.
 - **Settings → Notebooks buttons show proper labels** (Switch, Rename,
   Reveal, Remove) instead of raw translation keys.
+- **Whiteboard text in Korean, Hebrew, Arabic and other scripts** now draws
+  from a system font when the board's font lacks it, instead of empty boxes.
+  This covers uploaded board fonts too.
+- **Shortcut hints on Windows and Linux** in the PDF viewer and whiteboard
+  tooltips and menus read Ctrl+Shift+Z instead of Mac's ⌘⇧Z.
 
 ## [0.12.1] - 2026-10-01
 
