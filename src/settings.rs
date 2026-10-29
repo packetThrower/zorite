@@ -2250,7 +2250,7 @@ fn notebook_row(nb: crate::paths::Notebook, weak: &WeakEntity<SettingsView>) -> 
     } else {
         actions = actions.child(nb_button(
             SharedString::from(format!("nb-switch:{}", nb.dir)),
-            &t!("settings.nb.switch"),
+            &t!("settings.btn.switch"),
             weak,
             move |this, window, cx| this.switch_notebook(nb_switch.clone(), window, cx),
         ));
@@ -2258,13 +2258,13 @@ fn notebook_row(nb: crate::paths::Notebook, weak: &WeakEntity<SettingsView>) -> 
     actions = actions
         .child(nb_button(
             SharedString::from(format!("nb-rename:{}", nb.dir)),
-            &t!("settings.nb.rename"),
+            &t!("common.rename"),
             weak,
             move |this, window, cx| this.rename_notebook(nb_rename.clone(), window, cx),
         ))
         .child(nb_button(
             SharedString::from(format!("nb-reveal:{}", nb.dir)),
-            &t!("settings.nb.reveal"),
+            &t!("settings.btn.reveal"),
             weak,
             move |_this, _window, _cx| {
                 crate::app::AppView::reveal_folder(&reveal_dir);
@@ -2273,7 +2273,7 @@ fn notebook_row(nb: crate::paths::Notebook, weak: &WeakEntity<SettingsView>) -> 
     if !active {
         actions = actions.child(nb_button(
             SharedString::from(format!("nb-forget:{}", nb.dir)),
-            &t!("settings.nb.remove"),
+            &t!("common.remove"),
             weak,
             move |this, _window, cx| this.forget_notebook(nb_forget.clone(), cx),
         ));

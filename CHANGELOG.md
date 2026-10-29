@@ -15,6 +15,15 @@ log: <https://github.com/packetThrower/zorite/releases>.
   PortFinder and etch341. Zorite's Linux fix for Arabic dots and other
   combining marks (#108) is carried over to the new version.
 
+### Fixed
+
+- **Undo no longer crashes Zorite on Windows** when the page has Korean,
+  Japanese or other multibyte text after the edit. Undo and redo are also
+  saved right away and re-run spell-check, instead of waiting for the next
+  keystroke.
+- **Settings → Notebooks buttons show proper labels** (Switch, Rename,
+  Reveal, Remove) instead of raw translation keys.
+
 ## [0.12.1] - 2026-10-01
 
 A Linux fix release.
