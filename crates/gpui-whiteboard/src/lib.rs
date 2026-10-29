@@ -6174,13 +6174,13 @@ impl Render for WhiteboardView {
                 .items_center()
                 .justify_center()
                 .rounded(px(6.0));
+            // No tooltip while the flyout is open: it would sit over the menu.
             if self.font_open {
                 b = b.bg(accent);
             } else {
-                b = b.hover(|s| s.bg(grid));
+                b = b.hover(|s| s.bg(grid)).tooltip(self.tip("Font"));
             }
             b.child(div().text_size(px(15.0)).text_color(ink).child("Aa"))
-                .tooltip(self.tip("Font"))
                 .on_click(cx.listener(|this, _ev, window, cx| {
                     this.focus.focus(window, cx);
                     this.toggle_font(cx);

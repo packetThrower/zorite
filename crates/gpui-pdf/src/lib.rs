@@ -2077,7 +2077,11 @@ impl Render for PdfView {
             .child(
                 self.control("pdf-zoom-in", "+")
                     .on_click(cx.listener(|this, _, _window, cx| this.zoom_in(cx)))
-                    .tooltip(self.tip("Zoom in (⌘+)")),
+                    .tooltip(self.tip(if cfg!(target_os = "macos") {
+                        "Zoom in (⌘+)"
+                    } else {
+                        "Zoom in (Ctrl+=)"
+                    })),
             )
             .child(div().w(px(1.0)).h(px(14.0)).mx(px(4.0)).bg(style.border))
             .child({
