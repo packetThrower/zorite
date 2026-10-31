@@ -5566,14 +5566,6 @@ impl AppView {
                 theme::Mode::Auto => self.system_dark,
             };
         let palette = if is_dark { skin.dark } else { skin.light };
-        // Code-highlight styles follow gpui-component's light/dark highlight
-        // theme; adopting it drops the cache when it actually changed.
-        {
-            use gpui_component::ActiveTheme as _;
-            self.highlight_store
-                .borrow_mut()
-                .set_theme(cx.theme().highlight_theme.clone());
-        }
         // Font precedence: the user's explicit Font setting wins over the
         // theme's `font`, which wins over the platform default.
         let font = if self.ui_font.is_empty() {
@@ -5582,6 +5574,16 @@ impl AppView {
             self.ui_font.clone()
         };
         theme::apply(palette, is_dark, window, cx);
+        // Code-highlight styles follow gpui-component's light/dark highlight
+        // theme. Read it after `theme::apply` has set the mode: before, a
+        // dark-only skin under a light OS got the light one. Adopting it
+        // drops the cache when it actually changed.
+        {
+            use gpui_component::ActiveTheme as _;
+            self.highlight_store
+                .borrow_mut()
+                .set_theme(cx.theme().highlight_theme.clone());
+        }
         // Deferred: the theme picker lives in Settings, so its window is
         // usually mid-update right now and a direct update would fail.
         if let Some(settings) = self.settings_window {

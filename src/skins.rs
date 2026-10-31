@@ -79,6 +79,10 @@ impl Skin {
         p.bg_window.a = 0.72;
         p.bg_sidebar.a = 0.20;
         p.bg_content.a = 0.0;
+        // The dimmer text tiers (quotes, placeholders) fade over a white
+        // window behind; lift them.
+        p.text_secondary.a = 0.72;
+        p.text_tertiary.a = 0.55;
         skin.light = skin.dark;
         skin
     }

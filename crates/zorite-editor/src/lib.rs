@@ -2554,6 +2554,20 @@ impl EditorState {
                 self.selected_range.end = sel.start + lt;
                 continue;
             }
+            // A symmetric marker (`==`, `**`, `~~`) at either end with no
+            // partner inside the selection.
+            if let Some(m) = ["==", "**", "~~"].into_iter().find(|m| {
+                text.len() > m.len()
+                    && (text.ends_with(m) || text.starts_with(m))
+                    && text.matches(m).count() == 1
+            }) {
+                if text.ends_with(m) {
+                    self.selected_range.end -= m.len();
+                } else {
+                    self.selected_range.start += m.len();
+                }
+                continue;
+            }
             // An opening tag at the start whose closer is outside the selection.
             if text.starts_with('<')
                 && !text.starts_with("</")
@@ -7146,6 +7160,15 @@ mod tests {
                 assert_eq!(
                     e.content,
                     format!("a {mark}<span style=\"color:#30a46c\">yellow mark</span></mark>, b")
+                );
+                // A plain `==` highlight hides its markers the same way.
+                let plain = "a ==yellow mark==, b";
+                e.content = plain.to_string();
+                e.selected_range = plain.find("yellow").unwrap()..plain.find(',').unwrap();
+                e.color_selection(super::ColorKind::Text, Some(0x30a46cff), cx);
+                assert_eq!(
+                    e.content,
+                    "a ==<span style=\"color:#30a46c\">yellow mark</span>==, b"
                 );
                 // And a selection starting on the hidden opening tag.
                 e.content = text.clone();
