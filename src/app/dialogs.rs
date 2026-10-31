@@ -192,6 +192,7 @@ impl AppView {
         let focus = state.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let on_confirm = groups.clone();
             let page = page.clone();
             let weak = weak.clone();
@@ -268,6 +269,7 @@ impl AppView {
         let input = self.new_page_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let weak_ok = weak.clone();
             let weak_btn = weak.clone();
             dialog
@@ -348,6 +350,7 @@ impl AppView {
         let input = self.new_page_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let weak_ok = weak.clone();
             let json_ok = json.clone();
             let weak_btn = weak.clone();
@@ -422,6 +425,7 @@ impl AppView {
             .unwrap_or_else(|| t!("dialogs.delete_template_fallback").into_owned());
         let weak = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let weak = weak.clone();
             dialog
                 .title(t!("dialogs.delete_template_title"))
@@ -480,6 +484,7 @@ impl AppView {
             .into_owned(),
         };
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let folder = folder.clone();
             dialog
                 .title(t!("dialogs.db_error_title"))
@@ -537,6 +542,7 @@ impl AppView {
         };
         let weak = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let weak = weak.clone();
             dialog
                 .title(t!("dialogs.delete_page_title"))
@@ -570,6 +576,7 @@ impl AppView {
     ) {
         let title: SharedString = title.into();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let body = body.clone();
             dialog
                 .title(title.clone())
@@ -629,6 +636,7 @@ impl AppView {
         let weak = cx.entity().downgrade();
         let dialog_title: SharedString = dialog_title.into();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let input_body = input.clone();
             let input_btn = input.clone();
             let input_key = input.clone();
@@ -697,6 +705,7 @@ impl AppView {
         let err = self.rename_error.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let input_body = input.clone();
             let input_btn = input.clone();
             let input_key = input.clone();
@@ -833,6 +842,7 @@ impl AppView {
         let input = self.rename_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let input_body = input.clone();
             let input_btn = input.clone();
             let input_key = input.clone();

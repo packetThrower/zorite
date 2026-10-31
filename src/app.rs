@@ -5582,6 +5582,13 @@ impl AppView {
             self.ui_font.clone()
         };
         theme::apply(palette, is_dark, window, cx);
+        // Deferred: the theme picker lives in Settings, so its window is
+        // usually mid-update right now and a direct update would fail.
+        if let Some(settings) = self.settings_window {
+            cx.defer(move |cx| {
+                let _ = settings.update(cx, |_, w, _| theme::set_window_background(w));
+            });
+        }
         theme::set_ui_font(&font, cx);
         // Diagrams are themed at render time — drop the cache so they re-render
         // with the new palette.
@@ -6008,6 +6015,7 @@ impl AppView {
             },
             move |window, cx| {
                 window.set_client_inset(px(10.0));
+                theme::set_window_background(window);
                 let v = cx.new(|cx| SettingsView::new(app.clone(), window, cx));
                 cx.new(|cx| gpui_component::Root::new(v, window, cx))
             },
@@ -6651,6 +6659,7 @@ impl AppView {
             )
         };
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let nb = nb.clone();
             let body = body.clone();
             dialog
@@ -7002,7 +7011,7 @@ impl Render for AppView {
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
-                                    .bg(theme::bg_sidebar())
+                                    .bg(theme::popover())
                                     .border_1()
                                     .border_color(theme::border_subtle())
                                     .rounded(px(8.0))
@@ -7205,7 +7214,7 @@ impl Render for AppView {
                         div()
                             .occlude()
                             .min_w(px(150.0))
-                            .bg(theme::bg_sidebar())
+                            .bg(theme::popover())
                             .border_1()
                             .border_color(theme::border_subtle())
                             .rounded(px(8.0))

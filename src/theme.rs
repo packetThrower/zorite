@@ -143,6 +143,22 @@ pub fn bg_sidebar() -> Hsla {
 pub fn bg_content() -> Hsla {
     get().bg_content
 }
+/// Menus and popovers: the sidebar color, always opaque so a translucent
+/// skin never shows the page through a menu.
+pub fn popover() -> Hsla {
+    Hsla {
+        a: 1.0,
+        ..get().bg_sidebar
+    }
+}
+/// Dialog fill: the content color, always opaque. Set explicitly because Kit
+/// fills dialogs with the window background token, which the Glass skin clears.
+pub fn dialog() -> Hsla {
+    Hsla {
+        a: 1.0,
+        ..get().bg_content
+    }
+}
 pub fn elevated() -> Hsla {
     get().elevated
 }
@@ -354,7 +370,7 @@ pub fn editor_syntax_style() -> zorite_editor::SyntaxStyle {
         property_icon: Some(std::rc::Rc::new(property_icon)),
         rule: p.divider,
         mark_bg: gpui::rgba(0xFFD60066).into(),
-        popover_bg: p.bg_sidebar,
+        popover_bg: popover(),
         popover_border: p.border_subtle,
         popover_fg: p.text_primary,
         popover_hover: p.accent_tint,
@@ -411,10 +427,21 @@ pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App)
         cx,
     );
     apply_to_component_theme(&palette, cx);
+    set_window_background(window);
     // The theme-reactive cursor pack re-renders from the new palette (a
     // no-op unless it's the selected pack).
     crate::cursors::theme_changed();
     cx.refresh_windows();
+}
+
+/// A translucent palette (the Glass skin) lets the OS blur show through.
+/// For every window the palette paints, not just the one `apply` ran on.
+pub fn set_window_background(window: &Window) {
+    window.set_background_appearance(if get().bg_window.a < 1.0 {
+        gpui::WindowBackgroundAppearance::Blurred
+    } else {
+        gpui::WindowBackgroundAppearance::Opaque
+    });
 }
 
 /// Override the app-wide font family on gpui-component's `Theme` (its `Root`
@@ -498,7 +525,12 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     };
     t.border = p.border_subtle;
     t.input = p.border_subtle;
-    t.popover = p.bg_sidebar;
+    // Popovers stay opaque even on a translucent skin, or the page under
+    // them bleeds through.
+    t.popover = Hsla {
+        a: 1.0,
+        ..p.bg_sidebar
+    };
     t.popover_foreground = p.text_primary;
     t.accent = p.accent_tint;
     t.accent_foreground = p.text_primary;
@@ -523,6 +555,10 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.button_secondary_hover = p.hover;
     t.button_secondary_active = p.glass_strong;
     t.button_secondary_foreground = p.text_primary;
+    // A translucent skin clears the titlebar too, so the blur runs edge to edge.
+    if p.bg_window.a < 1.0 {
+        t.title_bar = p.bg_content;
+    }
     t.slider_bar = p.accent;
     t.slider_thumb = p.accent;
     // Focus ring on inputs/selects — stock is a bright near-white in dark mode.

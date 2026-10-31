@@ -258,7 +258,7 @@ pub fn render(
         // backdrop and close the menu (row clicks already stop_propagation).
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .min_w(px(min_w))
-        .bg(theme::bg_sidebar())
+        .bg(theme::popover())
         .border_1()
         .border_color(theme::border_subtle())
         .rounded(px(8.0))
@@ -370,7 +370,7 @@ pub fn render(
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .w(px(FLYOUT_WIDTH))
-            .bg(theme::bg_sidebar())
+            .bg(theme::popover())
             .border_1()
             .border_color(theme::border_subtle())
             .rounded(px(8.0))

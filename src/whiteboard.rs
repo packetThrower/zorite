@@ -23,7 +23,12 @@ pub fn style() -> WhiteboardStyleFn {
         grid: theme::border_subtle(),
         text: theme::text_tertiary(),
         ink: theme::text_primary(),
-        panel: theme::glass_strong(),
+        // Toolbar pills float over shapes, so they need their own fill: a faint
+        // overlay let busy boards (and the Glass skin) show through the icons.
+        panel: gpui::Hsla {
+            a: 0.85,
+            ..theme::popover()
+        },
         // Readable surface for popovers (color picker, flyouts, right-click
         // menu). `elevated` would do, but in light themes it equals the white
         // canvas (`bg_content`) and the panel vanishes — `bg_sidebar` is a

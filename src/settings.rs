@@ -391,6 +391,7 @@ impl SettingsView {
             )
         };
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let nb = nb.clone();
             let body = body.clone();
             dialog
@@ -456,6 +457,7 @@ impl SettingsView {
         let input = self.nb_rename_input.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let input_body = input.clone();
             let input_btn = input.clone();
             let input_key = input.clone();
@@ -692,6 +694,7 @@ impl SettingsView {
         let weak_app = self.app.clone();
         let this = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let orphans = orphans.clone();
             let weak_app = weak_app.clone();
             let this = this.clone();
@@ -757,6 +760,7 @@ impl SettingsView {
         let confirm = self.sec_confirm.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let current_i = current.clone();
             let new_i = newpw.clone();
             let confirm_i = confirm.clone();
@@ -935,6 +939,7 @@ impl SettingsView {
                 ),
             };
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let target = target.clone();
             let body = body.clone();
             dialog
@@ -963,6 +968,7 @@ impl SettingsView {
         }
         let default = crate::paths::default_location();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let default = default.clone();
             dialog
                 .title(t!("settings.dlg.reset_data_title"))
@@ -999,6 +1005,7 @@ impl SettingsView {
     ) {
         let title: SharedString = title.into();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let body = body.clone();
             dialog
                 .title(title.clone())

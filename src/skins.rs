@@ -68,6 +68,20 @@ impl Skin {
             font: None,
         }
     }
+
+    /// A dark-only translucent theme: the surfaces get alpha and `theme::apply`
+    /// switches the window to the OS blur, so the desktop shows through.
+    fn builtin_glass(id: &str, name: &str, dark: Base) -> Self {
+        let mut skin = Self::builtin_dark(id, name, dark);
+        let p = &mut skin.dark;
+        // Content surfaces nest (shell > pane > page), so alphas compound: the
+        // shell carries the tint and the content layers stay clear.
+        p.bg_window.a = 0.72;
+        p.bg_sidebar.a = 0.20;
+        p.bg_content.a = 0.0;
+        skin.light = skin.dark;
+        skin
+    }
 }
 
 /// The bundled skins, in display order. "zorite" is the default.
@@ -144,6 +158,15 @@ pub fn builtin_skins() -> Vec<Skin> {
             ),
             (
                 0xF4ECE0, 0xEBE3D6, 0xF8F1E5, 0x1A1A1A, 0x5A4A1A, 0x3A3A3A, 0x2A4A2A,
+            ),
+        ),
+        // Lighter accent/tag than Zorite's: over a white window behind, the
+        // glass reads mid-gray and the stock blue/purple lose contrast.
+        Skin::builtin_glass(
+            "glass",
+            "Glass",
+            (
+                0x16171A, 0x1B1D21, 0x16171A, 0xFFFFFF, 0x8AC4FF, 0xC9B1FF, 0xE6CC94,
             ),
         ),
         Skin::builtin(
