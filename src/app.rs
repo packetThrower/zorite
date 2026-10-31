@@ -3410,7 +3410,9 @@ impl AppView {
             crate::pdf::PdfView::new(
                 path.clone(),
                 Rc::new(|| crate::pdf::PdfStyle {
-                    bg: theme::bg_content(),
+                    // Opaque: the viewer fills its find bar, color row and
+                    // tooltips with this, which a translucent skin would clear.
+                    bg: theme::dialog(),
                     border: theme::border_subtle(),
                     placeholder_bg: theme::glass(),
                     placeholder_fg: theme::text_tertiary(),
