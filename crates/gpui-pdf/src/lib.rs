@@ -1731,19 +1731,53 @@ impl PdfView {
     /// *hook* but no tooltip *view* (those live in higher-level UI crates we don't
     /// depend on), so we render a small themed one ([`Tip`]), reading colors through
     /// the same style closure at show time.
+    ///
+    /// Header tooltips stay hidden while a popover (color row, find bar) is open:
+    /// they drop down right where the popovers sit.
     fn tip(
         &self,
         text: impl Into<SharedString>,
     ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
+        self.tip_if(!self.popover_open(), text)
+    }
+
+    /// Is a header popover (color row, find bar) open?
+    fn popover_open(&self) -> bool {
+        #[cfg(feature = "markup")]
+        if self.palette_open {
+            return true;
+        }
+        self.find_open()
+    }
+
+    /// Is the find bar open? (Always false without the `search` feature.)
+    fn find_open(&self) -> bool {
+        #[cfg(feature = "search")]
+        return self.search_open;
+        #[cfg(not(feature = "search"))]
+        false
+    }
+
+    /// [`Self::tip`] that shows nothing unless `show` holds. gpui's tooltip
+    /// hook always wants a view, so a hidden one is an empty [`Tip`].
+    fn tip_if(
+        &self,
+        show: bool,
+        text: impl Into<SharedString>,
+    ) -> impl Fn(&mut Window, &mut App) -> AnyView + 'static {
         let style_fn = self.style.clone();
-        let text: SharedString = platform_keys(&text.into()).into();
+        let text: SharedString = if show {
+            platform_keys(&text.into()).into()
+        } else {
+            SharedString::default()
+        };
         move |_window, cx| {
             let s = style_fn();
             let text = text.clone();
             cx.new(move |_| Tip {
                 text,
                 fg: s.header_fg,
-                bg: s.placeholder_bg,
+                bg: s.bg,
                 border: s.border,
             })
             .into()
@@ -2111,6 +2145,11 @@ impl Render for PdfView {
                 c
             });
 
+        // Open popovers (color row, find bar), stacked top to bottom under the
+        // header's right end so they never overlap each other.
+        #[cfg(feature = "markup")]
+        let mut popovers: Vec<gpui::AnyElement> = Vec::new();
+
         // Highlight-mode toggle + color picker (markup): the pen turns drag-to-select
         // on and pops a palette down; the active color shows as a chip beneath it.
         #[cfg(feature = "markup")]
@@ -2167,12 +2206,9 @@ impl Render for PdfView {
                 .on_click(cx.listener(|this, _, _window, cx| this.toggle_area_mode(cx)))
                 .tooltip(self.tip("Area highlight — drag a box over a region"));
 
-            // Color-picker dropdown, deferred so it paints over the page area below.
-            let dropdown = if self.palette_open && !self.palette.is_empty() {
+            // Color-picker row, joining the popover stack below the header.
+            if self.palette_open && !self.palette.is_empty() {
                 let mut row = div()
-                    .absolute()
-                    .top(px(30.0))
-                    .right(px(0.0))
                     .flex()
                     .flex_row()
                     .gap_1()
@@ -2198,7 +2234,9 @@ impl Render for PdfView {
                                 Hsla { a: 0.0, ..style.bg }
                             })
                             .cursor_pointer()
-                            .tooltip(self.tip(name.clone()))
+                            // Swatch names drop below the row, onto the find bar
+                            // when that's open too.
+                            .tooltip(self.tip_if(!self.find_open(), name.clone()))
                             .on_click(cx.listener(move |this, _, _window, cx| {
                                 this.active_color = i;
                                 this.selecting = true;
@@ -2207,21 +2245,10 @@ impl Render for PdfView {
                             })),
                     );
                 }
-                Some(deferred(row))
-            } else {
-                None
-            };
+                popovers.push(row.into_any_element());
+            }
 
-            header.child(
-                div()
-                    .relative()
-                    .flex()
-                    .flex_row()
-                    .gap(px(2.0))
-                    .child(pen)
-                    .child(area)
-                    .children(dropdown),
-            )
+            header.child(div().flex().flex_row().gap(px(2.0)).child(pen).child(area))
         };
 
         // Find toggle (search): a magnifier that opens the find bar.
@@ -2450,10 +2477,10 @@ impl Render for PdfView {
                 }),
             );
 
-        // Find bar overlay (search): a floating bar with the query, match count, and
-        // prev/next/close. Deferred so it paints over the page area below the header.
+        // Find bar (search): a floating bar with the query, match count, and
+        // prev/next/close, last in the popover stack.
         #[cfg(feature = "search")]
-        let root = if self.search_open {
+        if self.search_open {
             let count = if self.search_query.trim().is_empty() {
                 // Empty query: the field already shows the "Find…" placeholder, so the
                 // count reads "0 / 0" rather than repeating it.
@@ -2500,11 +2527,8 @@ impl Render for PdfView {
                     .child(caret())
                     .child(div().text_color(style.header_muted).child("Find…"))
             };
-            root.child(deferred(
+            popovers.push(
                 div()
-                    .absolute()
-                    .top(px(44.0))
-                    .right(px(12.0))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -2521,21 +2545,39 @@ impl Render for PdfView {
                     .child(
                         self.control("pdf-find-prev", "‹")
                             .on_click(cx.listener(|this, _, _w, cx| this.prev_match(cx)))
-                            .tooltip(self.tip("Previous match (⇧⏎ / ⌘⇧G)")),
+                            .tooltip(self.tip_if(true, "Previous match (⇧⏎ / ⌘⇧G)")),
                     )
                     .child(
                         self.control("pdf-find-next", "›")
                             .on_click(cx.listener(|this, _, _w, cx| this.next_match(cx)))
-                            .tooltip(self.tip("Next match (⏎ / ⌘G)")),
+                            .tooltip(self.tip_if(true, "Next match (⏎ / ⌘G)")),
                     )
                     .child(
                         self.control("pdf-find-close", "✕")
                             .on_click(cx.listener(|this, _, _w, cx| this.close_search(cx)))
-                            .tooltip(self.tip("Close (Esc)")),
-                    ),
-            ))
-        } else {
+                            .tooltip(self.tip_if(true, "Close (Esc)")),
+                    )
+                    .into_any_element(),
+            );
+        }
+
+        // The popover stack, deferred so it paints over the page area below the
+        // header.
+        #[cfg(feature = "markup")]
+        let root = if popovers.is_empty() {
             root
+        } else {
+            root.child(deferred(
+                div()
+                    .absolute()
+                    .top(px(44.0))
+                    .right(px(12.0))
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .gap(px(4.0))
+                    .children(popovers),
+            ))
         };
 
         // Custom overlay scrollbar: a draggable thumb floating over the viewport's
@@ -2805,6 +2847,9 @@ impl Render for Tip {
         // the hovered control. A transparent top padding on the root shifts the visible
         // box down to clear the control + its bar/header padding. (Padding is applied to
         // a `layout_as_root` element; a top *margin* on the root is ignored.)
+        if self.text.is_empty() {
+            return div();
+        }
         div().pt(px(22.0)).child(
             div()
                 .px(px(6.0))
