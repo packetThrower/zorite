@@ -102,7 +102,7 @@ fn expanded(app: &AppView, window: &mut Window, cx: &mut Context<AppView>) -> im
                 .flex_shrink_0()
                 .p_2()
                 .border_b_1()
-                .border_color(theme::border_subtle())
+                .border_color(theme::glass_edge())
                 .flex()
                 .flex_col()
                 .gap_2()
@@ -232,7 +232,7 @@ fn notebook_footer(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement
         .relative()
         .p_2()
         .border_t_1()
-        .border_color(theme::border_subtle())
+        .border_color(theme::glass_edge())
         .child(
             div()
                 .id("notebook-chip")
@@ -843,7 +843,7 @@ fn guide_line(level: usize) -> impl IntoElement {
         .bottom_0()
         .left(px(x))
         .w(px(1.0))
-        .bg(theme::border_subtle())
+        .bg(theme::glass_edge())
 }
 
 /// The disclosure chevron for a node with children, in its gutter at `x`. Toggles
