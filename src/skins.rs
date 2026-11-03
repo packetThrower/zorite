@@ -323,6 +323,17 @@ fn build_palette(cs: &ColorSet, base: Base, is_dark: bool) -> Palette {
         pick(&cs.code, base.6),
         is_dark,
     );
+    // The three backgrounds keep a `#RRGGBBAA` alpha: a translucent
+    // `bg_window` turns on the window blur, as in the built-in glass skins.
+    for (field, opt) in [
+        (&mut p.bg_window, &cs.bg_window),
+        (&mut p.bg_sidebar, &cs.bg_sidebar),
+        (&mut p.bg_content, &cs.bg_content),
+    ] {
+        if let Some(c) = opt.as_deref().and_then(parse_hsla) {
+            field.a = c.a;
+        }
+    }
     override_token(&mut p.elevated, &cs.elevated);
     override_token(&mut p.glass, &cs.glass);
     override_token(&mut p.glass_strong, &cs.glass_strong);
@@ -404,5 +415,23 @@ mod tests {
         );
         // Not overridden: primary text still derives from fg at 0.92 alpha.
         assert_eq!(p.text_primary, crate::theme::from_rgb(0x112233, 0.92));
+    }
+
+    #[test]
+    fn background_alpha_makes_a_glass_theme() {
+        let cs: ColorSet = serde_json::from_str(
+            r##"{ "bg_window": "#1E1E1E00", "bg_sidebar": "#2A2A2DCC", "bg_content": "#1E1E1E" }"##,
+        )
+        .unwrap();
+        let p = build_palette(&cs, ZORITE_DARK, true);
+        assert_eq!(p.bg_window, crate::theme::from_rgb(0x1E1E1E, 0.0));
+        assert_eq!(
+            p.bg_sidebar,
+            crate::theme::from_rgb(0x2A2A2D, 204.0 / 255.0)
+        );
+        assert_eq!(p.bg_content, crate::theme::from_rgb(0x1E1E1E, 1.0));
+        // Six-digit backgrounds stay opaque, so existing themes don't change.
+        let opaque = build_palette(&ColorSet::default(), ZORITE_DARK, true);
+        assert_eq!(opaque.bg_window.a, 1.0);
     }
 }
