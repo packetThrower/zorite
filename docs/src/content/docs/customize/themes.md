@@ -5,7 +5,10 @@ description: 'Zorite ships several built-in themes with light and dark variants,
 
 Zorite ships several built-in themes, each with a light and a dark variant:
 **Zorite**, **Nord**, **Solarized**, **Dracula**, **Tokyo Night**, **Foundry**,
-**Cyberpunk** (dark-only), **CRT (Green Phosphor)** (dark-only), and **E-Ink**.
+**Cyberpunk** (dark-only), **CRT (Green Phosphor)** (dark-only), **E-Ink**,
+**Sidebar Glass**, and **Glass** (dark-only). The two glass themes blur
+whatever is behind the window: Sidebar Glass only behind the sidebar and title
+bar, Glass behind the whole window.
 
 ## Picking a theme
 
@@ -76,6 +79,31 @@ Each value is a `#RRGGBB` hex colour:
 
 Provide a `dark` and/or a `light` block. Add `"dark_only": true` for a theme
 that should always render dark, regardless of the chosen mode.
+
+### Translucent (glass) themes
+
+The three backgrounds also accept `#RRGGBBAA`. Give `bg_window` an alpha below
+`FF` and Zorite blurs whatever is behind the window, like the built-in glass
+themes; the other backgrounds then decide where the blur shows:
+
+- **Sidebar only** (like Sidebar Glass): a clear `bg_window` (`…00`), a
+  partly see-through `bg_sidebar` (e.g. `…D0`) and an opaque `bg_content`.
+- **Whole window** (like Glass): a tinted `bg_window` (e.g. `…B8`), a lightly
+  tinted `bg_sidebar` and a clear `bg_content` (`…00`).
+
+```json
+"dark": {
+  "bg_window": "#1e1e1e00",
+  "bg_sidebar": "#2a2a2dd0",
+  "bg_content": "#1e1e1e"
+}
+```
+
+Menus, dialogs and pop-ups stay opaque either way. A border reads heavier or
+lighter depending on what the blur shows through it, so a glass theme may want
+an opaque `border_subtle` (e.g. `#3a3a3c`). The blur needs macOS, Windows 10/11
+or a Linux compositor that supports it (KDE); elsewhere the window is just
+see-through.
 
 ### Advanced tokens
 

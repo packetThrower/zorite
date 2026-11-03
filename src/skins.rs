@@ -68,6 +68,47 @@ impl Skin {
             font: None,
         }
     }
+
+    /// A dark-only translucent theme: the surfaces get alpha and `theme::apply`
+    /// switches the window to the OS blur, so the desktop shows through.
+    fn builtin_glass(id: &str, name: &str, dark: Base) -> Self {
+        let mut skin = Self::builtin_dark(id, name, dark);
+        let p = &mut skin.dark;
+        // Content surfaces nest (shell > pane > page), so alphas compound: the
+        // shell carries the tint and the content layers stay clear.
+        p.bg_window.a = 0.72;
+        p.bg_sidebar.a = 0.20;
+        p.bg_content.a = 0.0;
+        // The dimmer text tiers (quotes, placeholders) fade over a white
+        // window behind; lift them.
+        p.text_secondary.a = 0.72;
+        p.text_tertiary.a = 0.55;
+        // Opaque borders, as on Sidebar Glass: a translucent line's weight
+        // shifts with whatever the blur shows behind it.
+        p.border_subtle = crate::theme::from_rgb(0x3A3A3C, 1.0);
+        skin.light = skin.dark;
+        skin
+    }
+
+    /// Glass on the sidebar only, like macOS's sidebars: the window blurs, the
+    /// shell is clear and the sidebar carries a light tint, while the content
+    /// stays fully opaque. Follows Light/Dark like the plain skins.
+    fn builtin_sidebar_glass(id: &str, name: &str, dark: Base, light: Base) -> Self {
+        let mut skin = Self::builtin(id, name, dark, light);
+        // Dark needs the heavier tint: its light text washes out over a
+        // white window behind.
+        // Borders are opaque here: the same translucent white/black line reads
+        // heavier over the glass than over the content, so edges looked uneven.
+        for (p, tint, border) in [
+            (&mut skin.dark, 0.82, 0x3A3A3C),
+            (&mut skin.light, 0.65, 0xD8D8DC),
+        ] {
+            p.bg_window.a = 0.0;
+            p.bg_sidebar.a = tint;
+            p.border_subtle = crate::theme::from_rgb(border, 1.0);
+        }
+        skin
+    }
 }
 
 /// The bundled skins, in display order. "zorite" is the default.
@@ -144,6 +185,27 @@ pub fn builtin_skins() -> Vec<Skin> {
             ),
             (
                 0xF4ECE0, 0xEBE3D6, 0xF8F1E5, 0x1A1A1A, 0x5A4A1A, 0x3A3A3A, 0x2A4A2A,
+            ),
+        ),
+        // Lighter accent/tag than Zorite's: over a white window behind, the
+        // glass reads mid-gray and the stock blue/purple lose contrast.
+        Skin::builtin_glass(
+            "glass",
+            "Glass",
+            (
+                0x16171A, 0x1B1D21, 0x16171A, 0xFFFFFF, 0x8AC4FF, 0xC9B1FF, 0xE6CC94,
+            ),
+        ),
+        // macOS-style neutral grays rather than Zorite's near-black dark, and a
+        // softer, slightly desaturated blue than the system accent.
+        Skin::builtin_sidebar_glass(
+            "sidebar-glass",
+            "Sidebar Glass",
+            (
+                0x1E1E1E, 0x2A2A2D, 0x1E1E1E, 0xFFFFFF, 0x5A92E0, 0x9D7CD8, 0xD7BA7D,
+            ),
+            (
+                0xF5F5F7, 0xE8E8ED, 0xFFFFFF, 0x1D1D1F, 0x2F6DB5, 0x7A4FB5, 0xB0852A,
             ),
         ),
         Skin::builtin(
@@ -261,6 +323,17 @@ fn build_palette(cs: &ColorSet, base: Base, is_dark: bool) -> Palette {
         pick(&cs.code, base.6),
         is_dark,
     );
+    // The three backgrounds keep a `#RRGGBBAA` alpha: a translucent
+    // `bg_window` turns on the window blur, as in the built-in glass skins.
+    for (field, opt) in [
+        (&mut p.bg_window, &cs.bg_window),
+        (&mut p.bg_sidebar, &cs.bg_sidebar),
+        (&mut p.bg_content, &cs.bg_content),
+    ] {
+        if let Some(c) = opt.as_deref().and_then(parse_hsla) {
+            field.a = c.a;
+        }
+    }
     override_token(&mut p.elevated, &cs.elevated);
     override_token(&mut p.glass, &cs.glass);
     override_token(&mut p.glass_strong, &cs.glass_strong);
@@ -342,5 +415,23 @@ mod tests {
         );
         // Not overridden: primary text still derives from fg at 0.92 alpha.
         assert_eq!(p.text_primary, crate::theme::from_rgb(0x112233, 0.92));
+    }
+
+    #[test]
+    fn background_alpha_makes_a_glass_theme() {
+        let cs: ColorSet = serde_json::from_str(
+            r##"{ "bg_window": "#1E1E1E00", "bg_sidebar": "#2A2A2DCC", "bg_content": "#1E1E1E" }"##,
+        )
+        .unwrap();
+        let p = build_palette(&cs, ZORITE_DARK, true);
+        assert_eq!(p.bg_window, crate::theme::from_rgb(0x1E1E1E, 0.0));
+        assert_eq!(
+            p.bg_sidebar,
+            crate::theme::from_rgb(0x2A2A2D, 204.0 / 255.0)
+        );
+        assert_eq!(p.bg_content, crate::theme::from_rgb(0x1E1E1E, 1.0));
+        // Six-digit backgrounds stay opaque, so existing themes don't change.
+        let opaque = build_palette(&ColorSet::default(), ZORITE_DARK, true);
+        assert_eq!(opaque.bg_window.a, 1.0);
     }
 }

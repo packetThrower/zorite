@@ -2500,6 +2500,7 @@ impl EditorState {
     /// selection is already wrapped (markers just inside or just outside it),
     /// otherwise wraps — keeping the same text selected so presses toggle.
     fn toggle_wrap_pair(&mut self, open: &str, close: &str, cx: &mut Context<Self>) {
+        self.trim_dangling_tags();
         let sel = self.selected_range.clone();
         if sel.start >= sel.end {
             return;
@@ -2532,6 +2533,57 @@ impl EditorState {
         self.splice(range, new, new_sel);
         cx.emit(EditorEvent::Changed);
         cx.notify();
+    }
+
+    /// Shrink the selection off HTML tags whose partner lies outside it. The
+    /// rendered views hide tags, so a drag to the end of a highlighted word
+    /// takes its `</mark>` along; wrapping that would cross the tags
+    /// (`<mark><span>word</mark></span>`), which the editor can't parse.
+    fn trim_dangling_tags(&mut self) {
+        loop {
+            let sel = self.selected_range.clone();
+            let text = &self.content[sel.clone()];
+            // A closing tag at the end with no opener inside the selection.
+            if let Some(lt) = text.rfind("</")
+                && text.ends_with('>')
+                && let name = &text[lt + 2..text.len() - 1]
+                && !name.is_empty()
+                && name.chars().all(|c| c.is_ascii_alphanumeric())
+                && !text[..lt].contains(&format!("<{name}"))
+            {
+                self.selected_range.end = sel.start + lt;
+                continue;
+            }
+            // A symmetric marker (`==`, `**`, `~~`) at either end with no
+            // partner inside the selection.
+            if let Some(m) = ["==", "**", "~~"].into_iter().find(|m| {
+                text.len() > m.len()
+                    && (text.ends_with(m) || text.starts_with(m))
+                    && text.matches(m).count() == 1
+            }) {
+                if text.ends_with(m) {
+                    self.selected_range.end -= m.len();
+                } else {
+                    self.selected_range.start += m.len();
+                }
+                continue;
+            }
+            // An opening tag at the start whose closer is outside the selection.
+            if text.starts_with('<')
+                && !text.starts_with("</")
+                && let Some(gt) = text.find('>')
+                && let name = text[1..gt]
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .next()
+                    .unwrap_or("")
+                && !name.is_empty()
+                && !text[gt..].contains(&format!("</{name}>"))
+            {
+                self.selected_range.start = sel.start + gt + 1;
+                continue;
+            }
+            break;
+        }
     }
 
     /// The edit every wrap/unwrap ends in: replace `range` with `new`, select
@@ -2603,6 +2655,7 @@ impl EditorState {
     /// already on it (and, for a highlight, a plain `==…==`); `None` removes
     /// that color. No-op on an empty selection.
     pub fn color_selection(&mut self, kind: ColorKind, rgba: Option<u32>, cx: &mut Context<Self>) {
+        self.trim_dangling_tags();
         if self.selected_range.is_empty() {
             return;
         }
@@ -7083,6 +7136,48 @@ mod tests {
                 e.undo(&super::Undo, window, cx);
                 assert_eq!(e.content, "今日\n회의가");
                 assert!(e.diagnostics.is_empty());
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn coloring_inside_a_highlight_keeps_tags_nested(cx: &mut gpui::TestAppContext) {
+        let mark = "<mark style=\"background:#fff3a0\">";
+        let text = format!("a {mark}yellow mark</mark>, b");
+        let editor = cx.update(|cx| {
+            cx.open_window(Default::default(), |window, cx| {
+                cx.new(|cx| EditorState::new(window, cx).with_text(&text))
+            })
+            .unwrap()
+        });
+        editor
+            .update(cx, |e, _window, cx| {
+                // The rendered word ends where the hidden `</mark>` does, so a
+                // drag across it takes the closing tag along.
+                let start = text.find("yellow").unwrap();
+                e.selected_range = start..text.find(',').unwrap();
+                e.color_selection(super::ColorKind::Text, Some(0x30a46cff), cx);
+                assert_eq!(
+                    e.content,
+                    format!("a {mark}<span style=\"color:#30a46c\">yellow mark</span></mark>, b")
+                );
+                // A plain `==` highlight hides its markers the same way.
+                let plain = "a ==yellow mark==, b";
+                e.content = plain.to_string();
+                e.selected_range = plain.find("yellow").unwrap()..plain.find(',').unwrap();
+                e.color_selection(super::ColorKind::Text, Some(0x30a46cff), cx);
+                assert_eq!(
+                    e.content,
+                    "a ==<span style=\"color:#30a46c\">yellow mark</span>==, b"
+                );
+                // And a selection starting on the hidden opening tag.
+                e.content = text.clone();
+                e.selected_range = text.find("<mark").unwrap()..text.find("</mark>").unwrap();
+                e.color_selection(super::ColorKind::Text, Some(0x30a46cff), cx);
+                assert_eq!(
+                    e.content,
+                    format!("a {mark}<span style=\"color:#30a46c\">yellow mark</span></mark>, b")
+                );
             })
             .unwrap();
     }

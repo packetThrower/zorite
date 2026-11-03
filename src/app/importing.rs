@@ -176,6 +176,7 @@ impl AppView {
     ) {
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let (root_ns, root_flat, root_ok) = (root.clone(), root.clone(), root.clone());
             let (weak_ns, weak_flat, weak_ok) = (weak.clone(), weak.clone(), weak.clone());
             dialog
@@ -295,6 +296,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let dialog = dialog.w(px(460.0)).on_ok(|_, _, _| true);
             match &result {
                 Ok(s) => {
@@ -335,6 +337,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         window.open_dialog(cx, |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             dialog
                 .title(t!("importing.obsidian_progress"))
                 .w(px(400.0))
@@ -371,6 +374,7 @@ impl AppView {
     fn show_logseq_options(&mut self, root: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let (root_flat, root_list, root_ok) = (root.clone(), root.clone(), root.clone());
             let (weak_flat, weak_list, weak_ok) = (weak.clone(), weak.clone(), weak.clone());
             dialog
@@ -446,6 +450,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         window.open_dialog(cx, |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             dialog
                 .title(t!("importing.logseq_progress"))
                 .w(px(400.0))
@@ -498,6 +503,7 @@ impl AppView {
             s
         }
         window.open_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let (title, lines) = match &result {
                 Ok(s) => {
                     let mut lines = vec![

@@ -233,8 +233,16 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         // TabBar defaults every child's `tab_bar_prefix` to true — disabling
         // that rule — and the setter is crate-private. An overlay can't
         // disturb the tab layout the way a style override could.
-        .when(app.active == 0, |this| {
+        // Glass's content is clear, so nothing can paint over that border;
+        // the strip instead tucks 1px under the sidebar's edge, laying the
+        // two lines on top of each other.
+        .when(theme::bg_content().a < 1.0 && !app.sidebar_right, |this| {
+            this.ml(px(-1.0))
+        })
+        .when(app.active == 0 && theme::bg_content().a >= 1.0, |this| {
             use gpui_component::ActiveTheme as _;
+            // Over the content color first: a translucent skin's active-tab
+            // tint alone wouldn't cover the border.
             this.child(
                 div()
                     .absolute()
@@ -242,7 +250,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     .top_0()
                     .bottom(px(1.0))
                     .w(px(1.0))
-                    .bg(cx.theme().tokens.tab_active),
+                    .bg(theme::bg_content())
+                    .child(div().size_full().bg(cx.theme().tokens.tab_active)),
             )
         })
 }

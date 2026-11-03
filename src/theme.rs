@@ -143,6 +143,22 @@ pub fn bg_sidebar() -> Hsla {
 pub fn bg_content() -> Hsla {
     get().bg_content
 }
+/// Menus and popovers: the sidebar color, always opaque so a translucent
+/// skin never shows the page through a menu.
+pub fn popover() -> Hsla {
+    Hsla {
+        a: 1.0,
+        ..get().bg_sidebar
+    }
+}
+/// Dialog fill: the content color, always opaque. Set explicitly because Kit
+/// fills dialogs with the window background token, which the Glass skin clears.
+pub fn dialog() -> Hsla {
+    Hsla {
+        a: 1.0,
+        ..get().bg_content
+    }
+}
 pub fn elevated() -> Hsla {
     get().elevated
 }
@@ -163,6 +179,29 @@ pub fn divider() -> Hsla {
 }
 pub fn accent() -> Hsla {
     get().accent
+}
+/// The selected row in the main sidebar. The glass skins use a neutral fill,
+/// shared with Kit's sidebar (the Settings page list) so the two match, and
+/// stronger than the plain hover overlay, which vanished on the dark glass;
+/// the other skins keep the accent tint.
+pub fn sidebar_selected() -> Hsla {
+    if translucent() {
+        let dark = get().text_primary.l > 0.5;
+        from_rgb(
+            if dark { 0xFFFFFF } else { 0x000000 },
+            if dark { 0.14 } else { 0.09 },
+        )
+    } else {
+        accent_tint()
+    }
+}
+/// A hovered sidebar row, Kit's 80% of the selected fill on the glass skins.
+pub fn sidebar_hover() -> Hsla {
+    if translucent() {
+        sidebar_selected().opacity(0.8)
+    } else {
+        hover()
+    }
 }
 pub fn accent_tint() -> Hsla {
     get().accent_tint
@@ -354,7 +393,7 @@ pub fn editor_syntax_style() -> zorite_editor::SyntaxStyle {
         property_icon: Some(std::rc::Rc::new(property_icon)),
         rule: p.divider,
         mark_bg: gpui::rgba(0xFFD60066).into(),
-        popover_bg: p.bg_sidebar,
+        popover_bg: popover(),
         popover_border: p.border_subtle,
         popover_fg: p.text_primary,
         popover_hover: p.accent_tint,
@@ -411,10 +450,31 @@ pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App)
         cx,
     );
     apply_to_component_theme(&palette, cx);
+    set_window_background(window);
     // The theme-reactive cursor pack re-renders from the new palette (a
     // no-op unless it's the selected pack).
     crate::cursors::theme_changed();
     cx.refresh_windows();
+}
+
+/// Does the active palette let the OS blur show through (the glass skins)?
+pub fn translucent() -> bool {
+    get().bg_window.a < 1.0
+}
+
+/// Glass on the sidebar (and titlebar) only, the content opaque — Sidebar Glass.
+pub fn sidebar_glass() -> bool {
+    translucent() && get().bg_content.a >= 1.0
+}
+
+/// A translucent palette (the glass skins) lets the OS blur show through.
+/// For every window the palette paints, not just the one `apply` ran on.
+pub fn set_window_background(window: &Window) {
+    window.set_background_appearance(if translucent() {
+        gpui::WindowBackgroundAppearance::Blurred
+    } else {
+        gpui::WindowBackgroundAppearance::Opaque
+    });
 }
 
 /// Override the app-wide font family on gpui-component's `Theme` (its `Root`
@@ -484,7 +544,13 @@ pub fn register_user_fonts(cx: &App) {
 /// `Theme::change`, which resets colors to the mode's defaults.
 fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     let t = Theme::global_mut(cx);
-    t.background = p.bg_content;
+    // Kit fills each window's root with `background`; a translucent skin
+    // keeps that clear so the blur reaches whatever the app leaves unpainted.
+    t.background = if p.bg_window.a < 1.0 {
+        gpui::transparent_black()
+    } else {
+        p.bg_content
+    };
     t.foreground = p.text_primary;
     t.primary = p.accent;
     t.primary_hover = p.accent_hover;
@@ -498,7 +564,12 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     };
     t.border = p.border_subtle;
     t.input = p.border_subtle;
-    t.popover = p.bg_sidebar;
+    // Popovers stay opaque even on a translucent skin, or the page under
+    // them bleeds through.
+    t.popover = Hsla {
+        a: 1.0,
+        ..p.bg_sidebar
+    };
     t.popover_foreground = p.text_primary;
     t.accent = p.accent_tint;
     t.accent_foreground = p.text_primary;
@@ -523,6 +594,16 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.button_secondary_hover = p.hover;
     t.button_secondary_active = p.glass_strong;
     t.button_secondary_foreground = p.text_primary;
+    // A translucent skin gives the titlebar and tab strip the content color
+    // (clear in Glass, opaque in Sidebar Glass) instead of Kit's near-black
+    // defaults.
+    if p.bg_window.a < 1.0 {
+        t.title_bar = p.bg_content;
+        t.tab_bar = p.bg_content;
+        // The selection fill, so the active tab reads as clearly as the
+        // selected sidebar row.
+        t.tab_active = sidebar_selected();
+    }
     t.slider_bar = p.accent;
     t.slider_thumb = p.accent;
     // Focus ring on inputs/selects — stock is a bright near-white in dark mode.
@@ -533,6 +614,17 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.sidebar_foreground = p.text_primary;
     t.sidebar_border = p.border_subtle;
     t.sidebar_accent = p.hover;
+    // Glass skins: the page list matches the main sidebar — dimmed labels,
+    // full-strength on the selected row, and the same selection fill.
+    if translucent() {
+        t.sidebar_foreground = p.text_secondary;
+        t.sidebar_accent = sidebar_selected();
+        // Input borders as an overlay rather than the opaque border color: on
+        // the content it lands on the same gray as the PDF find bar's edge,
+        // and on the glass it darkens instead of reading as a white line.
+        let dark = p.text_primary.l > 0.5;
+        t.input = from_rgb(if dark { 0xFFFFFF } else { 0x000000 }, 0.14);
+    }
     t.sidebar_accent_foreground = p.text_primary;
     t.sidebar_primary = p.accent;
     t.sidebar_primary_foreground = on_accent;

@@ -398,6 +398,7 @@ impl AppView {
         style.block_label = Some(self.block_label_resolver());
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let mut list = div().flex().flex_col().gap_2();
             for (i, bl) in refs.iter().enumerate() {
                 let weak_row = weak.clone();

@@ -3410,6 +3410,8 @@ impl AppView {
             crate::pdf::PdfView::new(
                 path.clone(),
                 Rc::new(|| crate::pdf::PdfStyle {
+                    // The content color, so the viewer is glass on Glass; its
+                    // floating surfaces take this at full opacity.
                     bg: theme::bg_content(),
                     border: theme::border_subtle(),
                     placeholder_bg: theme::glass(),
@@ -5566,14 +5568,6 @@ impl AppView {
                 theme::Mode::Auto => self.system_dark,
             };
         let palette = if is_dark { skin.dark } else { skin.light };
-        // Code-highlight styles follow gpui-component's light/dark highlight
-        // theme; adopting it drops the cache when it actually changed.
-        {
-            use gpui_component::ActiveTheme as _;
-            self.highlight_store
-                .borrow_mut()
-                .set_theme(cx.theme().highlight_theme.clone());
-        }
         // Font precedence: the user's explicit Font setting wins over the
         // theme's `font`, which wins over the platform default.
         let font = if self.ui_font.is_empty() {
@@ -5582,6 +5576,23 @@ impl AppView {
             self.ui_font.clone()
         };
         theme::apply(palette, is_dark, window, cx);
+        // Code-highlight styles follow gpui-component's light/dark highlight
+        // theme. Read it after `theme::apply` has set the mode: before, a
+        // dark-only skin under a light OS got the light one. Adopting it
+        // drops the cache when it actually changed.
+        {
+            use gpui_component::ActiveTheme as _;
+            self.highlight_store
+                .borrow_mut()
+                .set_theme(cx.theme().highlight_theme.clone());
+        }
+        // Deferred: the theme picker lives in Settings, so its window is
+        // usually mid-update right now and a direct update would fail.
+        if let Some(settings) = self.settings_window {
+            cx.defer(move |cx| {
+                let _ = settings.update(cx, |_, w, _| theme::set_window_background(w));
+            });
+        }
         theme::set_ui_font(&font, cx);
         // Diagrams are themed at render time — drop the cache so they re-render
         // with the new palette.
@@ -6008,6 +6019,7 @@ impl AppView {
             },
             move |window, cx| {
                 window.set_client_inset(px(10.0));
+                theme::set_window_background(window);
                 let v = cx.new(|cx| SettingsView::new(app.clone(), window, cx));
                 cx.new(|cx| gpui_component::Root::new(v, window, cx))
             },
@@ -6651,6 +6663,7 @@ impl AppView {
             )
         };
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
+            let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let nb = nb.clone();
             let body = body.clone();
             dialog
@@ -7002,7 +7015,7 @@ impl Render for AppView {
                                     .on_mouse_down(MouseButton::Left, |_, _, cx| {
                                         cx.stop_propagation()
                                     })
-                                    .bg(theme::bg_sidebar())
+                                    .bg(theme::popover())
                                     .border_1()
                                     .border_color(theme::border_subtle())
                                     .rounded(px(8.0))
@@ -7205,7 +7218,7 @@ impl Render for AppView {
                         div()
                             .occlude()
                             .min_w(px(150.0))
-                            .bg(theme::bg_sidebar())
+                            .bg(theme::popover())
                             .border_1()
                             .border_color(theme::border_subtle())
                             .rounded(px(8.0))
@@ -7437,7 +7450,7 @@ impl Render for AppView {
                     this.focus_global_search(window, cx)
                 }),
             )
-            .child(TitleBar::new().child({
+            .child(TitleBar::new().map(title_bar_fill).child({
                 // The settings gear lives in the sidebar (next to search); the
                 // title bar keeps just the theme toggle.
                 //
@@ -7512,6 +7525,12 @@ impl Render for AppView {
                             .flex()
                             .flex_col()
                             .bg(theme::bg_content())
+                            // The titlebar has no rule on Sidebar Glass (the
+                            // glass runs into the sidebar); the content gets
+                            // its own top edge instead.
+                            .when(theme::sidebar_glass(), |el| {
+                                el.border_t_1().border_color(theme::border_subtle())
+                            })
                             .child(ui::tab_bar::render(self, cx))
                             // A dragged tab released here (or anywhere off the strip)
                             // is handled by the root `on_mouse_up` / `on_mouse_up_out`
@@ -7929,6 +7948,22 @@ thread_local! {
 /// caller's environment — so respawn our own executable directly (inheriting
 /// env, identical bundled or not) and quit. The old and new instances overlap
 /// only for a moment, and on different data dirs.
+/// Kit's titlebar is a gradient mixed with the window background token, which
+/// a translucent skin clears; paint it flat there instead, in the sidebar's
+/// tint so it reads as one glass strip with the sidebar (Glass, whose content
+/// is clear too, keeps it clear).
+pub(crate) fn title_bar_fill(bar: TitleBar) -> TitleBar {
+    if !theme::translucent() {
+        bar
+    } else if !theme::sidebar_glass() {
+        bar.bg(theme::bg_content())
+    } else {
+        // No rule under it either: the sidebar's glass runs on unbroken.
+        bar.bg(theme::bg_sidebar())
+            .border_color(gpui::transparent_black())
+    }
+}
+
 pub(crate) fn relaunch(cx: &mut App) {
     match std::env::current_exe() {
         Ok(exe) => match std::process::Command::new(exe).spawn() {
