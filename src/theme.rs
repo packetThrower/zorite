@@ -180,6 +180,24 @@ pub fn divider() -> Hsla {
 pub fn accent() -> Hsla {
     get().accent
 }
+/// The selected row in the main sidebar. Sidebar Glass uses the same neutral
+/// fill as Kit's sidebar (the Settings page list) so the two match; the other
+/// skins keep the accent tint.
+pub fn sidebar_selected() -> Hsla {
+    if sidebar_glass() {
+        hover()
+    } else {
+        accent_tint()
+    }
+}
+/// A hovered sidebar row, Kit's 80% of the selected fill on Sidebar Glass.
+pub fn sidebar_hover() -> Hsla {
+    if sidebar_glass() {
+        hover().opacity(0.8)
+    } else {
+        hover()
+    }
+}
 pub fn accent_tint() -> Hsla {
     get().accent_tint
 }

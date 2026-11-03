@@ -245,7 +245,10 @@ fn notebook_footer(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement
                 .text_size(px(13.0))
                 .text_color(theme::text_secondary())
                 .cursor_pointer()
-                .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+                .hover(|h| {
+                    h.bg(theme::sidebar_hover())
+                        .text_color(theme::text_primary())
+                })
                 .child(
                     Icon::empty()
                         .path("icons/book.svg")
@@ -309,7 +312,10 @@ fn notebook_popover(notebooks: &[crate::paths::Notebook], cx: &mut Context<AppVi
                     .rounded(px(6.0))
                     .cursor_pointer()
                     .text_color(theme::text_secondary())
-                    .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+                    .hover(|h| {
+                        h.bg(theme::sidebar_hover())
+                            .text_color(theme::text_primary())
+                    })
                     .child(t!("sidebar.add_notebook"))
                     .on_click(
                         cx.listener(|this: &mut AppView, _: &ClickEvent, window, cx| {
@@ -344,8 +350,8 @@ fn notebook_row(nb: crate::paths::Notebook, cx: &mut Context<AppView>) -> AnyEle
         .py_1p5()
         .rounded(px(6.0))
         .cursor_pointer()
-        .when(active, |d| d.bg(theme::accent_tint()))
-        .when(!active, |d| d.hover(|h| h.bg(theme::hover())))
+        .when(active, |d| d.bg(theme::sidebar_selected()))
+        .when(!active, |d| d.hover(|h| h.bg(theme::sidebar_hover())))
         .child(
             // The folder-path tooltip sits on the NAME, not the whole row, so
             // it can't flash while the pointer crosses the row's buttons
@@ -416,7 +422,10 @@ fn row_btn(
         .p(px(3.0))
         .rounded(px(4.0))
         .text_color(theme::text_tertiary())
-        .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+        .hover(|h| {
+            h.bg(theme::sidebar_hover())
+                .text_color(theme::text_primary())
+        })
         .child(face)
         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
         .on_mouse_down(MouseButton::Left, handler)
@@ -461,7 +470,10 @@ fn icon_btn(id: &'static str, icon: impl Into<Icon>) -> Stateful<Div> {
         .rounded(px(6.0))
         .text_color(theme::text_secondary())
         .cursor_pointer()
-        .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+        .hover(|h| {
+            h.bg(theme::sidebar_hover())
+                .text_color(theme::text_primary())
+        })
         .child(Icon::new(icon).size_4())
 }
 
@@ -575,11 +587,14 @@ fn journal_row(active: bool, cx: &mut Context<AppView>) -> impl IntoElement {
         .text_size(px(13.0))
         .cursor_pointer()
         .when(active, |d| {
-            d.bg(theme::accent_tint()).text_color(theme::text_primary())
+            d.bg(theme::sidebar_selected())
+                .text_color(theme::text_primary())
         })
         .when(!active, |d| {
-            d.text_color(theme::text_secondary())
-                .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+            d.text_color(theme::text_secondary()).hover(|h| {
+                h.bg(theme::sidebar_hover())
+                    .text_color(theme::text_primary())
+            })
         })
         .child(t!("sidebar.journal"))
         .on_click(
@@ -804,11 +819,14 @@ fn base_row(id: SharedString, label: &SharedString, active: bool, pad_left: f32)
         // and its selection highlight — never runs past the sidebar edge.
         .truncate()
         .when(active, |d| {
-            d.bg(theme::accent_tint()).text_color(theme::text_primary())
+            d.bg(theme::sidebar_selected())
+                .text_color(theme::text_primary())
         })
         .when(!active, |d| {
-            d.text_color(theme::text_secondary())
-                .hover(|h| h.bg(theme::hover()).text_color(theme::text_primary()))
+            d.text_color(theme::text_secondary()).hover(|h| {
+                h.bg(theme::sidebar_hover())
+                    .text_color(theme::text_primary())
+            })
         })
         .child(label.clone())
 }
