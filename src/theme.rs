@@ -180,12 +180,17 @@ pub fn divider() -> Hsla {
 pub fn accent() -> Hsla {
     get().accent
 }
-/// The selected row in the main sidebar. Sidebar Glass uses the same neutral
-/// fill as Kit's sidebar (the Settings page list) so the two match; the other
-/// skins keep the accent tint.
+/// The selected row in the main sidebar. Sidebar Glass uses a neutral fill,
+/// shared with Kit's sidebar (the Settings page list) so the two match, and
+/// stronger than the plain hover overlay, which vanished on the dark glass;
+/// the other skins keep the accent tint.
 pub fn sidebar_selected() -> Hsla {
     if sidebar_glass() {
-        hover()
+        let dark = get().text_primary.l > 0.5;
+        from_rgb(
+            if dark { 0xFFFFFF } else { 0x000000 },
+            if dark { 0.14 } else { 0.09 },
+        )
     } else {
         accent_tint()
     }
@@ -193,7 +198,7 @@ pub fn sidebar_selected() -> Hsla {
 /// A hovered sidebar row, Kit's 80% of the selected fill on Sidebar Glass.
 pub fn sidebar_hover() -> Hsla {
     if sidebar_glass() {
-        hover().opacity(0.8)
+        sidebar_selected().opacity(0.8)
     } else {
         hover()
     }
@@ -607,6 +612,12 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.sidebar_foreground = p.text_primary;
     t.sidebar_border = p.border_subtle;
     t.sidebar_accent = p.hover;
+    // Sidebar Glass: the page list matches the main sidebar — dimmed labels,
+    // full-strength on the selected row, and the same selection fill.
+    if sidebar_glass() {
+        t.sidebar_foreground = p.text_secondary;
+        t.sidebar_accent = sidebar_selected();
+    }
     t.sidebar_accent_foreground = p.text_primary;
     t.sidebar_primary = p.accent;
     t.sidebar_primary_foreground = on_accent;
