@@ -2095,7 +2095,12 @@ impl Render for SettingsView {
                                 .bottom_0()
                                 .right_0()
                                 .left(SETTINGS_SIDEBAR_W)
-                                .bg(theme::bg_content()),
+                                .bg(theme::bg_content())
+                                // Its own top edge, as the main window's
+                                // content gets (the titlebar has no rule).
+                                .when(theme::sidebar_glass(), |el| {
+                                    el.border_t_1().border_color(theme::border_subtle())
+                                }),
                         )
                     })
                     .child(
