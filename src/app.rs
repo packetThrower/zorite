@@ -7943,12 +7943,16 @@ thread_local! {
 /// env, identical bundled or not) and quit. The old and new instances overlap
 /// only for a moment, and on different data dirs.
 /// Kit's titlebar is a gradient mixed with the window background token, which
-/// a translucent skin clears; give it the flat content color there instead.
+/// a translucent skin clears; paint it flat there instead, in the sidebar's
+/// tint so it reads as one glass strip with the sidebar (Glass, whose content
+/// is clear too, keeps it clear).
 pub(crate) fn title_bar_fill(bar: TitleBar) -> TitleBar {
-    if theme::translucent() {
+    if !theme::translucent() {
+        bar
+    } else if theme::bg_content().a < 1.0 {
         bar.bg(theme::bg_content())
     } else {
-        bar
+        bar.bg(theme::bg_sidebar())
     }
 }
 
