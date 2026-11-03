@@ -617,6 +617,11 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     if sidebar_glass() {
         t.sidebar_foreground = p.text_secondary;
         t.sidebar_accent = sidebar_selected();
+        // Input borders as an overlay rather than the opaque border color: on
+        // the content it lands on the same gray as the PDF find bar's edge,
+        // and on the glass it darkens instead of reading as a white line.
+        let dark = p.text_primary.l > 0.5;
+        t.input = from_rgb(if dark { 0xFFFFFF } else { 0x000000 }, 0.14);
     }
     t.sidebar_accent_foreground = p.text_primary;
     t.sidebar_primary = p.accent;
