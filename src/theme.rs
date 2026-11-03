@@ -180,6 +180,19 @@ pub fn divider() -> Hsla {
 pub fn accent() -> Hsla {
     get().accent
 }
+/// A line drawn on the glass (input edges, the sidebar's own dividers): a
+/// black/white overlay on the glass skins, which darkens or lightens with the
+/// blur instead of reading as a pale line the way the opaque border gray
+/// does; the plain border color elsewhere.
+pub fn glass_edge() -> Hsla {
+    if translucent() {
+        let dark = get().text_primary.l > 0.5;
+        from_rgb(if dark { 0xFFFFFF } else { 0x000000 }, 0.14)
+    } else {
+        border_subtle()
+    }
+}
+
 /// The selected row in the main sidebar. The glass skins use a neutral fill,
 /// shared with Kit's sidebar (the Settings page list) so the two match, and
 /// stronger than the plain hover overlay, which vanished on the dark glass;
@@ -622,8 +635,7 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
         // Input borders as an overlay rather than the opaque border color: on
         // the content it lands on the same gray as the PDF find bar's edge,
         // and on the glass it darkens instead of reading as a white line.
-        let dark = p.text_primary.l > 0.5;
-        t.input = from_rgb(if dark { 0xFFFFFF } else { 0x000000 }, 0.14);
+        t.input = glass_edge();
     }
     t.sidebar_accent_foreground = p.text_primary;
     t.sidebar_primary = p.accent;
