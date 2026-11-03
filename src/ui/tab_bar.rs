@@ -235,6 +235,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         // disturb the tab layout the way a style override could.
         .when(app.active == 0, |this| {
             use gpui_component::ActiveTheme as _;
+            // Over the content color first: a translucent skin's active-tab
+            // tint alone wouldn't cover the border.
             this.child(
                 div()
                     .absolute()
@@ -242,7 +244,8 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     .top_0()
                     .bottom(px(1.0))
                     .w(px(1.0))
-                    .bg(cx.theme().tokens.tab_active),
+                    .bg(theme::bg_content())
+                    .child(div().size_full().bg(cx.theme().tokens.tab_active)),
             )
         })
 }

@@ -94,9 +94,15 @@ impl Skin {
         let mut skin = Self::builtin(id, name, dark, light);
         // Dark needs the heavier tint: its light text washes out over a
         // white window behind.
-        for (p, tint) in [(&mut skin.dark, 0.82), (&mut skin.light, 0.65)] {
+        // Borders are opaque here: the same translucent white/black line reads
+        // heavier over the glass than over the content, so edges looked uneven.
+        for (p, tint, border) in [
+            (&mut skin.dark, 0.82, 0x3A3A3C),
+            (&mut skin.light, 0.65, 0xD8D8DC),
+        ] {
             p.bg_window.a = 0.0;
             p.bg_sidebar.a = tint;
+            p.border_subtle = crate::theme::from_rgb(border, 1.0);
         }
         skin
     }
@@ -193,7 +199,7 @@ pub fn builtin_skins() -> Vec<Skin> {
             "sidebar-glass",
             "Sidebar Glass",
             (
-                0x1E1E1E, 0x2A2A2D, 0x1E1E1E, 0xFFFFFF, 0x7FA7E0, 0x9D7CD8, 0xD7BA7D,
+                0x1E1E1E, 0x2A2A2D, 0x1E1E1E, 0xFFFFFF, 0x5A92E0, 0x9D7CD8, 0xD7BA7D,
             ),
             (
                 0xF5F5F7, 0xE8E8ED, 0xFFFFFF, 0x1D1D1F, 0x2F6DB5, 0x7A4FB5, 0xB0852A,
