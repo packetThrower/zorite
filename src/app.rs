@@ -7525,6 +7525,12 @@ impl Render for AppView {
                             .flex()
                             .flex_col()
                             .bg(theme::bg_content())
+                            // The titlebar has no rule on Sidebar Glass (the
+                            // glass runs into the sidebar); the content gets
+                            // its own top edge instead.
+                            .when(theme::sidebar_glass(), |el| {
+                                el.border_t_1().border_color(theme::border_subtle())
+                            })
                             .child(ui::tab_bar::render(self, cx))
                             // A dragged tab released here (or anywhere off the strip)
                             // is handled by the root `on_mouse_up` / `on_mouse_up_out`
@@ -7949,7 +7955,7 @@ thread_local! {
 pub(crate) fn title_bar_fill(bar: TitleBar) -> TitleBar {
     if !theme::translucent() {
         bar
-    } else if theme::bg_content().a < 1.0 {
+    } else if !theme::sidebar_glass() {
         bar.bg(theme::bg_content())
     } else {
         // No rule under it either: the sidebar's glass runs on unbroken.

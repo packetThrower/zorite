@@ -439,6 +439,11 @@ pub fn translucent() -> bool {
     get().bg_window.a < 1.0
 }
 
+/// Glass on the sidebar (and titlebar) only, the content opaque — Sidebar Glass.
+pub fn sidebar_glass() -> bool {
+    translucent() && get().bg_content.a >= 1.0
+}
+
 /// A translucent palette (the glass skins) lets the OS blur show through.
 /// For every window the palette paints, not just the one `apply` ran on.
 pub fn set_window_background(window: &Window) {
