@@ -7952,7 +7952,9 @@ pub(crate) fn title_bar_fill(bar: TitleBar) -> TitleBar {
     } else if theme::bg_content().a < 1.0 {
         bar.bg(theme::bg_content())
     } else {
+        // No rule under it either: the sidebar's glass runs on unbroken.
         bar.bg(theme::bg_sidebar())
+            .border_color(gpui::transparent_black())
     }
 }
 
