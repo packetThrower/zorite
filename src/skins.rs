@@ -83,6 +83,9 @@ impl Skin {
         // window behind; lift them.
         p.text_secondary.a = 0.72;
         p.text_tertiary.a = 0.55;
+        // Opaque borders, as on Sidebar Glass: a translucent line's weight
+        // shifts with whatever the blur shows behind it.
+        p.border_subtle = crate::theme::from_rgb(0x3A3A3C, 1.0);
         skin.light = skin.dark;
         skin
     }

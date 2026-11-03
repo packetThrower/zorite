@@ -180,12 +180,12 @@ pub fn divider() -> Hsla {
 pub fn accent() -> Hsla {
     get().accent
 }
-/// The selected row in the main sidebar. Sidebar Glass uses a neutral fill,
+/// The selected row in the main sidebar. The glass skins use a neutral fill,
 /// shared with Kit's sidebar (the Settings page list) so the two match, and
 /// stronger than the plain hover overlay, which vanished on the dark glass;
 /// the other skins keep the accent tint.
 pub fn sidebar_selected() -> Hsla {
-    if sidebar_glass() {
+    if translucent() {
         let dark = get().text_primary.l > 0.5;
         from_rgb(
             if dark { 0xFFFFFF } else { 0x000000 },
@@ -195,9 +195,9 @@ pub fn sidebar_selected() -> Hsla {
         accent_tint()
     }
 }
-/// A hovered sidebar row, Kit's 80% of the selected fill on Sidebar Glass.
+/// A hovered sidebar row, Kit's 80% of the selected fill on the glass skins.
 pub fn sidebar_hover() -> Hsla {
-    if sidebar_glass() {
+    if translucent() {
         sidebar_selected().opacity(0.8)
     } else {
         hover()
@@ -596,11 +596,13 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.button_secondary_foreground = p.text_primary;
     // A translucent skin gives the titlebar and tab strip the content color
     // (clear in Glass, opaque in Sidebar Glass) instead of Kit's near-black
-    // defaults, with the active tab a step lighter.
+    // defaults.
     if p.bg_window.a < 1.0 {
         t.title_bar = p.bg_content;
         t.tab_bar = p.bg_content;
-        t.tab_active = p.glass_strong;
+        // The selection fill, so the active tab reads as clearly as the
+        // selected sidebar row.
+        t.tab_active = sidebar_selected();
     }
     t.slider_bar = p.accent;
     t.slider_thumb = p.accent;
@@ -612,9 +614,9 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.sidebar_foreground = p.text_primary;
     t.sidebar_border = p.border_subtle;
     t.sidebar_accent = p.hover;
-    // Sidebar Glass: the page list matches the main sidebar — dimmed labels,
+    // Glass skins: the page list matches the main sidebar — dimmed labels,
     // full-strength on the selected row, and the same selection fill.
-    if sidebar_glass() {
+    if translucent() {
         t.sidebar_foreground = p.text_secondary;
         t.sidebar_accent = sidebar_selected();
         // Input borders as an overlay rather than the opaque border color: on
