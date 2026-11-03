@@ -86,6 +86,20 @@ impl Skin {
         skin.light = skin.dark;
         skin
     }
+
+    /// Glass on the sidebar only, like macOS's sidebars: the window blurs, the
+    /// shell is clear and the sidebar carries a light tint, while the content
+    /// stays fully opaque. Follows Light/Dark like the plain skins.
+    fn builtin_sidebar_glass(id: &str, name: &str, dark: Base, light: Base) -> Self {
+        let mut skin = Self::builtin(id, name, dark, light);
+        // Dark needs the heavier tint: its light text washes out over a
+        // white window behind.
+        for (p, tint) in [(&mut skin.dark, 0.82), (&mut skin.light, 0.65)] {
+            p.bg_window.a = 0.0;
+            p.bg_sidebar.a = tint;
+        }
+        skin
+    }
 }
 
 /// The bundled skins, in display order. "zorite" is the default.
@@ -173,6 +187,7 @@ pub fn builtin_skins() -> Vec<Skin> {
                 0x16171A, 0x1B1D21, 0x16171A, 0xFFFFFF, 0x8AC4FF, 0xC9B1FF, 0xE6CC94,
             ),
         ),
+        Skin::builtin_sidebar_glass("sidebar-glass", "Sidebar Glass", ZORITE_DARK, ZORITE_LIGHT),
         Skin::builtin(
             "dracula",
             "Dracula",

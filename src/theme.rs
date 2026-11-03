@@ -511,7 +511,13 @@ pub fn register_user_fonts(cx: &App) {
 /// `Theme::change`, which resets colors to the mode's defaults.
 fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     let t = Theme::global_mut(cx);
-    t.background = p.bg_content;
+    // Kit fills each window's root with `background`; a translucent skin
+    // keeps that clear so the blur reaches whatever the app leaves unpainted.
+    t.background = if p.bg_window.a < 1.0 {
+        gpui::transparent_black()
+    } else {
+        p.bg_content
+    };
     t.foreground = p.text_primary;
     t.primary = p.accent;
     t.primary_hover = p.accent_hover;
