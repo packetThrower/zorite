@@ -1777,7 +1777,7 @@ impl PdfView {
             cx.new(move |_| Tip {
                 text,
                 fg: s.header_fg,
-                bg: s.bg,
+                bg: solid(s.bg),
                 border: s.border,
             })
             .into()
@@ -2216,7 +2216,7 @@ impl Render for PdfView {
                     .rounded(px(6.0))
                     .border_1()
                     .border_color(style.border)
-                    .bg(style.bg);
+                    .bg(solid(style.bg));
                 for (i, (name, color)) in self.palette.iter().enumerate() {
                     let selected = i == self.active_color;
                     let color = *color;
@@ -2538,7 +2538,7 @@ impl Render for PdfView {
                     .rounded(px(6.0))
                     .border_1()
                     .border_color(style.border)
-                    .bg(style.bg)
+                    .bg(solid(style.bg))
                     .text_size(px(12.0))
                     .child(field)
                     .child(div().text_color(style.header_muted).child(count))
@@ -2671,7 +2671,7 @@ impl Render for PdfView {
                     .items_center()
                     .justify_center()
                     .text_size(px(16.0))
-                    .bg(style.bg)
+                    .bg(solid(style.bg))
                     .text_color(style.header_fg)
                     .border_1()
                     .border_color(style.border)
@@ -2830,6 +2830,13 @@ fn loading(style: PdfStyle) -> impl IntoElement {
         .justify_center()
         .bg(style.bg)
         .child(div().text_color(style.placeholder_fg).child("Loading PDF…"))
+}
+
+/// `c` at full opacity: floating surfaces (tooltips, the popover stack, the
+/// scroll-to-top button) take the viewer background without its alpha, so a
+/// host with a translucent viewer still gets readable popovers.
+fn solid(c: Hsla) -> Hsla {
+    Hsla { a: 1.0, ..c }
 }
 
 /// A minimal themed tooltip view — gpui's `.tooltip()` takes any view, and we don't
