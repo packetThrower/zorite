@@ -2078,22 +2078,45 @@ impl Render for SettingsView {
             .size_full()
             .bg(theme::bg_window())
             .text_color(theme::text_primary())
-            .child(TitleBar::new())
+            .child(TitleBar::new().map(crate::app::title_bar_fill))
             .child(
-                div().flex_1().min_h_0().child(
-                    Settings::new("zorite-settings")
-                        .small()
-                        .sidebar_width(px(190.0))
-                        // Appearance is the page people open Settings for most.
-                        .default_selected_index(SelectIndex {
-                            page_ix: 2,
-                            group_ix: None,
-                        })
-                        .pages(pages),
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    // Kit's page pane paints nothing, so on a translucent skin
+                    // an opaque layer sits behind it (the sidebar stays glass);
+                    // the sidebar width is pinned so the layer lines up.
+                    .when(theme::translucent(), |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .top_0()
+                                .bottom_0()
+                                .right_0()
+                                .left(SETTINGS_SIDEBAR_W)
+                                .bg(theme::bg_content()),
+                        )
+                    })
+                    .child(
+                        Settings::new("zorite-settings")
+                            .small()
+                            .sidebar_width(SETTINGS_SIDEBAR_W)
+                            .when(theme::translucent(), |s| {
+                                s.sidebar_size_range(SETTINGS_SIDEBAR_W..SETTINGS_SIDEBAR_W)
+                            })
+                            // Appearance is the page people open Settings for most.
+                            .default_selected_index(SelectIndex {
+                                page_ix: 2,
+                                group_ix: None,
+                            })
+                            .pages(pages),
+                    ),
             )
     }
 }
+
+const SETTINGS_SIDEBAR_W: gpui::Pixels = px(190.0);
 
 // --- Card / field helpers ---------------------------------------------------
 

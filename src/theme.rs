@@ -434,10 +434,15 @@ pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App)
     cx.refresh_windows();
 }
 
-/// A translucent palette (the Glass skin) lets the OS blur show through.
+/// Does the active palette let the OS blur show through (the glass skins)?
+pub fn translucent() -> bool {
+    get().bg_window.a < 1.0
+}
+
+/// A translucent palette (the glass skins) lets the OS blur show through.
 /// For every window the palette paints, not just the one `apply` ran on.
 pub fn set_window_background(window: &Window) {
-    window.set_background_appearance(if get().bg_window.a < 1.0 {
+    window.set_background_appearance(if translucent() {
         gpui::WindowBackgroundAppearance::Blurred
     } else {
         gpui::WindowBackgroundAppearance::Opaque
@@ -561,9 +566,13 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     t.button_secondary_hover = p.hover;
     t.button_secondary_active = p.glass_strong;
     t.button_secondary_foreground = p.text_primary;
-    // A translucent skin clears the titlebar too, so the blur runs edge to edge.
+    // A translucent skin gives the titlebar and tab strip the content color
+    // (clear in Glass, opaque in Sidebar Glass) instead of Kit's near-black
+    // defaults, with the active tab a step lighter.
     if p.bg_window.a < 1.0 {
         t.title_bar = p.bg_content;
+        t.tab_bar = p.bg_content;
+        t.tab_active = p.glass_strong;
     }
     t.slider_bar = p.accent;
     t.slider_thumb = p.accent;

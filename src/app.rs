@@ -7450,7 +7450,7 @@ impl Render for AppView {
                     this.focus_global_search(window, cx)
                 }),
             )
-            .child(TitleBar::new().child({
+            .child(TitleBar::new().map(title_bar_fill).child({
                 // The settings gear lives in the sidebar (next to search); the
                 // title bar keeps just the theme toggle.
                 //
@@ -7942,6 +7942,16 @@ thread_local! {
 /// caller's environment — so respawn our own executable directly (inheriting
 /// env, identical bundled or not) and quit. The old and new instances overlap
 /// only for a moment, and on different data dirs.
+/// Kit's titlebar is a gradient mixed with the window background token, which
+/// a translucent skin clears; give it the flat content color there instead.
+pub(crate) fn title_bar_fill(bar: TitleBar) -> TitleBar {
+    if theme::translucent() {
+        bar.bg(theme::bg_content())
+    } else {
+        bar
+    }
+}
+
 pub(crate) fn relaunch(cx: &mut App) {
     match std::env::current_exe() {
         Ok(exe) => match std::process::Command::new(exe).spawn() {

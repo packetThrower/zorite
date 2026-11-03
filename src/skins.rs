@@ -187,7 +187,17 @@ pub fn builtin_skins() -> Vec<Skin> {
                 0x16171A, 0x1B1D21, 0x16171A, 0xFFFFFF, 0x8AC4FF, 0xC9B1FF, 0xE6CC94,
             ),
         ),
-        Skin::builtin_sidebar_glass("sidebar-glass", "Sidebar Glass", ZORITE_DARK, ZORITE_LIGHT),
+        // macOS-style neutral grays rather than Zorite's near-black dark.
+        Skin::builtin_sidebar_glass(
+            "sidebar-glass",
+            "Sidebar Glass",
+            (
+                0x1E1E1E, 0x2A2A2D, 0x1E1E1E, 0xFFFFFF, 0x0A84FF, 0x9D7CD8, 0xD7BA7D,
+            ),
+            (
+                0xF5F5F7, 0xE8E8ED, 0xFFFFFF, 0x1D1D1F, 0x007AFF, 0x7A4FB5, 0xB0852A,
+            ),
+        ),
         Skin::builtin(
             "dracula",
             "Dracula",
