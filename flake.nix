@@ -17,6 +17,8 @@
           wayland
           libxkbcommon
           vulkan-loader
+          # Lets wgpu fall back to OpenGL when Vulkan is unavailable.
+          libGL
           fontconfig
           freetype
           xorg.libX11
