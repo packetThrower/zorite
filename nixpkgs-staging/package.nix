@@ -14,6 +14,7 @@
   libx11,
   libxcb,
   libxcb-util,
+  libGL,
   nix-update-script,
 }:
 
@@ -53,9 +54,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   postFixup = ''
     # gpui dlopens Vulkan and the Wayland/X11 client libraries at runtime
-    # rather than linking them.
+    # rather than linking them; libGL lets wgpu fall back to OpenGL when
+    # Vulkan is unavailable.
     patchelf --add-rpath ${
       lib.makeLibraryPath [
+        libGL
         wayland
         libxkbcommon
         vulkan-loader
