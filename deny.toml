@@ -69,6 +69,14 @@ allow = ["NCSA"]
 crate = "heic_decoder"
 allow = ["AGPL-3.0-only"]
 
+[[licenses.exceptions]]
+# sqlcipher-src (rusqlite's bundled SQLCipher source, since rusqlite 0.41) is
+# "MIT AND BSD-3-Clause AND blessing AND WTFPL": SQLite's public-domain
+# blessing and libtomcrypt's WTFPL are both GPL-3-compatible. Scoped to this
+# crate.
+crate = "sqlcipher-src"
+allow = ["blessing", "WTFPL"]
+
 # `unescaper` ships with the deprecated `GPL-3.0/MIT` SPDX
 # expression in its Cargo.toml. The slash form means "user picks
 # either"; the modern equivalent is `GPL-3.0-or-later OR MIT`.
