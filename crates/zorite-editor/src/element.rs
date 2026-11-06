@@ -558,7 +558,10 @@ impl Element for EditorElement {
             if let Some(LineMark::Check { bullet_x, .. }) = marks.get(i).copied().flatten() {
                 let sz = font_size * CHECKBOX_SCALE;
                 let pad = px(4.);
-                let is_rtl = rtl.get(i).and_then(Option::as_ref).is_some();
+                let is_rtl = rtl
+                    .get(i)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|r| r.base_rtl);
                 let bx = bounds.origin.x + checkbox_x(bullet_x, sz, bounds.size.width, is_rtl);
                 let by = bounds.origin.y + line_tops[i] + (*lh - sz) / 2.;
                 let hit = Bounds::new(
@@ -1566,7 +1569,14 @@ impl Element for EditorElement {
             // Right-to-left row (#66): its text right-aligns by `shift`, and
             // every gutter decoration mirrors to the other side so the markers
             // sit where the text now starts — matching the reader.
-            let rtl = prepaint.rtl.get(i).and_then(Option::as_ref);
+            // Only a line that READS right-to-left mirrors its gutter: an
+            // English line with an Arabic tail has an `RtlRow` (for the bidi
+            // maps) but keeps its bullet, guides and rule on the left.
+            let rtl = prepaint
+                .rtl
+                .get(i)
+                .and_then(Option::as_ref)
+                .filter(|r| r.base_rtl);
             // Row 0's shift: the gutter decorations mirror against the line as
             // a whole, and the per-row shifts only move the text.
             let shift = rtl

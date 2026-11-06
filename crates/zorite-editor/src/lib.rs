@@ -6751,9 +6751,9 @@ fn line_index_at(line: &WrappedLine, rtl: Option<&RtlRow>, p: Point<Pixels>, lh:
 
 /// A right-to-left row's editor-side geometry, built in prepaint (#66).
 ///
-/// Only rows whose source reads RTL ([`zorite_markdown::syntax::base_direction`])
-/// get one — the flag *is* `Option::is_some`, so an LTR document allocates
-/// nothing and keeps taking gpui's own (cheaper) lookups.
+/// Only lines with right-to-left text get one, so an LTR document allocates
+/// nothing and keeps taking gpui's own (cheaper) lookups. Whether the line
+/// READS right-to-left is `base_rtl`, not `Option::is_some`.
 pub(crate) struct RtlRow {
     /// The line's visual rows, broken in LOGICAL order (gpui's own wrapping
     /// slices the reordered glyph run and gets them backwards). Each carries
