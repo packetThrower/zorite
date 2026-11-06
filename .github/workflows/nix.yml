@@ -49,12 +49,12 @@ jobs:
       - name: Eval like nixpkgs CI (live master, aliases off)
         run: |
           nix eval --impure --raw --expr \
-            '((import (builtins.getFlake "github:NixOS/nixpkgs/master").outPath { system = builtins.currentSystem; config.allowAliases = false; }).callPackage ./nixpkgs-staging/package.nix { }).drvPath'
+            '((import (builtins.getFlake "github:NixOS/nixpkgs/master").outPath { system = builtins.currentSystem; config.allowAliases = false; }).callPackage ./nix/package.nix { }).drvPath'
       - name: Build the nixpkgs package
         # The ${…} is NIX syntax — single quotes keep the shell away from it.
         run: |
           # shellcheck disable=SC2016
           nix build --impure --print-build-logs --expr \
-            '((builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.callPackage ./nixpkgs-staging/package.nix { })'
+            '((builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.callPackage ./nix/package.nix { })'
       - name: Smoke-check
         run: test -x result/bin/zorite && ldd result/bin/zorite | head -5
