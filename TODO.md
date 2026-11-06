@@ -439,9 +439,10 @@ Ideas worth keeping, not yet committed to.
   (fetchCargoVendor covers the git deps — NOT per-source outputHashes),
   `nix-update-script` so r-ryantm auto-bumps releases, maintainer entry
   for packetThrower, AI-policy disclosure included. Both platforms
-  CI-verified pre-submission. When it MERGES: delete `nixpkgs-staging/`
-  + the temporary `nixpkgs-staging` CI job from nix.yml, and respond to
-  reviewer feedback in the meantime.
+  CI-verified pre-submission. `nix/package.nix` is the shared definition:
+  the flake builds it from the checkout, so keep it in step with the PR.
+  When it MERGES: delete the temporary `nixpkgs-staging` CI job from
+  nix.yml, and respond to reviewer feedback in the meantime.
 
 - [ ] **MCP server** — let Claude (Desktop / Code) read and eventually write the
   journal. An external agent's draft prompt proposed a standalone binary doing
