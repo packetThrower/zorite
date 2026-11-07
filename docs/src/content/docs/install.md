@@ -1,6 +1,6 @@
 ---
 title: Install
-description: 'Install Zorite via Homebrew, winget, Scoop, or a direct download. Stable and pre-release channels available.'
+description: 'Install Zorite via Homebrew, winget, Scoop, Nix, or a direct download. Stable and pre-release channels available.'
 ---
 
 :::note
@@ -76,8 +76,7 @@ Update with `scoop update zorite` (or `zorite-prerelease`).
 
 ## Linux
 
-There's no package-manager bucket for Linux — grab the matching artifact for
-your distro from the
+Outside Nix, grab the matching artifact for your distro from the
 [Releases](https://github.com/packetThrower/zorite/releases) page:
 
 | Distro | Artifact | Install |
@@ -90,6 +89,48 @@ your distro from the
 For ARM64 hosts use the matching `arm64` / `aarch64` artifact. Linux also needs
 a Vulkan-capable GPU with current Mesa drivers — see
 [Requirements](/zorite/reference/requirements/).
+
+## Linux (Nix)
+
+The repo ships a flake for `x86_64-linux` and `aarch64-linux` that builds Zorite
+from source. It needs [flakes](https://wiki.nixos.org/wiki/Flakes) enabled.
+
+```sh
+nix run github:packetThrower/zorite                 # try it without installing
+nix profile install github:packetThrower/zorite     # install for your user
+```
+
+On NixOS, add the flake as an input and install the package system-wide:
+
+```nix
+# flake.nix
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.zorite.url = "github:packetThrower/zorite";
+
+  outputs = { nixpkgs, zorite, ... }: {
+    nixosConfigurations.my-host = nixpkgs.lib.nixosSystem {
+      modules = [
+        ./configuration.nix
+        ({ pkgs, ... }: {
+          environment.systemPackages = [
+            zorite.packages.${pkgs.system}.default
+          ];
+        })
+      ];
+    };
+  };
+}
+```
+
+The flake follows `main`. To stay on a release, pin a tag:
+`github:packetThrower/zorite/v0.13.0`. Update with `nix profile upgrade zorite`
+or `nix flake update zorite`.
+
+:::note[Coming soon: nixpkgs]
+Zorite is in review for nixpkgs. Once it lands, it installs like any other
+package (`pkgs.zorite`, or `nix-shell -p zorite`) with no flake needed.
+:::
 
 ## Direct download (any OS)
 

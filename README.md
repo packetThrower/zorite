@@ -262,9 +262,16 @@ scoop install zorite-prerelease                     # pre-release
 ```
 
 ```sh
-# NixOS / Nix (Linux) — builds from source via the repo flake
-nix run github:packetThrower/zorite
+# Nix (Linux, flakes enabled) — builds from source via the repo flake
+nix run github:packetThrower/zorite                 # try it without installing
+nix profile install github:packetThrower/zorite     # install for your user
 ```
+
+NixOS users can add the flake as an input and put
+`inputs.zorite.packages.${pkgs.system}.default` in
+`environment.systemPackages`. Zorite is in review for nixpkgs, so
+`pkgs.zorite` is coming soon. See the
+[install docs](https://packetthrower.github.io/zorite/install/#linux-nix) for details.
 
 winget carries **stable only**; for pre-release builds on Windows use Scoop or
 the [Releases](https://github.com/packetThrower/zorite/releases) page directly.
