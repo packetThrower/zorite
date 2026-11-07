@@ -20,6 +20,12 @@
             lockFile = ./Cargo.lock;
             allowBuiltinFetchGit = true;
           };
+          # nixpkgs master's cargoSetupHook forces system libraries (2026-10-12);
+          # nixos-unstable doesn't have it yet. Remove once it does.
+          env = (old.env or { }) // {
+            OPENSSL_NO_VENDOR = "1";
+            LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+          };
           meta = old.meta // {
             changelog = "https://github.com/packetThrower/zorite/blob/main/CHANGELOG.md";
           };
