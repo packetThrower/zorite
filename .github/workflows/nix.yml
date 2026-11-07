@@ -13,6 +13,7 @@ on:
       - flake.lock
       - Cargo.lock
       - Cargo.toml
+      - "nix/**"
       - "src/**"
       - "crates/**"
       - .github/workflows/nix.yml
@@ -50,11 +51,9 @@ jobs:
         run: |
           nix eval --impure --raw --expr \
             '((import (builtins.getFlake "github:NixOS/nixpkgs/master").outPath { system = builtins.currentSystem; config.allowAliases = false; }).callPackage ./nix/package.nix { }).drvPath'
-      - name: Build the nixpkgs package
-        # The ${…} is NIX syntax — single quotes keep the shell away from it.
+      - name: Build the nixpkgs package (live master)
         run: |
-          # shellcheck disable=SC2016
           nix build --impure --print-build-logs --expr \
-            '((builtins.getFlake (toString ./.)).inputs.nixpkgs.legacyPackages.${builtins.currentSystem}.callPackage ./nix/package.nix { })'
+            '(import (builtins.getFlake "github:NixOS/nixpkgs/master").outPath { system = builtins.currentSystem; }).callPackage ./nix/package.nix { }'
       - name: Smoke-check
         run: test -x result/bin/zorite && ldd result/bin/zorite | head -5

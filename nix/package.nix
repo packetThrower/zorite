@@ -5,7 +5,8 @@
   copyDesktopItems,
   makeDesktopItem,
   pkg-config,
-  perl,
+  openssl,
+  sqlcipher,
   wayland,
   libxkbcommon,
   vulkan-loader,
@@ -36,13 +37,14 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   nativeBuildInputs = [
     pkg-config
-    # rusqlite's bundled-sqlcipher-vendored-openssl builds OpenSSL from
-    # source, and OpenSSL's build system is perl.
-    perl
     copyDesktopItems
   ];
 
   buildInputs = [
+    # cargoSetupHook makes rusqlite link these instead of its bundled
+    # SQLCipher and vendored OpenSSL.
+    openssl
+    sqlcipher
     wayland
     libxkbcommon
     fontconfig
