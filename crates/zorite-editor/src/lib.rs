@@ -171,6 +171,10 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-h", Highlight, ctx),
         KeyBinding::new("ctrl-shift-h", Highlight, ctx),
         KeyBinding::new("escape", Dismiss, ctx),
+        // Windows / Linux: Ctrl + Ins, Shift + Ins,
+        KeyBinding::new("ctrl-insert", Copy, ctx),
+        KeyBinding::new("shift-delete", Cut, ctx),
+        KeyBinding::new("shift-insert", Paste, ctx),
     ]);
 }
 
