@@ -1,0 +1,757 @@
+common:
+  ok: Ок
+  cancel: Отменить
+  save: Сохранить
+  close: Закрыть
+  delete: Удалить
+  rename: Переименовать
+  done: Готово
+  yes: Да
+  no: Нет
+  add: Добавить
+  remove: Удалить
+  apply: Применить
+  retry: Ещё раз
+  open: Открыть
+  new: Новый
+  edit: Редактировать
+  search: Найти
+  loading: Загрузка…
+  error: Ошибка
+  insert: Вставить
+  create: Создать
+  quit: Выйти
+dates:
+  weekday:
+    mon: Понедельник
+    tue: Вторник
+    wed: Среда
+    thu: Четверг
+    fri: Пятница
+    sat: Суббота
+    sun: Воскресенье
+  month:
+    jan: Январь
+    feb: Февраль
+    mar: Март
+    apr: Апрель
+    may: Май
+    jun: Июнь
+    jul: Июль
+    aug: Август
+    sep: Сентябрь
+    oct: Октябрь
+    nov: Ноябрь
+    dec: Декабрь
+  format:
+    iso: "ISO - ГГГГ-ММ-ДД"
+    us: "США - ММ/ДД/ГГГГ"
+    eu: "Европа - ДД/ММ/ГГГГ"
+    long: "Длинный - Месяц Д, ГГГГ"
+    long_weekday: "Длинный с выходными"
+    dmy: "День Месяц Год"
+    time_24h: "24-часовой - 14:30"
+    time_12h: "12-часовой - 2:30 PM"
+slash:
+  cat:
+    markdown: Markdown
+    templates: Шаблоны
+  property: Свойство
+  date: Дата
+  time: Время
+  blockdown: "▸ Спойлер"
+  create: Создать
+  label:
+    h1: Заголовок 1
+    h2: Заголовок 2
+    h3: Заголовок 3
+    bullet: Ненумерованный список
+    numbered: Нумерованный список
+    todo: Чеклист
+    quote: Цитата
+    note_alert: Заметка
+    tip_alert: Подсказка
+    important_alert: Важный
+    warning_alert: Предупреждение
+    caution_alert: Осторожно
+    code: Блок кода
+    mermaid: Диаграмма Mermaid
+    math: Математический блок
+    table: Таблица
+    divider: Разделитель
+    bold: Полужирный
+    italic: Наклонный
+    strikethrough: Перечеркнутый
+    inline_code: Код
+    inline_math: Математическое выражение
+    highlight: Выделенный
+    underline: Подчёркнутый
+    link: Ссылка
+    wiki_link: Wiki-ссылка
+    image: Изображение
+link_preview:
+  no_page: Ещё не сгенерировано
+
+settings:
+  title: Настройки
+  filter_placeholder: "Фильтр…"
+  nav:
+    general: Общее
+    notebooks: Блокноты
+    appearance: Внешний вид
+    pdf: PDF
+    markdown: Markdown
+    security: Безопасность
+    keyboard: Горячие клавиши
+    updates: Обновления
+  language:
+    auto: Автоматически
+  section:
+    notebooks: Блокноты
+    data_location: Место хранения
+    unused_images: Неиспользованные изображения
+    language: Язык
+    remember_window: Запоминать окно
+    date_format: Формат даты
+    time_format: Формат времени
+    app_theme: Тема
+    appearance: Внешний вид
+    font: Шрифт
+    text_size: Размер шрифта
+    line_numbers: Номера строк
+    mouse_cursor: Курсор мыши
+    sidebar_position: Размещение панели
+    installed_themes: Установленные темы
+    pdf_quality: Качество генерации PDF
+    wysiwyg: WYSIWYG редактирование
+    list_indent: Отступы в списках
+    autolink: Авто-ссылки на страницы
+    application: Приложение
+    editing: Редактирование
+    wb_tools: Доска, инструменты
+    wb_editing: Доска, редактирование
+    pdf_viewer: Просмотр PDF
+    password: Пароль
+    remember_device: Сохранить на устройстве
+    autolock: Авто-блокировка
+    updates: Обновление ПО
+    auto_check: Авто-обновление
+    prereleases: Включая пре-релизы
+  desc:
+    notebooks: "Каждый блокнот - это самодостаточная папка, со своей базой знаний, настройками и файлами. Переключение блокнотов перезапускает Zorite в папке блокнота; удаление блокнота только удалит его из списка блокнотов, файлы останутся нетронутыми. В низу панели - список-переключатель блокнотов."
+    data_location: "Где текущий блокнот хранит базу знаний, настройки и файлы. При переносе данные будут перенесены, затем Zorite откроется из новой папки."
+    unused_images: "Удалить картинки в текущей базе, которые не использованы ни в одной заметке, странице, шаблоне или доске. Файлы добавленные в течение последнего часа не будут удалены."
+    language: "Язык интерфейса. По умолчанию - язык вашей системы. Английский всегда доступен."
+    remember_window: "Восстановление позиции окна и набор открытых вкладок Zorite при открытии. Если разрешение было изменено, то окно выведется по центру экрана."
+    date_format: "В каком формате выводить /date и подстановку {{date}}. Не влияет на заголовки дней журнала."
+    time_format: "В каком формате заменять /time и подстановку {{time}}."
+    app_theme: "Выберите одну из встроенных тем или свою тему."
+    appearance: "Тёмный или светлый вариант активной темы. Подстраивается под системные настройки."
+    font: "Шрифт, используемый в интерфейсе приложения и заметках. По умолчанию - шрифт активной темы, если найден. Добавьте свои файлы шрифтов в формате .ttf или .otf."
+    text_size: "Размер шрифта при чтении и редактировании. Заголовки и встроенные блоки адаптируются к указанному размеру."
+    line_numbers: "Вывести номера строк слева от текста на страницах и в днях журнала — по логическим строкам, свёрнутый текст считается как одна строка. В режиме чтения не выводится."
+    mouse_cursor: "Курсор мыши в Zorite. Добавьте папку с темой XCursor (формат курсорных тем Linux), чтобы использовать собственную."
+    sidebar_position: "При включении панель (список страниц, поиск) закрепляется у правого края окна; при выключении — остаётся слева."
+    installed_themes: "Поместите файлы тем .json в папку тем, затем нажмите «Перезагрузить». Любой не указанный цвет берётся из базовой палитры."
+    pdf_quality: "Чем выше значение, тем качественней картинки, но медленнее генерация. Для более слабых машин понижайте значения. 100% = исходное разрешение вашего дисплея. 100% — совпадает с разрешением вашего дисплея."
+    wysiwyg: "При вклчении форматирование (полужирный, заголовки, ссылки) показывается прямо при вводе. При выключении — редактирование в обычном Markdown, предпросмотр страницы по Esc."
+    list_indent: "Отступы на каждый уровень вложенности при Tab и во вложенных списках. Редактирование и просмотр используют одно значение, для одинакового отображения."
+    autolink: "Ввод текста, совпадающего с заголовком существующей страницы, обернёт его в [[wiki-ссылку]] по завершении. Отмена (Undo) удалит ссылку."
+    application: "Глобальные комбинации клавиш. ⌘ на macOS, Ctrl на Windows и Linux."
+    editing: "Слэш-меню и текстовые команды, пока курсор внутри заметки."
+    wb_tools: "Однобуквенные горячие клавиши для выбора инструментов при редактировании доски."
+    wb_editing: "Действия с выделенными объектами на доске."
+    pdf_viewer: "Во вкладке просмотра PDF."
+    password: "Зашифровать базу паролем (SQLCipher). Zorite запрашивает его при запуске; без него файл на диске не читается. Забытый пароль восстановить нельзя."
+    remember_device: "Хранить пароль базы в системной связке ключей и автоматически разблокировать при запуске. Авто-блокировка по простою всегда требует ввести его заново."
+    remember_device_linux: "Хранить пароль в системной связке ключей и автоматически разблокировать при запуске. На Linux действует до перезагрузки; авто-блокировка по простою всегда требует ввести его заново."
+    autolock: "Заблокировать Zorite после указанного времени бездействия — для продолжения потребуется ввод пароля."
+    updates: "Проверка GitHub на наличие новых версий при запуске. Не устанавливаем обновление автоматически, скачиваете вручную со страницы релиза."
+    auto_check: "Проверять наличие новой версии при каждом запуске Zorite."
+    prereleases: "Предлагать и бета-сборки (vX.Y.Z-beta.N), а не только стабильные релизы."
+  opt:
+    light: Светлая
+    dark: Тёмная
+    auto_appearance: "Авто (как в системе)"
+    indent_2: 2 пробела
+    indent_4: 4 пробела
+    indent_8: 8 пробелов
+    cursor_system: "Системный (по умолчанию)"
+    cursor_bibata: "Bibata (под тему)"
+    system: Системная
+    font_default: "По умолчанию (%{name})"
+    size_px: "%{size} px"
+    size_px_default: "%{size} px (по умолчанию)"
+  btn:
+    add_font: "Добавить файл шрифта…"
+    add_cursor: "Добавить тему курсора…"
+    reveal_cursors: "Открыть папку с курсорами"
+    reveal_themes: "Открыть папку с темами"
+    reload: Перезагрузить
+    cleanup: "Очистить"
+    set_password: "Задать пароль…"
+    change_password: "Сменить пароль…"
+    remove_password: "Убрать пароль…"
+    lock_now: "Заблокировать"
+    add_notebook: "Добавить…"
+    move: "Переместить…"
+    reveal: Показать
+    reset_default: "К значениям по умолчанию"
+    view_release: "Подробнее о релизе"
+    check_now: "Проверить сейчас"
+    switch: Переключить
+    move_to_trash: "В корзину"
+    relaunch: Перезапустить
+    move_quit: "Переместить и выйти"
+    reset_quit: "Сбросить и выйти"
+    encrypt: Зашифровать
+    change: Сменить
+    decrypt: Расшифровать
+  label:
+    window_size_pos: "Размер и положение окна"
+    open_tabs: "Открытые вкладки"
+    current: текущий
+    current_password: "Текущий пароль"
+    new_password: "Новый пароль"
+    confirm_password: "Подтвердите новый пароль"
+  item:
+    enabled: Включено
+    show_gutter: Номера строк
+    dock_right: Панель справа
+    theme: Тема
+    mode: Режим
+    family: Шрифт
+    size: Размер
+    quality: Качество
+    spaces_per_level: Кол-во пробелов
+    language: Язык
+    format: Формат
+    lock_after: Блокировка после
+  note:
+    set_password_first: "Сначала задайте пароль."
+    cursor_relaunch: "Изменения курсора вступают в силу после перезапуска."
+    no_custom_themes: "Пользовательские темы не установлены. Поместите файл .json в папку и нажмите «Перезагрузить»."
+    latest_version: "У вас последняя версия."
+  autolock:
+    off: "Выкл."
+    5min: "5 мин"
+    15min: "15 мин"
+    30min: "30 мин"
+    1hour: "1 час"
+  status:
+    current_version: "Текущая версия: v%{ver}"
+    update_available: "Доступно обновление до v%{ver}"
+    no_unused: "Неиспользованные изображения не найдены."
+    moved_one: "Файл (%{n} / %{size}) помещён в корзину."
+    moved_many: "Файлы (%{n} / %{size}) помещены в корзину."
+    and_more: "…и ещё %{n}"
+    db_encrypted: "База зашифрована."
+    pw_changed: "Пароль изменён."
+    pw_removed: "Пароль убран — база расшифрована."
+    failed: "Ошибка: %{err}"
+  dlg:
+    image_gc_title: "Перенести неиспользуемые изображения в корзину?"
+    image_gc_body_one: "%{count} файл (%{size}) в папке изображений не упоминается ни в одной заметке, доске или шаблоне. Он будет перемещён в системную корзину.\n\n%{listing}"
+    image_gc_body_many: "%{count} файла(-ов) (%{size}) в папке изображений не упоминаются ни в одной заметке, доске или шаблоне. Они будут перемещены в системную корзину.\n\n%{listing}"
+    create_notebook_title: "Создать блокнот"
+    create_notebook_body: "Zorite перезапустится с новым пустым блокнотом «%{name}» в:\n%{dir}"
+    switch_notebook_title: "Переключить блокнот"
+    switch_notebook_body: "Zorite перезапустится в блокноте «%{name}»:\n%{dir}"
+    rename_notebook_title: "Переименовать блокнот"
+    use_folder: "Использовать папку"
+    use_font: "Использовать шрифт"
+    use_theme: "Использовать тему"
+    choose: "Выбрать"
+    that_folder_notebook_title: "Эта папка уже является блокнотом"
+    that_folder_notebook_body: "«%{name}» уже содержит базу Zorite.\n\nДобавьте его через переключатель внизу боковой панели, затем переключитесь туда."
+    move_data_title: "Переместить место хранения данных"
+    move_data_body: "Zorite переместит заметки, настройки и вложения этого блокнота в:\n%{path}\n\nИзменение вступит в силу при следующем открытии Zorite."
+    reset_data_title: "Сбросить место хранения данных"
+    reset_data_body: "Zorite вернёт ваши данные в расположение по умолчанию:\n%{path}\n\nИзменение вступит в силу при следующем открытии Zorite."
+    set_pw_title: "Задать пароль"
+    change_pw_title: "Сменить пароль"
+    remove_pw_title: "Убрать пароль"
+    set_pw_note: "Шифрует базу заметок. Если вы забудете пароль, заметки восстановить нельзя. Изображения и PDF остаются обычными файлами в папке данных — они не шифруются — а ранее созданные незашифрованные резервные копии там остаются читаемыми, пока вы их не удалите."
+  alert:
+    cant_use_folder: "Нельзя использовать эту папку"
+    wrong_password: "Неверный пароль"
+    wrong_password_body: "Текущий пароль не совпадает."
+    close_windows: "Закройте другие окна"
+    close_windows_body: "Закройте все остальные окна Zorite перед сменой пароля."
+    no_password: "Пароль не задан"
+    no_password_body: "Новый пароль пуст."
+    pw_mismatch: "Пароли не совпадают"
+    pw_mismatch_body: "Два введённых значения различаются — попробуйте снова."
+  kb:
+    new_tab: "Новая вкладка (страница)"
+    new_window: "Новое окно"
+    close_tab: "Закрыть вкладку"
+    next_tab: "Следующая вкладка"
+    prev_tab: "Предыдущая вкладка"
+    find_in_page: "Найти на странице"
+    search_all: "Искать по всем заметкам"
+    fit_images: "Вписать крупные изображения в область просмотра"
+    export_pdf: "Экспорт активной вкладки в PDF"
+    open_settings: "Настройки"
+    command_palette: "Открыть панель команд"
+    quit: "Выйти"
+    slash_menu: "Открыть слэш-меню команд"
+    menu_nav: "Вверх / вниз по меню"
+    menu_insert: "Вставить выбранный элемент"
+    menu_close: "Закрыть слэш-меню"
+    indent: "Отступ / вложить элемент списка"
+    outdent: "Убрать отступ"
+    copy: "Копировать"
+    cut: "Вырезать"
+    paste: "Вставить"
+    undo: "Отменить"
+    redo: "Повторить"
+    select_all: "Выделить всё"
+    select: "Выделить"
+    pan: "Перемещение"
+    pen: "Перо"
+    rectangle: "Прямоугольник"
+    ellipse: "Эллипс"
+    diamond: "Ромб"
+    triangle: "Треугольник"
+    rounded_rect: "Прямоугольник со скруглением"
+    star: "Звезда"
+    hexagon: "Шестиугольник"
+    line: "Линия"
+    arrow: "Стрелка"
+    text: "Текст"
+    image: "Изображение"
+    bring_forward: "На уровень вперёд"
+    bring_front: "На передний план"
+    send_backward: "На уровень назад"
+    send_back: "На задний план"
+    delete_sel: "Удалить выделенное"
+    deselect: "Снять выделение"
+    next_page: "Следующая страница"
+    prev_page: "Предыдущая страница"
+    first_page: "Первая страница"
+    last_page: "Последняя страница"
+    zoom_in: "Приблизить"
+    zoom_out: "Отдалить"
+    reset_zoom: "Масштаб 100%"
+    find: "Найти"
+    next_match: "Следующее совпадение"
+    prev_match: "Предыдущее совпадение"
+    toggle_highlight: "Переключить подсветку"
+    go_to_page: "Перейти на страницу"
+unlock:
+  placeholder: Пароль
+  title: "Zorite заблокирован"
+  body: "Ваши заметки зашифрованы. Введите пароль, чтобы открыть их."
+  remember_label: "Запомнить на этом устройстве"
+  unlock_btn: Разблокировать
+  wrong_pw: "Неверный пароль — попробуйте снова."
+  window_title: "Zorite — заблокирован"
+dialogs:
+  insert_card_title: "Вставить карточку страницы"
+  save_template_title: "Сохранить как шаблон"
+  template_default_name: "Шаблон без названия"
+  delete_template_title: "Удалить шаблон?"
+  delete_template_body: "«%{name}» будет удалён безвозвратно. Это действие нельзя отменить."
+  delete_template_fallback: "этот шаблон"
+  db_error_title: "Не удалось открыть базу заметок"
+  db_error_body: "Zorite открыл временное пустое рабочее пространство, потому что базу не удалось открыть или обновить. Изменения здесь не сохранятся."
+  db_error_recovery_backup: "Ваши заметки были скопированы перед обновлением и в безопасности — восстановите их из %{path}"
+  db_error_recovery_no_backup: "Ваши заметки на диске не изменены, они в %{path}"
+  reveal_backup: "Показать резервную копию"
+  delete_page_title: "Удалить страницу?"
+  delete_page_body: "«%{title}» будет удалена безвозвратно. Это действие нельзя отменить."
+  delete_page_failed: "Не удалось удалить страницу"
+  rename_page_title: "Переименовать страницу"
+  title_collision: "Страница с именем «%{name}» уже существует."
+  rename_failed: "Не удалось переименовать"
+  rename_failed_fmt: "Не удалось переименовать: %{err}"
+  cant_rename: "Нельзя переименовать"
+
+app_err:
+  page_title_placeholder: "Имя страницы…"
+  search_placeholder: "Поиск…"
+  journal_tab: Журнал
+  yes: Да
+  off: Выкл.
+  save_pdf_field_failed: "Не удалось сохранить поле"
+  pdf_form_refused: "Не удалось сохранить поле"
+  add_image_failed: "Не удалось добавить изображение"
+  import_image_failed: "Не удалось добавить изображение"
+  font_not_usable: "непригодный шрифт: %{font}"
+  import_font_failed: "не удалось импортировать шрифт"
+  copy_page_failed: "Не удалось скопировать"
+  new_page: "Новая страница"
+  new_sub_page: "Новая подстраница"
+  pdf_locked: "🔒 Этот PDF защищён паролем"
+  pdf_wrong_password: "Неверный пароль — попробуйте снова."
+  pdf_unlock: Разблокировать
+  cant_use_folder: "Нельзя использовать эту папку"
+  settings_title: "Настройки · Zorite"
+  paste_image_failed: "Не удалось вставить изображение"
+  drop_import_failed: "Не удалось импортировать перетащенный файл"
+  math_copy_latex: "Копировать LaTeX"
+  math_export_png: "Экспорт PNG…"
+  math_export_svg: "Экспорт SVG…"
+  math_align_left: "По левому краю"
+  math_align_center: "По центру"
+  math_align_right: "По правому краю"
+  math_edit: Редактировать
+  save_hint: "%{name}  —  ⏎ сохранить · esc отмена · ⇥ далее"
+  grid: Сетка
+  striped: Выделение строк цветом фона
+  header: Заголовок
+  minimal: Минимальный
+  table_striped_marker: "\u003c!-- table:striped --\u003e"
+  table_header_marker: "\u003c!-- table:header --\u003e"
+  table_minimal_marker: "\u003c!-- table:minimal --\u003e"
+  db_open_failed: "не удалось открыть базу на диске: {}; используется временное хранилище в памяти"
+  db_init_memory: "инициализация базы в памяти"
+  search_nodes_placeholder: "Поиск узлов…"
+  graph_tab: Граф
+  properties_tab: Свойства
+  blockdown: Спойлер
+  place: Разместить
+  alias_hint: "псевдоним1, псевдоним2, …"
+  table_rows: строки
+  table_cols: столбцы
+  not_found: "не найдено"
+  relaunch_failed: "перезапуск: не удалось запустить процесс: {}"
+  relaunch_exe_failed: "перезапуск: current_exe: {}"
+  all_pages: "Все страницы"
+  untitled_whiteboard: "Доска без названия"
+  create_notebook: "Создать блокнот"
+  create_notebook_body: "Zorite перезапустится с новым пустым блокнотом «%{name}» в:\n%{dir}"
+  switch_notebook: "Переключить блокнот"
+  switch_notebook_body: "Zorite перезапустится с блокнотом «%{name}»:\n%{dir}"
+  relaunch: Перезапустить
+  pdf_read_failed: "Не удалось прочитать PDF: %{e}"
+  pdf_write_rejected: "PDF отклонил запись в «%{name}» (возможно, он доступен только для чтения)."
+  pdf_write_failed: "Не удалось записать PDF: %{e}"
+  import_image_failed_fmt: "Не удалось импортировать %{path}: %{e}"
+  today_label: "Сегодня · %{label}"
+  yesterday_label: "Вчера · %{label}"
+find:
+  placeholder_page: "Найти на странице…"
+  placeholder_journal: "Найти в журнале…"
+importing:
+  journal_label: Журнал
+  import_button: Импорт
+  importing_named: "Импорт %{name}"
+  obsidian_explain: "Папки Obsidian могут стать пространствами имён Zorite. «Сохранить папки» превращает Projects/Tasks.md в страницу Projects::Tasks (ссылки ведут на неё); «Только список» использует только имя заметки."
+  logseq_explain: "Logseq превращает каждую строку в пункт списка. «Простой список» превращает каждый пункт верхнего уровня в абзац или заголовок (вложенные пункты остаются списками), чтобы страницы читались как страницы Zorite; «Сохранить структуру» оставляет структуру без изменений. Существующие страницы сохраняют своё содержимое — импортированный текст добавляется ниже."
+  summary_counts: "%{pages} страниц, %{journals} дней журнала, %{highlight} страниц выделений PDF, %{boards} досок; скопировано %{assets} вложений; %{favorites} избранных."
+  export_counts: "%{pages} страниц, %{days} дней журнала, %{boards} досок и %{assets} файлов вложений записано."
+  warnings: "Предупреждения: %{names}"
+  complete_title: "Импорт из %{source} завершён"
+  failed_title: "Импорт из %{source} не удался"
+  title_obsidian: "Импорт из Obsidian"
+  cancel: Отмена
+  flatten: "Только список"
+  preserve_folders: "Сохранить папки"
+  export_here: "Экспортировать сюда"
+  complete: "Экспорт завершён"
+  failed: "Экспорт не удался"
+  obsidian: Obsidian
+  obsidian_progress: "Импорт из Obsidian…"
+  obsidian_busy: "Копирование заметок и вложений — может занять минуту."
+  logseq: Logseq
+  title_logseq: "Импорт из Logseq"
+  keep_bullets: "Сохранить структуру"
+  flatten_outline: "Простой список"
+  logseq_progress: "Импорт из Logseq…"
+  logseq_busy: "Копирование заметок и вложений — может занять минуту."
+  appended_below: "Добавлено ниже существующего содержимого: %{names}."
+  and_more: " — и ещё %{n}"
+  done: Готово
+math:
+  error: "формула не отобразилась"
+  export_failed: "Экспорт не удался"
+all_pages:
+  letter_all: Все
+  title: "Все страницы"
+  filter_all: "Все типы"
+  filter_pages: Страницы
+  filter_whiteboards: Доски
+  filter_pdfs: PDF
+  col_title: Заголовок
+  col_created: Создано
+  col_updated: Обновлено
+  col_type: Тип
+  type_page: Страница
+  type_whiteboard: Доска
+  type_pdf: PDF
+  empty: "Ничего не найдено."
+  shown: "Показано: %{count}"
+  properties: Свойства
+  graph: Граф
+game:
+  controls: "← → движение · Space запуск · P пауза · Esc выход"
+  paused: "пауза — P или Space продолжить"
+  game_over: "игра окончена — Space, чтобы попробовать снова"
+  level_cleared: "уровень пройден — Space для следующего (+1 жизнь)"
+graph:
+  empty: "Связанных страниц пока нет. Для создания графа используйте [[wiki-ссылки]] и #теги."
+  hint: "Перетащите для панорамирования или перемещения узла · щипок или ⌘-прокрутка для масштаба · клик по узлу, чтобы открыть"
+  filter_pages: Страницы
+  filter_whiteboards: Доски
+  filter_journals: Журналы
+  filter_links: Ссылки
+  filter_orphans: Сироты
+  nodes: Узлы
+  no_matches: "Нет совпадений"
+  legend_journals: Журналы
+  legend_orphans: "Страницы-сироты"
+  legend_whiteboards: Доски
+  shown: показано
+  match: совпадение
+  matches: совпадений
+  reset: "Сбросить граф"
+image:
+  unresolved: "🖼 изображение (неразрешённый путь)"
+journal:
+  empty: "Пусто — нажмите, чтобы написать"
+  load_older: "Загрузить предыдущие дни"
+render:
+  math_typesetting: "Вёрстка формул…"
+  mermaid_rendering: "Отрисовка диаграммы…"
+  math_failed: "формула не отобразилась"
+  mermaid_failed: "диаграмма не отобразилась"
+page_view:
+  empty: "Пусто — нажмите, чтобы начать"
+  no_matches: "Нет совпадений"
+  link: Ссылка
+  alias_prefix: "псевдоним::"
+  sub_pages: "Вложенные страницы (%{count})"
+  linked_refs: "Связанные страницы (%{count})"
+  unlinked_refs: "Несвязанные ссылки (%{count})"
+  linked_refs_panel: "Связанные ссылки (%{count})"
+ctx:
+  cut: Вырезать
+  copy: Копировать
+  copy_as_markdown: "Копировать как Markdown"
+  paste: Вставить
+  code_copy: Копировать
+  math_copy: Копировать
+  turn_into: "Преобразовать в"
+  text: Текст
+  heading_1: "Заголовок 1"
+  heading_2: "Заголовок 2"
+  heading_3: "Заголовок 3"
+  bulleted_list: "Ненумерованный список"
+  numbered_list: "Нумерованный список"
+  todo: Чеклист
+  quote: Цитата
+  callout: Выноска
+  code_block: "Блок кода"
+  math_block: "Математический блок"
+  insert_row_above: "Вставить строку выше"
+  insert_row_below: "Вставить строку ниже"
+  duplicate_row: "Дублировать строку"
+  insert_column_left: "Вставить столбец слева"
+  insert_column_right: "Вставить столбец справа"
+  align_left: "По левому краю"
+  align_center: "По центру"
+  align_right: "По правому краю"
+  grid_style: "Стиль «Сетка»"
+  striped_style: "Стиль «Полосы»"
+  header_style: "Стиль «Заголовок»"
+  minimal_style: "Стиль «Минимальный»"
+  delete_row: "Удалить строку"
+  delete_column: "Удалить столбец"
+  delete_table: "Удалить таблицу"
+  edit_properties: "Редактировать свойства"
+  delete_property: "Удалить свойство"
+  delete_image: "Удалить изображение"
+page_ctx:
+  remove_favorite: "Убрать из избранного"
+  add_favorite: "Добавить в избранное"
+  open_new_tab: "Открыть в новой вкладке"
+  open_new_window: "Открыть в новом окне"
+  copy_link: "Копировать ссылку"
+  copy_contents: "Копировать содержимое"
+  copy_contents_md: "Копировать содержимое как Markdown"
+  export_pdf: "Экспорт в PDF…"
+  new_sub_page: "Новая подстраница"
+  rename_page: "Переименовать страницу"
+  delete_page: "Удалить страницу"
+month_cal:
+  su: Вс
+  mo: Пн
+  tu: Вт
+  we: Ср
+  th: Чт
+  fr: Пт
+  sa: Сб
+properties_page:
+  title: Свойства
+  col_key: Ключ
+  col_pages: Страницы
+  col_values: Значения
+  keys_in_use: "ключей использовано"
+  map_first: "Назначьте ключ перед первым использованием:"
+  mapped_unused: "назначен — ещё не используется ни на одной странице"
+  ok: ОК
+  cancel: Отмена
+  rename: Переименовать
+  icon: "Иконка ▾"
+  default_builtin: "По умолчанию (встроенный)"
+  reset_icon_tip: "Убрать пользовательскую иконку ключа. Ключ, который ещё не используется ни на одной странице, также теряет свою строку здесь."
+  placeholder_rename: "новое имя"
+  placeholder_key: "ключ…"
+
+property_editor:
+  add_property: "+ Добавить свойство"
+search:
+  subtitle_whiteboard: Доска
+  subtitle_pdf: PDF
+  subtitle_image: Изображение
+  pdf_in: "PDF · в %{title}"
+  image_in: "Изображение · в %{title}"
+  no_matches: "Нет совпадений"
+  filter_all: Все
+  filter_pages: Страницы
+  filter_whiteboards: "▦ Доски"
+  filter_pdfs: PDF
+  filter_images: Изображения
+sidebar:
+  favorites: Избранное
+  whiteboards: Доски
+  recent: Недавние
+  no_pages: "Страниц пока нет — кликните правой кнопкой ниже, чтобы добавить"
+  no_recent: "Нет недавних страниц"
+  new_page: "Новая страница"
+  main: Главное
+  add_notebook: "Добавить блокнот…"
+  rename: Переименовать
+  reveal_folder: "Показать папку"
+  remove_from_list: "Убрать из списка (файлы сохранятся)"
+  new_whiteboard: "Новая доска"
+  journal: Журнал
+  all_pages: "Все страницы"
+  properties: Свойства
+  graph: Граф
+slash_menu:
+  h1_desc: "Заголовок уровня 1."
+  h2_desc: "Заголовок уровня 2."
+  h3_desc: "Заголовок уровня 3."
+  bullet_desc: "Ненумерованный список."
+  numbered_desc: "Нумерованный список."
+  todo_desc: "Отслеживание задачи с флажком."
+  quote_desc: "Зафиксировать цитату."
+  note_desc: "Блок: что-то, что стоит отметить."
+  tip_desc: "Блок: полезная подсказка."
+  important_desc: "Блок: ключевая информация."
+  warning_desc: "Блок: требует внимания."
+  caution_desc: "Блок: рискованные последствия."
+  code_desc: "Зафиксировать фрагмент кода."
+  mermaid_desc: "Нарисовать диаграмму из текста."
+  math_desc: "Сверстать отображаемую формулу."
+  table_desc: "Выбрать размер строки × столбцы."
+  divider_desc: "Визуально разделить страницу."
+  bold_desc: "Полужирный текст."
+  italic_desc: "Наклонный текст."
+  strikethrough_desc: "Перечёркнутый текст."
+  inline_code_desc: "Код внутри текста."
+  inline_math_desc: "Формула внутри текста."
+  highlight_desc: "Выделенный текст."
+  underline_desc: "Подчёркнутый текст."
+  link_desc: "Веб-ссылка."
+  property_desc: "Добавить свойство ключ:: значение."
+  markdown_desc: "Все блоки Markdown."
+  templates_desc: "Вставить один из ваших шаблонов."
+  date_desc: "Вставить текущую дату."
+  time_desc: "Вставить текущее время."
+  no_commands: "Нет команд"
+tab_bar:
+  remove_favorite: "Убрать из избранного"
+  add_favorite: "Добавить в избранное"
+  open_new_window: "Открыть в новом окне"
+  export_pdf: "Экспорт в PDF…"
+  copy_link: "Копировать ссылку"
+  copy_contents: "Копировать содержимое"
+  copy_contents_md: "Копировать содержимое как Markdown"
+  new_sub_page: "Новая подстраница"
+  rename_page: "Переименовать страницу"
+  delete_page: "Удалить страницу"
+table_picker:
+  title: "Вставить таблицу"
+  insert: Вставить
+import_err:
+  logseq_no_folders: "%{path} не похож на папку Logseq (нет папки pages/ или journals/)"
+  imported_whiteboard: "Импортированная доска"
+  obsidian_no_md: "%{path} не содержит заметок Markdown"
+  canvas_malformed: "canvas %{path}: повреждённый JSON, пропущен"
+  canvas_unsupported_node: 'canvas "%{title}": неподдерживаемый тип узла ''%{node}'''
+  canvas_downgraded: 'canvas "%{title}": %{count} элемент(ов) понижено или пропущено'
+  embed_expected: "ожидалась карточка Embed, получено %{kind}"
+  favorite_err: "избранное %{title}: %{e}"
+  save_favorites_err: "сохранение избранного: %{e}"
+  file_conv_err: "%{path}: %{e}"
+  missing_pdf: "отсутствует встроенный PDF: %{name}"
+  embed_dup: "дублирующееся встраивание %{name}: %{e}"
+  loop_embed: "циклическое встраивание в %{name}"
+  wb_unreadable: "доска %{path}: не читается"
+  wb_shapes_skipped: "доска %{title}: пропущено фигур: %{skipped} (встраивания / порталы / неподдерживаемые)"
+  wb_geom_err: "доска %{path}: %{e}"
+  asset_not_found: "вложение не найдено: %{rel}"
+migration:
+  moving_data: "Перемещение ваших данных…"
+menu:
+  app_name: Zorite
+  settings: "Настройки…"
+  quit: "Выйти из Zorite"
+  file: Файл
+  edit: Правка
+  view: Вид
+  new_tab: "Новая страница"
+  new_whiteboard: "Новая доска"
+  new_window: "Новое окно"
+  import_logseq: "Импорт из Logseq…"
+  import_obsidian: "Импорт из Obsidian…"
+  export_notebook: "Экспорт блокнота как Markdown…"
+  export_pdf: "Экспорт в PDF…"
+  close_tab: "Закрыть вкладку"
+  undo: Отменить
+  redo: Повторить
+  cut: Вырезать
+  copy: Копировать
+  paste: Вставить
+  select_all: "Выделить всё"
+  find_in_page: "Найти на странице"
+  search_all_notes: "Искать по всем заметкам"
+  fit_images: "Вписать изображения в область просмотра"
+  next_tab: "Следующая вкладка"
+  prev_tab: "Предыдущая вкладка"
+  command_palette: "Команды…"
+command_palette:
+  placeholder: "Введите команду…"
+  navigate: Перейти
+  go_to_today: "Перейти к сегодняшнему дню"
+  jump_to_date: "Перейти к дате…"
+  all_pages: "Открыть «Все страницы»"
+  graph: "Открыть граф"
+  sidebar_show: "Показать боковую панель"
+  sidebar_hide: "Скрыть боковую панель"
+  settings: Настройки
+  wysiwyg_on: "Включить WYSIWYG-редактирование"
+  wysiwyg_off: "Выключить WYSIWYG-редактирование"
+  gutter_show: "Показать номера строк"
+  gutter_hide: "Скрыть номера строк"
+  sidebar_left: "Закрепить боковую панель слева"
+  sidebar_right: "Закрепить боковую панель справа"
+  theme_light: "Тема: Светлая"
+  theme_dark: "Тема: Тёмная"
+  theme_auto: "Тема: Авто (как в системе)"
+paths:
+  not_a_folder: "Вы выбрали не папку."
+  nested_or_parent: "Укажите папку не внутри текущей и не являющейся родительской к папке текущего блокнота."
+  not_writable: "Папка закрыта от записи."
+  default_notebook: Блокнот
+  app_title: "Zorite — %{name}"
+export_md:
+  not_a_folder: "Вы выбрали не папку."
+  not_empty: "Выбранная папка не пустая, укажите пустую или создайте новую папку."
+  read_dest_failed: "ошибка чтения: %{e}"
+cursors:
+  pick_folder: "Укажите папку с темой."
