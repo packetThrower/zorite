@@ -536,6 +536,9 @@ jobs:
           # refused to start it ("AppRun: Permission denied"). Make every
           # executable runnable by all, and fail the build if one isn't.
           chmod 0755 squashfs-root/AppRun
+          # appimagetool now refuses an AppDir that other users can't read
+          # (the extracted root itself is 0700).
+          chmod -R a+rX squashfs-root
           if find squashfs-root -type f -perm -u=x ! -perm -o=x | grep .; then
             echo "::error::executables above aren't runnable by other users"
             exit 1
