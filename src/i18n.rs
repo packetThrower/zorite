@@ -15,8 +15,12 @@
 /// title)`. Language names render in their own script (so a zh-CN user can
 /// find "English" and vice-versa); only the "Auto" entry is itself localized
 /// at its call site.
-pub const LANGUAGE_OPTS: &[(&str, &str)] =
-    &[("auto", "Auto"), ("en", "English"), ("zh-CN", "简体中文")];
+pub const LANGUAGE_OPTS: &[(&str, &str); 4] = &[
+    ("auto", "Auto"),
+    ("en", "English"),
+    ("zh-CN", "简体中文"),
+    ("ru-RU", "Русский"),
+];
 
 /// Resolve a persisted language choice to a concrete locale id.
 ///
@@ -28,6 +32,7 @@ pub fn resolve_locale(choice: &str) -> &'static str {
     match choice {
         "en" => "en",
         "zh-CN" => "zh-CN",
+        "ru-RU" => "ru-RU",
         "auto" => {
             let loc = sys_locale::get_locale().unwrap_or_default();
             if loc.to_lowercase().starts_with("zh") {
