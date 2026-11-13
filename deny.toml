@@ -20,7 +20,6 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained as a standalone crate (folded into zbus). Linux-only, transitive via gpui-pre-linux -> accesskit_unix -> atspi/zbus. Upstream; revisit at each gpui pull." },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained as a standalone crate (folded into zbus). Same Linux-only gpui-pre-linux -> atspi/zbus chain as RUSTSEC-2026-0370." },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained as a standalone crate (folded into zbus). Same Linux-only gpui-pre-linux -> atspi/zbus chain as RUSTSEC-2026-0370." },
-    { id = "RUSTSEC-2026-0502", reason = "SQLite <3.54 WAL page-size read of uninitialized memory, in sqlcipher-src 419.0.6. Pinned by libsqlite3-sys 0.39 <- rusqlite 0.41.1 (latest); the fix (sqlcipher-src 420) needs libsqlite3-sys 0.40. Local-only: needs a crafted db + -wal pair opened by zorite. Drop when rusqlite moves to libsqlite3-sys 0.40." },
 ]
 
 [licenses]
