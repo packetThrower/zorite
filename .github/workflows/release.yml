@@ -412,7 +412,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          # Pinned, not ubuntu-latest: binaries need the build host's glibc or newer,
+          # and ubuntu-latest moved to 26.04 (glibc 2.43), which broke 24.04 installs.
+          - runner: ubuntu-24.04
             arch: amd64
             target: x86_64-unknown-linux-gnu
             rpm_arch: x86_64
