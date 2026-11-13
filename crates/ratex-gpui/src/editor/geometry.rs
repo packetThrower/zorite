@@ -454,8 +454,8 @@ fn descend_to_row<'a>(
     // slots live on the 2nd).
     for c in row_cells(row, row_box, x0, scale) {
         let (sbox, sx0) = unwrap_box(c.boxx, c.x, scale);
-        for atom_i in c.lo..c.hi {
-            for slot in crate::editor::cursor::nav_slots(&row.atoms[atom_i]) {
+        for (atom_i, atom) in row.atoms.iter().enumerate().take(c.hi).skip(c.lo) {
+            for slot in crate::editor::cursor::nav_slots(atom) {
                 let Some((sub_box, sx, sy, ss)) = descend(sbox, sx0, slot, ybase, scale) else {
                     continue;
                 };
@@ -463,7 +463,7 @@ fn descend_to_row<'a>(
                     && x <= sx + sub_box.width * ss
                     && y >= sy - sub_box.height * ss
                     && y <= sy + sub_box.depth * ss;
-                if inside && let Some(sub_row) = slot_model_row(&row.atoms[atom_i], slot) {
+                if inside && let Some(sub_row) = slot_model_row(atom, slot) {
                     path.push(Step { atom: atom_i, slot });
                     return descend_to_row(sub_row, sub_box, x, y, sx, sy, ss, path);
                 }
