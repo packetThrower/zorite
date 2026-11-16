@@ -15,8 +15,12 @@
 /// title)`. Language names render in their own script (so a zh-CN user can
 /// find "English" and vice-versa); only the "Auto" entry is itself localized
 /// at its call site.
-pub const LANGUAGE_OPTS: &[(&str, &str)] =
-    &[("auto", "Auto"), ("en", "English"), ("zh-CN", "简体中文")];
+pub const LANGUAGE_OPTS: &[(&str, &str); 4] = &[
+    ("auto", "Auto"),
+    ("en", "English"),
+    ("zh-CN", "简体中文"),
+    ("ru-RU", "Русский"),
+];
 
 /// Resolve a persisted language choice to a concrete locale id.
 ///
@@ -28,6 +32,7 @@ pub fn resolve_locale(choice: &str) -> &'static str {
     match choice {
         "en" => "en",
         "zh-CN" => "zh-CN",
+        "ru-RU" => "ru-RU",
         "auto" => {
             let loc = sys_locale::get_locale().unwrap_or_default();
             if loc.to_lowercase().starts_with("zh") {
@@ -139,13 +144,17 @@ mod tests {
     fn explicit_choices_resolve_themselves() {
         assert_eq!(resolve_locale("en"), "en");
         assert_eq!(resolve_locale("zh-CN"), "zh-CN");
+        assert_eq!(resolve_locale("ru-RU"), "ru-RU");
     }
 
     #[test]
     fn auto_resolves_to_an_offered_locale() {
         // No deterministic sys-locale mock; just assert it lands on a real one.
         let r = resolve_locale("auto");
-        assert!(matches!(r, "en" | "zh-CN"));
+        assert!(
+            LANGUAGE_OPTS.iter().any(|(id, _)| *id == r),
+            "auto resolved to {r:?}, which LANGUAGE_OPTS doesn't offer"
+        );
     }
 
     #[test]
@@ -162,7 +171,7 @@ mod tests {
         sorted.dedup();
         assert_eq!(sorted.len(), ids.len(), "language ids must be unique");
         // The three the picker offers, in order.
-        assert_eq!(ids, vec!["auto", "en", "zh-CN"]);
+        assert_eq!(ids, vec!["auto", "en", "zh-CN", "ru-RU"]);
     }
 
     // Race-free catalog spot-checks: `t!(..., locale = ...)` reads a locale
@@ -173,6 +182,7 @@ mod tests {
     fn june_localizes_in_both_locales() {
         assert_eq!(rust_i18n::t!("dates.month.jun", locale = "en"), "June");
         assert_eq!(rust_i18n::t!("dates.month.jun", locale = "zh-CN"), "六月");
+        assert_eq!(rust_i18n::t!("dates.month.jun", locale = "ru-RU"), "Июнь");
     }
 
     #[test]
@@ -180,8 +190,10 @@ mod tests {
         // Any non-empty value proves the key is present in that catalog.
         assert!(!rust_i18n::t!("settings.nav.appearance", locale = "en").is_empty());
         assert!(!rust_i18n::t!("settings.nav.appearance", locale = "zh-CN").is_empty());
+        assert!(!rust_i18n::t!("settings.nav.appearance", locale = "ru-RU").is_empty());
         assert!(!rust_i18n::t!("slash.cat.markdown", locale = "en").is_empty());
         assert!(!rust_i18n::t!("slash.cat.markdown", locale = "zh-CN").is_empty());
+        assert!(!rust_i18n::t!("slash.cat.markdown", locale = "ru-RU").is_empty());
     }
 
     #[test]
@@ -199,6 +211,11 @@ mod tests {
                 assert!(
                     !rust_i18n::t!($key, locale = "zh-CN").is_empty(),
                     "{} missing in zh-CN",
+                    stringify!($key)
+                );
+                assert!(
+                    !rust_i18n::t!($key, locale = "ru-RU").is_empty(),
+                    "{} missing in ru-RU",
                     stringify!($key)
                 );
             };
