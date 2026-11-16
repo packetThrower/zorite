@@ -109,7 +109,7 @@ base64 = "0.23"
 # target, and no version skew between dev machines.
 # bundled-sqlcipher: full SQLite + AES-256 page encryption (PRAGMA key),
 # vendored OpenSSL so all five CI targets build without system deps.
-rusqlite = { version = "0.41", features = ["bundled-sqlcipher-vendored-openssl"] }
+rusqlite = { version = "0.42", features = ["bundled-sqlcipher-vendored-openssl"] }
 
 # Local date for the daily-journal title (YYYY-MM-DD). `local-offset`
 # enables `OffsetDateTime::now_local()` so "today" follows the user's
