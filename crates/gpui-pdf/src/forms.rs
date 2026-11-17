@@ -781,6 +781,7 @@ mod tests {
                 &pdf,
                 1.0,
                 hayro::hayro_interpret::InterpreterSettings::default(),
+                &hayro::RenderSettings::default(),
                 Some(0..=0),
             )
             .expect("render")

@@ -154,8 +154,14 @@ pub fn page_dims(doc: &Document) -> Vec<(f32, f32)> {
 /// scale = sharper but more memory; [`PdfView`] picks `scale` from the display's
 /// pixel ratio, zoom, and quality so pages are crisp without wasting memory.
 pub fn render_page(doc: &Document, idx: usize, scale: f32) -> Result<Arc<RenderImage>, String> {
-    let pixmaps = hayro::render_pdf(doc, scale, InterpreterSettings::default(), Some(idx..=idx))
-        .ok_or_else(|| format!("render page {idx}"))?;
+    let pixmaps = hayro::render_pdf(
+        doc,
+        scale,
+        InterpreterSettings::default(),
+        &hayro::RenderSettings::default(),
+        Some(idx..=idx),
+    )
+    .ok_or_else(|| format!("render page {idx}"))?;
     let pixmap = pixmaps
         .into_iter()
         .next()
