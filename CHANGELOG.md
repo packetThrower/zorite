@@ -9,6 +9,44 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-16
+
+Glass themes: Zorite can now blur whatever is behind its window, behind the
+sidebar only or the whole window, and your own themes can do the same. Zorite
+also speaks Russian, and installs with Nix.
+
+### Added
+
+- **Two glass themes.** **Sidebar Glass** blurs behind the sidebar and title
+  bar, like macOS's own sidebars, and follows Light/Dark. **Glass** (dark only)
+  blurs behind the whole window. Menus, dialogs, popovers and the whiteboard
+  toolbar stay opaque so they're always readable.
+- **Translucent user themes.** Give a background color an alpha
+  (`#RRGGBBAA`) and Zorite blurs behind it, the same way the built-in glass
+  themes do. Six-digit colors stay opaque, so existing themes look the same.
+  See Customize → Themes.
+- **Russian translation** (thanks @slavakrampetz, #163).
+- **Ctrl+Insert, Shift+Delete and Shift+Insert** copy, cut and paste on
+  Windows and Linux (thanks @slavakrampetz, #163).
+- **Install with Nix:** `nix run github:packetThrower/zorite`, or add the
+  flake to your profile or NixOS config. The install page has the details.
+
+### Changed
+
+- **Linux packages now need Ubuntu 24.04, Debian 13, Fedora 40 or newer.**
+- **Security update** to the bundled SQLite (SQLCipher), fixing
+  RUSTSEC-2026-0502.
+- **PDF libraries updated** to hayro 0.9 and lopdf 0.47.
+
+### Fixed
+
+- **Coloring a word inside a highlight or other formatting** no longer shows
+  the color tags as raw text.
+- **In a left-to-right list item that ends in Arabic or Hebrew,** the bullet,
+  number or checkbox stays on the left.
+- **The PDF viewer's highlight colors and find bar no longer overlap,** and
+  toolbar tooltips no longer drop onto them.
+
 ## [0.13.0] - 2026-10-29
 
 The Windows release: a full pass of testing on Windows turned up crashes,
