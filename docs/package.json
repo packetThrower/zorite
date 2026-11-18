@@ -12,13 +12,13 @@
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/sitemap": "^3.7.2",
-    "@astrojs/starlight": "^0.39.2",
-    "@fontsource-variable/fraunces": "^5.2.9",
-    "@fontsource-variable/ibm-plex-sans": "^5.2.8",
-    "@fontsource/ibm-plex-mono": "^5.2.7",
-    "astro": "^6.3.3",
-    "sharp": "^0.34.5"
+    "@astrojs/sitemap": "^3.7.5",
+    "@astrojs/starlight": "^0.42.11",
+    "@fontsource-variable/ibm-plex-sans": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
+    "@packetthrower/site-theme": "github:packetThrower/site-theme#v0.1.2",
+    "astro": "^7.4.12",
+    "sharp": "^0.35.5"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

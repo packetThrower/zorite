@@ -1,0 +1,188 @@
+---
+// Landing page at /zorite/ (replaces the Starlight splash index.mdx).
+// Layout + components come from the shared @packetthrower/site-theme.
+import Layout from '@packetthrower/site-theme/components/Layout.astro';
+import InstallTabs from '@packetthrower/site-theme/components/InstallTabs.astro';
+import { latestRelease } from '@packetthrower/site-theme';
+
+const v = latestRelease()?.version ?? 'latest';
+const description =
+	'A local-first, Logseq-style daily journal for the desktop with a Word-like typing experience. Linked Markdown notes with LaTeX math, embedded PDFs, freeform whiteboards, and full-text search, all in a local SQLite database.';
+
+// JSON-LD SoftwareApplication schema for rich results on the homepage.
+const jsonLd = {
+	'@context': 'https://schema.org',
+	'@type': 'SoftwareApplication',
+	name: 'Zorite',
+	applicationCategory: 'ProductivityApplication',
+	applicationSubCategory: 'Note-taking',
+	operatingSystem: 'macOS, Windows, Linux',
+	description,
+	url: 'https://packetthrower.github.io/zorite/',
+	downloadUrl: 'https://github.com/packetThrower/zorite/releases/latest',
+	license: 'https://github.com/packetThrower/zorite/blob/main/LICENSE',
+	image: 'https://packetthrower.github.io/zorite/og-image.png',
+	screenshot: 'https://packetthrower.github.io/zorite/screenshots/zorite-macos-dark.png',
+	author: { '@type': 'Person', name: 'Will Lehnertz', url: 'https://github.com/packetThrower' },
+	offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+	softwareHelp: { '@type': 'CreativeWork', url: 'https://packetthrower.github.io/zorite/install/' },
+};
+
+const shots = [
+	['zorite-journal-dark', 'journal feed', 'The Zorite journal: a reverse-chronological feed of daily Markdown pages'],
+	['zorite-edit-dark', 'click to edit', 'A journal day in edit mode: raw Markdown on click, rendered on click-away'],
+	['zorite-whiteboard-dark', 'whiteboard', 'A Zorite whiteboard: freehand pen, shapes, on-canvas text and a page-card embed'],
+	['zorite-pdf-dark', 'pdf viewer', 'The Zorite PDF viewer with a table of contents and drag-to-highlight markup'],
+	['zorite-search-dark', 'search', 'Zorite search results spanning pages, PDFs, images and whiteboards with filter chips'],
+	['zorite-mermaid-dark', 'mermaid diagram', 'A note with a rendered Mermaid diagram'],
+];
+---
+
+<Layout title="Zorite — a local-first Markdown daily journal" description={description} app="zorite" ogImage="https://packetthrower.github.io/zorite/og-image.png">
+	<Fragment slot="head">
+		<script type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+	</Fragment>
+
+	<section class="pt-hero">
+		<div class="pt-wrap pt-hero-grid">
+			<div>
+				<a class="pt-pill" href="/zorite/changelog/"><span class="pt-ver">v{v}</span> What's new in this release →</a>
+				<h1>A daily journal <em>you type like a document.</em></h1>
+				<p class="pt-lede">
+					Every day is a page, notes link to each other, and everything is searchable, like Logseq, but you write in plain
+					Markdown that renders as you go. Your notes live in a local SQLite database: no cloud, no account.
+				</p>
+				<div class="pt-actions">
+					<a class="pt-btn pt-btn-primary" href="#install"><span>Download for <span data-pt-os>your OS</span></span></a>
+					<a class="pt-btn" href="/zorite/usage/journal/">Read the docs</a>
+				</div>
+				<div class="pt-chips" style="margin-top:16px">
+					<span class="pt-chip">macOS 11+</span><span class="pt-chip">Windows 10 21H2+</span><span class="pt-chip">Ubuntu 22.04+</span><span class="pt-chip">GPL-3.0</span>
+				</div>
+			</div>
+			<div class="pt-shot">
+				<img src="/zorite/screenshots/zorite-macos-dark.png" alt="Zorite: a linked note with sub-pages and backlinks, the Favorites and Whiteboards sidebar, and multiple open tabs" width="2624" height="1826" />
+			</div>
+		</div>
+	</section>
+
+	<section class="pt-section">
+		<div class="pt-wrap">
+			<div class="pt-head"><div><div class="pt-eyebrow">What it does</div><h2>Your notes, linked and searchable, on your machine.</h2></div></div>
+			<div class="pt-features">
+				<div class="pt-feature">
+					<div class="pt-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M8 8h8M8 12h8M8 16h5" /></svg></div>
+					<h3>Journal &amp; pages</h3>
+					<p>An infinite feed of days. <code>[[wiki-links]]</code>, <code>#tags</code>, backlinks, namespaces, a <code>/</code> command palette and templates.</p>
+				</div>
+				<div class="pt-feature">
+					<div class="pt-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 19c3-6 6-2 8-6s3-6 8-7" /><rect x="3" y="3" width="6" height="6" rx="1" /></svg></div>
+					<h3>Whiteboards</h3>
+					<p>A freeform infinite canvas: pen, shapes, text, images and page-card embeds, with reusable templates.</p>
+				</div>
+				<div class="pt-feature">
+					<div class="pt-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z" /><path d="M14 3v6h6M8 14h8" /></svg></div>
+					<h3>PDF viewer</h3>
+					<p>Drop a PDF onto a note: page-virtualized viewing, a TOC, drag-to-highlight markup, fillable forms and password-protected files.</p>
+				</div>
+				<div class="pt-feature">
+					<div class="pt-ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="6" /><path d="m20 20-4.5-4.5" /></svg></div>
+					<h3>Full-text search</h3>
+					<p>A trigram index over titles and content, with type-aware results for pages, PDFs, images and whiteboards.</p>
+				</div>
+			</div>
+		</div>
+	</section>
+
+	<section class="pt-section pt-band">
+		<div class="pt-wrap pt-split">
+			<div>
+				<div class="pt-eyebrow">Math &amp; equations</div>
+				<h2>Edit a fraction, not a string of LaTeX.</h2>
+				<p>Write <code>$…$</code> inline or <code>$$…$$</code> as a display block. Click into a formula and the caret moves through its structure: into a numerator, under a root, between matrix cells.</p>
+				<ul class="pt-checks">
+					<li><code>\command</code> autocomplete for about 100 commands</li>
+					<li>A symbol palette of structures, Greek letters and operators</li>
+					<li>Copy or export any formula to PNG or SVG</li>
+				</ul>
+				<div class="pt-actions">
+					<a class="pt-btn" href="/zorite/usage/math/">Math guide</a>
+					<a class="pt-btn" href="/zorite/reference/crates/ratex-gpui/">The ratex-gpui crate</a>
+				</div>
+			</div>
+			<div class="pt-shot">
+				<img src="/zorite/screenshots/zorite-math-dark.png" alt="Zorite editing a formula in its 2-D structural math editor, with the symbol palette open" width="2624" height="1826" loading="lazy" />
+			</div>
+		</div>
+	</section>
+
+	<section class="pt-section">
+		<div class="pt-wrap">
+			<div class="pt-head">
+				<div>
+					<div class="pt-eyebrow">Screenshots</div>
+					<h2>One app for the day's writing.</h2>
+					<p>Journal, whiteboards, PDFs and search, each with light and dark themes.</p>
+				</div>
+				<a class="pt-link" href="/zorite/usage/journal/">Tour the journal →</a>
+			</div>
+			<div class="pt-gallery">
+				{shots.map(([file, caption, alt]) => (
+					<figure><img src={`/zorite/screenshots/${file}.png`} alt={alt} loading="lazy" /><figcaption>{caption}</figcaption></figure>
+				))}
+			</div>
+		</div>
+	</section>
+
+	<section id="install" class="pt-section pt-band">
+		<div class="pt-wrap pt-split">
+			<div>
+				<div class="pt-eyebrow">Install</div>
+				<h2>Stable or alpha, side by side.</h2>
+				<p>
+					Package managers keep Zorite updated and get you past the first-launch Gatekeeper and SmartScreen warnings. The
+					alpha channel has its own Homebrew cask and Scoop manifest.
+				</p>
+				<div class="pt-channels">
+					<div class="pt-channel"><h3>Stable <span class="pt-ver">{v}</span></h3><span>Homebrew · Scoop · winget · Nix · Linux packages</span></div>
+					<div class="pt-channel"><h3>Alpha <span class="pt-ver">pre-release</span></h3><span><code>zorite@alpha</code> · <code>zorite-prerelease</code></span></div>
+				</div>
+			</div>
+			<InstallTabs
+				id="zorite"
+				panels={[
+					{ os: 'mac', cmds: ['brew tap packetThrower/tap', 'brew trust packetThrower/tap', 'brew install --cask zorite'], note: 'Or download the <code>.dmg</code> for Apple silicon or Intel from the release page.' },
+					{
+						os: 'win',
+						cmds: ['winget install packetThrower.Zorite', 'scoop bucket add packetThrower https://github.com/packetThrower/scoop-bucket', 'scoop install zorite'],
+						note: 'MSI and setup <code>.exe</code> for x64 and arm64 on the release page.',
+					},
+					{
+						os: 'linux',
+						cmds: [`sudo apt install ./zorite_${v}_amd64.deb`, `sudo dnf install ./Zorite-${v}-1.x86_64.rpm`, 'nix run github:packetThrower/zorite'],
+						note: 'AppImage and Arch <code>.pkg.tar.zst</code> too, for x86_64 and aarch64. Needs Ubuntu 22.04, Debian 12 or Fedora 38, and a Vulkan-capable GPU.',
+					},
+				]}
+			>
+				<p class="pt-note" style="margin-top:14px">
+					<a href="https://github.com/packetThrower/zorite/releases/latest">Release downloads</a> ·
+					<a href="/zorite/install/">Full install guide, checksums and building from source →</a>
+				</p>
+			</InstallTabs>
+		</div>
+	</section>
+
+	<section class="pt-section">
+		<div class="pt-wrap">
+			<div class="pt-head"><div><div class="pt-eyebrow">Docs</div><h2>Start here</h2></div><a class="pt-link" href="/zorite/install/">All docs →</a></div>
+			<div class="pt-cards">
+				<a class="pt-lcard" href="/zorite/install/"><div class="pt-eyebrow">Get started</div><h3>Install</h3><p>Homebrew, winget, Scoop, Nix and Linux packages, stable and pre-release.</p></a>
+				<a class="pt-lcard" href="/zorite/usage/journal/"><div class="pt-eyebrow">Guide</div><h3>Journal &amp; pages</h3><p>Click-to-edit Markdown, wiki-links, backlinks, block references and templates.</p></a>
+				<a class="pt-lcard" href="/zorite/usage/pdf/"><div class="pt-eyebrow">Guide</div><h3>PDF &amp; images</h3><p>The PDF viewer, highlight markup with note↔PDF jump links, and inline images.</p></a>
+				<a class="pt-lcard" href="/zorite/usage/import/"><div class="pt-eyebrow">Guide</div><h3>Import &amp; export</h3><p>Bring in an Obsidian vault or a Logseq graph; export back to plain Markdown.</p></a>
+				<a class="pt-lcard" href="/zorite/usage/security/"><div class="pt-eyebrow">Guide</div><h3>Password &amp; encryption</h3><p>Encrypt the whole database, with an unlock screen and idle auto-lock.</p></a>
+				<a class="pt-lcard" href="/zorite/customize/themes/"><div class="pt-eyebrow">Customize</div><h3>Themes</h3><p>Built-in light and dark themes, Auto mode, and custom <code>.json</code> themes.</p></a>
+			</div>
+		</div>
+	</section>
+</Layout>
