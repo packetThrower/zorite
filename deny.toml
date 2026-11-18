@@ -20,6 +20,7 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained as a standalone crate (folded into zbus). Linux-only, transitive via gpui-pre-linux -> accesskit_unix -> atspi/zbus. Upstream; revisit at each gpui pull." },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained as a standalone crate (folded into zbus). Same Linux-only gpui-pre-linux -> atspi/zbus chain as RUSTSEC-2026-0370." },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained as a standalone crate (folded into zbus). Same Linux-only gpui-pre-linux -> atspi/zbus chain as RUSTSEC-2026-0370." },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained (no patched version; jiff and time are the suggested successors). Transitive via gpui-pre, gpui-pre-scheduler, gpui-base and gpui-component (GPUI Kit), plus oxidize-pdf. Clears when upstream moves off chrono; revisit at each gpui pull." },
 ]
 
 [licenses]
