@@ -15,12 +15,8 @@ export default defineConfig({
 			title: 'Zorite',
 			description:
 				'A local-first, Logseq-style daily journal for the desktop — with a Word-like typing experience. Linked Markdown notes, embedded PDFs, freeform whiteboards, and full-text search, all in a local SQLite database.',
-			logo: {
-				src: './src/assets/icon.svg',
-				replacesTitle: false,
-			},
 			favicon: '/favicon.svg',
-			customCss: ['./src/styles/theme.css'],
+			customCss: ['@packetthrower/site-theme/styles/starlight.css'],
 
 			// Site-wide head additions for discoverability: the Open
 			// Graph / Twitter image. Without this, link-preview
@@ -57,27 +53,25 @@ export default defineConfig({
 				},
 			],
 			components: {
-				Hero: './src/components/Hero.astro',
-				// Wraps Starlight's default SocialIcons to add a "Docs"
-				// quick-access pill linking to /install/ — the most
-				// common entry point for visitors landing on a deep
-				// page who want to start over.
-				SocialIcons: './src/components/SocialIcons.astro',
+				// Shared packetThrower header: global bar (Apps menu, search,
+				// theme, GitHub) + Zorite's app bar. The landing page at
+				// /zorite/ is src/pages/index.astro, outside Starlight.
+				Header: '@packetthrower/site-theme/components/StarlightHeader.astro',
 			},
-			social: [
-				{
-					icon: 'github',
-					label: 'GitHub',
-					href: 'https://github.com/packetThrower/zorite',
-				},
-			],
 			editLink: {
 				baseUrl: 'https://github.com/packetThrower/zorite/edit/main/docs/',
 			},
 			sidebar: [
-				{ label: 'Install', slug: 'install' },
+				// Same groups, in the same order, on every packetThrower docs site.
 				{
-					label: 'Usage',
+					label: 'Get started',
+					items: [
+						{ label: 'Install', slug: 'install' },
+						{ label: 'Requirements', slug: 'reference/requirements' },
+					],
+				},
+				{
+					label: 'Guides',
 					items: [
 						{ label: 'Journal & pages', slug: 'usage/journal' },
 						{ label: 'All pages & the graph', slug: 'usage/navigate' },
@@ -102,7 +96,6 @@ export default defineConfig({
 				{
 					label: 'Reference',
 					items: [
-						{ label: 'Requirements', slug: 'reference/requirements' },
 						{ label: 'Bundled icons', slug: 'reference/icons' },
 						{
 							label: 'Crates',
@@ -160,7 +153,17 @@ export default defineConfig({
 						},
 					],
 				},
-				{ label: 'Changelog', slug: 'changelog' },
+				{
+					label: 'Project',
+					items: [
+						{ label: 'Changelog', slug: 'changelog' },
+						{
+							label: 'Issues',
+							link: 'https://github.com/packetThrower/zorite/issues',
+							attrs: { target: '_blank', rel: 'noopener' },
+						},
+					],
+				},
 			],
 			lastUpdated: true,
 		}),
