@@ -76,13 +76,20 @@ impl Skin {
         let p = &mut skin.dark;
         // Content surfaces nest (shell > pane > page), so alphas compound: the
         // shell carries the tint and the content layers stay clear.
-        p.bg_window.a = 0.72;
+        // Over a white window behind, a lighter shell reads mid-gray and the
+        // dim text and hover layers below wash out.
+        p.bg_window.a = 0.80;
         p.bg_sidebar.a = 0.20;
         p.bg_content.a = 0.0;
-        // The dimmer text tiers (quotes, placeholders) fade over a white
-        // window behind; lift them.
+        // The dimmer text tiers (quotes, placeholders, disabled filters) fade
+        // over a white window behind; lift them.
         p.text_secondary.a = 0.72;
-        p.text_tertiary.a = 0.55;
+        p.text_tertiary.a = 0.65;
+        // The white hover / chip layers need about twice the stock alpha to
+        // show over the gray glass.
+        p.hover.a = 0.12;
+        p.glass.a = 0.10;
+        p.glass_strong.a = 0.16;
         // Opaque borders, as on Sidebar Glass: a translucent line's weight
         // shifts with whatever the blur shows behind it.
         p.border_subtle = crate::theme::from_rgb(0x3A3A3C, 1.0);

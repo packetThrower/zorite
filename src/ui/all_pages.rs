@@ -523,7 +523,7 @@ fn chip(
         el.text_color(theme::text_secondary())
             .hover(|s| s.bg(theme::hover()))
     } else {
-        el.text_color(theme::text_tertiary()).opacity(0.4)
+        el.text_color(theme::text_tertiary()).opacity(0.6)
     };
     el.on_click(on_click).child(label)
 }
