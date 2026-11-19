@@ -24,6 +24,8 @@ Rust + [GPUI](https://www.gpui.rs) + gpui-component + SQLite. The repo is the ap
   - `ratex-gpui` — LaTeX math renderer + structural editor (RaTeX engine).
   - `os-cursors` — custom mouse cursors (no gpui fork; Linux XCursor / macOS / Windows).
   - `os-spellcheck` — native OS spell-check (no deps; macOS/Windows, Linux no-op).
+- `src/ui/graph/` — the graph view: a shared core (`mod.rs`) and one file per
+  style. New styles implement `GraphStyle`; `style.rs` says how to add one.
 - `docs/` — Astro Starlight docs site (auto-deploys on push to `main`).
 - `vendor/gpui-pre-wgpu` — gpui's Linux text system, vendored via `[patch.crates-io]`
   for one upstream bug (combining marks drawn at the pen position, #108). Not ours:

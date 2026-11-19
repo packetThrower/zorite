@@ -18,6 +18,10 @@ log: <https://github.com/packetThrower/zorite/releases>.
 - **Journal days in All pages.** A new **Journal** chip lists every day you
   wrote something, newest first, with its first line as a preview. Year and
   month chips narrow it down (#186).
+- **Graph styles.** The graph panel switches between five looks: Classic (the
+  graph as it was), Nebula, Islands, Focus and Timeline. Pages are grouped into
+  topics from their links, nodes glide between layouts, and your pick is
+  remembered. New styles are one file each; see `src/ui/graph/style.rs`.
 
 ### Fixed
 

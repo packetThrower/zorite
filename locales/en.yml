@@ -525,6 +525,16 @@ graph:
   match: match
   matches: matches
   reset: "Reset graph"
+  style_classic: Classic
+  style_nebula: Nebula
+  style_islands: Islands
+  style_focus: Focus
+  style_timeline: Timeline
+  hint_focus: "Click a page to center it · click the center to open it · drag to pan"
+  hint_timeline: "Pages sit at the day they were created · hover to trace links · drag to pan"
+  focus_legend: "Inner ring: %{linked} linked · outer ring: %{two} two links away"
+  unlinked: "Unlinked pages · %{count}"
+  lane_other: Other
 image:
   unresolved: "🖼 image (unresolved path)"
 journal:
