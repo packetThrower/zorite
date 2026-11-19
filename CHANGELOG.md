@@ -9,6 +9,12 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pressing Enter in whiteboard text** adds one line break, not two. Thanks to
+  eiei114, whose fork in [nottio](https://github.com/eiei114/nottio) found and
+  fixed it.
+
 ## [0.14.0] - 2026-11-16
 
 Glass themes: Zorite can now blur whatever is behind its window, behind the

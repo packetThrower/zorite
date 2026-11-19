@@ -3140,7 +3140,7 @@ checksum = "4b0d73e1bc02eef886a5947f41b8512708792e9e5d3053d181843311a487f96f"
 
 [[package]]
 name = "gpui-whiteboard"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "gpui-pre",
  "log",

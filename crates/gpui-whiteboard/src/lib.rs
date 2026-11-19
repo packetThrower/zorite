@@ -4890,6 +4890,10 @@ impl WhiteboardView {
         if ks.is_ime_in_progress() {
             return;
         }
+        // Keys handled here (Enter, navigation, clipboard) must not also reach
+        // GPUI's native input path, which inserts their key_char a second time;
+        // printable text re-enables propagation below.
+        cx.stop_propagation();
         let cmd = ks.modifiers.platform || ks.modifiers.control;
         let shift = ks.modifiers.shift;
 
@@ -4993,13 +4997,7 @@ impl WhiteboardView {
                 // Inserting `key_char` here duplicates IME composition: pinyin is
                 // inserted by keydown, then the committed Chinese text is inserted
                 // by the input handler. Keep keydown for navigation/deletion only.
-                if ks
-                    .key_char
-                    .as_deref()
-                    .is_none_or(|c| c.chars().next().is_none_or(|ch| ch.is_control()))
-                {
-                    cx.propagate();
-                }
+                cx.propagate();
             }
         }
     }
@@ -8399,5 +8397,56 @@ mod tests {
             let back: Element = serde_json::from_str(&json).unwrap();
             assert_eq!(box_like(&back.kind), Some((1.0, 2.0, 30.0, 40.0, 0.5)));
         }
+    }
+}
+
+/// Key handling through GPUI's real dispatch and input path (`TestAppContext`).
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use gpui::{TestAppContext, VisualTestContext, point, px, rgba};
+
+    #[gpui::test]
+    fn enter_inserts_one_newline_and_typing_still_works(cx: &mut TestAppContext) {
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                cx.new(|cx| {
+                    WhiteboardView::new(
+                        Scene::default(),
+                        Rc::new(|| WhiteboardStyle {
+                            bg: rgba(0xF7F7F5FF).into(),
+                            grid: rgba(0xCFCFCBFF).into(),
+                            text: rgba(0x6B6B66FF).into(),
+                            ink: rgba(0x1F1F23FF).into(),
+                            panel: rgba(0xFFFFFFFF).into(),
+                            panel_strong: rgba(0xFFFFFFFF).into(),
+                            accent: rgba(0xE8EEFDFF).into(),
+                            selection: rgba(0x2E6BE6FF).into(),
+                            swatches: vec![],
+                        }),
+                        cx,
+                    )
+                })
+            })
+            .unwrap()
+        });
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let board = window.root(&mut cx).unwrap();
+        cx.run_until_parked();
+        board.update(&mut cx, |b, _| b.tool = Tool::Text);
+        let at = point(px(400.0), px(300.0));
+        cx.simulate_mouse_down(at, gpui::MouseButton::Left, Default::default());
+        cx.simulate_mouse_up(at, gpui::MouseButton::Left, Default::default());
+        cx.simulate_input("ab");
+        cx.simulate_keystrokes("enter");
+        cx.simulate_input("c");
+        cx.simulate_keystrokes("d");
+        board.read_with(&cx, |b, _| {
+            let content = b.scene.elements.iter().find_map(|e| match &e.kind {
+                ElementKind::Text(t) => Some(t.content.clone()),
+                _ => None,
+            });
+            assert_eq!(content.as_deref(), Some("ab\ncd"));
+        });
     }
 }
