@@ -6,23 +6,24 @@ already here — match the surrounding code, and prefer deleting over adding.
 ## What this is
 
 Zorite — a cross-platform (macOS / Windows / Linux) Markdown daily-journal desktop app.
-Rust + [GPUI](https://www.gpui.rs) + gpui-component + SQLite. The repo is a Cargo
-workspace (edition 2024): the app at the root, plus eight reusable crates under `crates/`
-(MIT, published on crates.io; the app is GPL-3.0-or-later).
+Rust + [GPUI](https://www.gpui.rs) + gpui-component + SQLite. The repo is the app
+(edition 2024, GPL-3.0-or-later). Its eight reusable crates live in their own repos,
+`packetThrower/<crate>` (MIT, published on crates.io), and the app takes them from crates.io.
 
 ## Layout
 
 - `src/` — the app: window, journal feed, editor wiring, SQLite (`db.rs`), import,
   settings, and the host-side renderers (`ui/`).
-- `crates/gpui-bidi` — bidirectional text for GPUI: index↔x over reordered glyphs,
-  logical-order row layout, and the row painter both renderers use (#66).
-- `crates/zorite-editor` — from-scratch text editor for GPUI (the WYSIWYG markdown surface).
-- `crates/zorite-markdown` — Markdown reading-view renderer.
-- `crates/gpui-pdf` — page-virtualized PDF viewer (pure-Rust `hayro`, no native libs).
-- `crates/gpui-whiteboard` — infinite pan/zoom whiteboard canvas.
-- `crates/ratex-gpui` — LaTeX math renderer + structural editor (RaTeX engine).
-- `crates/os-cursors` — custom mouse cursors (no gpui fork; Linux XCursor / macOS / Windows).
-- `crates/os-spellcheck` — native OS spell-check (no deps; macOS/Windows, Linux no-op).
+- The crates, each in its own repo (`github.com/packetThrower/<crate>`):
+  - `gpui-bidi` — bidirectional text for GPUI: index↔x over reordered glyphs,
+    logical-order row layout, and the row painter both renderers use (#66).
+  - `zorite-editor` — from-scratch text editor for GPUI (the WYSIWYG markdown surface).
+  - `zorite-markdown` — Markdown reading-view renderer.
+  - `gpui-pdf` — page-virtualized PDF viewer (pure-Rust `hayro`, no native libs).
+  - `gpui-whiteboard` — infinite pan/zoom whiteboard canvas.
+  - `ratex-gpui` — LaTeX math renderer + structural editor (RaTeX engine).
+  - `os-cursors` — custom mouse cursors (no gpui fork; Linux XCursor / macOS / Windows).
+  - `os-spellcheck` — native OS spell-check (no deps; macOS/Windows, Linux no-op).
 - `docs/` — Astro Starlight docs site (auto-deploys on push to `main`).
 - `vendor/gpui-pre-wgpu` — gpui's Linux text system, vendored via `[patch.crates-io]`
   for one upstream bug (combining marks drawn at the pen position, #108). Not ours:
@@ -35,9 +36,9 @@ comments, and commits — so a search for the view name finds its implementation
 
 | View | What it is | Owner | Switched by |
 |---|---|---|---|
-| **WYSIWYG** | Live-preview *editing*: markers dimmed/hidden, headings sized, images/tables/math render inline, reveal-on-caret | `crates/zorite-editor` with a `markdown_style` installed | `AppView.wysiwyg` on (the default; Settings → Markdown) |
-| **raw** | Plain-text *editing*: the bare markdown source, no styling | `crates/zorite-editor` with no `markdown_style` | `AppView.wysiwyg` off, while editing |
-| **reader** | *Read-only* rendered markdown (clickable links, checkboxes) | `crates/zorite-markdown` (`MarkdownView`) | `AppView.wysiwyg` off, when not editing |
+| **WYSIWYG** | Live-preview *editing*: markers dimmed/hidden, headings sized, images/tables/math render inline, reveal-on-caret | `zorite-editor` with a `markdown_style` installed | `AppView.wysiwyg` on (the default; Settings → Markdown) |
+| **raw** | Plain-text *editing*: the bare markdown source, no styling | `zorite-editor` with no `markdown_style` | `AppView.wysiwyg` off, while editing |
+| **reader** | *Read-only* rendered markdown (clickable links, checkboxes) | `zorite-markdown` (`MarkdownView`) | `AppView.wysiwyg` off, when not editing |
 
 The app picks the view in `day_section` (`src/ui/journal.rs`) and its
 `src/ui/page_view.rs` twin; hosts wire renderers/handlers to both crates from
@@ -89,7 +90,7 @@ change must stay cross-platform.
 - **Surgical diffs.** Every changed line should trace to the change you're making. Don't
   reformat or "improve" adjacent code. It's a `-D warnings` repo — leave no orphaned
   `dead_code`/`unused` behind your edit.
-- **Crates stay host-agnostic.** `crates/*` depend on `gpui` only — not `gpui-component`,
+- **Crates stay host-agnostic.** Our crates depend on `gpui` only — not `gpui-component`,
   not the app — and run on all three platforms with no native libraries. Sibling
   dependencies are sanctioned one at a time, and there are two:
   - `zorite-editor` → `zorite-markdown`, for the shared construct **recognition** in
@@ -150,11 +151,13 @@ cursors", not "NSCursor swizzling" — the mechanism belongs in a "How it works"
 no marketing. The docs site takes each crate's description from its Cargo.toml, so
 there is one place to edit.
 
-**Crate releases** are independent of app releases: bump `version` in
-`crates/<name>/Cargo.toml` (and the `version` requirement in any workspace crate that
-depends on it — path deps carry one so they publish), update the README's dependency
-snippet, then `cargo publish -p <name>` in dependency order (bidi → markdown → editor).
+**Crate releases** happen in each crate's own repo, independent of app releases: bump
+`version` in its `Cargo.toml` (and the requirement in any crate that depends on it),
+update the README's dependency snippet, `cargo publish` in dependency order (bidi →
+markdown → editor), then raise the requirement in this repo's `Cargo.toml`. To work on a
+crate against the app before it's published, add a local `[patch.crates-io]` entry
+(`<crate> = { path = "../<crate>" }`) and don't commit it.
 `gpui` is the crates.io `gpui-pre` family, spec `"0.3"` (caret) so consumers aren't
-pinned to one snapshot; `Cargo.lock` holds the exact version for this workspace. The
+pinned to one snapshot; each repo's `Cargo.lock` holds the exact version. The
 token needs the `publish-update` scope; crates.io limits new-crate publishes to five
 then one per ten minutes.

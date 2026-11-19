@@ -2529,6 +2529,8 @@ dependencies = [
 [[package]]
 name = "gpui-bidi"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12ca465817de1670c6c1a830c0f4a0a665434e4d02c30a7ffc6362e0194f9cc9"
 dependencies = [
  "gpui-pre",
  "unicode-bidi",
@@ -2652,6 +2654,8 @@ dependencies = [
 [[package]]
 name = "gpui-pdf"
 version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8939c88a7601f91ec8faca9503a6b9a38e12d2804351abef9b2fc6c4d5569b42"
 dependencies = [
  "gpui-pre",
  "hayro",
@@ -3141,6 +3145,8 @@ checksum = "4b0d73e1bc02eef886a5947f41b8512708792e9e5d3053d181843311a487f96f"
 [[package]]
 name = "gpui-whiteboard"
 version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c1cf1c93fa51877be551ddc6a36f20a5fdda8d65a9157dd0f8ea3642c2f71a8b"
 dependencies = [
  "gpui-pre",
  "log",
@@ -5333,6 +5339,8 @@ dependencies = [
 [[package]]
 name = "os-cursors"
 version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eed375b8cd76d398267d9c391c3dcd501114c8467f8eca51794c6457050eca08"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -5343,6 +5351,8 @@ dependencies = [
 [[package]]
 name = "os-spellcheck"
 version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0062960325585b13f5162fb61d236054ab5c300071d5e49dfcc37c98338b120c"
 dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -6121,9 +6131,10 @@ dependencies = [
 [[package]]
 name = "ratex-gpui"
 version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6c77adea70179bc9f7619dba84302f4da3870b142cf435d9c2c67f077c18757"
 dependencies = [
  "gpui-pre",
- "gpui-pre-platform",
  "image",
  "ratex-layout",
  "ratex-parser",
@@ -10330,11 +10341,11 @@ dependencies = [
 [[package]]
 name = "zorite-editor"
 version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "818b54943607783f935deb16954cd5781e8a51942501526b2fb9993e4a97e946"
 dependencies = [
  "gpui-bidi",
  "gpui-pre",
- "gpui-pre-platform",
- "os-spellcheck",
  "unicode-segmentation",
  "zorite-markdown",
 ]
@@ -10342,6 +10353,8 @@ dependencies = [
 [[package]]
 name = "zorite-markdown"
 version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59383128cff3700ff49464f1974e3c6969b5d5efe4cc2ee37bb41dcdb5feac44"
 dependencies = [
  "gpui-bidi",
  "gpui-pre",

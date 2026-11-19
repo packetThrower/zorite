@@ -21,16 +21,14 @@ fps = ["dep:gpui-fps"]
 # The vendored gpui crate (see [patch.crates-io] below) is upstream code, not
 # ours to lint or test: keep it out of `--workspace`.
 exclude = ["vendor"]
-members = ["crates/gpui-bidi", "crates/zorite-editor", "crates/zorite-markdown", "crates/gpui-pdf", "crates/gpui-whiteboard", "crates/os-cursors", "crates/os-spellcheck", "crates/ratex-gpui"]
 resolver = "2"
 
 [workspace.dependencies]
-# ONE shared gpui spec for the app and every crate, so Cargo unifies the
-# whole workspace on a single gpui graph. gpui ships on crates.io as the
-# `gpui-pre` family (weekly snapshots of zed; each version = one zed sha —
+# The app's gpui spec. Our crates (zorite-editor, gpui-pdf, …) use the same
+# caret, so Cargo unifies everything on a single gpui graph. gpui ships on
+# crates.io as the `gpui-pre` family (weekly snapshots of zed; each version = one zed sha —
 # 0.3.9 is zed@93d7456), consumed here under the crate name `gpui` so
-# `gpui::…` paths and `gpui::actions!` are unchanged. The spec is a caret so
-# the published crates don't force consumers onto one snapshot; for THIS
+# `gpui::…` paths and `gpui::actions!` are unchanged. For THIS
 # workspace the exact snapshot is held by Cargo.lock (0.3.9 = zed@93d7456) —
 # never `cargo update -p gpui-pre` casually: every gpui-pre release is a new
 # zed sha and can change the gpui API under us. To upgrade, take the gpui-kit
@@ -53,8 +51,8 @@ gpui_platform = { package = "gpui-pre-platform", version = "0.3", features = [
 ] }
 
 [dependencies]
-# Our own markdown renderer (clickable wiki-links), a workspace crate.
-zorite-markdown = { path = "crates/zorite-markdown" }
+# Our own markdown renderer (clickable wiki-links), packetThrower/zorite-markdown.
+zorite-markdown = "0.10.1"
 # PDF export (src/export.rs): `markdown` parses (same crate zorite-markdown uses),
 # oxidize-pdf writes — pure Rust; with default features off it adds only a
 # handful of small crates (cipher primitives) to the tree.
@@ -69,30 +67,30 @@ oxidize-pdf = { version = "5", default-features = false, features = ["compressio
 # (gpui pins its own; see Dependabot ignores). Revisit on gpui upgrades.
 resvg = { version = "0.45", default-features = false, features = ["text", "system-fonts"] }
 
-# Our structural math editor + LaTeX renderer (RaTeX port), a workspace crate.
+# Our structural math editor + LaTeX renderer (RaTeX port), packetThrower/ratex-gpui.
 # `editor` is on by default, but request it explicitly: zorite hosts the interactive
 # `MathEditor`, so don't silently break if that default ever changes.
-ratex-gpui = { path = "crates/ratex-gpui", features = ["editor"] }
+ratex-gpui = { version = "0.4.1", features = ["editor"] }
 
-# Our own page-virtualized PDF viewer (pure-Rust hayro), a workspace crate.
+# Our own page-virtualized PDF viewer (pure-Rust hayro), packetThrower/gpui-pdf.
 # `markup` adds the text-extraction layer + highlight rendering (Logseq-style);
 # `forms` normalizes AcroForm appearances so form values/checkboxes display.
-gpui-pdf = { path = "crates/gpui-pdf", features = ["markup", "search", "forms"] }
+gpui-pdf = { version = "0.8.0", features = ["markup", "search", "forms"] }
 
-# Our own infinite-canvas whiteboard, a host-agnostic workspace crate.
-gpui-whiteboard = { path = "crates/gpui-whiteboard" }
+# Our own infinite-canvas whiteboard, packetThrower/gpui-whiteboard.
+gpui-whiteboard = "0.5.3"
 
 # Our from-scratch text editor — replaces gpui-component's Input across the note
-# body editors (native spell-check + custom menus). A workspace crate.
-zorite-editor = { path = "crates/zorite-editor" }
+# body editors (native spell-check + custom menus). packetThrower/zorite-editor.
+zorite-editor = "0.11.4"
 
 # Native OS spell-check (NSSpellChecker / ISpellChecker), feeding the editor's
-# diagnostics; a no-op on Linux. A workspace crate.
-os-spellcheck = { path = "crates/os-spellcheck" }
+# diagnostics; a no-op on Linux. packetThrower/os-spellcheck.
+os-spellcheck = "0.2.1"
 
 # Custom mouse cursors from below gpui (NSCursor swizzle / WM_SETCURSOR hook /
-# XCURSOR_* env) — no toolkit fork. Packs are XCursor theme dirs. A workspace crate.
-os-cursors = { path = "crates/os-cursors" }
+# XCURSOR_* env) — no toolkit fork. Packs are XCursor theme dirs. packetThrower/os-cursors.
+os-cursors = "0.1.1"
 
 # Mermaid diagrams: a pure-Rust mermaid → SVG renderer (zed-industries — the
 # same crate Zed's markdown preview uses; no JS/Node). We rasterize its SVG to a

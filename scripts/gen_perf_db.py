@@ -106,7 +106,7 @@ MERMAIDS = [
 
 # --- whiteboard scene building --------------------------------------------
 #
-# Scenes are gpui_whiteboard::Scene JSON (see crates/gpui-whiteboard): a camera
+# Scenes are gpui_whiteboard::Scene JSON (see github.com/packetThrower/gpui-whiteboard): a camera
 # plus z-ordered elements. ElementKind is externally tagged snake_case, e.g.
 # {"rect": {x,y,w,h,width,rotation}}, {"arrow": {x1,y1,x2,y2,width}},
 # {"text": {x,y,content,size,rotation}}. Colors are packed 0xRRGGBBAA u32s;
