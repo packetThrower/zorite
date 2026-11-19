@@ -12,6 +12,13 @@
 [![gpui](https://img.shields.io/badge/gpui-from%20Zed-1F1F28?style=flat-square)](https://www.gpui.rs/)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPLv3%2B-blue?style=flat-square)](LICENSE)
 
+> [!NOTE]
+> **Zorite's crates have moved to their own repositories.** zorite-editor,
+> zorite-markdown, gpui-bidi, gpui-pdf, gpui-whiteboard, os-cursors, os-spellcheck
+> and ratex-gpui each live at `github.com/packetThrower/<crate>` now, with their full
+> history. Open issues and pull requests for a crate there; this repo is the app,
+> which uses them from crates.io. See [Crates](#crates).
+
 ## Minimum OS versions
 
 **macOS** (Apple Silicon and Intel)
@@ -197,7 +204,7 @@ line under a `!name` (until the next `!name`) is that template's body:
 Then type `/meeting` in any day or page to insert it. Placeholders expand on
 insert: `{{date}}`, `{{time}}`, `{{title}}` (the current page/day), and
 `{{cursor}}` (where the caret lands). Built-in Markdown commands live in
-[`zorite-markdown`](crates/zorite-markdown/README.md) as `SNIPPETS`.
+[`zorite-markdown`](https://github.com/packetThrower/zorite-markdown) as `SNIPPETS`.
 
 ## Themes
 
@@ -319,34 +326,21 @@ Your data lives at:
 database file), so you can run against a throwaway data set without touching your
 real notes.
 
-## Workspace layout
+## Crates
 
-```
-zorite/
-├── src/                       the app — journal feed, pages, search, slash menu, import, SQLite
-└── crates/
-    ├── zorite-editor/         a from-scratch WYSIWYG Markdown editor (live preview, tables, math hosting)
-    ├── zorite-markdown/       a reusable Markdown renderer for gpui (clickable links, Mermaid, math)
-    ├── gpui-bidi/             bidirectional text for gpui (RTL caret/selection/row layout)
-    ├── gpui-pdf/              a page-virtualized PDF viewer (pure-Rust hayro) with highlight markup
-    ├── gpui-whiteboard/       a host-agnostic infinite-canvas whiteboard
-    ├── os-cursors/            custom mouse cursors without forking the toolkit
-    ├── os-spellcheck/         native OS spell-checking (NSSpellChecker / ISpellChecker)
-    └── ratex-gpui/            a structural (MathQuill-style) math editor + LaTeX renderer (RaTeX)
-```
+Zorite is built on eight reusable crates. Each lives in its own repository, is
+host-agnostic and MIT-licensed, and is **published on crates.io**:
 
-Each crate is host-agnostic, MIT-licensed, and **published on crates.io**:
-
-| Crate | | |
-| --- | --- | --- |
-| `zorite-editor` | [crates.io](https://crates.io/crates/zorite-editor) | [docs.rs](https://docs.rs/zorite-editor) |
-| `zorite-markdown` | [crates.io](https://crates.io/crates/zorite-markdown) | [docs.rs](https://docs.rs/zorite-markdown) |
-| `gpui-bidi` | [crates.io](https://crates.io/crates/gpui-bidi) | [docs.rs](https://docs.rs/gpui-bidi) |
-| `gpui-pdf` | [crates.io](https://crates.io/crates/gpui-pdf) | [docs.rs](https://docs.rs/gpui-pdf) |
-| `gpui-whiteboard` | [crates.io](https://crates.io/crates/gpui-whiteboard) | [docs.rs](https://docs.rs/gpui-whiteboard) |
-| `os-cursors` | [crates.io](https://crates.io/crates/os-cursors) | [docs.rs](https://docs.rs/os-cursors) |
-| `os-spellcheck` | [crates.io](https://crates.io/crates/os-spellcheck) | [docs.rs](https://docs.rs/os-spellcheck) |
-| `ratex-gpui` | [crates.io](https://crates.io/crates/ratex-gpui) | [docs.rs](https://docs.rs/ratex-gpui) |
+| Crate | What it is | | | |
+| --- | --- | --- | --- | --- |
+| `zorite-editor` | a from-scratch WYSIWYG Markdown editor (live preview, tables, math hosting) | [repo](https://github.com/packetThrower/zorite-editor) | [crates.io](https://crates.io/crates/zorite-editor) | [docs.rs](https://docs.rs/zorite-editor) |
+| `zorite-markdown` | a reusable Markdown renderer for gpui (clickable links, Mermaid, math) | [repo](https://github.com/packetThrower/zorite-markdown) | [crates.io](https://crates.io/crates/zorite-markdown) | [docs.rs](https://docs.rs/zorite-markdown) |
+| `gpui-bidi` | bidirectional text for gpui (RTL caret/selection/row layout) | [repo](https://github.com/packetThrower/gpui-bidi) | [crates.io](https://crates.io/crates/gpui-bidi) | [docs.rs](https://docs.rs/gpui-bidi) |
+| `gpui-pdf` | a page-virtualized PDF viewer (pure-Rust hayro) with highlight markup | [repo](https://github.com/packetThrower/gpui-pdf) | [crates.io](https://crates.io/crates/gpui-pdf) | [docs.rs](https://docs.rs/gpui-pdf) |
+| `gpui-whiteboard` | a host-agnostic infinite-canvas whiteboard | [repo](https://github.com/packetThrower/gpui-whiteboard) | [crates.io](https://crates.io/crates/gpui-whiteboard) | [docs.rs](https://docs.rs/gpui-whiteboard) |
+| `os-cursors` | custom mouse cursors without forking the toolkit | [repo](https://github.com/packetThrower/os-cursors) | [crates.io](https://crates.io/crates/os-cursors) | [docs.rs](https://docs.rs/os-cursors) |
+| `os-spellcheck` | native OS spell-checking (NSSpellChecker / ISpellChecker) | [repo](https://github.com/packetThrower/os-spellcheck) | [crates.io](https://crates.io/crates/os-spellcheck) | [docs.rs](https://docs.rs/os-spellcheck) |
+| `ratex-gpui` | a structural (MathQuill-style) math editor + LaTeX renderer (RaTeX) | [repo](https://github.com/packetThrower/ratex-gpui) | [crates.io](https://crates.io/crates/ratex-gpui) | [docs.rs](https://docs.rs/ratex-gpui) |
 
 Each carries its own README and a complete `API.md`.
 
@@ -394,7 +388,7 @@ cost is independent of the total (it's capped to recently-viewed pages).
 derivative works must stay open under the same license. Commercial use is
 permitted but can't close the source.
 
-The reusable crates under [`crates/`](#workspace-layout) are licensed **MIT** so any
+The reusable crates (see [Crates](#crates)) are licensed **MIT** so any
 gpui application can use them.
 
 Third-party dependencies keep their own licenses (see

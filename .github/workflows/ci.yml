@@ -123,8 +123,7 @@ jobs:
       # surfaces in seconds rather than after an apt-get pass.
       #
       # `cargo fmt` is workspace-aware, so this one invocation covers
-      # the root crate and every `crates/*` member (zorite-markdown,
-      # gpui-pdf).
+      # the whole repo.
       - name: cargo fmt --check
         if: matrix.runner == 'ubuntu-latest'
         run: cargo fmt --check
@@ -176,12 +175,11 @@ jobs:
       # `cargo clippy` is a strict superset of `cargo check` — same
       # compile front-end + the lint pass on top, so a separate
       # `cargo check` would just compile twice for no extra signal.
-      # `--workspace` covers the root bin and the `crates/*` libs;
+      # `--workspace` covers the root bin (the crates live in their own repos);
       # `--all-targets` widens the lint pass to tests + examples.
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      # `--workspace` runs the root bin's in-module unit tests plus
-      # each `crates/*` library's tests (zorite-markdown, gpui-pdf).
+      # `--workspace` runs the root bin's in-module unit tests.
       - name: cargo test
         run: cargo test --workspace
