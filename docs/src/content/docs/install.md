@@ -4,10 +4,9 @@ description: 'Install Zorite via Homebrew, winget, Scoop, Nix, or a direct downl
 ---
 
 :::note
-Installer packages and package-manager entries land with the first **stable**
-release. Until then, grab a build from the
-[Releases](https://github.com/packetThrower/zorite/releases) page — every beta
-attaches `.dmg`, `.exe` / `.msi`, `.deb`, `.AppImage`, `.rpm`, and
+Every release on the
+[Releases](https://github.com/packetThrower/zorite/releases) page, stable or
+pre-release, attaches `.dmg`, `.exe` / `.msi`, `.deb`, `.AppImage`, `.rpm`, and
 `.pkg.tar.zst` artifacts plus `SHA256SUMS`.
 :::
 
@@ -82,8 +81,8 @@ Outside Nix, grab the matching artifact for your distro from the
 | Distro | Artifact | Install |
 |---|---|---|
 | Debian / Ubuntu | `.deb` | `sudo apt install ./zorite_<version>_amd64.deb` |
-| Fedora / RHEL | `.rpm` | `sudo dnf install ./zorite-<version>.x86_64.rpm` |
-| Arch | `.pkg.tar.zst` | `sudo pacman -U zorite-<version>-x86_64.pkg.tar.zst` |
+| Fedora / RHEL | `.rpm` | `sudo dnf install ./Zorite-<version>-1.x86_64.rpm` |
+| Arch | `.pkg.tar.zst` | `sudo pacman -U zorite-<version>-1-x86_64.pkg.tar.zst` |
 | Any glibc distro | `.AppImage` | `chmod +x` then run it |
 
 For ARM64 hosts use the matching `arm64` / `aarch64` artifact. Linux also needs
