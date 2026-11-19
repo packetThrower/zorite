@@ -154,7 +154,7 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                 .size_full()
                 .overflow_y_scroll()
                 .track_scroll(&app.feed_scroll)
-                .on_scroll_wheel(cx.listener(|this: &mut AppView, _ev, window, cx| {
+                .on_scroll(cx.listener(|this: &mut AppView, _ev, window, cx| {
                     this.maybe_extend_feed(window, cx);
                 }))
                 .child(

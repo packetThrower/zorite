@@ -13,7 +13,7 @@ use std::rc::Rc;
 use gpui::{
     Bounds, ClickEvent, Context, Corners, Entity, Hsla, InteractiveElement, IntoElement,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement, PathBuilder,
-    PinchEvent, Pixels, Point, ScrollDelta, ScrollWheelEvent, SharedString, Size,
+    PinchEvent, Pixels, Point, ScrollDelta, ScrollEvent, SharedString, Size,
     StatefulInteractiveElement, Styled, TextRun, canvas, div, fill, point, px, size,
 };
 use gpui_component::Sizable;
@@ -631,21 +631,19 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
                 }
             }),
         )
-        .on_scroll_wheel(
-            cx.listener(|this: &mut AppView, ev: &ScrollWheelEvent, _w, cx| {
-                let Some(g) = this.graph.as_mut() else { return };
-                let (dx, dy) = match ev.delta {
-                    ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
-                    ScrollDelta::Lines(p) => (p.x * LINE_PX, p.y * LINE_PX),
-                };
-                if ev.modifiers.platform || ev.modifiers.control {
-                    g.zoom_about(ev.position, (1.0 + dy * 0.0025).clamp(0.5, 2.0));
-                } else {
-                    g.pan = [g.pan[0] + dx, g.pan[1] + dy];
-                }
-                cx.notify();
-            }),
-        )
+        .on_scroll(cx.listener(|this: &mut AppView, ev: &ScrollEvent, _w, cx| {
+            let Some(g) = this.graph.as_mut() else { return };
+            let (dx, dy) = match ev.delta {
+                ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
+                ScrollDelta::Lines(p) => (p.x * LINE_PX, p.y * LINE_PX),
+            };
+            if ev.modifiers.platform || ev.modifiers.control {
+                g.zoom_about(ev.position, (1.0 + dy * 0.0025).clamp(0.5, 2.0));
+            } else {
+                g.pan = [g.pan[0] + dx, g.pan[1] + dy];
+            }
+            cx.notify();
+        }))
         .on_pinch(cx.listener(|this: &mut AppView, ev: &PinchEvent, _w, cx| {
             if let Some(g) = this.graph.as_mut() {
                 g.zoom_about(ev.position, 1.0 + ev.delta);

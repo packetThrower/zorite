@@ -117,20 +117,18 @@ impl Render for EmbedView {
             // embed can't consume the wheel itself (at its top/bottom, or no
             // overflow at all) hand the delta to the page — nested scrolling
             // that doesn't trap the pointer.
-            .on_scroll_wheel(
-                cx.listener(|this, ev: &gpui::ScrollWheelEvent, window, cx| {
-                    let delta = ev.delta.pixel_delta(window.line_height()).y;
-                    let off = this.scroll.offset().y;
-                    let max = this.scroll.max_offset().y;
-                    let at_top = off >= px(-1.0);
-                    let at_bottom = off <= -max + px(1.0);
-                    if (delta < px(0.0) && at_bottom) || (delta > px(0.0) && at_top) {
-                        let _ = this
-                            .app
-                            .update(cx, |app, cx| app.scroll_active_surface(delta, cx));
-                    }
-                }),
-            )
+            .on_scroll(cx.listener(|this, ev: &gpui::ScrollEvent, window, cx| {
+                let delta = ev.delta.pixel_delta(window.line_height()).y;
+                let off = this.scroll.offset().y;
+                let max = this.scroll.max_offset().y;
+                let at_top = off >= px(-1.0);
+                let at_bottom = off <= -max + px(1.0);
+                if (delta < px(0.0) && at_bottom) || (delta > px(0.0) && at_top) {
+                    let _ = this
+                        .app
+                        .update(cx, |app, cx| app.scroll_active_surface(delta, cx));
+                }
+            }))
             .child(
                 div()
                     .flex_shrink_0()

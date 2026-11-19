@@ -13,7 +13,9 @@
 //! `ToggleFavorite` have no keybinding — they're dispatched by right-click
 //! context menus (sidebar pages and tabs) and handled on `AppView`.
 
-use gpui::{Action, App, KeyBinding, Menu, MenuItem, SharedString, actions};
+use gpui::{
+    Action, App, KeyBinding, KeyBindingContextPredicate, Menu, MenuItem, SharedString, actions,
+};
 use rust_i18n::t;
 
 actions!(
@@ -98,6 +100,13 @@ const INPUT_CONTEXT: &str = "Input";
 /// Key context of our zorite-editor body editors (matches `zorite_editor`'s own).
 const EDITOR_CONTEXT: &str = "Editor";
 
+/// A `secondary-` chord (Cmd on macOS, Ctrl elsewhere). gpui resolves the
+/// alias against the host OS, so it needs `cx` — `KeyBinding::new` panics on it.
+fn sec<A: Action>(keys: &str, action: A, context: Option<&str>, cx: &App) -> KeyBinding {
+    let context = context.map(|c| KeyBindingContextPredicate::parse(c).unwrap().into());
+    KeyBinding::load(keys, Box::new(action), context, false, None, cx).unwrap()
+}
+
 pub fn bind_keys(cx: &mut App) {
     // Single-line gpui-component fields (title, alias, find bar, search, dialogs)
     // run in the "Input" context.
@@ -130,10 +139,10 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("tab", PropNextField, Some("PropertyEditor")),
         KeyBinding::new("shift-tab", PropPrevField, Some("PropertyEditor")),
-        KeyBinding::new("secondary-c", PropCopy, Some("PropertyEditor")),
-        KeyBinding::new("secondary-x", PropCut, Some("PropertyEditor")),
-        KeyBinding::new("secondary-v", PropPaste, Some("PropertyEditor")),
-        KeyBinding::new("secondary-a", PropSelectAll, Some("PropertyEditor")),
+        sec("secondary-c", PropCopy, Some("PropertyEditor"), cx),
+        sec("secondary-x", PropCut, Some("PropertyEditor"), cx),
+        sec("secondary-v", PropPaste, Some("PropertyEditor"), cx),
+        sec("secondary-a", PropSelectAll, Some("PropertyEditor"), cx),
     ]);
     // Paste-image: bind the platform's real paste chord — Cmd+V on macOS, Ctrl+V on
     // Windows/Linux. gpui treats `cmd-` and `ctrl-` as distinct chords, so a bare
@@ -157,27 +166,27 @@ pub fn bind_keys(cx: &mut App) {
     // so none collide with text input. Handlers: tab/settings actions on
     // `AppView`; `NewWindow` / `Quit` as global App actions (see `main`).
     cx.bind_keys([
-        KeyBinding::new("secondary-t", NewPage, None), // New Tab == new page
-        KeyBinding::new("secondary-n", NewWindow, None),
-        KeyBinding::new("secondary-w", CloseTab, None),
-        KeyBinding::new("secondary-p", ExportActivePdf, None),
-        KeyBinding::new("secondary-,", OpenSettings, None),
-        KeyBinding::new("secondary-shift-p", OpenCommandPalette, None),
+        sec("secondary-t", NewPage, None, cx), // New Tab == new page
+        sec("secondary-n", NewWindow, None, cx),
+        sec("secondary-w", CloseTab, None, cx),
+        sec("secondary-p", ExportActivePdf, None, cx),
+        sec("secondary-,", OpenSettings, None, cx),
+        sec("secondary-shift-p", OpenCommandPalette, None, cx),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         // Find-in-page (a Page tab's rendered text) vs the global note search.
         // PDFs keep their own ⌘F (handled in the viewer); FindInPage no-ops there.
-        KeyBinding::new("secondary-f", FindInPage, None),
-        KeyBinding::new("secondary-shift-f", GlobalSearch, None),
+        sec("secondary-f", FindInPage, None, cx),
+        sec("secondary-shift-f", GlobalSearch, None, cx),
         // Fit over-wide images back into the page / journal view.
-        KeyBinding::new("secondary-shift-i", FitImages, None),
+        sec("secondary-shift-i", FitImages, None, cx),
     ]);
     // Quit: ⌘Q on macOS, Ctrl+Q on Linux (the GNOME/KDE convention). NOT on
     // Windows — Alt+F4 is the convention there and already quits (the OS
     // delivers it as a window close; gpui exits at zero windows), while a
     // Ctrl+Q binding mostly fires by accident.
     #[cfg(not(target_os = "windows"))]
-    cx.bind_keys([KeyBinding::new("secondary-q", Quit, None)]);
+    cx.bind_keys([sec("secondary-q", Quit, None, cx)]);
 }
 
 /// Install the application menu bar. Native on macOS; on Windows/Linux the menus
