@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "gpui-pdf"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "gpui-pre",
  "hayro",
@@ -10329,7 +10329,7 @@ dependencies = [
 
 [[package]]
 name = "zorite-editor"
-version = "0.11.3"
+version = "0.11.4"
 dependencies = [
  "gpui-bidi",
  "gpui-pre",
