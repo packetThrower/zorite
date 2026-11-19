@@ -540,15 +540,32 @@ impl AppView {
         let Some((id, title)) = self.context_page.take() else {
             return;
         };
+        // A journal day gets its own wording: it's a date, not a page title.
+        let is_day = self
+            .db
+            .get_page(id)
+            .ok()
+            .flatten()
+            .is_some_and(|p| p.is_journal);
+        let (heading, body) = if is_day {
+            (
+                t!("dialogs.delete_day_title"),
+                t!("dialogs.delete_day_body", date = title),
+            )
+        } else {
+            (
+                t!("dialogs.delete_page_title"),
+                t!("dialogs.delete_page_body", title = title),
+            )
+        };
+        let (heading, body) = (SharedString::from(heading), SharedString::from(body));
         let weak = cx.entity().downgrade();
         window.open_alert_dialog(cx, move |dialog, _window, _cx| {
             let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let weak = weak.clone();
             dialog
-                .title(t!("dialogs.delete_page_title"))
-                .description(SharedString::from(
-                    t!("dialogs.delete_page_body", title = title).into_owned(),
-                ))
+                .title(heading.clone())
+                .description(body.clone())
                 .button_props(
                     DialogButtonProps::default()
                         .ok_text(t!("common.delete"))
@@ -591,8 +608,24 @@ impl AppView {
     }
 
     fn delete_page(&mut self, id: i64, window: &mut Window, cx: &mut Context<Self>) {
+        // Read the day's date before the row goes, to drop its feed editor.
+        let day = self
+            .db
+            .get_page(id)
+            .ok()
+            .flatten()
+            .and_then(|p| p.journal_date);
         match self.db.delete_page(id) {
             Ok(true) => {
+                if let Some(date) = day {
+                    // The feed reloads the day from the DB (now empty), and
+                    // All pages drops it from its Journal list.
+                    self.day_editors.remove(&date);
+                    if self.editing_day.as_deref() == Some(date.as_str()) {
+                        self.editing_day = None;
+                    }
+                    self.refresh_all_pages_journal();
+                }
                 // Drop a deleted page from favorites so the dead id doesn't linger.
                 if let Some(pos) = self.favorites.iter().position(|&x| x == id) {
                     self.favorites.remove(pos);

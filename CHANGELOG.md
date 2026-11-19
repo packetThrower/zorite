@@ -9,8 +9,17 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Added
+
+- **Journal days in All pages.** A new **Journal** chip lists every day you
+  wrote something, newest first, with its first line as a preview. Year and
+  month chips narrow it down (#186).
+
 ### Fixed
 
+- **Journal days can be deleted.** Right-click a day in All pages or search results
+  → **Delete page** removes it after a confirmation. The menu offered it
+  before, but nothing happened (#186).
 - **Pressing Enter in whiteboard text** adds one line break, not two. Thanks to
   eiei114, whose fork in [nottio](https://github.com/eiei114/nottio) found and
   fixed it.
