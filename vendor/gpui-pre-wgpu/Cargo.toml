@@ -142,7 +142,7 @@ default-features = false
 version = "1.10"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies.wgpu]
-version = "29.0"
+version = "30.0"
 features = [
     "std",
     "parking_lot",
@@ -155,7 +155,7 @@ features = [
 default-features = false
 
 [target.'cfg(not(any(target_os = "linux", target_os = "freebsd")))'.dependencies.wgpu]
-version = "29.0"
+version = "30.0"
 default-features = true
 
 [target.'cfg(target_family = "wasm")'.dependencies.web-sys]
@@ -163,7 +163,7 @@ version = "0.3"
 features = ["HtmlCanvasElement"]
 
 [target.'cfg(target_family = "wasm")'.dependencies.wgpu]
-version = "29.0"
+version = "30.0"
 features = ["webgl"]
 default-features = false
 
