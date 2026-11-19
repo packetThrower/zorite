@@ -1,8 +1,9 @@
 //! The **All pages** browser (sidebar → list icon; its own tab): every named
 //! page, whiteboard, and stored PDF in one filterable index. An A–Z / 0–9 / `#` strip
 //! narrows by first character, kind chips narrow by type, and both compose.
-//! Journal days are deliberately excluded — the calendar is their browser,
-//! and thousands of day rows would swamp the list.
+//! Journal days stay out of "All types" (thousands of day rows would swamp
+//! it); the Journal chip lists them newest first, with year and month chips
+//! in place of the A–Z strip.
 
 use gpui::{
     ClickEvent, Context, InteractiveElement, IntoElement, ParentElement, SharedString,
@@ -24,6 +25,7 @@ pub enum KindFilter {
     Pages,
     Whiteboards,
     Pdfs,
+    Journal,
 }
 
 /// What a row is — and, for a PDF, where it lives.
@@ -32,6 +34,8 @@ enum Row {
     Page(i64),
     Board(i64),
     Pdf(std::path::PathBuf),
+    /// A journal day: its ISO date (the title) and a one-line preview.
+    Day(i64, String),
 }
 
 /// The letter bucket a title sorts under: its first alphanumeric-ish char
@@ -79,35 +83,12 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
     }
     rows.sort_by_key(|(t, ..)| t.to_lowercase());
 
-    // Which buckets exist (pre-letter-filter), so empty chips render dimmed.
-    let mut present = std::collections::HashSet::new();
-    for (t, ..) in &rows {
-        present.insert(bucket(t));
-    }
-    if let Some(l) = letter {
-        rows.retain(|(t, ..)| bucket(t) == l);
-    }
+    let strip = if kind == KindFilter::Journal {
+        journal_rows(app, &mut rows, cx)
+    } else {
+        letter_strip(letter, &mut rows, cx)
+    };
     let count = rows.len();
-
-    // The A–Z / 0–9 / # strip. "All" clears.
-    let mut strip = div().flex().flex_row().flex_wrap().gap(px(4.0)).child(chip(
-        t!("all_pages.letter_all").into_owned(),
-        letter.is_none(),
-        true,
-        cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
-            this.set_all_pages_letter(None, cx);
-        }),
-    ));
-    for c in ('A'..='Z').chain('0'..='9').chain(['#']) {
-        strip = strip.child(chip(
-            c,
-            letter == Some(c),
-            present.contains(&c),
-            cx.listener(move |this: &mut AppView, _: &ClickEvent, _w, cx| {
-                this.set_all_pages_letter(Some(c), cx);
-            }),
-        ));
-    }
 
     // Kind chips.
     let kinds = div()
@@ -144,6 +125,14 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             true,
             cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
                 this.set_all_pages_kind(KindFilter::Pdfs, cx);
+            }),
+        ))
+        .child(chip(
+            t!("all_pages.filter_journal").into_owned(),
+            kind == KindFilter::Journal,
+            true,
+            cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
+                this.set_all_pages_kind(KindFilter::Journal, cx);
             }),
         ));
 
@@ -183,10 +172,15 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
             Row::Page(_) => t!("all_pages.type_page").into_owned(),
             Row::Board(_) => t!("all_pages.type_whiteboard").into_owned(),
             Row::Pdf(_) => t!("all_pages.type_pdf").into_owned(),
+            Row::Day(..) => t!("all_pages.type_day").into_owned(),
         };
         let menu_target = match &row {
-            Row::Page(id) | Row::Board(id) => Some(*id),
+            Row::Page(id) | Row::Board(id) | Row::Day(id, _) => Some(*id),
             Row::Pdf(_) => None,
+        };
+        let preview = match &row {
+            Row::Day(_, p) => Some(p.clone()),
+            _ => None,
         };
         let menu_title: SharedString = title.clone().into();
         let row_el = div()
@@ -206,19 +200,41 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                     // their canvas); a PDF opens its viewer directly.
                     match &open_row {
                         Row::Pdf(path) => this.open_pdf(path.clone(), window, cx),
+                        Row::Day(..) => this.open_journal_day(&open_title, window, cx),
                         _ => this.open_page_title(&open_title, window, cx),
                     }
                 }),
             )
-            .child(
-                div()
+            .child(match preview {
+                // A day: its date, then the first line of what was written.
+                Some(p) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .gap(px(10.0))
+                    .text_size(px(14.0))
+                    .child(
+                        div()
+                            .flex_shrink_0()
+                            .text_color(theme::text_primary())
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(theme::text_tertiary())
+                            .child(p),
+                    ),
+                None => div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_size(px(14.0))
                     .text_color(theme::text_primary())
                     .child(title),
-            )
+            })
             .child(date_cell(created))
             .child(date_cell(updated))
             .child(
@@ -348,6 +364,131 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .flex_col()
                 .child(list),
         )
+}
+
+/// The A–Z / 0–9 / `#` strip ("All" clears) — and the letter filter it applies.
+fn letter_strip(
+    letter: Option<char>,
+    rows: &mut Vec<(String, Row, Option<String>, Option<String>)>,
+    cx: &mut Context<AppView>,
+) -> gpui::Div {
+    // Which buckets exist (pre-letter-filter), so empty chips render dimmed.
+    let present: std::collections::HashSet<char> = rows.iter().map(|(t, ..)| bucket(t)).collect();
+    if let Some(l) = letter {
+        rows.retain(|(t, ..)| bucket(t) == l);
+    }
+    let mut strip = div().flex().flex_row().flex_wrap().gap(px(4.0)).child(chip(
+        t!("all_pages.letter_all").into_owned(),
+        letter.is_none(),
+        true,
+        cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
+            this.set_all_pages_letter(None, cx);
+        }),
+    ));
+    for c in ('A'..='Z').chain('0'..='9').chain(['#']) {
+        strip = strip.child(chip(
+            c,
+            letter == Some(c),
+            present.contains(&c),
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, _w, cx| {
+                this.set_all_pages_letter(Some(c), cx);
+            }),
+        ));
+    }
+    strip
+}
+
+/// The Journal filter: days with content, newest first, narrowed by a year
+/// strip and (once a year is picked) a month strip. Fills `rows` and returns
+/// the strips.
+fn journal_rows(
+    app: &AppView,
+    rows: &mut Vec<(String, Row, Option<String>, Option<String>)>,
+    cx: &mut Context<AppView>,
+) -> gpui::Div {
+    let (year, month) = app.all_pages_period();
+    let local_date = |ts: &Option<String>| ts.as_deref().and_then(dates::db_timestamp_local_date);
+    // `journal_date` is ISO `YYYY-MM-DD`, so year and month are fixed slices.
+    let ym = |d: &str| -> (i32, u8) {
+        (
+            d.get(..4).and_then(|y| y.parse().ok()).unwrap_or(0),
+            d.get(5..7).and_then(|m| m.parse().ok()).unwrap_or(0),
+        )
+    };
+    let days = app.all_pages_journal();
+    let mut years: Vec<i32> = days
+        .iter()
+        .filter_map(|d| d.journal_date.as_deref())
+        .map(|d| ym(d).0)
+        .collect();
+    years.dedup(); // newest first already, so equal years are adjacent
+    let months: std::collections::HashSet<u8> = days
+        .iter()
+        .filter_map(|d| d.journal_date.as_deref())
+        .map(ym)
+        .filter(|(y, _)| Some(*y) == year)
+        .map(|(_, m)| m)
+        .collect();
+
+    rows.extend(days.iter().filter_map(|d| {
+        let date = d.journal_date.clone()?;
+        let (y, m) = ym(&date);
+        if year.is_some_and(|yr| yr != y) || month.is_some_and(|mo| mo != m) {
+            return None;
+        }
+        let preview = d
+            .content
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or_default()
+            .to_string();
+        Some((
+            date.clone(),
+            Row::Day(d.id, preview),
+            local_date(&d.created_at),
+            local_date(&d.updated_at),
+        ))
+    }));
+
+    let mut strip = div().flex().flex_col().gap(px(6.0));
+    let mut year_strip = div().flex().flex_row().flex_wrap().gap(px(4.0)).child(chip(
+        t!("all_pages.year_all").into_owned(),
+        year.is_none(),
+        true,
+        cx.listener(|this: &mut AppView, _: &ClickEvent, _w, cx| {
+            this.set_all_pages_year(None, cx);
+        }),
+    ));
+    for y in years {
+        year_strip = year_strip.child(chip(
+            y.to_string(),
+            year == Some(y),
+            true,
+            cx.listener(move |this: &mut AppView, _: &ClickEvent, _w, cx| {
+                this.set_all_pages_year(Some(y), cx);
+            }),
+        ));
+    }
+    strip = strip.child(year_strip);
+    if year.is_some() {
+        let mut month_strip = div().flex().flex_row().flex_wrap().gap(px(4.0));
+        for m in 1..=12u8 {
+            let Ok(name) = time::Month::try_from(m) else {
+                continue;
+            };
+            month_strip = month_strip.child(chip(
+                dates::month_name(name),
+                month == Some(m),
+                months.contains(&m),
+                cx.listener(move |this: &mut AppView, _: &ClickEvent, _w, cx| {
+                    this.set_all_pages_month(Some(m), cx);
+                }),
+            ));
+        }
+        strip = strip.child(month_strip);
+    }
+    strip
 }
 
 /// A fixed-width Created/Updated cell; an em dash when the date is unknown.

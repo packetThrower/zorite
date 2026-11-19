@@ -878,16 +878,14 @@ impl Db {
         Ok(())
     }
 
-    /// Delete a named page. The `is_journal = 0` guard makes deleting a
-    /// journal day impossible even if this is called with a journal id.
-    /// `page_links` rows that reference the page (in either direction) are
-    /// removed by the `ON DELETE CASCADE` foreign keys. Returns whether a
-    /// row was actually deleted.
+    /// Delete a page or a journal day (opening a deleted day later just
+    /// recreates it empty). `page_links` rows that reference the page (in
+    /// either direction) are removed by the `ON DELETE CASCADE` foreign keys.
+    /// Returns whether a row was actually deleted.
     pub fn delete_page(&self, id: i64) -> rusqlite::Result<bool> {
-        let n = self.conn.execute(
-            "DELETE FROM pages WHERE id = ?1 AND is_journal = 0",
-            params![id],
-        )?;
+        let n = self
+            .conn
+            .execute("DELETE FROM pages WHERE id = ?1", params![id])?;
         Ok(n > 0)
     }
 
@@ -1278,6 +1276,30 @@ impl Db {
                 content: String::new(),
                 created_at: None,
                 updated_at: None,
+            })
+        })?
+        .collect()
+    }
+
+    /// Journal days with content, newest first, for the All pages browser's
+    /// Journal filter. `content` holds only the first 300 characters (enough
+    /// for a one-line preview); days auto-created empty don't count, matching
+    /// the calendar's markers.
+    pub fn list_journal_days(&self) -> rusqlite::Result<Vec<Page>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, journal_date, substr(content, 1, 300), created_at, updated_at \
+             FROM pages WHERE is_journal = 1 AND journal_date IS NOT NULL \
+             AND trim(content) != '' ORDER BY journal_date DESC",
+        )?;
+        stmt.query_map([], |row| {
+            Ok(Page {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                is_journal: true,
+                journal_date: row.get(2)?,
+                content: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })?
         .collect()
@@ -2170,6 +2192,31 @@ mod tests {
         let p = db.get_or_create_page("Notes").unwrap();
         db.set_page_content(p.id, "hello zphirium world").unwrap();
         assert_eq!(hits("zphirium"), 1, "a normal page should be searchable");
+    }
+
+    #[test]
+    fn journal_days_list_and_delete() {
+        let db = Db::open_in_memory().unwrap();
+        let older = db.get_or_create_journal("2026-10-30").unwrap();
+        db.set_page_content(older.id, "boiler service").unwrap();
+        let newer = db.get_or_create_journal("2026-11-02").unwrap();
+        db.set_page_content(newer.id, "met the plumber").unwrap();
+        db.get_or_create_journal("2026-11-03").unwrap(); // auto-created empty
+
+        // Days with content only, newest first.
+        let days = db.list_journal_days().unwrap();
+        let dates: Vec<_> = days
+            .iter()
+            .map(|d| d.journal_date.as_deref().unwrap())
+            .collect();
+        assert_eq!(dates, ["2026-11-02", "2026-10-30"]);
+        assert_eq!(days[0].content, "met the plumber");
+
+        // A day deletes like a page, and leaves search.
+        assert!(db.delete_page(newer.id).unwrap());
+        assert!(db.get_journal_by_date("2026-11-02").unwrap().is_none());
+        assert!(db.search_rows("plumber", 10).unwrap().is_empty());
+        assert_eq!(db.list_journal_days().unwrap().len(), 1);
     }
 
     #[test]
