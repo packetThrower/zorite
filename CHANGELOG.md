@@ -11,6 +11,10 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Added
 
+- **Accent color.** Settings → Appearance → **Accent color** recolors the
+  dates, section labels, links and selections with one of eight swatches or
+  any color from a picker, in any theme. **Default** goes back to the theme's
+  own color.
 - **Journal days in All pages.** A new **Journal** chip lists every day you
   wrote something, newest first, with its first line as a preview. Year and
   month chips narrow it down (#186).

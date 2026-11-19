@@ -20,6 +20,14 @@ Open **Settings** (the ⚙ in the title bar) to choose a theme and set the mode:
 
 A quick light/dark toggle also lives in the title bar for switching on the fly.
 
+## Accent color
+
+**Settings → Appearance → Accent color** recolors the theme's accent: the
+journal dates, section labels like **Favorites**, links, selections and
+buttons. Pick one of eight swatches (Blue, Purple, Pink, Red, Orange, Green,
+Teal, Graphite), or the last one to choose any color with a picker; it applies
+to every theme. **Default** goes back to each theme's own accent.
+
 ## Other appearance settings
 
 The same **Appearance** tab holds the rest of the look: the **font** (any

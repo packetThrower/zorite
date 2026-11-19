@@ -116,6 +116,7 @@ settings:
     time_format: 时间格式
     app_theme: 应用主题
     appearance: 外观
+    accent: 强调色
     font: 字体
     text_size: 字号
     line_numbers: 行号
@@ -147,6 +148,7 @@ settings:
     time_format: "控制 /time 和 {{time}} 模板占位符的插入方式。"
     app_theme: "选择一个内置主题或您自己的主题。"
     appearance: "当前主题的浅色或深色变体。自动跟随您的系统。"
+    accent: "日期、标题、链接和选区的颜色。“默认”使用主题自带的颜色。"
     font: "应用程序和笔记使用的字体。默认跟随当前主题指定的字体（如果有）。添加 .ttf 或 .otf 文件以使用系统未安装的字体。"
     text_size: "编辑和阅读时笔记文字的大小。标题和行内公式会随之缩放。"
     line_numbers: "在页面和日志日期的编辑器旁显示带编号的行号槽——按逻辑源码行计数，换行文本只计一次。阅读视图保持简洁。"
@@ -184,6 +186,7 @@ settings:
     size_px_default: "%{size} px（默认）"
   btn:
     add_font: "添加字体文件…"
+    accent_default: 默认
     add_cursor: "添加光标主题…"
     reveal_cursors: "显示光标文件夹"
     reveal_themes: "显示主题文件夹"
@@ -207,6 +210,16 @@ settings:
     encrypt: 加密
     change: 修改
     decrypt: 解密
+  accent:
+    blue: 蓝色
+    purple: 紫色
+    pink: 粉色
+    red: 红色
+    orange: 橙色
+    green: 绿色
+    teal: 青色
+    graphite: 石墨色
+    custom: 自定义
   label:
     window_size_pos: "窗口大小和位置"
     open_tabs: "打开的标签页"
