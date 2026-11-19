@@ -47,13 +47,13 @@ Published on [crates.io](https://crates.io/crates/gpui-pdf):
 
 ```toml
 [dependencies]
-gpui-pdf = "0.6"
+gpui-pdf = "0.8"
 
 # Optional features:
 #   markup — text layer + quote-anchored highlights (adds only `kurbo`)
 #   search — find-in-PDF bar; implies markup
 #   forms  — AcroForm values/checkboxes display correctly (adds `lopdf`)
-gpui-pdf = { version = "0.6", features = ["search", "forms"] }
+gpui-pdf = { version = "0.8", features = ["search", "forms"] }
 ```
 > **gpui version:** the crate depends on GPUI as published on crates.io — the
 > `gpui-pre` family, consumed under the name `gpui` (`gpui = { package = "gpui-pre",
