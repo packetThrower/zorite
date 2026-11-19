@@ -526,6 +526,11 @@ pub struct AppView {
     all_pages_letter: Option<char>,
     all_pages_kind: crate::ui::all_pages::KindFilter,
     all_pages_pdfs: Vec<(String, PathBuf, Option<String>, Option<String>)>,
+    // The Journal filter: days with content (refreshed like the PDFs) and the
+    // year / month chips that narrow them.
+    all_pages_journal: Vec<Page>,
+    all_pages_year: Option<i32>,
+    all_pages_month: Option<u8>,
     /// The graph view's model (nodes + layout + camera), rebuilt on open.
     pub graph: Option<crate::ui::graph::GraphState>,
     /// The Properties page state (All pages → "Properties"); rebuilt on open.
@@ -877,6 +882,9 @@ impl AppView {
             all_pages_letter: None,
             all_pages_kind: Default::default(),
             all_pages_pdfs: Vec::new(),
+            all_pages_journal: Vec::new(),
+            all_pages_year: None,
+            all_pages_month: None,
             graph: None,
             props_page: None,
             game: None,
@@ -1924,6 +1932,7 @@ impl AppView {
             TabKind::AllPages => {
                 self.page_editor = None;
                 self.refresh_all_pages_pdfs();
+                self.refresh_all_pages_journal();
             }
             TabKind::Graph => {
                 self.page_editor = None;
@@ -3806,6 +3815,31 @@ impl AppView {
         &self.all_pages_pdfs
     }
 
+    pub fn all_pages_journal(&self) -> &[Page] {
+        &self.all_pages_journal
+    }
+
+    pub fn all_pages_period(&self) -> (Option<i32>, Option<u8>) {
+        (self.all_pages_year, self.all_pages_month)
+    }
+
+    /// Pick the Journal filter's year (clicking the active one clears it, and
+    /// any year change clears the month).
+    pub fn set_all_pages_year(&mut self, y: Option<i32>, cx: &mut Context<Self>) {
+        self.all_pages_year = if self.all_pages_year == y { None } else { y };
+        self.all_pages_month = None;
+        cx.notify();
+    }
+
+    pub fn set_all_pages_month(&mut self, m: Option<u8>, cx: &mut Context<Self>) {
+        self.all_pages_month = if self.all_pages_month == m { None } else { m };
+        cx.notify();
+    }
+
+    fn refresh_all_pages_journal(&mut self) {
+        self.all_pages_journal = self.db.list_journal_days().unwrap_or_default();
+    }
+
     /// List the managed `pdf/` store for the All-pages browser (name, path).
     fn refresh_all_pages_pdfs(&mut self) {
         let dir = crate::paths::pdf_dir();
@@ -3837,6 +3871,7 @@ impl AppView {
     /// Open (or focus) the "All pages" browser tab.
     pub fn open_all_pages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.refresh_all_pages_pdfs();
+        self.refresh_all_pages_journal();
         if let Some(ix) = self
             .tabs
             .iter()

@@ -374,6 +374,8 @@ dialogs:
   reveal_backup: "Reveal Backup"
   delete_page_title: "Delete page?"
   delete_page_body: "“%{title}” will be permanently deleted. This can't be undone."
+  delete_day_title: "Delete this day?"
+  delete_day_body: "Everything written on %{date} will be permanently deleted. This can't be undone."
   delete_page_failed: "Couldn’t delete the page"
   rename_page_title: "Rename page"
   title_collision: "A page named “%{name}” already exists."
@@ -487,6 +489,7 @@ all_pages:
   filter_pages: Pages
   filter_whiteboards: Whiteboards
   filter_pdfs: PDFs
+  filter_journal: Journal
   col_title: Title
   col_created: Created
   col_updated: Updated
@@ -494,6 +497,8 @@ all_pages:
   type_page: Page
   type_whiteboard: Whiteboard
   type_pdf: PDF
+  type_day: Day
+  year_all: "All years"
   empty: "Nothing matches this filter."
   shown: "%{count} shown"
   properties: Properties

@@ -374,6 +374,8 @@ dialogs:
   reveal_backup: "显示备份"
   delete_page_title: "删除页面？"
   delete_page_body: "“%{title}” 将被永久删除。此操作无法撤销。"
+  delete_day_title: "删除这一天？"
+  delete_day_body: "%{date} 的所有内容将被永久删除。此操作无法撤销。"
   delete_page_failed: "无法删除页面"
   rename_page_title: "重命名页面"
   title_collision: "已存在名为 “%{name}” 的页面。"
@@ -487,6 +489,7 @@ all_pages:
   filter_pages: 页面
   filter_whiteboards: 白板
   filter_pdfs: PDF
+  filter_journal: 日志
   col_title: 标题
   col_created: 创建时间
   col_updated: 修改时间
@@ -494,6 +497,8 @@ all_pages:
   type_page: 页面
   type_whiteboard: 白板
   type_pdf: PDF
+  type_day: 日志
+  year_all: "所有年份"
   empty: "没有符合此筛选的内容。"
   shown: "已显示 %{count} 项"
   properties: 属性

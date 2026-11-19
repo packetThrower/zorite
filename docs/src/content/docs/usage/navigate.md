@@ -16,6 +16,12 @@ whiteboard, and stored PDF in one index.
   matches dim, and clicking the active letter clears it.
 - **Kind chips** (All types / Pages / Whiteboards / PDFs) compose with the
   letter filter.
+- The **Journal** chip lists every day you wrote something, newest first, with
+  the first line of each day beside its date. A strip of **years** replaces
+  the letters; pick a year and a strip of **months** narrows it further.
+  Journal days stay out of **All types** so they don't bury your pages.
+- Right-click a day for the same menu as a page. **Delete page** removes the
+  whole day after a confirmation; opening that date again starts it empty.
 - Each row shows a **type badge** and its **created / updated** dates (file
   dates for PDFs), shown in your local time zone.
 - The filters and column headers stay **pinned** while the list scrolls.

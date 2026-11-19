@@ -374,6 +374,8 @@ dialogs:
   reveal_backup: "Показать резервную копию"
   delete_page_title: "Удалить страницу?"
   delete_page_body: "«%{title}» будет удалена безвозвратно. Это действие нельзя отменить."
+  delete_day_title: "Удалить этот день?"
+  delete_day_body: "Всё, что записано за %{date}, будет удалено безвозвратно. Это действие нельзя отменить."
   delete_page_failed: "Не удалось удалить страницу"
   rename_page_title: "Переименовать страницу"
   title_collision: "Страница с именем «%{name}» уже существует."
@@ -487,6 +489,7 @@ all_pages:
   filter_pages: Страницы
   filter_whiteboards: Доски
   filter_pdfs: PDF
+  filter_journal: Журнал
   col_title: Заголовок
   col_created: Создано
   col_updated: Обновлено
@@ -494,6 +497,8 @@ all_pages:
   type_page: Страница
   type_whiteboard: Доска
   type_pdf: PDF
+  type_day: День
+  year_all: "Все годы"
   empty: "Ничего не найдено."
   shown: "Показано: %{count}"
   properties: Свойства
