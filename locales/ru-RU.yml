@@ -219,6 +219,7 @@ settings:
     green: Зелёный
     teal: Бирюзовый
     graphite: Графитовый
+    custom: Свой цвет
   label:
     window_size_pos: "Размер и положение окна"
     open_tabs: "Открытые вкладки"

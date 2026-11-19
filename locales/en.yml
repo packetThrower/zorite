@@ -219,6 +219,7 @@ settings:
     green: Green
     teal: Teal
     graphite: Graphite
+    custom: Custom
   label:
     window_size_pos: "Window size and position"
     open_tabs: "Open tabs"

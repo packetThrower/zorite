@@ -12,8 +12,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
 ### Added
 
 - **Accent color.** Settings → Appearance → **Accent color** recolors the
-  dates, section labels, links and selections with one of eight swatches, in
-  any theme. **Default** goes back to the theme's own color.
+  dates, section labels, links and selections with one of eight swatches or
+  any color from a picker, in any theme. **Default** goes back to the theme's
+  own color.
 
 ### Fixed
 

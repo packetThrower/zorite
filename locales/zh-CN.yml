@@ -219,6 +219,7 @@ settings:
     green: 绿色
     teal: 青色
     graphite: 石墨色
+    custom: 自定义
   label:
     window_size_pos: "窗口大小和位置"
     open_tabs: "打开的标签页"

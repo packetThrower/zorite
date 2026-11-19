@@ -14,8 +14,9 @@ use gpui::{
     WeakEntity, Window, div, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    Sizable, TitleBar, WindowExt,
+    Icon, IconName, Sizable, TitleBar, WindowExt,
     button::{Button, ButtonVariants as _},
+    color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState},
     dialog::{DialogButtonProps, DialogFooter},
     input::{Input, InputState},
     setting::{SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage, Settings},
@@ -273,6 +274,8 @@ fn keywords_for(title_key: &str) -> &'static str {
 pub struct SettingsView {
     app: WeakEntity<AppView>,
     quality_slider: Entity<SliderState>,
+    /// The custom accent color (the picker after the preset swatches).
+    accent_picker: Entity<ColorPickerState>,
     /// Installed font families + cursor packs, scanned once (and again after an
     /// import) rather than on every frame the dropdowns are built.
     font_names: Vec<String>,
@@ -324,6 +327,32 @@ impl SettingsView {
             },
         ));
 
+        // Custom accent: starts on the saved accent when it isn't a preset, and
+        // a committed pick becomes the accent.
+        let custom_accent = theme::accent_override()
+            .filter(|hex| !theme::ACCENT_PRESETS.iter().any(|&(_, h)| h == *hex));
+        let accent_picker = cx.new(|cx| {
+            let state = ColorPickerState::new(window, cx);
+            match custom_accent {
+                Some(hex) => state.default_value(gpui::rgb(hex)),
+                None => state,
+            }
+        });
+        subs.push(cx.subscribe_in(
+            &accent_picker,
+            window,
+            |this: &mut SettingsView, _, ev: &ColorPickerEvent, _window, cx| {
+                if let ColorPickerEvent::Change(Some(c)) = ev {
+                    let c: gpui::Rgba = (*c).into();
+                    let ch = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+                    let hex = ch(c.r) << 16 | ch(c.g) << 8 | ch(c.b);
+                    with_main_window(&this.app, cx, move |a, window, cx| {
+                        a.set_accent(Some(hex), window, cx)
+                    });
+                }
+            },
+        ));
+
         let masked = |ph: &str, window: &mut Window, cx: &mut Context<Self>| {
             let ph = ph.to_string();
             cx.new(|cx| InputState::new(window, cx).masked(true).placeholder(ph))
@@ -339,6 +368,7 @@ impl SettingsView {
             cursor_reactive: crate::cursors::reactive_available(),
             app,
             quality_slider,
+            accent_picker,
             image_gc_result: None,
             cursor_status: None,
             sec_current,
@@ -1316,8 +1346,13 @@ impl SettingsView {
         // back to the theme's own accent.
         let accent_app = app.clone();
         let accent_weak = weak.clone();
-        let accent = custom(move |_window, _cx| {
+        let accent_picker = self.accent_picker.clone();
+        let accent = custom(move |_window, cx| {
             let current = theme::accent_override();
+            // No custom color yet: a palette icon instead of Kit's empty square.
+            let picked = accent_picker.read(cx).value().is_some();
+            let is_custom =
+                current.is_some_and(|hex| !theme::ACCENT_PRESETS.iter().any(|&(_, h)| h == hex));
             let swatches = theme::ACCENT_PRESETS.iter().map(|&(key, hex)| {
                 let app = accent_app.clone();
                 accent_swatch(key, hex, current == Some(hex), move |cx| {
@@ -1334,6 +1369,30 @@ impl SettingsView {
                 .items_center()
                 .gap(px(10.0))
                 .children(swatches)
+                // The custom color, ringed like a swatch when it's the accent.
+                .child(
+                    div()
+                        .p(px(2.0))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(if is_custom {
+                            theme::text_primary()
+                        } else {
+                            gpui::transparent_black()
+                        })
+                        .child(
+                            ColorPicker::new(&accent_picker)
+                                .accessibility_label(t!("settings.accent.custom"))
+                                .small()
+                                .when(!picked, |p| {
+                                    p.icon(
+                                        Icon::new(IconName::Palette)
+                                            .size(px(22.0))
+                                            .text_color(theme::text_secondary()),
+                                    )
+                                }),
+                        ),
+                )
                 .when(current.is_some(), |row| {
                     row.child(text_button(
                         "accent-default",

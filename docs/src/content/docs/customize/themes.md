@@ -25,8 +25,8 @@ A quick light/dark toggle also lives in the title bar for switching on the fly.
 **Settings → Appearance → Accent color** recolors the theme's accent: the
 journal dates, section labels like **Favorites**, links, selections and
 buttons. Pick one of eight swatches (Blue, Purple, Pink, Red, Orange, Green,
-Teal, Graphite); it applies to every theme. **Default** goes back to each
-theme's own accent.
+Teal, Graphite), or the last one to choose any color with a picker; it applies
+to every theme. **Default** goes back to each theme's own accent.
 
 ## Other appearance settings
 
