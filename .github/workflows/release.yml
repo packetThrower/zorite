@@ -117,7 +117,7 @@ jobs:
       # its debug-mode cache stays separate from these release-mode
       # artifacts.
       - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: release
           # Preserve the cache when a later step (build, cargo-
@@ -135,7 +135,7 @@ jobs:
         run: brew install pkg-config
 
       - name: Install cargo-packager
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-packager
 
@@ -266,12 +266,12 @@ jobs:
 
       # See the macOS job's note on `shared-key: release`.
       - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: release
 
       - name: Install cargo-packager
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-packager
 
@@ -285,7 +285,7 @@ jobs:
       # identifiers like `0.9.0-alpha.3` — NSIS has no such limit.
       - name: Install cargo-wix
         if: ${{ !contains(env.EFFECTIVE_VERSION, '-') }}
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-wix
 
@@ -439,7 +439,7 @@ jobs:
 
       # See the macOS job's note on `shared-key: release`.
       - name: Cache cargo registry + target
-        uses: Swatinem/rust-cache@c8037a86dde8214a8310e9f54a8fc61ab362aa31 # v2
+        uses: Swatinem/rust-cache@eedcf2fb1c22f010a0eb66b92f378c110977f266 # v2
         with:
           shared-key: release
 
@@ -465,7 +465,7 @@ jobs:
             libarchive-tools
 
       - name: Install cargo-packager
-        uses: taiki-e/install-action@3a3daafd3b7f23b8f65d9f5ba2db203fb59b79e2 # v2.90.2
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-packager
 
