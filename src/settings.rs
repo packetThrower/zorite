@@ -1312,6 +1312,43 @@ impl SettingsView {
             weak,
         );
 
+        // Accent color: preset swatches (etch341's set) + Default, which goes
+        // back to the theme's own accent.
+        let accent_app = app.clone();
+        let accent_weak = weak.clone();
+        let accent = custom(move |_window, _cx| {
+            let current = theme::accent_override();
+            let swatches = theme::ACCENT_PRESETS.iter().map(|&(key, hex)| {
+                let app = accent_app.clone();
+                accent_swatch(key, hex, current == Some(hex), move |cx| {
+                    with_main_window(&app, cx, move |a, window, cx| {
+                        a.set_accent(Some(hex), window, cx)
+                    })
+                })
+            });
+            let reset_app = accent_app.clone();
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(10.0))
+                .children(swatches)
+                .when(current.is_some(), |row| {
+                    row.child(text_button(
+                        "accent-default",
+                        &t!("settings.btn.accent_default"),
+                        &accent_weak,
+                        move |_, _w, cx| {
+                            with_main_window(&reset_app, cx, |a, window, cx| {
+                                a.set_accent(None, window, cx)
+                            })
+                        },
+                    ))
+                })
+                .into_any_element()
+        });
+
         // Font: the family dropdown + an import button.
         let (font_opts, _) = font_options(app, &self.font_names, cx);
         let font_get_app = app.clone();
@@ -1517,6 +1554,11 @@ impl SettingsView {
                 "settings.section.appearance",
                 "settings.desc.appearance",
                 vec![appearance],
+            ),
+            card(
+                "settings.section.accent",
+                "settings.desc.accent",
+                vec![accent],
             ),
             card(
                 "settings.section.font",
@@ -2250,6 +2292,33 @@ fn with_main_window(
     let _ = handle.update(cx, move |_, window, cx| {
         a.update(cx, |a, cx| f(a, window, cx))
     });
+}
+
+/// One accent swatch: a filled circle, ringed in the text color when it's the
+/// active accent. The tooltip names the color.
+fn accent_swatch(
+    key: &'static str,
+    hex: u32,
+    selected: bool,
+    on_click: impl Fn(&mut App) + 'static,
+) -> impl IntoElement {
+    let name = SharedString::from(t!(format!("settings.accent.{key}")));
+    div()
+        .id(SharedString::from(format!("accent-{key}")))
+        .p(px(2.0))
+        .rounded_full()
+        .border_2()
+        .border_color(if selected {
+            theme::text_primary()
+        } else {
+            gpui::transparent_black()
+        })
+        .cursor_pointer()
+        .child(div().size(px(22.0)).rounded_full().bg(gpui::rgb(hex)))
+        .tooltip(move |window, cx| {
+            gpui_component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+        })
+        .on_click(move |_, _, cx| on_click(cx))
 }
 
 /// Muted small text under a control: an outcome, a note, a value readout.

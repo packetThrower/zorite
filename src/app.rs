@@ -982,6 +982,11 @@ impl AppView {
             .get_setting("theme_mode")
             .map(|s| theme::Mode::from_str(&s))
             .unwrap_or_default();
+        theme::set_accent_override(
+            this.db
+                .get_setting("theme_accent")
+                .and_then(|s| theme::parse_accent(&s)),
+        );
         // UI language: load the persisted choice (default "auto") and push the
         // resolved locale into rust-i18n's global before the first paint, so
         // every `t!` call site renders in the right language. Mirrors the
@@ -5647,6 +5652,16 @@ impl AppView {
         self.skin_id = id;
         self.apply_theme(window, cx);
         let _ = self.db.set_setting("theme_skin", &self.skin_id);
+    }
+
+    /// Set the accent color (`None` = the theme's own), apply it live, and
+    /// persist it as `#RRGGBB` ("" for the theme's).
+    pub fn set_accent(&mut self, hex: Option<u32>, window: &mut Window, cx: &mut Context<Self>) {
+        theme::set_accent_override(hex);
+        self.apply_theme(window, cx);
+        let stored = hex.map(|h| format!("#{h:06X}")).unwrap_or_default();
+        let _ = self.db.set_setting("theme_accent", &stored);
+        cx.notify();
     }
 
     /// The app-wide font family override ("" = the platform default).

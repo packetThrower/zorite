@@ -116,6 +116,7 @@ settings:
     time_format: Time format
     app_theme: App Theme
     appearance: Appearance
+    accent: "Accent color"
     font: Font
     text_size: Text size
     line_numbers: Line numbers
@@ -147,6 +148,7 @@ settings:
     time_format: "How /time and the {{time}} template placeholder are inserted."
     app_theme: "Pick a built-in theme or one of your own."
     appearance: "Light or dark variant of the active theme. Auto follows your system."
+    accent: "The color of dates, headings, links and selections. Default uses the theme's own."
     font: "The typeface for the app and your notes. Default follows the active theme's font, if it names one. Add a .ttf or .otf file to use a font that isn't installed on your system."
     text_size: "Size of note text when editing and reading. Headings and inline math scale with it."
     line_numbers: "Show a numbered gutter beside the editor on pages and journal days - logical source lines, wrapped text counts once. The reading view stays clean."
@@ -184,6 +186,7 @@ settings:
     size_px_default: "%{size} px (default)"
   btn:
     add_font: "Add font file…"
+    accent_default: Default
     add_cursor: "Add cursor theme…"
     reveal_cursors: "Reveal cursors folder"
     reveal_themes: "Reveal themes folder"
@@ -207,6 +210,15 @@ settings:
     encrypt: Encrypt
     change: Change
     decrypt: Decrypt
+  accent:
+    blue: Blue
+    purple: Purple
+    pink: Pink
+    red: Red
+    orange: Orange
+    green: Green
+    teal: Teal
+    graphite: Graphite
   label:
     window_size_pos: "Window size and position"
     open_tabs: "Open tabs"

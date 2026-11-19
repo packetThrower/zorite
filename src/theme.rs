@@ -126,6 +126,37 @@ pub fn dark_palette() -> Palette {
 thread_local! {
     /// The active palette. Dark until `apply` runs at startup.
     static CURRENT: RefCell<Palette> = RefCell::new(dark_palette());
+    /// The user's accent color (Settings → Appearance), replacing the theme's
+    /// own accent in every skin; `None` keeps the theme's.
+    static ACCENT_OVERRIDE: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+/// The accent swatches in Settings → Appearance: (i18n key under
+/// `settings.accent`, 0xRRGGBB). Blue is the default Zorite skin's accent.
+pub const ACCENT_PRESETS: &[(&str, u32)] = &[
+    ("blue", 0x0A84FF),
+    ("purple", 0xBF5AF2),
+    ("pink", 0xFF375F),
+    ("red", 0xFF453A),
+    ("orange", 0xFF9F0A),
+    ("green", 0x30D158),
+    ("teal", 0x40CBE0),
+    ("graphite", 0x8E8E93),
+];
+
+/// Set the accent override; it takes effect on the next [`apply`].
+pub fn set_accent_override(hex: Option<u32>) {
+    ACCENT_OVERRIDE.with(|a| a.set(hex));
+}
+
+pub fn accent_override() -> Option<u32> {
+    ACCENT_OVERRIDE.with(|a| a.get())
+}
+
+/// Parse a stored `#RRGGBB` accent; anything else (including "") is `None`.
+pub fn parse_accent(s: &str) -> Option<u32> {
+    let hex = s.strip_prefix('#')?;
+    (hex.len() == 6).then(|| u32::from_str_radix(hex, 16).ok())?
 }
 
 fn get() -> Palette {
@@ -451,7 +482,15 @@ impl Mode {
 
 /// Resolve `mode` (+ the OS appearance, for `Auto`) to dark/light, swap
 /// the active palette, push it onto gpui-component's `Theme`, and repaint.
-pub fn apply(palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App) {
+pub fn apply(mut palette: Palette, is_dark: bool, window: &mut Window, cx: &mut App) {
+    if let Some(hex) = accent_override() {
+        palette.accent = from_rgb(hex, 1.0);
+        (
+            palette.accent_hover,
+            palette.accent_active,
+            palette.accent_tint,
+        ) = accent_variants(palette.accent);
+    }
     CURRENT.with(|c| *c.borrow_mut() = palette);
     Theme::change(
         if is_dark {
@@ -647,4 +686,19 @@ fn apply_to_component_theme(p: &Palette, cx: &mut App) {
     // theme. Regenerate the tokens from the overlaid colors so both stores
     // agree. Keep this LAST.
     t.tokens = (**t).into();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_accent;
+
+    #[test]
+    fn parse_accent_reads_only_hash_rrggbb() {
+        assert_eq!(parse_accent("#0A84FF"), Some(0x0A84FF));
+        assert_eq!(parse_accent("#bf5af2"), Some(0xBF5AF2));
+        assert_eq!(parse_accent(""), None);
+        assert_eq!(parse_accent("0A84FF"), None);
+        assert_eq!(parse_accent("#0A84F"), None);
+        assert_eq!(parse_accent("#GGGGGG"), None);
+    }
 }
