@@ -1967,6 +1967,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "etagere"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ecb5c40d5683a270e077688f53a99eac51c1cb1ae5ba63b55590370cb3536bf"
+dependencies = [
+ "euclid",
+]
+
+[[package]]
 name = "euclid"
 version = "0.22.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2746,7 +2755,7 @@ dependencies = [
  "chrono",
  "derive_more",
  "embed-resource",
- "etagere",
+ "etagere 0.2.15",
  "futures",
  "futures-concurrency",
  "getrandom 0.3.4",
@@ -2818,7 +2827,7 @@ dependencies = [
  "core-graphics 0.24.0",
  "core-text",
  "dispatch2",
- "etagere",
+ "etagere 0.2.15",
  "futures",
  "gpui-pre",
  "gpui-pre-collections",
@@ -3180,7 +3189,7 @@ dependencies = [
  "anyhow",
  "bytemuck",
  "cosmic-text",
- "etagere",
+ "etagere 0.3.0",
  "gpui-pre",
  "gpui-pre-collections",
  "gpui-pre-util",
@@ -3208,7 +3217,7 @@ dependencies = [
  "accesskit_windows",
  "anyhow",
  "dunce",
- "etagere",
+ "etagere 0.2.15",
  "futures",
  "gpui-pre",
  "gpui-pre-collections",
