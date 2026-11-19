@@ -27,9 +27,9 @@ resolver = "2"
 # The app's gpui spec. Our crates (zorite-editor, gpui-pdf, …) use the same
 # caret, so Cargo unifies everything on a single gpui graph. gpui ships on
 # crates.io as the `gpui-pre` family (weekly snapshots of zed; each version = one zed sha —
-# 0.3.9 is zed@93d7456), consumed here under the crate name `gpui` so
+# 0.3.12 is zed@d2a4fb6), consumed here under the crate name `gpui` so
 # `gpui::…` paths and `gpui::actions!` are unchanged. For THIS
-# workspace the exact snapshot is held by Cargo.lock (0.3.9 = zed@93d7456) —
+# workspace the exact snapshot is held by Cargo.lock (0.3.12 = zed@d2a4fb6) —
 # never `cargo update -p gpui-pre` casually: every gpui-pre release is a new
 # zed sha and can change the gpui API under us. To upgrade, take the gpui-kit
 # release you want, read the `gpui-pre` version from ITS Cargo.lock, and move
@@ -75,14 +75,14 @@ ratex-gpui = { version = "0.4.1", features = ["editor"] }
 # Our own page-virtualized PDF viewer (pure-Rust hayro), packetThrower/gpui-pdf.
 # `markup` adds the text-extraction layer + highlight rendering (Logseq-style);
 # `forms` normalizes AcroForm appearances so form values/checkboxes display.
-gpui-pdf = { version = "0.8.0", features = ["markup", "search", "forms"] }
+gpui-pdf = { version = "0.8.2", features = ["markup", "search", "forms"] }
 
 # Our own infinite-canvas whiteboard, packetThrower/gpui-whiteboard.
-gpui-whiteboard = "0.5.3"
+gpui-whiteboard = "0.5.5"
 
 # Our from-scratch text editor — replaces gpui-component's Input across the note
 # body editors (native spell-check + custom menus). packetThrower/zorite-editor.
-zorite-editor = "0.11.4"
+zorite-editor = "0.11.6"
 
 # Native OS spell-check (NSSpellChecker / ISpellChecker), feeding the editor's
 # diagnostics; a no-op on Linux. packetThrower/os-spellcheck.
@@ -138,7 +138,7 @@ gpui_platform = { workspace = true }
 # Widget library — GPUI Kit's styled layer (github.com/longbridge/gpui-kit;
 # we depend on it directly rather than through the `gpui-kit` facade).
 # Exact-pinned so it only moves together with the gpui-pre pin above.
-gpui-component = { version = "=0.8.0", features = [
+gpui-component = { version = "=0.10.0", features = [
     # Code-block syntax highlighting (src/highlight.rs): each feature compiles
     # in one tree-sitter grammar (~0.5-1 MB binary each) — the top languages a
     # note is likely to quote. JSON ships in the base crate already.
@@ -169,11 +169,11 @@ gpui-component = { version = "=0.8.0", features = [
 # Lucide icon SVGs (was `gpui-component-assets`). Without `.with_assets(Assets)`
 # at startup, every gpui-component icon renders as an empty rect. Pin to the
 # same version so the icon set tracks the `IconName` enum in gpui-component.
-gpui-kit-assets = "=0.8.0"
+gpui-kit-assets = "=0.10.0"
 
 # The `fps` feature's HUD (GPUI Kit's, depends on gpui only). Same gpui-pre
 # family, so it unifies with the pin above; move it with the other three.
-gpui-fps = { version = "0.8", optional = true }
+gpui-fps = { version = "0.10", optional = true }
 
 # Parse `file://` URLs into filesystem paths correctly across platforms (Windows
 # `file:///C:/…`, percent-decoding). Already in the tree via gpui.

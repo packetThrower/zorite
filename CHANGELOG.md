@@ -28,6 +28,12 @@ log: <https://github.com/packetThrower/zorite/releases>.
   eiei114, whose fork in [nottio](https://github.com/eiei114/nottio) found and
   fixed it.
 
+### Changed
+
+- **Moved to GPUI Kit 0.10.0** (gpui-pre 0.3.12), in step with Baudrun,
+  PortFinder and etch341. The Linux fix for Arabic dots and other combining
+  marks (#108) is carried over again.
+
 ## [0.14.0] - 2026-11-16
 
 Glass themes: Zorite can now blur whatever is behind its window, behind the
