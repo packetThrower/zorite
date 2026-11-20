@@ -7,7 +7,7 @@ use gpui::{SharedString, px};
 use rust_i18n::t;
 
 use super::Graph;
-use super::style::{Align, Frame, GraphStyle, Layout, Painter, VAlign, force_layout, hash_unit};
+use super::style::{Frame, GraphStyle, Layout, Painter, force_layout, hash_unit};
 use crate::theme;
 
 pub struct Classic;
@@ -69,18 +69,19 @@ impl GraphStyle for Classic {
         }
         // Labels: all of them when zoomed in enough to read the map;
         // search matches and the hovered node always.
-        for (i, n) in g.nodes.iter().enumerate() {
+        for i in f.label_order(g) {
             if p.zoom() < 0.7 && !f.lit(i) {
                 continue;
             }
+            let n = &g.nodes[i];
             let c = p.at(f.pos[i]);
-            let at = gpui::point(c.x, c.y + p.len(n.radius, 3.0) + px(3.0));
+            let at = gpui::point(c.x, c.y - p.len(n.radius, 3.0) - px(3.0));
             let color = if f.lit(i) {
                 accent
             } else {
                 theme::text_secondary()
             };
-            p.text(&n.title, at, 11.0, color, Align::Center, VAlign::Top, false);
+            p.label(&n.title, at, color, false, f.lit(i));
         }
     }
 }

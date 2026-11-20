@@ -116,12 +116,15 @@ impl GraphStyle for Islands {
                 .iter()
                 .map(|q| q.y)
                 .fold(px(f32::MAX), |a, b| a.min(b));
-            let mid =
-                outline.iter().map(|q| f32::from(q.x)).sum::<f32>() / outline.len().max(1) as f32;
-            let label: SharedString = grp.label.to_uppercase().into();
+            let (l, r) = outline
+                .iter()
+                .fold((px(f32::MAX), px(f32::MIN)), |(l, r), q| {
+                    (l.min(q.x), r.max(q.x))
+                });
+            let label = p.fit(&grp.label.to_uppercase().into(), 11.0, true, r - l);
             p.text(
                 &label,
-                point(px(mid), top - px(4.0)),
+                point((l + r) / 2.0, top - px(4.0)),
                 11.0,
                 label_color(palette(gi), dark),
                 Align::Center,
@@ -181,7 +184,8 @@ impl GraphStyle for Islands {
                 p.ring(c, r, paper.opacity(a), color.opacity(a), px(1.6));
             }
         }
-        for (i, n) in g.nodes.iter().enumerate() {
+        for i in f.label_order(g) {
+            let n = &g.nodes[i];
             let show = if f.hover.is_some() || f.matches.is_some() {
                 n.group.is_some() && !f.dimmed(i)
             } else {
@@ -189,21 +193,13 @@ impl GraphStyle for Islands {
             };
             if show {
                 let c = v.at(f.pos[i]);
-                let at = point(c.x, c.y + v.len(n.radius * 0.7, 3.0) + px(4.0));
+                let at = point(c.x, c.y - v.len(n.radius * 0.7, 3.0) - px(4.0));
                 let color = if f.lit(i) {
                     theme::text_primary()
                 } else {
                     theme::text_secondary()
                 };
-                p.text(
-                    &n.title,
-                    at,
-                    11.0,
-                    color,
-                    Align::Center,
-                    VAlign::Top,
-                    f.lit(i),
-                );
+                p.label(&n.title, at, color, f.lit(i), f.lit(i));
             }
         }
         // The tray.

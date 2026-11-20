@@ -10,9 +10,7 @@ use rust_i18n::t;
 
 use super::Graph;
 use super::classic::arrange;
-use super::style::{
-    Align, Frame, GraphStyle, Layout, Painter, VAlign, hash_unit, is_dark, palette,
-};
+use super::style::{Frame, GraphStyle, Layout, Painter, hash_unit, is_dark, palette};
 use crate::theme;
 
 pub struct Nebula;
@@ -156,7 +154,8 @@ impl GraphStyle for Nebula {
         // Labels: hubs at rest, the neighborhood on hover, everything when
         // zoomed in.
         let top = g.nodes.iter().map(|n| n.degree).max().unwrap_or(0);
-        for (i, n) in g.nodes.iter().enumerate() {
+        for i in f.label_order(g) {
+            let n = &g.nodes[i];
             let show = if f.hover.is_some() || f.matches.is_some() {
                 !f.dimmed(i)
             } else {
@@ -166,21 +165,13 @@ impl GraphStyle for Nebula {
                 continue;
             }
             let c = v.at(f.pos[i]);
-            let at = point(c.x, c.y + v.len(n.radius * 0.62, 2.5) + px(5.0));
+            let at = point(c.x, c.y - v.len(n.radius * 0.62, 2.5) - px(5.0));
             let color = if f.lit(i) {
                 theme::text_primary()
             } else {
                 theme::text_secondary()
             };
-            p.text(
-                &n.title,
-                at,
-                11.0,
-                color,
-                Align::Center,
-                VAlign::Top,
-                f.lit(i),
-            );
+            p.label(&n.title, at, color, f.lit(i), f.lit(i));
         }
     }
 }
