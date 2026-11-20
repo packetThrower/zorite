@@ -1898,7 +1898,13 @@ impl SettingsView {
                 );
                 // A short preview of the release notes; the full notes are on the
                 // release page behind "View release".
-                let notes = a.notes.trim();
+                let notes = a
+                    .notes
+                    .lines()
+                    .filter_map(crate::ui::all_pages::plain_line)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let notes = notes.trim();
                 if !notes.is_empty() {
                     let mut preview: String = notes.chars().take(280).collect();
                     if notes.chars().count() > 280 {

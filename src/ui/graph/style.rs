@@ -480,10 +480,11 @@ impl<'a> Painter<'a> {
     }
 
     /// Text on a soft patch of the background, so dots and edges under it
-    /// don't show through, kept inside the canvas. Unless `always` (the
-    /// hovered or searched-for page, a lane's name), it's skipped when it
-    /// would overlap text already drawn, so draw the important ones first
-    /// (see [`Frame::label_order`]).
+    /// don't show through, nudged inside the canvas when it hangs over an
+    /// edge (one wholly off screen is skipped). Unless `always` (the hovered
+    /// or searched-for page), it's also skipped when it would overlap text
+    /// already drawn, so draw the important ones first (see
+    /// [`Frame::label_order`]). Returns whether it was drawn.
     #[allow(clippy::too_many_arguments)]
     pub fn label_at(
         &mut self,
@@ -495,8 +496,8 @@ impl<'a> Painter<'a> {
         valign: VAlign,
         bold: bool,
         always: bool,
-    ) {
-        self.place(text, at, size, color, align, valign, bold, Some(always));
+    ) -> bool {
+        self.place(text, at, size, color, align, valign, bold, Some(always))
     }
 
     /// `label`: `None` for plain text, else whether a label always shows.
@@ -511,7 +512,7 @@ impl<'a> Painter<'a> {
         valign: VAlign,
         bold: bool,
         label: Option<bool>,
-    ) {
+    ) -> bool {
         let shaped = self.shape(text, size, color, bold);
         let lh = px(size * 1.3);
         let mut x = match align {
@@ -525,13 +526,17 @@ impl<'a> Painter<'a> {
             VAlign::Bottom => at.y - lh,
         };
         if label.is_some() {
+            let whole = Bounds::new(point(x, y), gpui::size(shaped.width(), lh));
+            if !whole.intersects(&self.bounds) {
+                return false;
+            }
             let (lo, hi) = (self.bounds.origin, self.bounds.bottom_right());
             x = x.min(hi.x - shaped.width() - px(4.0)).max(lo.x + px(4.0));
             y = y.min(hi.y - lh).max(lo.y);
         }
         let b = Bounds::new(point(x, y), gpui::size(shaped.width(), lh));
         if label == Some(false) && self.placed.iter().any(|q| q.intersects(&b.dilate(px(3.0)))) {
-            return;
+            return false;
         }
         self.placed.push(b);
         if label.is_some() {
@@ -550,6 +555,7 @@ impl<'a> Painter<'a> {
             self.window,
             self.cx,
         );
+        true
     }
 
     /// `text` cut short with an ellipsis to fit `max` px.
