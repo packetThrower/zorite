@@ -62,8 +62,10 @@ nodes glide to their new places, and Zorite remembers your pick.
 - **Focus**: one page in the middle, the pages it links with on an inner ring
   and their links on an outer one. Click a page to bring it to the center;
   click the center to open it.
-- **Timeline**: pages sit at the day they were created, one lane per topic,
-  with links arcing between them. Unlinked pages run along the bottom.
+- **Timeline**: pages sit at the day they first appeared, one lane per topic,
+  with links arcing between them. That's the day a page was created, or the
+  first journal day that links to it if that's earlier, so imported pages
+  keep their history. Unlinked pages run along the bottom.
 
 Topics come from the links alone: pages that link to each other more than to
 the rest form one, named after its most-linked page. No tags or folders

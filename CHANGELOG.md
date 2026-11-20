@@ -22,7 +22,8 @@ log: <https://github.com/packetThrower/zorite/releases>.
   graph as it was), Nebula, Islands, Focus and Timeline. Pages are grouped into
   topics from their links, nodes glide between layouts, and your pick is
   remembered. New styles are one file each; see `src/ui/graph/style.rs`.
-  Clicking the panel's title bar retracts it out of the way.
+  Clicking the panel's title bar retracts it out of the way. Timeline places
+  imported pages at their first journal mention instead of the import day.
 
 ### Fixed
 

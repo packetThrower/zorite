@@ -10,7 +10,7 @@ use rust_i18n::t;
 
 use super::style::{Align, Frame, GraphStyle, Layout, Painter, VAlign, palette};
 use super::{Graph, Kind, days_from_civil};
-use crate::theme;
+use crate::{dates, theme};
 
 pub struct Timeline;
 
@@ -162,28 +162,55 @@ impl GraphStyle for Timeline {
                 theme::text_primary().opacity(0.025),
             ));
         }
-        // Years, and today.
+        // Years, and months too once a month is wide enough on screen to
+        // label (a short history, or zoomed in). The first label on screen
+        // always carries its year.
         let x_at = |day: i32| v.at([(day - start) as f32 * per_day, 0.0]).x;
         let last = g.nodes.iter().filter_map(|n| n.day).max().unwrap_or(start);
+        let months = per_day * 30.0 * p.zoom() >= 44.0;
+        let mut year_shown = false;
         for y in year_of(start)..=year_of(last.max(today())) + 1 {
-            let x = x_at(days_from_civil(y, 1, 1));
-            if x < b.origin.x || x > b.origin.x + b.size.width {
-                continue;
+            for m in 1..=12 {
+                if m > 1 && !months {
+                    break;
+                }
+                let x = x_at(days_from_civil(y, m, 1));
+                if x < b.origin.x || x > b.origin.x + b.size.width {
+                    continue;
+                }
+                let strong = m == 1;
+                p.window.paint_quad(fill(
+                    Bounds::new(point(x, b.origin.y), size(px(1.0), b.size.height)),
+                    theme::divider().opacity(if strong { 0.6 } else { 0.25 }),
+                ));
+                let label: SharedString = if strong {
+                    y.to_string().into()
+                } else {
+                    let name = time::Month::try_from(m as u8)
+                        .map(dates::month_name)
+                        .unwrap_or_default();
+                    if year_shown {
+                        name
+                    } else {
+                        format!("{name} {y}")
+                    }
+                    .into()
+                };
+                year_shown = true;
+                p.text(
+                    &label,
+                    point(x + px(5.0), b.origin.y + px(8.0)),
+                    11.0,
+                    if strong {
+                        theme::text_secondary()
+                    } else {
+                        theme::text_tertiary()
+                    },
+                    Align::Left,
+                    VAlign::Top,
+                    strong,
+                );
             }
-            p.window.paint_quad(fill(
-                Bounds::new(point(x, b.origin.y), size(px(1.0), b.size.height)),
-                theme::divider().opacity(0.6),
-            ));
-            let label: SharedString = y.to_string().into();
-            p.text(
-                &label,
-                point(x + px(5.0), b.origin.y + px(8.0)),
-                11.0,
-                theme::text_tertiary(),
-                Align::Left,
-                VAlign::Top,
-                false,
-            );
         }
         let now = x_at(today());
         p.stroke(1.0, theme::accent().opacity(0.6), Some([3.0, 3.0]), |pb| {

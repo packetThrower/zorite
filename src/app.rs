@@ -4278,11 +4278,9 @@ impl AppView {
         } else {
             Vec::new()
         };
-        let journals = if filters.journals {
-            self.db.list_journal_pages().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // Every journal day, shown or not: their links date the pages they
+        // mention (see `GraphState::build`).
+        let journals = self.db.list_journal_pages().unwrap_or_default();
         let links = self.db.all_page_links().unwrap_or_default();
         let style = self.db.get_setting("graph_style");
         let mut graph = crate::ui::graph::GraphState::build(

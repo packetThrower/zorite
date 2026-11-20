@@ -94,7 +94,8 @@ pub struct Node {
     pub radius: f32,
     /// Index into [`Graph::groups`]; `None` for nodes without visible links.
     pub group: Option<usize>,
-    /// Creation day (days since 1970-01-01), when known.
+    /// The day the page first appeared (days since 1970-01-01): its creation
+    /// day, or the earliest journal day linking to it if that's sooner.
     pub day: Option<i32>,
 }
 
@@ -187,18 +188,43 @@ impl GraphState {
         filters: GraphFilters,
         style: Option<&str>,
     ) -> Self {
+        // A page's day is when it first appeared: its creation day, or the
+        // earliest journal day that links to it when that's sooner — pages
+        // brought in by an import all share the import's creation day, but
+        // their journal mentions keep the real history. `journals` is every
+        // journal day, whether or not they're shown as nodes.
+        let journal_day: HashMap<i64, i32> = journals
+            .iter()
+            .filter_map(|j| Some((j.id, parse_day(j.journal_date.as_deref()?)?)))
+            .collect();
+        let mut mentioned: HashMap<i64, i32> = HashMap::new();
+        for &(s, t) in links {
+            for (j, other) in [(s, t), (t, s)] {
+                if let Some(&d) = journal_day.get(&j)
+                    && !journal_day.contains_key(&other)
+                {
+                    let m = mentioned.entry(other).or_insert(d);
+                    *m = (*m).min(d);
+                }
+            }
+        }
+        let shown_journals: &[Page] = if filters.journals { journals } else { &[] };
         let mut cand: Vec<(i64, &str, Kind, Option<i32>)> = Vec::new();
         for (list, kind) in [
             (pages, Kind::Page),
             (boards, Kind::Board),
-            (journals, Kind::Journal),
+            (shown_journals, Kind::Journal),
         ] {
             cand.extend(list.iter().map(|p| {
-                let day = p
+                let created = p
                     .created_at
                     .as_deref()
                     .or(p.journal_date.as_deref())
                     .and_then(parse_day);
+                let day = match (created, mentioned.get(&p.id)) {
+                    (Some(c), Some(&m)) => Some(c.min(m)),
+                    (c, m) => c.or(m.copied()),
+                };
                 (p.id, p.title.as_str(), kind, day)
             }));
         }
@@ -1068,6 +1094,42 @@ mod tests {
         assert_eq!(g[4], g[5]);
         assert_ne!(g[0], g[3]);
         assert_eq!(g[6], None);
+    }
+
+    fn page(id: i64, title: &str, created: Option<&str>, journal: Option<&str>) -> Page {
+        Page {
+            id,
+            title: title.into(),
+            is_journal: journal.is_some(),
+            journal_date: journal.map(Into::into),
+            content: String::new(),
+            created_at: created.map(Into::into),
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn imported_pages_date_from_their_first_journal_mention() {
+        // Both pages were imported on the same day; a 2024 journal day links A.
+        let pages = [
+            page(1, "A", Some("2026-06-16 15:00:00"), None),
+            page(2, "B", Some("2026-06-16 15:00:00"), None),
+        ];
+        let journals = [page(3, "Mar 1st, 2024", None, Some("2024-03-01"))];
+        let links = [(3, 1), (1, 2)];
+        // Journal days stay hidden as nodes but still date the pages.
+        let g = GraphState::build(
+            &pages,
+            &[],
+            &journals,
+            &links,
+            GraphFilters::default(),
+            None,
+        );
+        let day = |t: &str| g.graph.nodes.iter().find(|n| n.title == t).unwrap().day;
+        assert_eq!(day("A"), parse_day("2024-03-01"));
+        assert_eq!(day("B"), parse_day("2026-06-16"));
+        assert_eq!(g.graph.nodes.len(), 2);
     }
 
     #[test]
