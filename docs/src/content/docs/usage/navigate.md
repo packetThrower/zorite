@@ -46,6 +46,8 @@ outside.
   the rest, and filters: **journal days** (off by default — thousands of day
   nodes swamp the map), **orphan pages**, and **whiteboards**.
 - **Reset graph** re-runs the layout with a fresh camera fit.
+- Click the panel's title bar to retract it to just that bar (and again to
+  bring it back); Zorite remembers which way you left it.
 
 ### Graph styles
 

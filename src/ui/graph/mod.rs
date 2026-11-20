@@ -29,9 +29,9 @@ use gpui::{
     ScrollDelta, ScrollEvent, SharedString, Size, StatefulInteractiveElement, Styled, canvas, div,
     px,
 };
-use gpui_component::Sizable;
 use gpui_component::input::{Input, InputState};
 use gpui_component::switch::Switch;
+use gpui_component::{Icon, IconName, Sizable};
 
 use crate::app::AppView;
 use crate::models::Page;
@@ -174,6 +174,8 @@ pub struct GraphState {
     drag: Option<Drag>,
     /// Canvas bounds, captured at prepaint for event → world math.
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// The panel shows its controls (false: just its title bar).
+    panel_open: bool,
 }
 
 impl GraphState {
@@ -303,6 +305,7 @@ impl GraphState {
             hover: None,
             drag: None,
             bounds: Rc::default(),
+            panel_open: true,
         }
     }
 
@@ -314,6 +317,11 @@ impl GraphState {
     /// so the fit-to-view has a real size on its first frame.
     pub fn adopt_camera_bounds(&mut self, prev: &Self) {
         self.bounds = prev.bounds.clone();
+    }
+
+    /// Show the panel's controls, or retract it to its title bar.
+    pub fn set_panel_open(&mut self, open: bool) {
+        self.panel_open = open;
     }
 
     /// Switch to the style with this id and move the nodes to its layout.
@@ -332,7 +340,13 @@ impl GraphState {
             self.fit_pending = true;
             return;
         }
-        let cam_to = fit_camera(size, &self.graph, &self.layout.pos, &self.layout.shown);
+        let cam_to = fit_camera(
+            size,
+            &self.graph,
+            &self.layout.pos,
+            &self.layout.shown,
+            self.panel_open,
+        );
         self.morph = Some(Morph {
             from: std::mem::take(&mut self.pos),
             cam_from: (self.pan, self.zoom),
@@ -400,6 +414,7 @@ fn fit_camera(
     graph: &Graph,
     pos: &[[f32; 2]],
     shown: &[bool],
+    panel_open: bool,
 ) -> ([f32; 2], f32) {
     let (mut minx, mut miny) = (f32::MAX, f32::MAX);
     let (mut maxx, mut maxy) = (f32::MIN, f32::MIN);
@@ -419,9 +434,13 @@ fn fit_camera(
         return ([0.0, 0.0], 1.0);
     }
     const PAD: f32 = 80.0;
-    // Fit right of the panel when there's room, so it covers nothing.
+    // Fit right of the open panel when there's room, so it covers nothing.
     let full_w = f32::from(size.width).max(1.0);
-    let panel = if full_w > PANEL_W * 2.5 { PANEL_W } else { 0.0 };
+    let panel = if panel_open && full_w > PANEL_W * 2.5 {
+        PANEL_W
+    } else {
+        0.0
+    };
     let (bw, bh) = (maxx - minx + PAD * 2.0, maxy - miny + PAD * 2.0);
     let (w, h) = (full_w - panel, f32::from(size.height).max(1.0));
     let zoom = (w / bw).min(h / bh).clamp(0.05, 1.25);
@@ -567,7 +586,13 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
     // one's paint computes the identical fit locally below).
     let b = state.bounds.get();
     if state.fit_pending && b.size.width > px(0.0) {
-        let (pan, zoom) = fit_camera(b.size, &state.graph, &state.pos, &state.layout.shown);
+        let (pan, zoom) = fit_camera(
+            b.size,
+            &state.graph,
+            &state.pos,
+            &state.layout.shown,
+            state.panel_open,
+        );
         state.pan = pan;
         state.zoom = zoom;
         state.fit_pending = false;
@@ -581,7 +606,7 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
     let pos = state.pos.clone();
     let shown = state.layout.shown.clone();
     let (pan, zoom, hover, focus) = (state.pan, state.zoom, state.hover, state.focus);
-    let fit_pending = state.fit_pending;
+    let (fit_pending, panel_open) = (state.fit_pending, state.panel_open);
     let matches: Option<HashSet<usize>> = query.map(|q| {
         (0..graph.nodes.len())
             .filter(|&i| shown[i] && graph.nodes[i].title.to_lowercase().contains(&q))
@@ -728,7 +753,7 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
             move |bounds, _, _| bounds_cell.set(bounds),
             move |bounds, _, window, cx| {
                 let (pan, zoom) = if fit_pending {
-                    fit_camera(bounds.size, &graph, &pos, &shown)
+                    fit_camera(bounds.size, &graph, &pos, &shown, panel_open)
                 } else {
                     (pan, zoom)
                 };
@@ -779,6 +804,7 @@ fn panel(
     cx: &mut Context<AppView>,
 ) -> impl IntoElement {
     let f = state.filters;
+    let open = state.panel_open;
     let nodes = &state.graph.nodes;
     let count = |k: Kind| nodes.iter().filter(|n| n.kind == k).count();
     let (pages, boards, journals) = (count(Kind::Page), count(Kind::Board), count(Kind::Journal));
@@ -881,41 +907,11 @@ fn panel(
         ))
         .child(legend_row(ring, t!("graph.filter_orphans"), orphans));
 
-    div()
-        .id("graph-panel")
-        .occlude()
-        .absolute()
-        .top(px(12.0))
-        .left(px(12.0))
-        .w(px(220.0))
-        .rounded(px(10.0))
-        .bg(theme::elevated())
-        .border_1()
-        .border_color(theme::border_subtle())
-        .p(px(12.0))
+    // Everything under the title bar, hidden while the panel is retracted.
+    let body = div()
         .flex()
         .flex_col()
         .gap(px(10.0))
-        .child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .font_weight(gpui::FontWeight::BOLD)
-                        .text_color(theme::text_primary())
-                        .child(t!("graph.nodes")),
-                )
-                .child(
-                    div()
-                        .text_size(px(11.0))
-                        .text_color(theme::text_tertiary())
-                        .child(format!("{} {}", nodes.len(), t!("graph.shown"))),
-                ),
-        )
         .child(styles)
         .children(search.map(|input| Input::new(&input).small().text_size(px(12.0))))
         .children(match_count.map(|n| {
@@ -955,7 +951,62 @@ fn panel(
                     cx.notify();
                 }))
                 .child(t!("graph.reset")),
+        );
+
+    div()
+        .id("graph-panel")
+        .occlude()
+        .absolute()
+        .top(px(12.0))
+        .left(px(12.0))
+        .w(px(220.0))
+        .rounded(px(10.0))
+        .bg(theme::elevated())
+        .border_1()
+        .border_color(theme::border_subtle())
+        .p(px(12.0))
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(
+            // The title bar: click to retract the panel to just this row.
+            div()
+                .id("graph-panel-head")
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .cursor_pointer()
+                .on_click(
+                    cx.listener(move |this: &mut AppView, _: &ClickEvent, _w, cx| {
+                        this.set_graph_panel_open(!open, cx);
+                    }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::BOLD)
+                        .text_color(theme::text_primary())
+                        .child(t!("graph.nodes")),
+                )
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme::text_tertiary())
+                        .child(format!("{} {}", nodes.len(), t!("graph.shown"))),
+                )
+                .child(
+                    Icon::new(if open {
+                        IconName::ChevronUp
+                    } else {
+                        IconName::ChevronDown
+                    })
+                    .small()
+                    .text_color(theme::text_tertiary()),
+                ),
         )
+        .when(open, |el| el.child(body))
 }
 
 /// One legend line: a color mark, the kind, and its count.

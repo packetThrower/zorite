@@ -4297,6 +4297,7 @@ impl AppView {
             // Keep the known canvas size so the fit-to-view lands frame one.
             graph.adopt_camera_bounds(old);
         }
+        graph.set_panel_open(self.db.get_setting("graph_panel").as_deref() != Some("closed"));
         self.graph = Some(graph);
     }
 
@@ -4307,6 +4308,18 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.rebuild_graph_with(filters);
+        cx.notify();
+    }
+
+    /// Retract the graph panel to its title bar, or open it, and remember it.
+    pub fn set_graph_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        let value = if open { "open" } else { "closed" };
+        if let Err(e) = self.db.set_setting("graph_panel", value) {
+            log::error!("save graph panel state: {e}");
+        }
+        if let Some(g) = self.graph.as_mut() {
+            g.set_panel_open(open);
+        }
         cx.notify();
     }
 
