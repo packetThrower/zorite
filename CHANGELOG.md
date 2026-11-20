@@ -30,6 +30,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Fixed
 
+- **Enter in whiteboard text breaks the line on Windows**, and Enter and Tab
+  add mind-map nodes there again; both were swallowed as if typing in an
+  input method (gpui-whiteboard 0.5.6).
 - **The Edit menu works in journal days and pages**, and shows the shortcut
   for every item. Undo, Redo, Cut, Paste and Select All did nothing there
   before.
