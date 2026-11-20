@@ -99,6 +99,14 @@ pub struct Frame<'a> {
 }
 
 impl Frame<'_> {
+    /// Nodes in label order: lit first, then the most linked, so when labels
+    /// collide the hovered page and the hubs keep theirs.
+    pub fn label_order(&self, g: &Graph) -> Vec<usize> {
+        let mut order: Vec<usize> = (0..g.nodes.len()).collect();
+        order.sort_by_key(|&i| (!self.lit(i), std::cmp::Reverse(g.nodes[i].degree)));
+        order
+    }
+
     /// Hovered or a search match: draw it emphasized.
     pub fn lit(&self, i: usize) -> bool {
         self.hover == Some(i) || self.matches.is_some_and(|m| m.contains(&i))
@@ -285,6 +293,8 @@ pub struct Painter<'a> {
     pub cx: &'a mut App,
     pub bounds: Bounds<Pixels>,
     pub view: View,
+    /// Text drawn so far this frame, so [`Painter::label`] can keep clear.
+    placed: Vec<Bounds<Pixels>>,
 }
 
 impl<'a> Painter<'a> {
@@ -305,6 +315,7 @@ impl<'a> Painter<'a> {
             cx,
             bounds,
             view,
+            placed: Vec::new(),
         }
     }
 
@@ -451,6 +462,46 @@ impl<'a> Painter<'a> {
         valign: VAlign,
         bold: bool,
     ) {
+        self.place(text, at, size, color, align, valign, bold, false);
+    }
+
+    /// A node's name, centered just above `top`: above, because the pointer
+    /// hangs below its hotspot and would cover it. Unless `always` (the
+    /// hovered or searched-for page), it's skipped when it would overlap text
+    /// already drawn, so draw the important ones first (see
+    /// [`Frame::label_order`]).
+    pub fn label(
+        &mut self,
+        text: &SharedString,
+        top: Point<Pixels>,
+        color: Hsla,
+        bold: bool,
+        always: bool,
+    ) {
+        self.place(
+            text,
+            top,
+            11.0,
+            color,
+            Align::Center,
+            VAlign::Bottom,
+            bold,
+            !always,
+        );
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn place(
+        &mut self,
+        text: &SharedString,
+        at: Point<Pixels>,
+        size: f32,
+        color: Hsla,
+        align: Align,
+        valign: VAlign,
+        bold: bool,
+        keep_clear: bool,
+    ) {
         let shaped = self.shape(text, size, color, bold);
         let lh = px(size * 1.3);
         let x = match align {
@@ -463,6 +514,11 @@ impl<'a> Painter<'a> {
             VAlign::Middle => at.y - lh / 2.0,
             VAlign::Bottom => at.y - lh,
         };
+        let b = Bounds::new(point(x, y), gpui::size(shaped.width(), lh));
+        if keep_clear && self.placed.iter().any(|q| q.intersects(&b.dilate(px(3.0)))) {
+            return;
+        }
+        self.placed.push(b);
         let _ = shaped.paint(
             point(x, y),
             lh,
@@ -471,6 +527,21 @@ impl<'a> Painter<'a> {
             self.window,
             self.cx,
         );
+    }
+
+    /// `text` cut short with an ellipsis to fit `max` px.
+    pub fn fit(&mut self, text: &SharedString, size: f32, bold: bool, max: Pixels) -> SharedString {
+        if self.measure(text, size, bold) <= max {
+            return text.clone();
+        }
+        let mut s = text.to_string();
+        while s.pop().is_some() {
+            let cut: SharedString = format!("{}…", s.trim_end()).into();
+            if s.is_empty() || self.measure(&cut, size, bold) <= max {
+                return cut;
+            }
+        }
+        text.clone()
     }
 }
 

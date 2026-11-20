@@ -292,19 +292,12 @@ impl GraphStyle for Timeline {
             );
         }
         // Names on hover and search.
-        for (i, n) in g.nodes.iter().enumerate() {
+        for i in f.label_order(g) {
             if (f.hover.is_some() || f.matches.is_some()) && !f.dimmed(i) {
+                let n = &g.nodes[i];
                 let c = v.at(f.pos[i]);
-                let at = point(c.x, c.y + v.len(n.radius * 0.55, 2.5) + px(4.0));
-                p.text(
-                    &n.title,
-                    at,
-                    11.0,
-                    theme::text_primary(),
-                    Align::Center,
-                    VAlign::Top,
-                    f.lit(i),
-                );
+                let at = point(c.x, c.y - v.len(n.radius * 0.55, 2.5) - px(4.0));
+                p.label(&n.title, at, theme::text_primary(), f.lit(i), f.lit(i));
             }
         }
         // Pinned top-right of each band: the panel covers the left edge, and
