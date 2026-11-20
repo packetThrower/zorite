@@ -436,13 +436,7 @@ fn journal_rows(
         if year.is_some_and(|yr| yr != y) || month.is_some_and(|mo| mo != m) {
             return None;
         }
-        let preview = d
-            .content
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty())
-            .unwrap_or_default()
-            .to_string();
+        let preview = d.content.lines().find_map(plain_line).unwrap_or_default();
         Some((
             date.clone(),
             Row::Day(d.id, preview),
@@ -526,4 +520,69 @@ fn chip(
         el.text_color(theme::text_tertiary()).opacity(0.6)
     };
     el.on_click(on_click).child(label)
+}
+
+/// One line of Markdown as plain text for a preview: markers, link targets
+/// and images dropped, `[[wiki links]]` shown by name. `None` for a line with
+/// no text of its own (blank, an image, a `key:: value` property).
+fn plain_line(line: &str) -> Option<String> {
+    use markdown::mdast::Node;
+    fn collect(n: &Node, out: &mut String) {
+        match n {
+            Node::Text(t) => out.push_str(&t.value),
+            Node::InlineCode(c) => out.push_str(&c.value),
+            Node::Image(_) => {}
+            _ => n
+                .children()
+                .into_iter()
+                .flatten()
+                .for_each(|c| collect(c, out)),
+        }
+    }
+    let line = line.trim();
+    let is_property = line
+        .split_once(":: ")
+        .is_some_and(|(k, _)| !k.is_empty() && !k.contains(' '));
+    if line.is_empty() || is_property {
+        return None;
+    }
+    let mut text = String::new();
+    match markdown::to_mdast(line, &markdown::ParseOptions::gfm()) {
+        Ok(ast) => collect(&ast, &mut text),
+        Err(_) => text.push_str(line),
+    }
+    // Wiki links and highlights aren't CommonMark, so they come through as
+    // text: `[[Page|alias]]` reads as its alias, `[[Page]]` as the page.
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(i) = rest.find("[[") {
+        out.push_str(&rest[..i]);
+        let Some(j) = rest[i..].find("]]") else { break };
+        let inner = &rest[i + 2..i + j];
+        out.push_str(inner.rsplit('|').next().unwrap_or(inner));
+        rest = &rest[i + j + 2..];
+    }
+    out.push_str(rest);
+    let out = out.replace("==", "").trim().to_string();
+    (!out.is_empty()).then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::plain_line;
+
+    #[test]
+    fn previews_drop_markdown() {
+        let p = |s: &str| plain_line(s);
+        assert_eq!(p("# Standup **notes**").as_deref(), Some("Standup notes"));
+        assert_eq!(p("- [ ] call [[Dentist]]").as_deref(), Some("call Dentist"));
+        assert_eq!(
+            p("see [[Home network|the LAN]] and [docs](https://x.y)").as_deref(),
+            Some("see the LAN and docs")
+        );
+        assert_eq!(p("==big== `code`").as_deref(), Some("big code"));
+        assert_eq!(p("![](photo.png)"), None);
+        assert_eq!(p("tags:: work"), None);
+        assert_eq!(p("   "), None);
+    }
 }
