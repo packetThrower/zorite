@@ -5645,6 +5645,12 @@ impl AppView {
             self.ui_font.clone()
         };
         theme::apply(palette, is_dark, window, cx);
+        // Mirror the look outside the database for a locked notebook's
+        // unlock screen (see `paths::save_theme`).
+        let accent = theme::accent_override()
+            .map(|h| format!("#{h:06X}"))
+            .unwrap_or_default();
+        crate::paths::save_theme(&self.skin_id, self.mode.as_str(), &accent);
         // Code-highlight styles follow gpui-component's light/dark highlight
         // theme. Read it after `theme::apply` has set the mode: before, a
         // dark-only skin under a light OS got the light one. Adopting it

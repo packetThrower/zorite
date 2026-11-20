@@ -30,6 +30,7 @@ use gpui::{
     px,
 };
 use gpui_component::input::{Input, InputState};
+use gpui_component::menu::ContextMenuExt;
 use gpui_component::switch::Switch;
 use gpui_component::{Icon, IconName, Sizable};
 
@@ -86,6 +87,8 @@ impl Kind {
 
 /// One node, as every style sees it.
 pub struct Node {
+    /// The page's database id.
+    pub id: i64,
     pub title: SharedString,
     pub kind: Kind,
     /// Links in the visible graph.
@@ -177,6 +180,9 @@ pub struct GraphState {
     bounds: Rc<Cell<Bounds<Pixels>>>,
     /// The panel shows its controls (false: just its title bar).
     panel_open: bool,
+    /// The node under the last right-click, for the page menu (none: the
+    /// background, which has no menu).
+    menu_node: Option<usize>,
 }
 
 impl GraphState {
@@ -258,6 +264,7 @@ impl GraphState {
         for (id, title, kind, day) in cand {
             index.insert(id, nodes.len());
             nodes.push(Node {
+                id,
                 title: SharedString::from(title.to_string()),
                 kind,
                 degree: 0,
@@ -332,6 +339,7 @@ impl GraphState {
             drag: None,
             bounds: Rc::default(),
             panel_open: true,
+            menu_node: None,
         }
     }
 
@@ -380,6 +388,24 @@ impl GraphState {
             start: Instant::now(),
         });
         self.pos = self.layout.pos.clone();
+    }
+
+    /// Store the pending fit-to-view once the canvas size is known. The first
+    /// frame paints with the same fit computed locally, so input arriving
+    /// before a second frame must bake it too, or hit tests would use the
+    /// unfitted camera and miss what's on screen.
+    fn bake_fit(&mut self) {
+        let size = self.bounds.get().size;
+        if self.fit_pending && size.width > px(0.0) {
+            (self.pan, self.zoom) = fit_camera(
+                size,
+                &self.graph,
+                &self.pos,
+                &self.layout.shown,
+                self.panel_open,
+            );
+            self.fit_pending = false;
+        }
     }
 
     /// Advance a running morph to `now`; returns whether one is still running.
@@ -608,21 +634,8 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
         return div().size_full().into_any_element();
     };
 
-    // Bake the pending fit once the canvas size is known (frame two; frame
-    // one's paint computes the identical fit locally below).
-    let b = state.bounds.get();
-    if state.fit_pending && b.size.width > px(0.0) {
-        let (pan, zoom) = fit_camera(
-            b.size,
-            &state.graph,
-            &state.pos,
-            &state.layout.shown,
-            state.panel_open,
-        );
-        state.pan = pan;
-        state.zoom = zoom;
-        state.fit_pending = false;
-    }
+    // Frame two onward: store the fit frame one painted (see `bake_fit`).
+    state.bake_fit();
     let morphing = state.step_morph(Instant::now());
     let state = &*state;
 
@@ -655,6 +668,7 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
             MouseButton::Left,
             cx.listener(|this: &mut AppView, ev: &MouseDownEvent, _w, _cx| {
                 if let Some(g) = this.graph.as_mut() {
+                    g.bake_fit();
                     g.drag = Some(match g.hit(ev.position) {
                         Some(i) => Drag::Node {
                             i,
@@ -670,9 +684,25 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
                 }
             }),
         )
+        // Right-click a node for THE page menu (same as page rows elsewhere);
+        // this picks the page, the `context_menu` below shows the items.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(|this: &mut AppView, ev: &MouseDownEvent, _w, _cx| {
+                let Some(g) = this.graph.as_mut() else { return };
+                g.bake_fit();
+                g.menu_node = g.hit(ev.position);
+                if let Some(i) = g.menu_node {
+                    let n = &g.graph.nodes[i];
+                    let (id, title) = (n.id, n.title.clone());
+                    this.set_context_page(id, title);
+                }
+            }),
+        )
         .on_mouse_move(
             cx.listener(|this: &mut AppView, ev: &MouseMoveEvent, _w, cx| {
                 let Some(g) = this.graph.as_mut() else { return };
+                g.bake_fit();
                 match g.drag {
                     Some(Drag::Pan { last, moved }) => {
                         let (dx, dy) = (
@@ -752,6 +782,7 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
         )
         .on_scroll(cx.listener(|this: &mut AppView, ev: &ScrollEvent, _w, cx| {
             let Some(g) = this.graph.as_mut() else { return };
+            g.bake_fit();
             let (dx, dy) = match ev.delta {
                 ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
                 ScrollDelta::Lines(p) => (p.x * LINE_PX, p.y * LINE_PX),
@@ -766,6 +797,7 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
         }))
         .on_pinch(cx.listener(|this: &mut AppView, ev: &PinchEvent, _w, cx| {
             if let Some(g) = this.graph.as_mut() {
+                g.bake_fit();
                 g.zoom_about(ev.position, 1.0 + ev.delta);
                 cx.notify();
             }
@@ -773,6 +805,18 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
     if hover.is_some() {
         el = el.cursor_pointer();
     }
+    let app = cx.entity();
+    let el = el.context_menu(move |menu, _w, cx| {
+        let app = app.read(cx);
+        let Some(id) = app
+            .graph
+            .as_ref()
+            .and_then(|g| g.menu_node.map(|i| g.graph.nodes[i].id))
+        else {
+            return menu; // an empty menu isn't shown
+        };
+        crate::ui::page_menu(menu, app.is_favorite(id), cx)
+    });
 
     el.child(
         canvas(

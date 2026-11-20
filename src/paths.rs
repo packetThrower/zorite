@@ -146,6 +146,30 @@ pub fn save_language(choice: &str) {
     let _ = std::fs::write(language_file(), choice);
 }
 
+// The look (theme, Light/Dark/Auto, accent) is mirrored the same way, so a
+// locked notebook's unlock screen wears the user's theme instead of the
+// default. Also a UI preference, nothing about the notes.
+
+fn theme_file() -> PathBuf {
+    data_dir().join("theme")
+}
+
+/// The mirrored look: theme id, mode (`light` / `dark` / `auto`), and accent
+/// (`#RRGGBB`, or empty for the theme's own). `None` if never saved.
+pub fn saved_theme() -> Option<(String, String, String)> {
+    let s = std::fs::read_to_string(theme_file()).ok()?;
+    let mut lines = s.lines().map(|l| l.trim().to_string());
+    Some((
+        lines.next()?,
+        lines.next().unwrap_or_default(),
+        lines.next().unwrap_or_default(),
+    ))
+}
+
+pub fn save_theme(skin: &str, mode: &str, accent: &str) {
+    let _ = std::fs::write(theme_file(), format!("{skin}\n{mode}\n{accent}\n"));
+}
+
 // --- Open-tabs persistence (the second switch on the same Settings card) ---
 //
 // Same sidecar pattern as window-bounds: file presence is the on/off state.
@@ -784,6 +808,18 @@ pub(crate) fn is_contained_relative(rel: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn theme_mirror_round_trips() {
+        std::fs::create_dir_all(super::data_dir()).unwrap();
+        super::save_theme("glass", "dark", "#0E7490");
+        assert_eq!(
+            super::saved_theme(),
+            Some(("glass".into(), "dark".into(), "#0E7490".into()))
+        );
+        super::save_theme("zorite", "auto", "");
+        assert_eq!(super::saved_theme().unwrap().2, "");
+    }
+
     use super::*;
 
     #[test]

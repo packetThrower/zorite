@@ -40,7 +40,8 @@ outside.
 
 - **Drag** the background (or scroll) to pan, **pinch** or `⌘`-scroll to
   zoom, **drag a node** to reposition it, **click** one to open it, and
-  hover to highlight a node's neighborhood.
+  hover to highlight a node's neighborhood. **Right-click** a node for the
+  same page menu as everywhere else.
 - The panel carries a **legend with live counts** (pages, whiteboards,
   links, orphans), a **search box** that lights up matching nodes and dims
   the rest, and filters: **journal days** (off by default — thousands of day

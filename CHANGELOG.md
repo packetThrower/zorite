@@ -24,9 +24,16 @@ log: <https://github.com/packetThrower/zorite/releases>.
   remembered. New styles are one file each; see `src/ui/graph/style.rs`.
   Clicking the panel's title bar retracts it out of the way. Timeline places
   imported pages at their first journal mention instead of the import day.
+- **Right-click a page in the graph** for the same menu pages have everywhere
+  else: favorite, open in a new tab or window, copy, export, rename, delete.
 
 ### Fixed
 
+- **A locked notebook's unlock screen wears your theme** (and accent color)
+  instead of the default.
+- **Journal days in All pages preview as plain text**, without Markdown
+  markers or link brackets.
+- **The first click in a freshly opened graph** lands on the node under it.
 - **Journal days can be deleted.** Right-click a day in All pages or search results
   → **Delete page** removes it after a confirmation. The menu offered it
   before, but nothing happened (#186).
