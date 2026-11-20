@@ -46,6 +46,30 @@ outside.
   the rest, and filters: **journal days** (off by default — thousands of day
   nodes swamp the map), **orphan pages**, and **whiteboards**.
 - **Reset graph** re-runs the layout with a fresh camera fit.
+- Click the panel's title bar to retract it to just that bar (and again to
+  bring it back); Zorite remembers which way you left it.
+
+### Graph styles
+
+The row of names at the top of the panel switches how the graph looks; the
+nodes glide to their new places, and Zorite remembers your pick.
+
+- **Classic**: the map described above.
+- **Nebula**: linked pages glow in their topic's color, sized by how linked
+  they are; unlinked pages drift as faint dust around them.
+- **Islands**: each topic is an outlined island with its name; links between
+  topics are dashed, and unlinked pages wait in a tray underneath.
+- **Focus**: one page in the middle, the pages it links with on an inner ring
+  and their links on an outer one. Click a page to bring it to the center;
+  click the center to open it.
+- **Timeline**: pages sit at the day they first appeared, one lane per topic,
+  with links arcing between them. That's the day a page was created, or the
+  first journal day that links to it if that's earlier, so imported pages
+  keep their history. Unlinked pages run along the bottom.
+
+Topics come from the links alone: pages that link to each other more than to
+the rest form one, named after its most-linked page. No tags or folders
+needed.
 
 A page counts as an *orphan* only if nothing links to it anywhere — a page
 referenced only from (hidden) journal days still shows; it just has no

@@ -4278,18 +4278,24 @@ impl AppView {
         } else {
             Vec::new()
         };
-        let journals = if filters.journals {
-            self.db.list_journal_pages().unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        // Every journal day, shown or not: their links date the pages they
+        // mention (see `GraphState::build`).
+        let journals = self.db.list_journal_pages().unwrap_or_default();
         let links = self.db.all_page_links().unwrap_or_default();
-        let mut graph =
-            crate::ui::graph::GraphState::build(&pages, &boards, &journals, &links, filters);
+        let style = self.db.get_setting("graph_style");
+        let mut graph = crate::ui::graph::GraphState::build(
+            &pages,
+            &boards,
+            &journals,
+            &links,
+            filters,
+            style.as_deref(),
+        );
         if let Some(old) = self.graph.as_ref() {
             // Keep the known canvas size so the fit-to-view lands frame one.
             graph.adopt_camera_bounds(old);
         }
+        graph.set_panel_open(self.db.get_setting("graph_panel").as_deref() != Some("closed"));
         self.graph = Some(graph);
     }
 
@@ -4300,6 +4306,29 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.rebuild_graph_with(filters);
+        cx.notify();
+    }
+
+    /// Retract the graph panel to its title bar, or open it, and remember it.
+    pub fn set_graph_panel_open(&mut self, open: bool, cx: &mut Context<Self>) {
+        let value = if open { "open" } else { "closed" };
+        if let Err(e) = self.db.set_setting("graph_panel", value) {
+            log::error!("save graph panel state: {e}");
+        }
+        if let Some(g) = self.graph.as_mut() {
+            g.set_panel_open(open);
+        }
+        cx.notify();
+    }
+
+    /// Switch the graph's style (panel picker) and remember it.
+    pub fn set_graph_style(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Err(e) = self.db.set_setting("graph_style", id) {
+            log::error!("save graph style: {e}");
+        }
+        if let Some(g) = self.graph.as_mut() {
+            g.set_style(id);
+        }
         cx.notify();
     }
 
