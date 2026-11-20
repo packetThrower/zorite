@@ -33,6 +33,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
 - **Pressing Enter in whiteboard text** adds one line break, not two. Thanks to
   eiei114, whose fork in [nottio](https://github.com/eiei114/nottio) found and
   fixed it.
+- **Glass theme over light backgrounds.** Greyed-out filters in All pages and
+  the highlight under the mouse were hard to see when a white window sat behind
+  Zorite; the glass is a little darker and both stand out more.
 
 ### Changed
 
