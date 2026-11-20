@@ -199,6 +199,7 @@ impl AppView {
             let command = groups.iter().fold(
                 Command::new(&state)
                     .bordered(false)
+                    .highlight_matches(true)
                     .placeholder(t!("command_palette.placeholder"))
                     .on_confirm(move |ix, window, cx| {
                         window.close_dialog(cx);
