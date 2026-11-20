@@ -372,10 +372,6 @@ Skip: dock/tiles, charts, chat components, `NavStack` (tabs cover it),
 `gpui-shell` JS extensions (interesting later, not now).
 
 ## App & polish
-- [ ] **Graph-node context menu** — nodes hit-test inside one
-  canvas element (`g.hit(position)`), so the shared page-menu builder
-  doesn't attach; needs the app's overlay-menu machinery (the reader
-  ctx-menu recipe)
 - [ ] **PopupMenu density** — the pinned gpui-component rev has a
   `Size::Small` branch for menus (20px rows vs 26px) but NO public setter;
   upstream a `Sizable` impl for `PopupMenu` (or bump the pin when one
