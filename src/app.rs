@@ -492,6 +492,8 @@ pub struct AppView {
     /// The Windows/Linux in-titlebar menu bar (File/Edit/View). macOS shows the
     /// native menu bar instead; this gives the other OSes visual parity.
     app_menu_bar: Entity<gpui_component::menu::AppMenuBar>,
+    /// What had focus when a menu-bar title was clicked (see `menu_esc_sub`).
+    focus_before_menu: Option<FocusHandle>,
 
     // Single-page view.
     pub page_editor: Option<PageEditor>,
@@ -844,6 +846,25 @@ impl AppView {
             },
         );
 
+        // Kit's menu bar hands focus back on close to whatever had it when the
+        // menu opened, but clicking a menu title focuses that title first, so
+        // Esc left focus on the menu bar, where shortcuts don't reach. Put it
+        // back where it was before the click.
+        let menu_esc_sub = cx.observe_keystrokes(|this: &mut AppView, ev, window, cx| {
+            if ev.keystroke.key != "escape" || window.window_handle() != this.window_handle {
+                return;
+            }
+            cx.defer_in(window, |this, window, cx| {
+                let stack = window.context_stack();
+                let on = |c: &str| stack.iter().any(|k| k.contains(c));
+                if on("AppMenuBar") && !on("PopupMenu") {
+                    let to = this.focus_before_menu.take();
+                    to.unwrap_or_else(|| this.focus_handle.clone())
+                        .focus(window, cx);
+                }
+            });
+        });
+
         let mut this = Self {
             db,
             window_handle: window.window_handle(),
@@ -924,6 +945,7 @@ impl AppView {
             block_ref_index: Rc::new(std::cell::RefCell::new(HashMap::new())),
             block_ref_counts: Rc::new(std::cell::RefCell::new(HashMap::new())),
             app_menu_bar: gpui_component::menu::AppMenuBar::new(cx),
+            focus_before_menu: None,
             page_editor: None,
             pages: Vec::new(),
             aliases: Vec::new(),
@@ -964,7 +986,13 @@ impl AppView {
             feed_find: None,
             page_scroll: ScrollHandle::new(),
             md_block_scroll: ScrollHandle::new(),
-            _subs: vec![search_sub, doc_sub, pdf_password_sub, bounds_sub],
+            _subs: vec![
+                search_sub,
+                doc_sub,
+                pdf_password_sub,
+                bounds_sub,
+                menu_esc_sub,
+            ],
             focus_handle: cx.focus_handle(),
         };
 
@@ -7416,6 +7444,23 @@ impl Render for AppView {
             )
             // Sidebar right-click menu actions.
             .on_action(cx.listener(Self::on_delete_page))
+            .on_action(cx.listener(|_, _: &gpui_component::input::Undo, w, cx| {
+                forward_edit(zorite_editor::Undo, w, cx)
+            }))
+            .on_action(cx.listener(|_, _: &gpui_component::input::Redo, w, cx| {
+                forward_edit(zorite_editor::Redo, w, cx)
+            }))
+            .on_action(cx.listener(|_, _: &gpui_component::input::Cut, w, cx| {
+                forward_edit(zorite_editor::Cut, w, cx)
+            }))
+            .on_action(cx.listener(|_, _: &gpui_component::input::Paste, w, cx| {
+                forward_edit(zorite_editor::Paste, w, cx)
+            }))
+            .on_action(
+                cx.listener(|_, _: &gpui_component::input::SelectAll, w, cx| {
+                    forward_edit(zorite_editor::SelectAll, w, cx)
+                }),
+            )
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_export_pdf))
@@ -7587,6 +7632,15 @@ impl Render for AppView {
                             .occlude()
                             .flex()
                             .items_center()
+                            .capture_any_mouse_down(cx.listener(|this, _, window, cx| {
+                                let in_bar = window
+                                    .context_stack()
+                                    .iter()
+                                    .any(|k| k.contains("AppMenuBar"));
+                                if !in_bar {
+                                    this.focus_before_menu = window.focused(cx);
+                                }
+                            }))
                             .child(self.app_menu_bar.clone()),
                     )
                     .child(div().mr_2().child(toggle))
@@ -8311,4 +8365,15 @@ fn excerpt(content: &str) -> String {
         out.push('…');
     }
     out
+}
+
+/// An Edit-menu action (gpui-component's input actions) that no field took:
+/// hand it to the focused journal/page editor as its own action, or, with no
+/// editor focused, let the keystroke carry on (a whiteboard handles ⌘Z itself).
+fn forward_edit(action: impl gpui::Action, window: &mut Window, cx: &mut Context<AppView>) {
+    if window.is_action_available(&action, cx) {
+        window.dispatch_action(Box::new(action), cx);
+    } else {
+        cx.propagate();
+    }
 }

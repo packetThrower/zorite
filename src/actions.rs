@@ -160,6 +160,26 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-v", PasteImage, Some(EDITOR_CONTEXT)),
     ]);
 
+    // The Edit menu's items are gpui-component's input actions. Bind them at
+    // the window root too, so the menu shows their shortcuts wherever focus is
+    // (Kit already does this for Copy). Deeper contexts win: a focused field
+    // or editor keeps its own bindings, and `AppView::forward_edit` hands the
+    // rest to the journal's editor or lets the keystroke through.
+    {
+        use gpui_component::input;
+        let root = Some("Root");
+        cx.bind_keys([
+            sec("secondary-z", input::Undo, root, cx),
+            #[cfg(target_os = "macos")]
+            sec("secondary-shift-z", input::Redo, root, cx),
+            #[cfg(not(target_os = "macos"))]
+            sec("secondary-y", input::Redo, root, cx),
+            sec("secondary-x", input::Cut, root, cx),
+            sec("secondary-v", input::Paste, root, cx),
+            sec("secondary-a", input::SelectAll, root, cx),
+        ]);
+    }
+
     // App-wide shortcuts. `secondary-` resolves to Cmd on macOS and Ctrl on
     // Windows/Linux, so one binding is correct on every OS. No key context →
     // they fire whether or not an editor is focused; every chord uses a modifier
