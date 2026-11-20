@@ -30,6 +30,16 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Fixed
 
+- **The Edit menu works in journal days and pages**, and shows the shortcut
+  for every item. Undo, Redo, Cut, Paste and Select All did nothing there
+  before.
+- **Esc out of a menu-bar menu** (Windows, Linux) gives the keyboard back to
+  what you were typing in, so shortcuts work again without a click.
+- **Search results preview as plain text**, without Markdown markers.
+- **Greyed-out letters in All pages** are easier to read.
+- **The graph's zoom hint says Ctrl** on Windows and Linux, not ⌘.
+- **Graph labels keep clear of dots and edges** in every style, and stay inside
+  the window.
 - **A locked notebook's unlock screen wears your theme** (and accent color)
   instead of the default.
 - **Journal days in All pages preview as plain text**, without Markdown

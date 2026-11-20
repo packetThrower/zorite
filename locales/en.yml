@@ -228,7 +228,7 @@ settings:
     new_password: "New password"
     confirm_password: "Confirm new password"
   item:
-    enabled: Enabled
+    enabled: Enable
     show_gutter: Show gutter
     dock_right: Dock on the right
     theme: Theme

@@ -228,7 +228,7 @@ settings:
     new_password: "Новый пароль"
     confirm_password: "Подтвердите новый пароль"
   item:
-    enabled: Включено
+    enabled: Включить
     show_gutter: Номера строк
     dock_right: Панель справа
     theme: Тема
