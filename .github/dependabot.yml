@@ -29,6 +29,13 @@ updates:
       - dependency-name: "gpui-component"
       - dependency-name: "gpui-kit-assets"
       - dependency-name: "gpui-fps"
+      # Deps of vendor/gpui-pre-wgpu (upstream code kept identical but for one
+      # patch, see its ZORITE-PATCH.md): Dependabot edits that Cargo.toml
+      # because it's a path dep, and etagere 0.3 already broke the Linux
+      # build there. They move when the vendored copy is replaced.
+      - dependency-name: "etagere"
+      - dependency-name: "itertools"
+      - dependency-name: "parking_lot"
     groups:
       # One PR for the routine patch/minor sweep instead of a dozen; majors
       # still come through individually so they get a proper look.
