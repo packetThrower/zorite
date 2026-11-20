@@ -662,7 +662,9 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
     let match_count = matches.as_ref().map(|m| m.len());
     let bounds_cell = state.bounds.clone();
     let empty = graph.nodes.is_empty();
-    let hint = style.hint().unwrap_or_else(|| t!("graph.hint").into());
+    let hint = style
+        .hint()
+        .unwrap_or_else(|| t!("graph.hint", key = crate::settings::keys::MOD).into());
 
     let mut el = div()
         .id("graph")

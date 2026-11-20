@@ -462,14 +462,11 @@ impl<'a> Painter<'a> {
         valign: VAlign,
         bold: bool,
     ) {
-        self.place(text, at, size, color, align, valign, bold, false);
+        self.place(text, at, size, color, align, valign, bold, None);
     }
 
     /// A node's name, centered just above `top`: above, because the pointer
-    /// hangs below its hotspot and would cover it. Unless `always` (the
-    /// hovered or searched-for page), it's skipped when it would overlap text
-    /// already drawn, so draw the important ones first (see
-    /// [`Frame::label_order`]).
+    /// hangs below its hotspot and would cover it. See [`Painter::label_at`].
     pub fn label(
         &mut self,
         text: &SharedString,
@@ -478,18 +475,31 @@ impl<'a> Painter<'a> {
         bold: bool,
         always: bool,
     ) {
-        self.place(
-            text,
-            top,
-            11.0,
-            color,
-            Align::Center,
-            VAlign::Bottom,
-            bold,
-            !always,
-        );
+        let (a, v) = (Align::Center, VAlign::Bottom);
+        self.label_at(text, top, 11.0, color, a, v, bold, always);
     }
 
+    /// Text on a soft patch of the background, so dots and edges under it
+    /// don't show through, kept inside the canvas. Unless `always` (the
+    /// hovered or searched-for page, a lane's name), it's skipped when it
+    /// would overlap text already drawn, so draw the important ones first
+    /// (see [`Frame::label_order`]).
+    #[allow(clippy::too_many_arguments)]
+    pub fn label_at(
+        &mut self,
+        text: &SharedString,
+        at: Point<Pixels>,
+        size: f32,
+        color: Hsla,
+        align: Align,
+        valign: VAlign,
+        bold: bool,
+        always: bool,
+    ) {
+        self.place(text, at, size, color, align, valign, bold, Some(always));
+    }
+
+    /// `label`: `None` for plain text, else whether a label always shows.
     #[allow(clippy::too_many_arguments)]
     fn place(
         &mut self,
@@ -500,25 +510,38 @@ impl<'a> Painter<'a> {
         align: Align,
         valign: VAlign,
         bold: bool,
-        keep_clear: bool,
+        label: Option<bool>,
     ) {
         let shaped = self.shape(text, size, color, bold);
         let lh = px(size * 1.3);
-        let x = match align {
+        let mut x = match align {
             Align::Left => at.x,
             Align::Center => at.x - shaped.width() / 2.0,
             Align::Right => at.x - shaped.width(),
         };
-        let y = match valign {
+        let mut y = match valign {
             VAlign::Top => at.y,
             VAlign::Middle => at.y - lh / 2.0,
             VAlign::Bottom => at.y - lh,
         };
+        if label.is_some() {
+            let (lo, hi) = (self.bounds.origin, self.bounds.bottom_right());
+            x = x.min(hi.x - shaped.width() - px(4.0)).max(lo.x + px(4.0));
+            y = y.min(hi.y - lh).max(lo.y);
+        }
         let b = Bounds::new(point(x, y), gpui::size(shaped.width(), lh));
-        if keep_clear && self.placed.iter().any(|q| q.intersects(&b.dilate(px(3.0)))) {
+        if label == Some(false) && self.placed.iter().any(|q| q.intersects(&b.dilate(px(3.0)))) {
             return;
         }
         self.placed.push(b);
+        if label.is_some() {
+            let bg = Hsla {
+                a: 0.82,
+                ..theme::bg_content()
+            };
+            self.window
+                .paint_quad(fill(b.dilate(px(2.0)), bg).corner_radii(px(3.0)));
+        }
         let _ = shaped.paint(
             point(x, y),
             lh,

@@ -510,7 +510,7 @@ game:
   level_cleared: "level cleared — Space for the next (+1 life)"
 graph:
   empty: "No linked pages yet — [[wiki-links]] and #tags build the graph."
-  hint: "Drag to pan or move a node · pinch or ⌘-scroll to zoom · click a node to open"
+  hint: "Drag to pan or move a node · pinch or %{key}-scroll to zoom · click a node to open"
   filter_pages: Pages
   filter_whiteboards: Whiteboards
   filter_journals: Journals

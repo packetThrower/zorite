@@ -291,6 +291,29 @@ impl GraphStyle for Timeline {
                 n.kind == Kind::Board,
             );
         }
+        // Lane names, pinned top-right of each band: the panel covers the
+        // left edge, and the band's top is where its dots are sparsest. Before
+        // the page names, so those keep clear of them.
+        for (l, label) in lanes.labels.iter().enumerate() {
+            let y = lane_y(l) - v.len(lanes.h, 1.0) / 2.0 + px(4.0);
+            if y < b.origin.y || y > b.origin.y + b.size.height {
+                continue;
+            }
+            let x = b.origin.x + b.size.width - px(16.0);
+            p.dot(point(x, y + px(8.0)), px(3.5), lanes.colors[l]);
+            let (a, va) = (Align::Right, VAlign::Top);
+            let color = theme::text_secondary();
+            p.label_at(
+                label,
+                point(x - px(10.0), y),
+                12.0,
+                color,
+                a,
+                va,
+                true,
+                true,
+            );
+        }
         // Names on hover and search.
         for i in f.label_order(g) {
             if (f.hover.is_some() || f.matches.is_some()) && !f.dimmed(i) {
@@ -299,22 +322,6 @@ impl GraphStyle for Timeline {
                 let at = point(c.x, c.y - v.len(n.radius * 0.55, 2.5) - px(4.0));
                 p.label(&n.title, at, theme::text_primary(), f.lit(i), f.lit(i));
             }
-        }
-        // Pinned top-right of each band: the panel covers the left edge, and
-        // the band's top is where its dots are sparsest.
-        for (l, label) in lanes.labels.iter().enumerate() {
-            let y = lane_y(l) - v.len(lanes.h, 1.0) / 2.0 + px(4.0);
-            let x = b.origin.x + b.size.width - px(16.0);
-            p.dot(point(x, y + px(8.0)), px(3.5), lanes.colors[l]);
-            p.text(
-                label,
-                point(x - px(10.0), y),
-                12.0,
-                theme::text_secondary(),
-                Align::Right,
-                VAlign::Top,
-                true,
-            );
         }
     }
 

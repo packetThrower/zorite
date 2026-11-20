@@ -2608,7 +2608,7 @@ fn fmt_size(bytes: u64) -> String {
 /// primary modifier (Cmd on macOS, Ctrl elsewhere) — matching `secondary-` in
 /// the keymap; `CTRL` is the literal Control key (for Ctrl+Tab).
 #[cfg(target_os = "macos")]
-mod keys {
+pub(crate) mod keys {
     pub const MOD: &str = "⌘";
     pub const CTRL: &str = "⌃";
     pub const SHIFT: &str = "⇧";
@@ -2618,7 +2618,7 @@ mod keys {
     }
 }
 #[cfg(not(target_os = "macos"))]
-mod keys {
+pub(crate) mod keys {
     pub const MOD: &str = "Ctrl";
     pub const CTRL: &str = "Ctrl";
     pub const SHIFT: &str = "Shift";
