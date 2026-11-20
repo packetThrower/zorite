@@ -162,8 +162,21 @@ pub fn open_unlock_window(cx: &mut App) {
             // Theme like the app would: the saved skin + mode when the DB is
             // readable; an encrypted DB (theme prefs live inside the lock)
             // falls back to the default skin at the system appearance.
-            let (skin_id, mode_str) = crate::db::read_theme(&crate::paths::db_path());
+            // The database is still locked, so the look comes from its
+            // unencrypted mirror (the database read covers older notebooks
+            // that predate the mirror, when they aren't encrypted).
+            let (skin_id, mode_str, accent) = match crate::paths::saved_theme() {
+                Some((skin, mode, accent)) => {
+                    (Some(skin), Some(mode), theme::parse_accent(&accent))
+                }
+                None => {
+                    let (skin, mode) = crate::db::read_theme(&crate::paths::db_path());
+                    (skin, mode, None)
+                }
+            };
+            theme::set_accent_override(accent);
             let mut all = crate::skins::builtin_skins();
+            all.extend(crate::skins::load_user_skins());
             let idx = skin_id
                 .as_ref()
                 .and_then(|id| all.iter().position(|s| &s.id == id))
