@@ -26,6 +26,7 @@ log: <https://github.com/packetThrower/zorite/releases>.
   imported pages at their first journal mention instead of the import day.
 - **Right-click a page in the graph** for the same menu pages have everywhere
   else: favorite, open in a new tab or window, copy, export, rename, delete.
+- **The command palette highlights what you typed** in each result.
 
 ### Fixed
 
@@ -34,6 +35,10 @@ log: <https://github.com/packetThrower/zorite/releases>.
 - **Journal days in All pages preview as plain text**, without Markdown
   markers or link brackets.
 - **The first click in a freshly opened graph** lands on the node under it.
+- **Graph labels sit above their dots**, so the pointer no longer covers them,
+  and long names no longer pile on top of each other.
+- **The graph honors your OS's reduce-motion setting:** switching styles jumps
+  straight to the new layout instead of gliding.
 - **Journal days can be deleted.** Right-click a day in All pages or search results
   → **Delete page** removes it after a confirmation. The menu offered it
   before, but nothing happened (#186).

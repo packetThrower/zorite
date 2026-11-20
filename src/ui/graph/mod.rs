@@ -409,9 +409,14 @@ impl GraphState {
     }
 
     /// Advance a running morph to `now`; returns whether one is still running.
-    fn step_morph(&mut self, now: Instant) -> bool {
+    /// With the OS's reduce-motion setting on, it jumps straight to the end.
+    fn step_morph(&mut self, now: Instant, reduce_motion: bool) -> bool {
         let Some(m) = &self.morph else { return false };
-        let t = (now.duration_since(m.start).as_secs_f32() / MORPH.as_secs_f32()).min(1.0);
+        let t = if reduce_motion {
+            1.0
+        } else {
+            (now.duration_since(m.start).as_secs_f32() / MORPH.as_secs_f32()).min(1.0)
+        };
         let e = 1.0 - (1.0 - t).powi(3); // ease out
         let lerp = |a: f32, b: f32| a + (b - a) * e;
         for (i, p) in self.pos.iter_mut().enumerate() {
@@ -636,7 +641,7 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
 
     // Frame two onward: store the fit frame one painted (see `bake_fit`).
     state.bake_fit();
-    let morphing = state.step_morph(Instant::now());
+    let morphing = state.step_morph(Instant::now(), cx.reduce_motion());
     let state = &*state;
 
     // Snapshot for the paint closure (the state itself stays on AppView).
