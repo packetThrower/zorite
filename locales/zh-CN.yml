@@ -510,7 +510,7 @@ game:
   level_cleared: "关卡已清除——空格进入下一关（+1 命）"
 graph:
   empty: "尚无链接的页面——[[wiki 链接]] 和 #标签 可构建图谱。"
-  hint: "拖动以平移或移动节点 · 双指或 ⌘-滚轮缩放 · 点击节点打开"
+  hint: "拖动以平移或移动节点 · 双指或 %{key}-滚轮缩放 · 点击节点打开"
   filter_pages: 页面
   filter_whiteboards: 白板
   filter_journals: 日志

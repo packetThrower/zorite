@@ -189,6 +189,9 @@ impl AppView {
             _ => None,
         };
         let groups = Rc::new(groups);
+        // The typed query, for the rows' highlights (a row can't read the
+        // palette's state: it's drawn while that state is being updated).
+        let typed: Rc<std::cell::RefCell<String>> = Rc::default();
         let focus = state.clone();
         let weak = cx.entity().downgrade();
         window.open_dialog(cx, move |dialog, _window, _cx| {
@@ -196,10 +199,11 @@ impl AppView {
             let on_confirm = groups.clone();
             let page = page.clone();
             let weak = weak.clone();
+            let on_query = typed.clone();
             let command = groups.iter().fold(
                 Command::new(&state)
                     .bordered(false)
-                    .highlight_matches(true)
+                    .on_query(move |q, _, _| *on_query.borrow_mut() = q.trim().to_lowercase())
                     .placeholder(t!("command_palette.placeholder"))
                     .on_confirm(move |ix, window, cx| {
                         window.close_dialog(cx);
@@ -222,16 +226,34 @@ impl AppView {
                             .label(label.clone())
                             .items(items.iter().map(|(name, action)| {
                                 let (name, action) = (name.clone(), action.boxed_clone());
+                                let typed = typed.clone();
                                 CommandItem::new()
                                     .label(name.clone())
                                     .child(move |window, _cx| {
+                                        // Kit's `highlight_matches` only reaches its default
+                                        // rows, so mark what was typed here.
+                                        let marks = match_ranges(&name, &typed.borrow())
+                                            .into_iter()
+                                            .map(|r| {
+                                                let style = gpui::HighlightStyle {
+                                                    color: Some(crate::theme::accent()),
+                                                    font_weight: Some(gpui::FontWeight::SEMIBOLD),
+                                                    ..Default::default()
+                                                };
+                                                (r, style)
+                                            });
                                         // The default row would draw this hint itself, but only
                                         // for an item carrying `.action` — see above.
                                         h_flex()
                                             .flex_1()
                                             .gap_2()
                                             .items_center()
-                                            .child(div().flex_1().truncate().child(name.clone()))
+                                            .child(
+                                                div().flex_1().truncate().child(
+                                                    gpui::StyledText::new(name.clone())
+                                                        .with_highlights(marks.collect::<Vec<_>>()),
+                                                ),
+                                            )
                                             .children(Kbd::binding_for_action(
                                                 action.as_ref(),
                                                 None,
@@ -1003,4 +1025,52 @@ fn rgba_u32(c: gpui::Hsla) -> u32 {
     let c: gpui::Rgba = c.into();
     let ch = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
     ch(c.r) << 24 | ch(c.g) << 16 | ch(c.b) << 8 | ch(c.a)
+}
+
+/// Byte ranges of `text` that case-insensitively equal `query` (already
+/// lowercase), left to right, without overlaps.
+fn match_ranges(text: &str, query: &str) -> Vec<std::ops::Range<usize>> {
+    let mut out = Vec::new();
+    if query.is_empty() {
+        return out;
+    }
+    let mut next = 0;
+    for (start, _) in text.char_indices() {
+        if start < next {
+            continue;
+        }
+        let mut want = query.chars();
+        let mut end = start;
+        let mut lower = text[start..].char_indices().flat_map(|(i, c)| {
+            let w = c.len_utf8();
+            c.to_lowercase().map(move |l| (start + i + w, l))
+        });
+        let matched = loop {
+            match want.next() {
+                None => break true,
+                Some(q) => match lower.next() {
+                    Some((e, l)) if l == q => end = e,
+                    _ => break false,
+                },
+            }
+        };
+        if matched {
+            out.push(start..end);
+            next = end;
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::match_ranges;
+
+    #[test]
+    fn palette_marks_every_case_insensitive_match() {
+        assert_eq!(match_ranges("Go to Today", "to"), vec![3..5, 6..8]);
+        assert_eq!(match_ranges("Сегодня", "сег"), vec![0..6]);
+        assert!(match_ranges("Go to today", "").is_empty());
+        assert!(match_ranges("Go", "xyz").is_empty());
+    }
 }

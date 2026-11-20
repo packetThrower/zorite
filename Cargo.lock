@@ -3246,9 +3246,9 @@ checksum = "85701631a9bbecf47e6d19f145e85e57767e7c50f7192d5b1bf65b5ef43cb373"
 
 [[package]]
 name = "gpui-whiteboard"
-version = "0.5.5"
+version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "440344855a5e1fcab6ae4ffc58e7e6452f6326049f7abed4117035db42d5598d"
+checksum = "2e9e97f9327a3dc25de23cbb7645a2630b8262d183a64a93d8e06d33ef19fcbb"
 dependencies = [
  "gpui-pre",
  "log",
@@ -7944,7 +7944,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

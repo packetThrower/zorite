@@ -127,37 +127,38 @@ impl GraphStyle for Focus {
             }
             !l2.is_empty()
         });
-        // Outer ring, then inner ring, labels pointing away from the center.
+        // Outer ring, then inner ring.
         for &(i, _) in &l2 {
             let q = v.at(fr.pos[i]);
-            p.node(
-                q,
-                px(3.0),
-                group_color(g, i).opacity(dim(i)),
-                g.nodes[i].kind == Kind::Board,
-            );
-            let color = if fr.lit(i) {
-                theme::text_primary()
-            } else {
-                theme::text_secondary().opacity(dim(i))
-            };
-            radial_label(p, &g.nodes[i].title, c, q, 7.0, 10.5, color, fr.lit(i));
+            let color = group_color(g, i).opacity(dim(i));
+            p.node(q, px(3.0), color, g.nodes[i].kind == Kind::Board);
         }
         for &i in &l1 {
             let q = v.at(fr.pos[i]);
             let r = px(if fr.hover == Some(i) { 6.5 } else { 5.0 });
-            p.node(
-                q,
-                r,
-                group_color(g, i).opacity(dim(i)),
-                g.nodes[i].kind == Kind::Board,
-            );
-            let color = if fr.lit(i) {
-                theme::text_primary()
-            } else {
-                theme::text_primary().opacity(0.85 * dim(i))
+            let color = group_color(g, i).opacity(dim(i));
+            p.node(q, r, color, g.nodes[i].kind == Kind::Board);
+        }
+        // Labels pointing away from the center: the hovered page's first, then
+        // the inner ring's, then the outer ring's where there's room.
+        let mut order: Vec<(usize, bool)> = l1.iter().map(|&i| (i, true)).collect();
+        order.extend(l2.iter().map(|&(i, _)| (i, false)));
+        order.sort_by_key(|&(i, _)| !fr.lit(i));
+        for (i, inner) in order {
+            let q = v.at(fr.pos[i]);
+            let lit = fr.lit(i);
+            let (gap, size, color, bold) = match (inner, lit) {
+                (true, true) => (10.0, 12.0, theme::text_primary(), true),
+                (false, true) => (7.0, 10.5, theme::text_primary(), true),
+                (true, false) => (
+                    10.0,
+                    12.0,
+                    theme::text_primary().opacity(0.85 * dim(i)),
+                    true,
+                ),
+                (false, false) => (7.0, 10.5, theme::text_secondary().opacity(dim(i)), false),
             };
-            radial_label(p, &g.nodes[i].title, c, q, 10.0, 12.0, color, true);
+            radial_label(p, &g.nodes[i].title, c, q, gap, size, color, bold, lit);
         }
         // The center: a pill with a soft accent glow.
         let title = &g.nodes[f].title;
@@ -238,6 +239,7 @@ fn radial_label(
     size: f32,
     color: gpui::Hsla,
     bold: bool,
+    always: bool,
 ) {
     let (dx, dy) = (f32::from(at.x - center.x), f32::from(at.y - center.y));
     let len = dx.hypot(dy).max(0.01);
@@ -257,5 +259,5 @@ fn radial_label(
         VAlign::Middle
     };
     let q = point(at.x + px(cx * gap), at.y + px(cy * gap));
-    p.text(text, q, size, color, align, valign, bold);
+    p.label_at(text, q, size, color, align, valign, bold, always);
 }

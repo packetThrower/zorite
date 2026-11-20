@@ -1898,7 +1898,13 @@ impl SettingsView {
                 );
                 // A short preview of the release notes; the full notes are on the
                 // release page behind "View release".
-                let notes = a.notes.trim();
+                let notes = a
+                    .notes
+                    .lines()
+                    .filter_map(crate::ui::all_pages::plain_line)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let notes = notes.trim();
                 if !notes.is_empty() {
                     let mut preview: String = notes.chars().take(280).collect();
                     if notes.chars().count() > 280 {
@@ -2608,7 +2614,7 @@ fn fmt_size(bytes: u64) -> String {
 /// primary modifier (Cmd on macOS, Ctrl elsewhere) — matching `secondary-` in
 /// the keymap; `CTRL` is the literal Control key (for Ctrl+Tab).
 #[cfg(target_os = "macos")]
-mod keys {
+pub(crate) mod keys {
     pub const MOD: &str = "⌘";
     pub const CTRL: &str = "⌃";
     pub const SHIFT: &str = "⇧";
@@ -2618,7 +2624,7 @@ mod keys {
     }
 }
 #[cfg(not(target_os = "macos"))]
-mod keys {
+pub(crate) mod keys {
     pub const MOD: &str = "Ctrl";
     pub const CTRL: &str = "Ctrl";
     pub const SHIFT: &str = "Shift";

@@ -300,21 +300,30 @@ impl GraphStyle for Timeline {
                 p.label(&n.title, at, theme::text_primary(), f.lit(i), f.lit(i));
             }
         }
-        // Pinned top-right of each band: the panel covers the left edge, and
-        // the band's top is where its dots are sparsest.
+        // Lane names, pinned top-right of each band: the panel covers the
+        // left edge, and the band's top is where its dots are sparsest. After
+        // the page names, so a hovered name that lands here wins and the lane
+        // name steps aside until the hover ends.
         for (l, label) in lanes.labels.iter().enumerate() {
             let y = lane_y(l) - v.len(lanes.h, 1.0) / 2.0 + px(4.0);
+            if y < b.origin.y || y > b.origin.y + b.size.height {
+                continue;
+            }
             let x = b.origin.x + b.size.width - px(16.0);
-            p.dot(point(x, y + px(8.0)), px(3.5), lanes.colors[l]);
-            p.text(
+            let (a, va) = (Align::Right, VAlign::Top);
+            let color = theme::text_secondary();
+            if p.label_at(
                 label,
                 point(x - px(10.0), y),
                 12.0,
-                theme::text_secondary(),
-                Align::Right,
-                VAlign::Top,
+                color,
+                a,
+                va,
                 true,
-            );
+                false,
+            ) {
+                p.dot(point(x, y + px(8.0)), px(3.5), lanes.colors[l]);
+            }
         }
     }
 

@@ -517,7 +517,7 @@ fn chip(
         el.text_color(theme::text_secondary())
             .hover(|s| s.bg(theme::hover()))
     } else {
-        el.text_color(theme::text_tertiary()).opacity(0.6)
+        el.text_color(theme::text_tertiary())
     };
     el.on_click(on_click).child(label)
 }
@@ -525,7 +525,7 @@ fn chip(
 /// One line of Markdown as plain text for a preview: markers, link targets
 /// and images dropped, `[[wiki links]]` shown by name. `None` for a line with
 /// no text of its own (blank, an image, a `key:: value` property).
-fn plain_line(line: &str) -> Option<String> {
+pub(crate) fn plain_line(line: &str) -> Option<String> {
     use markdown::mdast::Node;
     fn collect(n: &Node, out: &mut String) {
         match n {
