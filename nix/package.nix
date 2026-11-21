@@ -79,6 +79,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     })
   ];
 
+  # The version Zorite reports (Settings → Updates, the update check);
+  # Cargo.toml's is a placeholder that release builds overwrite.
+  env.ZORITE_VERSION = finalAttrs.version;
+
   postInstall = ''
     install -Dm644 resources/icons/icon.png \
       $out/share/icons/hicolor/512x512/apps/zorite.png

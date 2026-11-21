@@ -1880,7 +1880,7 @@ impl SettingsView {
             let available = cx
                 .try_global::<crate::updater::UpdateState>()
                 .and_then(|u| u.available.clone());
-            let cur_version = env!("CARGO_PKG_VERSION");
+            let cur_version = crate::updater::VERSION;
             let mut col = div().flex().flex_col().gap(px(10.0)).child(
                 div()
                     .text_size(px(13.0))
