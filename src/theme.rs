@@ -491,6 +491,20 @@ pub fn apply(mut palette: Palette, is_dark: bool, window: &mut Window, cx: &mut 
             palette.accent_tint,
         ) = accent_variants(palette.accent);
     }
+    // Where nothing blurs behind the window (see `os_blurs`), glass would be
+    // plain see-through with the desktop's text legible behind ours: thicken
+    // it until it reads as a tint.
+    if !os_blurs() {
+        for c in [
+            &mut palette.bg_window,
+            &mut palette.bg_sidebar,
+            &mut palette.bg_content,
+        ] {
+            if c.a < 1.0 {
+                c.a += (1.0 - c.a) * 0.85;
+            }
+        }
+    }
     CURRENT.with(|c| *c.borrow_mut() = palette);
     Theme::change(
         if is_dark {
@@ -507,6 +521,19 @@ pub fn apply(mut palette: Palette, is_dark: bool, window: &mut Window, cx: &mut 
     // no-op unless it's the selected pack).
     crate::cursors::theme_changed();
     cx.refresh_windows();
+}
+
+/// Whether the OS blurs behind a translucent window. gpui asks for it on
+/// macOS and Windows; on Linux only KDE's compositor offers it (GNOME, X11
+/// and most others draw a translucent window plainly see-through).
+fn os_blurs() -> bool {
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    return true;
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let var = |k: &str| std::env::var(k).unwrap_or_default().to_uppercase();
+        var("XDG_SESSION_TYPE") == "WAYLAND" && var("XDG_CURRENT_DESKTOP").contains("KDE")
+    }
 }
 
 /// Does the active palette let the OS blur show through (the glass skins)?
