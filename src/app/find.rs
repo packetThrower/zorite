@@ -208,9 +208,12 @@ impl AppView {
     }
 
     /// Close the in-page find bar.
-    pub fn close_page_find(&mut self, cx: &mut Context<Self>) {
+    pub fn close_page_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.page_find.take().is_some() {
             self.apply_page_find_highlights(cx);
+            // The bar's field had the keyboard; with it gone nothing would,
+            // and shortcuts wouldn't fire until a click.
+            self.focus_handle.focus(window, cx);
             cx.notify();
         }
     }
@@ -358,9 +361,12 @@ impl AppView {
     }
 
     /// Close the feed find bar and clear every day's highlights.
-    pub fn close_feed_find(&mut self, cx: &mut Context<Self>) {
+    pub fn close_feed_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.feed_find.take().is_some() {
             self.apply_feed_find_highlights(cx);
+            // The bar's field had the keyboard; with it gone nothing would,
+            // and shortcuts wouldn't fire until a click.
+            self.focus_handle.focus(window, cx);
             cx.notify();
         }
     }

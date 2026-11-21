@@ -137,7 +137,7 @@ pub fn render(app: &AppView, day_min: Pixels, cx: &mut Context<AppView>) -> impl
                     |this: &mut AppView, _: &ClickEvent, _w, cx| this.feed_find_step(1, cx),
                 )))
                 .child(nav("feed-find-close", "✕").on_click(cx.listener(
-                    |this: &mut AppView, _: &ClickEvent, _w, cx| this.close_feed_find(cx),
+                    |this: &mut AppView, _: &ClickEvent, w, cx| this.close_feed_find(w, cx),
                 ))),
         )
     });

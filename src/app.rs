@@ -2235,11 +2235,8 @@ impl AppView {
         self.warm_backlink_labels(&backlinks, cx);
 
         // Inline-editable title: renames the page on Enter or blur.
-        let title_state = cx.new(|cx| {
-            let mut st = InputState::new(window, cx).default_value(page.title.clone());
-            align_to_text(&mut st, cx);
-            st
-        });
+        let title_state =
+            cx.new(|cx| InputState::new(window, cx).default_value(page.title.clone()));
         let title_sub = cx.subscribe_in(
             &title_state,
             window,
@@ -2248,7 +2245,6 @@ impl AppView {
                     let new = st.read(cx).value().trim().to_string();
                     this.commit_title_rename(pid, new, window, cx);
                 }
-                InputEvent::Change => st.update(cx, align_to_text),
                 _ => {}
             },
         );
@@ -7457,9 +7453,9 @@ impl Render for AppView {
                                 Some(TabKind::Journal)
                             ) =>
                         {
-                            this.close_feed_find(cx)
+                            this.close_feed_find(window, cx)
                         }
-                        None if this.page_find.is_some() => this.close_page_find(cx),
+                        None if this.page_find.is_some() => this.close_page_find(window, cx),
                         None if this.page_editing || this.editing_day.is_some() => window.blur(cx),
                         None => cx.propagate(),
                     }
@@ -8407,16 +8403,4 @@ fn forward_edit(action: impl gpui::Action, window: &mut Window, cx: &mut Context
 pub(crate) fn focus_input(input: Entity<InputState>, window: &mut Window, cx: &mut App) {
     input.update(cx, |s, cx| s.focus(window, cx));
     window.on_next_frame(move |window, cx| input.update(cx, |s, cx| s.focus(window, cx)));
-}
-
-/// Right-align a field whose text starts right-to-left (a Persian or Arabic
-/// page title), like the body below it.
-fn align_to_text(st: &mut InputState, cx: &mut Context<InputState>) {
-    let rtl = zorite_markdown::syntax::base_direction(&st.value()).is_rtl();
-    let align = if rtl {
-        gpui::TextAlign::Right
-    } else {
-        gpui::TextAlign::Left
-    };
-    st.set_text_align(align, cx);
 }

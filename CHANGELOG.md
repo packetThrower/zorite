@@ -40,6 +40,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
 - **Nix builds report their real version** in Settings → Updates (the flake:
   the newest release plus the commit) instead of v0.1.0 with an update nag.
 - **A Persian or Arabic page title** is right-aligned like its body.
+- **Closing a find bar with Esc** leaves the keyboard on the window, so
+  shortcuts work again without a click.
+- **Deleting a whiteboard closes its open tab.**
 - **All pages keeps its scroll position** when you switch tabs and back.
 - **The PDF page counter** shows the last page once it fills the view.
 - **Timeline keeps the year in view** beside the graph panel, and every graph

@@ -657,12 +657,17 @@ impl AppView {
                     self.favorites.remove(pos);
                     self.persist_favorites();
                 }
-                // Close any tabs showing the deleted page (journal at 0 is safe).
+                // Close any tabs showing the deleted page or board (journal at 0
+                // is safe).
                 let mut i = self.tabs.len();
                 while i > 1 {
                     i -= 1;
-                    if matches!(self.tabs[i].kind, TabKind::Page(pid) if pid == id) {
+                    if matches!(
+                        self.tabs[i].kind,
+                        TabKind::Page(pid) | TabKind::Whiteboard(pid) if pid == id
+                    ) {
                         self.tabs.remove(i);
+                        self.whiteboard_views.remove(&id);
                         if self.active > i {
                             self.active -= 1;
                         } else if self.active == i {
