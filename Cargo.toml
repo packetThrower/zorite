@@ -75,10 +75,10 @@ ratex-gpui = { version = "0.4.1", features = ["editor"] }
 # Our own page-virtualized PDF viewer (pure-Rust hayro), packetThrower/gpui-pdf.
 # `markup` adds the text-extraction layer + highlight rendering (Logseq-style);
 # `forms` normalizes AcroForm appearances so form values/checkboxes display.
-gpui-pdf = { version = "0.8.2", features = ["markup", "search", "forms"] }
+gpui-pdf = { version = "0.8.3", features = ["markup", "search", "forms"] }
 
 # Our own infinite-canvas whiteboard, packetThrower/gpui-whiteboard.
-gpui-whiteboard = "0.5.6"
+gpui-whiteboard = "0.5.7"
 
 # Our from-scratch text editor — replaces gpui-component's Input across the note
 # body editors (native spell-check + custom menus). packetThrower/zorite-editor.

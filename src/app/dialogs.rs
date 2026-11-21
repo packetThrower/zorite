@@ -274,7 +274,10 @@ impl AppView {
                 .border_color(theme::divider())
                 .child(command)
         });
+        // Again next frame: from the menu bar, the menu hands focus back to
+        // what had it when it opened, after this action ran.
         focus.update(cx, |state, cx| state.focus(window, cx));
+        window.on_next_frame(move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
     }
 
     /// Open the "insert page card" dialog, then place the chosen page as a card
@@ -734,7 +737,7 @@ impl AppView {
                 })
                 .on_cancel(|_, _window, _cx| true)
         });
-        self.new_page_input.update(cx, |s, cx| s.focus(window, cx));
+        focus_input(self.new_page_input.clone(), window, cx);
     }
 
     /// `RenamePage` handler: open a dialog with a text field, pre-filled

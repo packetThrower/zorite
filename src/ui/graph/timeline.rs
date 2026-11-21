@@ -175,7 +175,7 @@ impl GraphStyle for Timeline {
                     break;
                 }
                 let x = x_at(days_from_civil(y, m, 1));
-                if x < b.origin.x || x > b.origin.x + b.size.width {
+                if x < p.clear.origin.x || x > b.origin.x + b.size.width {
                     continue;
                 }
                 let strong = m == 1;
@@ -211,6 +211,38 @@ impl GraphStyle for Timeline {
                     strong,
                 );
             }
+        }
+        // The year (and month) at the left edge, pinned there, so the axis
+        // reads even when its last line is off screen or under the panel.
+        let left = p.clear.origin.x;
+        let unit = per_day * p.zoom();
+        if unit > 0.0 {
+            let day = start + (f32::from(left - x_at(start)) / unit).floor() as i32;
+            let y = year_of(day);
+            let label: SharedString = if months {
+                let m = (1..=12)
+                    .rev()
+                    .find(|&m| days_from_civil(y, m, 1) <= day)
+                    .unwrap_or(1);
+                let name = time::Month::try_from(m as u8)
+                    .map(dates::month_name)
+                    .unwrap_or_default();
+                format!("{name} {y}").into()
+            } else {
+                y.to_string().into()
+            };
+            let at = point(left + px(5.0), b.origin.y + px(8.0));
+            let (a, va) = (Align::Left, VAlign::Top);
+            p.label_at(
+                &label,
+                at,
+                11.0,
+                theme::text_secondary(),
+                a,
+                va,
+                true,
+                false,
+            );
         }
         let now = x_at(today());
         p.stroke(1.0, theme::accent().opacity(0.6), Some([3.0, 3.0]), |pb| {
@@ -332,6 +364,6 @@ impl GraphStyle for Timeline {
     }
 
     fn hint(&self) -> Option<SharedString> {
-        Some(t!("graph.hint_timeline").into())
+        Some(t!("graph.hint_timeline", key = crate::settings::keys::MOD).into())
     }
 }
