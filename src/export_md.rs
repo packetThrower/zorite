@@ -268,7 +268,8 @@ fn board_to_canvas(
             | K::Triangle(b)
             | K::RoundRect(b)
             | K::Star(b)
-            | K::Hexagon(b) => {
+            | K::Hexagon(b)
+            | K::Sticky(b) => {
                 let mut node = json!({
                     "id": id, "type": "text",
                     "text": el.label.clone().unwrap_or_default(),

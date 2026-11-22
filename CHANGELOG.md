@@ -42,8 +42,11 @@ log: <https://github.com/packetThrower/zorite/releases>.
     between copied shapes stay attached to the copies.
   - **Group and ungroup** with ⌘G / Ctrl+G and ⇧⌘G / Ctrl+Shift+G (or the
     right-click menu). A group selects, moves and copies as one.
-  - **Sticky notes**: the new toolbar tool (key N) drops a yellow note and
-    starts typing; the text wraps and shrinks to fit.
+  - **Sticky notes**: the new toolbar tool (key N) drops a paper note with a
+    folded corner, in one of five colors, and starts typing from the top-left;
+    long text wraps and shrinks to fit.
+  - **Typing a shape's label**, the caret now moves on Enter and Space right
+    away instead of waiting for the next letter.
 
 ### Fixed
 

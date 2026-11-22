@@ -157,7 +157,8 @@ mod tests {
         let scene = gpui_whiteboard::Scene::from_json(
             r#"{"elements":[
                 {"id":1,"kind":{"rect":{"x":0,"y":0,"w":200,"h":100,"width":2}},"label":"Hello","fill":4294156447},
-                {"id":2,"kind":{"ellipse":{"x":260,"y":0,"w":120,"h":100,"width":3}},"stroke":3815994623}
+                {"id":2,"kind":{"ellipse":{"x":260,"y":0,"w":120,"h":100,"width":3}},"stroke":3815994623},
+                {"id":3,"kind":{"sticky":{"x":420,"y":0,"w":140,"h":140,"width":1}},"label":"Call the plumber","fill":4291420927}
             ]}"#,
         );
         let d = scene
