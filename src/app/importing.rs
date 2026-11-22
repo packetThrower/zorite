@@ -180,14 +180,23 @@ impl AppView {
     pub(super) fn on_copy_board_image(
         &mut self,
         _: &CopyBoardImage,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let png = self
             .take_context_board()
             .and_then(|id| self.board_drawing(id))
             .and_then(|(_, d)| crate::board_export::png(&d));
-        if let Some(png) = png {
+        let Some(png) = png else { return };
+        // gpui's Linux clipboard only offers text (X11 and Wayland), so the
+        // image goes through wl-copy / xclip, which keep serving it.
+        #[cfg(target_os = "linux")]
+        if let Err(e) = copy_png_linux(&png) {
+            self.show_error_dialog(t!("board_export.failed"), e, window, cx);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = window;
             cx.write_to_clipboard(ClipboardItem::new_image(&gpui::Image::from_bytes(
                 gpui::ImageFormat::Png,
                 png,
@@ -659,4 +668,35 @@ fn file_stem(title: &str) -> String {
         })
         .collect();
     name.trim().to_string()
+}
+
+/// Hands `png` to the desktop's clipboard tool: wl-copy on Wayland, xclip
+/// on X11. Both fork and keep owning the selection after we return.
+#[cfg(target_os = "linux")]
+fn copy_png_linux(png: &[u8]) -> Result<(), String> {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let (tool, args): (&str, &[&str]) = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        ("wl-copy", &["--type", "image/png"])
+    } else {
+        ("xclip", &["-selection", "clipboard", "-t", "image/png"])
+    };
+    let mut child = Command::new(tool)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| t!("board_export.needs_tool", tool = tool).into_owned())?;
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(png)
+        .map_err(|e| e.to_string())?;
+    match child.wait() {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("{tool}: {s}")),
+        Err(e) => Err(e.to_string()),
+    }
 }

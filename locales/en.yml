@@ -139,6 +139,7 @@ settings:
     auto_check: Automatically check for updates
     prereleases: Include pre-releases
   desc:
+    mode_dark_only: "This theme is always dark, so Light and Auto have no effect."
     notebooks: "Each notebook is a self-contained folder - its own database, settings, and attachments. Switching relaunches Zorite into the picked notebook; removing one only forgets it here, never touching its files. The chip at the bottom of the sidebar is the quick switcher."
     data_location: "Where the current notebook keeps its database, settings, and attachments. Moving relocates the data to the new folder, then reopens Zorite."
     unused_images: "Delete images in the managed store that no note, whiteboard, or template references. Files added in the last hour are kept."
@@ -793,3 +794,4 @@ cursors:
 board_export:
   failed: "Board export failed"
   too_large: "The board is too large to export as an image."
+  needs_tool: "Copy as image needs %{tool} installed (wl-clipboard on Wayland, xclip on X11)."

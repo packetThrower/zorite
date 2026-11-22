@@ -1341,6 +1341,16 @@ impl SettingsView {
             "auto",
             weak,
         );
+        // A dark-only theme (Glass) ignores the mode; say so rather than
+        // letting Light look broken.
+        let dark_only = app
+            .upgrade()
+            .is_some_and(|a| a.read(cx).current_skin().dark_only);
+        let appearance = if dark_only {
+            appearance.description(SharedString::from(t!("settings.desc.mode_dark_only")))
+        } else {
+            appearance
+        };
 
         // Accent color: preset swatches (etch341's set) + Default, which goes
         // back to the theme's own accent.

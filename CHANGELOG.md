@@ -60,6 +60,20 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Fixed
 
+- **From testing beta.3 on Linux:**
+  - **Copy as image** works on Linux (X11 and Wayland) by handing the PNG to
+    `wl-copy` or `xclip`; it put empty text on the clipboard before. Without
+    the tool, Zorite says which one to install.
+  - **Board text in fonts without ☐ / ☑ or a script** (Arabic, Hebrew,
+    Japanese…) draws from a system font that has it, on the board and in
+    exports, on distributions that keep fonts outside the usual folders
+    (NixOS, Fedora, Arch).
+  - **Ticking a checklist box** works without editing the text first.
+  - **Enter on a selected shape or text box** starts editing it.
+  - **Undo (Ctrl+Z) takes back an image pasted into a page.**
+  - **Ctrl+Shift+F selects the previous search** so typing replaces it.
+  - **Settings → Mode** says Glass is always dark instead of quietly
+    ignoring Light.
 - **Whiteboards, from a test pass on macOS, Windows and Linux:**
   - **Pasting an image (⌘V / Ctrl+V)** onto a board works; it didn't on
     Windows or Linux.
