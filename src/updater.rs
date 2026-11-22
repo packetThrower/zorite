@@ -64,7 +64,7 @@ pub fn spawn_check(include_prerelease: bool, cx: &mut gpui::App) {
     cx.spawn(async move |cx| {
         let result = cx
             .background_executor()
-            .spawn(async move { check_for_update(env!("CARGO_PKG_VERSION"), include_prerelease) })
+            .spawn(async move { check_for_update(VERSION, include_prerelease) })
             .await;
         let available = match result {
             Ok(Some(a)) => a,
@@ -83,6 +83,14 @@ pub fn spawn_check(include_prerelease: bool, cx: &mut gpui::App) {
     })
     .detach();
 }
+
+/// The running version: `ZORITE_VERSION` when the build sets it (the Nix
+/// package, which can't rewrite Cargo.toml the way `release.yml` does), else
+/// Cargo.toml's.
+pub const VERSION: &str = match option_env!("ZORITE_VERSION") {
+    Some(v) => v,
+    None => env!("CARGO_PKG_VERSION"),
+};
 
 /// Query the project's GitHub Releases for the newest release the user's
 /// `include_prerelease` preference allows.
@@ -145,10 +153,8 @@ fn fetch_releases(include_prerelease: bool) -> Option<Vec<Release>> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(5))
-        .user_agent(concat!(
-            "Zorite/",
-            env!("CARGO_PKG_VERSION"),
-            " (https://github.com/packetThrower/zorite)"
+        .user_agent(&format!(
+            "Zorite/{VERSION} (https://github.com/packetThrower/zorite)"
         ))
         .build();
     let response = match agent.get(url).call() {
@@ -176,9 +182,8 @@ fn fetch_releases(include_prerelease: bool) -> Option<Vec<Release>> {
 mod tests {
     #[test]
     fn current_version_parses_as_semver() {
-        // The boot-time check feeds `CARGO_PKG_VERSION` into `check_for_update`;
-        // make sure it's parseable semver.
-        let raw = env!("CARGO_PKG_VERSION");
-        semver::Version::parse(raw).expect("CARGO_PKG_VERSION must be valid semver");
+        // The boot-time check feeds `VERSION` into `check_for_update`; make
+        // sure it's parseable semver.
+        semver::Version::parse(super::VERSION).expect("VERSION must be valid semver");
     }
 }

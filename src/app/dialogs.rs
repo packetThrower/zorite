@@ -274,7 +274,10 @@ impl AppView {
                 .border_color(theme::divider())
                 .child(command)
         });
+        // Again next frame: from the menu bar, the menu hands focus back to
+        // what had it when it opened, after this action ran.
         focus.update(cx, |state, cx| state.focus(window, cx));
+        window.on_next_frame(move |window, cx| focus.update(cx, |s, cx| s.focus(window, cx)));
     }
 
     /// Open the "insert page card" dialog, then place the chosen page as a card
@@ -654,12 +657,17 @@ impl AppView {
                     self.favorites.remove(pos);
                     self.persist_favorites();
                 }
-                // Close any tabs showing the deleted page (journal at 0 is safe).
+                // Close any tabs showing the deleted page or board (journal at 0
+                // is safe).
                 let mut i = self.tabs.len();
                 while i > 1 {
                     i -= 1;
-                    if matches!(self.tabs[i].kind, TabKind::Page(pid) if pid == id) {
+                    if matches!(
+                        self.tabs[i].kind,
+                        TabKind::Page(pid) | TabKind::Whiteboard(pid) if pid == id
+                    ) {
                         self.tabs.remove(i);
+                        self.whiteboard_views.remove(&id);
                         if self.active > i {
                             self.active -= 1;
                         } else if self.active == i {
@@ -734,7 +742,7 @@ impl AppView {
                 })
                 .on_cancel(|_, _window, _cx| true)
         });
-        self.new_page_input.update(cx, |s, cx| s.focus(window, cx));
+        focus_input(self.new_page_input.clone(), window, cx);
     }
 
     /// `RenamePage` handler: open a dialog with a text field, pre-filled

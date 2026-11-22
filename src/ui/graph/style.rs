@@ -292,6 +292,9 @@ pub struct Painter<'a> {
     pub window: &'a mut Window,
     pub cx: &'a mut App,
     pub bounds: Bounds<Pixels>,
+    /// `bounds` minus what the open panel covers on the left: where labels
+    /// are kept, and where pinned headers start.
+    pub clear: Bounds<Pixels>,
     pub view: View,
     /// Text drawn so far this frame, so [`Painter::label`] can keep clear.
     placed: Vec<Bounds<Pixels>>,
@@ -304,16 +307,23 @@ impl<'a> Painter<'a> {
         bounds: Bounds<Pixels>,
         pan: [f32; 2],
         zoom: f32,
+        panel_inset: f32,
     ) -> Self {
         let view = View {
             center: bounds.center(),
             pan,
             zoom,
         };
+        let inset = px(panel_inset);
+        let clear = Bounds::new(
+            point(bounds.origin.x + inset, bounds.origin.y),
+            gpui::size(bounds.size.width - inset, bounds.size.height),
+        );
         Self {
             window,
             cx,
             bounds,
+            clear,
             view,
             placed: Vec::new(),
         }
@@ -481,7 +491,7 @@ impl<'a> Painter<'a> {
 
     /// Text on a soft patch of the background, so dots and edges under it
     /// don't show through, nudged inside the canvas when it hangs over an
-    /// edge (one wholly off screen is skipped). Unless `always` (the hovered
+    /// edge or under the panel (one wholly off screen or under it is skipped). Unless `always` (the hovered
     /// or searched-for page), it's also skipped when it would overlap text
     /// already drawn, so draw the important ones first (see
     /// [`Frame::label_order`]). Returns whether it was drawn.
@@ -527,10 +537,10 @@ impl<'a> Painter<'a> {
         };
         if label.is_some() {
             let whole = Bounds::new(point(x, y), gpui::size(shaped.width(), lh));
-            if !whole.intersects(&self.bounds) {
+            if !whole.intersects(&self.clear) {
                 return false;
             }
-            let (lo, hi) = (self.bounds.origin, self.bounds.bottom_right());
+            let (lo, hi) = (self.clear.origin, self.clear.bottom_right());
             x = x.min(hi.x - shaped.width() - px(4.0)).max(lo.x + px(4.0));
             y = y.min(hi.y - lh).max(lo.y);
         }

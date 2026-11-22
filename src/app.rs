@@ -707,6 +707,9 @@ pub struct AppView {
     /// offset; `md_block_scroll` tracks the rendered markdown blocks' bounds (via
     /// `MarkdownView::track_blocks`) so the active match's block can be located.
     pub page_scroll: ScrollHandle,
+    /// All pages' list: outlives the tab's element, so switching tabs and
+    /// back keeps the scroll position.
+    pub all_pages_scroll: ScrollHandle,
     pub md_block_scroll: ScrollHandle,
 
     _subs: Vec<Subscription>,
@@ -985,6 +988,7 @@ impl AppView {
             page_find: None,
             feed_find: None,
             page_scroll: ScrollHandle::new(),
+            all_pages_scroll: ScrollHandle::new(),
             md_block_scroll: ScrollHandle::new(),
             _subs: vec![
                 search_sub,
@@ -1956,7 +1960,10 @@ impl AppView {
             }
             TabKind::Page(id) => self.load_page_editor(id, window, cx),
             TabKind::Pdf(_) => self.page_editor = None,
-            TabKind::Whiteboard(_) => self.page_editor = None,
+            TabKind::Whiteboard(id) => {
+                self.page_editor = None;
+                self.focus_board(id, window, cx);
+            }
             TabKind::AllPages => {
                 self.page_editor = None;
                 self.refresh_all_pages_pdfs();
@@ -4495,6 +4502,18 @@ impl AppView {
         self.whiteboard_views.insert(id, view);
         // Seed the new view with the current template list.
         self.refresh_templates(cx);
+        self.focus_board(id, window, cx);
+    }
+
+    /// Give an opened board the keyboard, so tool keys work without a click
+    /// first. Again next frame, for File → New Whiteboard (see `focus_input`).
+    fn focus_board(&self, id: i64, window: &mut Window, cx: &mut App) {
+        use gpui::Focusable as _;
+        if let Some(view) = self.whiteboard_views.get(&id) {
+            let handle = view.focus_handle(cx);
+            handle.focus(window, cx);
+            window.on_next_frame(move |window, cx| handle.focus(window, cx));
+        }
     }
 
     /// The user's saved whiteboard colors (packed `0xRRGGBBAA`), from settings.
@@ -7434,10 +7453,14 @@ impl Render for AppView {
                                 Some(TabKind::Journal)
                             ) =>
                         {
-                            this.close_feed_find(cx)
+                            this.close_feed_find(window, cx)
                         }
-                        None if this.page_find.is_some() => this.close_page_find(cx),
-                        None if this.page_editing || this.editing_day.is_some() => window.blur(cx),
+                        None if this.page_find.is_some() => this.close_page_find(window, cx),
+                        // Leave editing for the window root, not nothing: with no
+                        // focus at all, shortcuts don't fire until a click.
+                        None if this.page_editing || this.editing_day.is_some() => {
+                            this.focus_handle.focus(window, cx)
+                        }
                         None => cx.propagate(),
                     }
                 }),
@@ -8376,4 +8399,12 @@ fn forward_edit(action: impl gpui::Action, window: &mut Window, cx: &mut Context
     } else {
         cx.propagate();
     }
+}
+
+/// Focus a text field now and again on the next frame. A menu-bar item runs
+/// its action and then the menu hands focus back to what had it when the menu
+/// opened, which would undo focusing during the action.
+pub(crate) fn focus_input(input: Entity<InputState>, window: &mut Window, cx: &mut App) {
+    input.update(cx, |s, cx| s.focus(window, cx));
+    window.on_next_frame(move |window, cx| input.update(cx, |s, cx| s.focus(window, cx)));
 }

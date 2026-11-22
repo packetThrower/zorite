@@ -466,6 +466,16 @@ impl GraphState {
 }
 
 /// The camera (pan, zoom) that fits every shown node inside `size` with margin.
+/// How much of the canvas's left edge the open panel covers, when the canvas
+/// is wide enough to keep things clear of it.
+fn panel_inset(size: gpui::Size<Pixels>, panel_open: bool) -> f32 {
+    if panel_open && f32::from(size.width) > PANEL_W * 2.5 {
+        PANEL_W
+    } else {
+        0.0
+    }
+}
+
 fn fit_camera(
     size: Size<Pixels>,
     graph: &Graph,
@@ -493,11 +503,7 @@ fn fit_camera(
     const PAD: f32 = 80.0;
     // Fit right of the open panel when there's room, so it covers nothing.
     let full_w = f32::from(size.width).max(1.0);
-    let panel = if panel_open && full_w > PANEL_W * 2.5 {
-        PANEL_W
-    } else {
-        0.0
-    };
+    let panel = panel_inset(size, panel_open);
     let (bw, bh) = (maxx - minx + PAD * 2.0, maxy - miny + PAD * 2.0);
     let (w, h) = (full_w - panel, f32::from(size.height).max(1.0));
     let zoom = (w / bw).min(h / bh).clamp(0.05, 1.25);
@@ -844,7 +850,14 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
                 style.paint(
                     &graph,
                     &frame,
-                    &mut Painter::new(window, cx, bounds, pan, zoom),
+                    &mut Painter::new(
+                        window,
+                        cx,
+                        bounds,
+                        pan,
+                        zoom,
+                        panel_inset(bounds.size, panel_open),
+                    ),
                 );
                 if morphing {
                     window.request_animation_frame();

@@ -30,6 +30,31 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Fixed
 
+- **Opening a page no longer changes its Updated date.** Viewing (or clicking
+  into) a page saved it unchanged and stamped it as edited.
+- **Glass themes stay readable where nothing blurs behind the window** (GNOME,
+  X11): the glass is thicker there instead of plainly see-through.
+- **Menu-bar items that open a field** (command palette, find, search, new
+  page) keep the keyboard on that field, and an opened whiteboard takes the
+  keyboard so tool keys work without a click first.
+- **Nix builds report their real version** in Settings → Updates (the flake:
+  the newest release plus the commit) instead of v0.1.0 with an update nag.
+- **A Persian or Arabic page title** is right-aligned like its body.
+- **Closing a find bar with Esc** leaves the keyboard on the window, so
+  shortcuts work again without a click.
+- **Deleting a whiteboard closes its open tab.**
+- **Copying text works on Linux X11.** The copied text disappeared as soon as
+  it was put on the clipboard, so nothing could be pasted, not even back into
+  Zorite.
+- **Esc out of editing** keeps the keyboard on the window, so shortcuts work
+  right after it.
+- **Searching with one or two letters is fast again.** Short searches also
+  scanned whiteboards' canvas data, which on a big board took over a second
+  per keystroke.
+- **All pages keeps its scroll position** when you switch tabs and back.
+- **The PDF page counter** shows the last page once it fills the view.
+- **Timeline keeps the year in view** beside the graph panel, and every graph
+  style's hint mentions Ctrl/⌘-scroll to zoom.
 - **Enter in whiteboard text breaks the line on Windows**, and Enter and Tab
   add mind-map nodes there again; both were swallowed as if typing in an
   input method (gpui-whiteboard 0.5.6).

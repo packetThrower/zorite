@@ -68,7 +68,7 @@ impl AppView {
             return;
         }
         if let Some(pf) = self.page_find.as_ref() {
-            pf.input.update(cx, |s, cx| s.focus(window, cx));
+            focus_input(pf.input.clone(), window, cx);
             return;
         }
         let input =
@@ -85,7 +85,7 @@ impl AppView {
                 _ => {}
             },
         );
-        input.update(cx, |s, cx| s.focus(window, cx));
+        focus_input(input.clone(), window, cx);
         self.page_find = Some(PageFind {
             input,
             query: String::new(),
@@ -208,9 +208,12 @@ impl AppView {
     }
 
     /// Close the in-page find bar.
-    pub fn close_page_find(&mut self, cx: &mut Context<Self>) {
+    pub fn close_page_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.page_find.take().is_some() {
             self.apply_page_find_highlights(cx);
+            // The bar's field had the keyboard; with it gone nothing would,
+            // and shortcuts wouldn't fire until a click.
+            self.focus_handle.focus(window, cx);
             cx.notify();
         }
     }
@@ -218,7 +221,7 @@ impl AppView {
     /// Open (or refocus) the journal feed's find bar (⌘F on the Journal tab).
     pub fn open_feed_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(ff) = self.feed_find.as_ref() {
-            ff.input.update(cx, |s, cx| s.focus(window, cx));
+            focus_input(ff.input.clone(), window, cx);
             return;
         }
         let input =
@@ -234,7 +237,7 @@ impl AppView {
                 _ => {}
             },
         );
-        input.update(cx, |s, cx| s.focus(window, cx));
+        focus_input(input.clone(), window, cx);
         self.feed_find = Some(FeedFind {
             input,
             query: String::new(),
@@ -358,9 +361,12 @@ impl AppView {
     }
 
     /// Close the feed find bar and clear every day's highlights.
-    pub fn close_feed_find(&mut self, cx: &mut Context<Self>) {
+    pub fn close_feed_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.feed_find.take().is_some() {
             self.apply_feed_find_highlights(cx);
+            // The bar's field had the keyboard; with it gone nothing would,
+            // and shortcuts wouldn't fire until a click.
+            self.focus_handle.focus(window, cx);
             cx.notify();
         }
     }
@@ -369,7 +375,7 @@ impl AppView {
     /// Drives ⌘⇧F — the journal feed's "find", and a quick jump from anywhere.
     pub fn focus_global_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_collapsed = false;
-        self.search_input.update(cx, |s, cx| s.focus(window, cx));
+        focus_input(self.search_input.clone(), window, cx);
         cx.notify();
     }
 }

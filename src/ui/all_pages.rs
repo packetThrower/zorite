@@ -360,6 +360,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
                 .flex_1()
                 .min_h_0()
                 .overflow_y_scroll()
+                .track_scroll(&app.all_pages_scroll)
                 .flex()
                 .flex_col()
                 .child(list),

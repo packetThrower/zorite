@@ -293,6 +293,14 @@ fn page_title(pe: &PageEditor, crumb: Option<gpui::AnyElement>) -> impl IntoElem
                 // text; at 24px they clip descenders, so override them.
                 Input::new(&pe.title_state)
                     .appearance(false)
+                    // A right-to-left title lines up with its body.
+                    .text_align(
+                        if zorite_markdown::syntax::base_direction(&pe.title).is_rtl() {
+                            gpui::TextAlign::Right
+                        } else {
+                            gpui::TextAlign::Left
+                        },
+                    )
                     .text_size(px(24.0))
                     .line_height(px(30.0))
                     .py(px(0.0))
@@ -508,7 +516,7 @@ fn find_bar(pf: &PageFind, cx: &mut Context<AppView>) -> impl IntoElement {
         )
         .child(
             find_btn("find-close", "✕")
-                .on_click(cx.listener(|this, _: &ClickEvent, _w, cx| this.close_page_find(cx))),
+                .on_click(cx.listener(|this, _: &ClickEvent, w, cx| this.close_page_find(w, cx))),
         )
 }
 

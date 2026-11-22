@@ -14,7 +14,20 @@
         # The same derivation nixpkgs ships (nix/package.nix), built from this
         # checkout instead of the release tag. Git dependencies come from the
         # lock via Nix's builtin fetcher, so there is no cargoHash to maintain.
+        # A flake build isn't a release: report the newest released CHANGELOG
+        # section plus the commit (e.g. 0.14.0+git.89a8faa). Build metadata
+        # doesn't count in semver order, so the update check stays quiet until
+        # a newer release than that section is out.
+        released =
+          let
+            lines = pkgs.lib.splitString "\n" (builtins.readFile ./CHANGELOG.md);
+            hits = map (builtins.match "## [[]([0-9]+[.][0-9]+[.][0-9]+)[]].*") lines;
+          in
+          builtins.head (pkgs.lib.findFirst (m: m != null) [ "0.0.0" ] hits);
+        version = "${released}+git.${self.shortRev or "dirty"}";
+
         zorite = (pkgs.callPackage ./nix/package.nix { }).overrideAttrs (old: {
+          inherit version;
           src = self;
           cargoDeps = pkgs.rustPlatform.importCargoLock {
             lockFile = ./Cargo.lock;
@@ -23,6 +36,7 @@
           # nixpkgs master's cargoSetupHook forces system libraries (2026-10-12);
           # nixos-unstable doesn't have it yet. Remove once it does.
           env = (old.env or { }) // {
+            ZORITE_VERSION = version;
             OPENSSL_NO_VENDOR = "1";
             LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
           };

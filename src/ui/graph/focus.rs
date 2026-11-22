@@ -220,7 +220,7 @@ impl GraphStyle for Focus {
     }
 
     fn hint(&self) -> Option<SharedString> {
-        Some(t!("graph.hint_focus").into())
+        Some(t!("graph.hint_focus", key = crate::settings::keys::MOD).into())
     }
 }
 

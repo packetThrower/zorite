@@ -530,8 +530,8 @@ graph:
   style_islands: Islands
   style_focus: Focus
   style_timeline: Timeline
-  hint_focus: "Click a page to center it · click the center to open it · drag to pan"
-  hint_timeline: "Pages sit at the day they were created · hover to trace links · drag to pan"
+  hint_focus: "Click a page to center it · click the center to open it · drag to pan · %{key}-scroll to zoom"
+  hint_timeline: "Pages sit at the day they were created · hover to trace links · drag to pan · %{key}-scroll to zoom"
   focus_legend: "Inner ring: %{linked} linked · outer ring: %{two} two links away"
   unlinked: "Unlinked pages · %{count}"
   lane_other: Other

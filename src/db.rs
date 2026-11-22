@@ -870,9 +870,13 @@ impl Db {
         rows.collect()
     }
 
+    /// Unchanged content is no write at all, so a page only looks updated when
+    /// it was: opening a page focuses its editor on a trailing blank line (an
+    /// appended newline) and saves on blur, so trailing newlines don't count.
     pub fn set_page_content(&self, id: i64, content: &str) -> rusqlite::Result<()> {
         self.conn.execute(
-            "UPDATE pages SET content = ?2, updated_at = datetime('now') WHERE id = ?1",
+            "UPDATE pages SET content = ?2, updated_at = datetime('now') \
+             WHERE id = ?1 AND rtrim(content, char(10)) IS NOT rtrim(?2, char(10))",
             params![id, content],
         )?;
         Ok(())
@@ -1444,7 +1448,10 @@ impl Db {
         let like = format!("%{}%", escape_like(q));
         // The trigram index needs ≥3 chars; 1–2 char queries fall back to the (rare,
         // small) LIKE scan. Either way: title matches first, then journals by date,
-        // capped to `limit`.
+        // capped to `limit`. Whiteboards stay out of the LIKE scan as they do the
+        // index: their content is canvas JSON (a big board is megabytes, which the
+        // image/PDF-link scan then crawled per keystroke), and
+        // `search::whiteboard_hits` finds them by title.
         let rows: Vec<(i64, String, String)> = if q.chars().count() >= 3 {
             // Case-insensitive substring via the trigram FTS index. The query is a
             // quoted phrase (inner quotes doubled) so punctuation can't break MATCH.
@@ -1468,7 +1475,8 @@ impl Db {
         } else {
             let mut stmt = self.conn.prepare(
                 "SELECT id, title, content FROM pages \
-                 WHERE title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\' \
+                 WHERE (title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\') \
+                   AND kind != 'whiteboard' \
                  ORDER BY (CASE WHEN title LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END), \
                           is_journal DESC, journal_date DESC, title COLLATE NOCASE \
                  LIMIT ?2",
@@ -1802,6 +1810,33 @@ mod tests {
     /// verify had stashed, which pointed at the file the swap replaced. The
     /// database re-encrypted correctly, but every later write in that session
     /// went to the deleted inode and vanished on exit.
+    #[test]
+    fn saving_unchanged_content_keeps_updated_at() {
+        let db = Db::open_in_memory().unwrap();
+        let page = db.get_or_create_page("Viewed").unwrap();
+        db.set_page_content(page.id, "same").unwrap();
+        let stamp = |db: &Db| -> String {
+            db.conn
+                .query_row(
+                    "SELECT updated_at FROM pages WHERE id = ?1",
+                    [page.id],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        db.conn
+            .execute(
+                "UPDATE pages SET updated_at = '2000-01-01 00:00:00' WHERE id = ?1",
+                [page.id],
+            )
+            .unwrap();
+        db.set_page_content(page.id, "same").unwrap();
+        db.set_page_content(page.id, "same\n").unwrap();
+        assert_eq!(stamp(&db), "2000-01-01 00:00:00");
+        db.set_page_content(page.id, "edited").unwrap();
+        assert_ne!(stamp(&db), "2000-01-01 00:00:00");
+    }
+
     #[test]
     fn password_change_after_verify_keeps_writing_to_disk() {
         let dir = std::env::temp_dir().join(format!("zorite-pwchg-{}", std::process::id()));
@@ -2192,6 +2227,10 @@ mod tests {
         let p = db.get_or_create_page("Notes").unwrap();
         db.set_page_content(p.id, "hello zphirium world").unwrap();
         assert_eq!(hits("zphirium"), 1, "a normal page should be searchable");
+        // Short queries skip the index for a LIKE scan; whiteboards stay out
+        // of that too.
+        let short = db.search_rows("zp", 50).unwrap();
+        assert_eq!(short.iter().map(|r| r.0).collect::<Vec<_>>(), vec![p.id]);
     }
 
     #[test]
