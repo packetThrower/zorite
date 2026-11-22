@@ -48,7 +48,10 @@ log: <https://github.com/packetThrower/zorite/releases>.
   - **Curved lines and arrows**: three curved tools in the Lines menu, and a
     handle in the middle of any selected line or arrow that bends it (drag
     it back onto the line to straighten). Hold Shift while dragging to move
-    the curve's peak along the line.
+    the curve's peak along the line. With any line tool, drag from a shape
+    to draw an arrow attached to it.
+  - **Ctrl+Home / Ctrl+End** (⌘↑ / ⌘↓) jump to the start or end of board
+    text while editing it.
   - **Bullets and checklists in board text**: start a line with `* ` or `- `
     for a bullet, or `[ ] ` for a checkbox, in a text box, a shape or a sticky
     note. Enter continues the list, and clicking a box ticks it.
