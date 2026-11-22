@@ -45,6 +45,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
   - **Sticky notes**: the new toolbar tool (key N) drops a paper note with a
     folded corner, in one of five colors, and starts typing from the top-left;
     long text wraps and shrinks to fit.
+  - **Curved lines and arrows**: three curved tools in the Lines menu, and a
+    handle in the middle of any selected line or arrow that bends it (drag
+    it back onto the line to straighten).
   - **Bullets and checklists in board text**: start a line with `* ` or `- `
     for a bullet, or `[ ] ` for a checkbox, in a text box, a shape or a sticky
     note. Enter continues the list, and clicking a box ticks it.

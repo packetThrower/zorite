@@ -508,6 +508,7 @@ fn line_or_arrow(shape: &Edn, x1: f32, y1: f32, x2: f32, y2: f32, width: f32) ->
         style: SegmentStyle::Solid,
         start_anchor: None,
         end_anchor: None,
+        bend: 0.0,
     };
     if arrow_at("end") {
         ElementKind::Arrow(seg(x1, y1, x2, y2))

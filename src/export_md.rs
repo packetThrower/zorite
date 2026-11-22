@@ -775,6 +775,7 @@ mod tests {
             style: SegmentStyle::Solid,
             start_anchor: None,
             end_anchor: None,
+            bend: 0.0,
         };
         let mut labeled = el(
             1,
