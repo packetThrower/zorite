@@ -422,6 +422,13 @@ findings worth fixing rather than just documenting):
   is handled internally, but ⌘V actually routes through `on_paste` (with `None`
   deliberately propagating so a clipboard image can paste) — fix the comment to
   match `API.md`
+- [ ] `gpui-whiteboard`: **replace `ttf-parser` with `skrifa`** — `ttf-parser` is
+  unmaintained (RUSTSEC-2026-0192) and the whiteboard uses it directly for
+  on-canvas text (glyph outlines, advances, metrics and the system fallback
+  faces in `font.rs`). `skrifa` (Google Fonts' fontations) is the advisory's
+  suggested replacement. Upstream gpui pulls `ttf-parser` in too (via usvg /
+  fontdb), so this clears our own use, not the advisory in Zorite's tree;
+  `deny.toml`'s ignore stays until upstream moves as well
 - [ ] Extract editor features (e.g. the slash menu) into a reusable crate if they generalize
 - [ ] Publish to crates.io once the API is stable
 - [x] **Split the reusable crates (`zorite-markdown`, `gpui-pdf`) into their own repos** so outside contributors don't have to fork/clone all of Zorite to contribute — **defer until the first stable release**. Gotcha to plan for: the crates use the workspace's pinned gpui rev (`[workspace.dependencies]`, one spec byte-for-byte); in separate repos each picks its own rev, and a mismatch puts two gpui versions in one consumer's build (won't compile), so the revs must be kept in lockstep. Extraction is cheap and lossless when the time comes — `git subtree split -P crates/<name>` carries each crate's history into the new repo. (crates.io publishing stays blocked regardless, since gpui is a git-only dep.)
