@@ -78,7 +78,7 @@ ratex-gpui = { version = "0.4.1", features = ["editor"] }
 gpui-pdf = { version = "0.8.3", features = ["markup", "search", "forms"] }
 
 # Our own infinite-canvas whiteboard, packetThrower/gpui-whiteboard.
-gpui-whiteboard = "0.5.7"
+gpui-whiteboard = "0.6.0"
 
 # Our from-scratch text editor — replaces gpui-component's Input across the note
 # body editors (native spell-check + custom menus). packetThrower/zorite-editor.
@@ -184,6 +184,8 @@ url = "2"
 # minor (0.25) so the `Frame` type unifies with `RenderImage::new`, matching the
 # gpui-pdf crate.
 image = "0.25"
+# Board PNG export (already in the tree via ratex-render).
+tiny-skia = "0.11"
 
 # JPEG fast-path: DCT-scaled decode at a reduced size, so a 12-MP phone photo
 # doesn't pay a full-resolution decode just to be downscaled (src/images.rs).

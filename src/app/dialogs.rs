@@ -329,6 +329,7 @@ impl AppView {
                         ),
                 )
         });
+        focus_input(self.new_page_input.clone(), window, cx);
     }
 
     /// Resolve `title` to a page (creating it) and add it as a card on the board.
@@ -371,16 +372,19 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.new_page_input
-            .update(cx, |s, cx| s.set_value("", window, cx));
-        let input = self.new_page_input.clone();
+        // Its own field: the shared page-name one says "Page name…".
+        let input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder(t!("dialogs.template_name_placeholder"))
+        });
         let weak = cx.entity().downgrade();
+        let field = input.clone();
         window.open_dialog(cx, move |dialog, _window, _cx| {
             let dialog = gpui::Styled::bg(dialog, crate::theme::dialog());
             let weak_ok = weak.clone();
             let json_ok = json.clone();
             let weak_btn = weak.clone();
             let json_btn = json.clone();
+            let (in_ok, in_btn) = (field.clone(), field.clone());
             dialog
                 .title(t!("dialogs.save_template_title"))
                 .w(px(420.0))
@@ -388,10 +392,12 @@ impl AppView {
                 // this, Enter closes the dialog without saving (looks like
                 // Cancel). Save here, same as the button.
                 .on_ok(move |_, _window, cx| {
-                    let _ = weak_ok.update(cx, |this, cx| this.save_template_named(&json_ok, cx));
+                    let name = in_ok.read(cx).value().to_string();
+                    let _ = weak_ok
+                        .update(cx, |this, cx| this.save_template_named(&name, &json_ok, cx));
                     true
                 })
-                .child(Input::new(&input))
+                .child(Input::new(&field))
                 .footer(
                     DialogFooter::new()
                         .child(
@@ -404,20 +410,22 @@ impl AppView {
                                 .primary()
                                 .label(t!("common.save"))
                                 .on_click(move |_, window, cx| {
+                                    let name = in_btn.read(cx).value().to_string();
                                     let _ = weak_btn.update(cx, |this, cx| {
-                                        this.save_template_named(&json_btn, cx)
+                                        this.save_template_named(&name, &json_btn, cx)
                                     });
                                     window.close_dialog(cx);
                                 }),
                         ),
                 )
         });
+        focus_input(input, window, cx);
     }
 
-    /// Read the template name from the shared page-name input (blank → a default
-    /// title) and store it. Shared by the Save button and Enter (`on_ok`).
-    fn save_template_named(&mut self, json: &str, cx: &mut Context<Self>) {
-        let name = self.new_page_input.read(cx).value().trim().to_string();
+    /// Store a template under `name` (blank → a default title). Shared by the
+    /// Save button and Enter (`on_ok`).
+    fn save_template_named(&mut self, name: &str, json: &str, cx: &mut Context<Self>) {
+        let name = name.trim().to_string();
         let name = if name.is_empty() {
             t!("dialogs.template_default_name").into_owned()
         } else {

@@ -268,7 +268,8 @@ fn board_to_canvas(
             | K::Triangle(b)
             | K::RoundRect(b)
             | K::Star(b)
-            | K::Hexagon(b) => {
+            | K::Hexagon(b)
+            | K::Sticky(b) => {
                 let mut node = json!({
                     "id": id, "type": "text",
                     "text": el.label.clone().unwrap_or_default(),
@@ -763,6 +764,7 @@ mod tests {
             label_color: None,
             styles: Vec::new(),
             mindmap: None,
+            group: None,
         };
         let seg = |x1, y1, x2, y2| SegGeom {
             x1,
@@ -773,6 +775,8 @@ mod tests {
             style: SegmentStyle::Solid,
             start_anchor: None,
             end_anchor: None,
+            bend: 0.0,
+            bend_at: 0.5,
         };
         let mut labeled = el(
             1,

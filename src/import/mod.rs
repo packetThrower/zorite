@@ -487,6 +487,7 @@ mod tests {
                 label_color: None,
                 styles: Vec::new(),
                 mindmap: None,
+                group: None,
             }],
         };
         let bundle = ImportBundle {

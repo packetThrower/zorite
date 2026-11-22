@@ -366,6 +366,7 @@ unlock:
 dialogs:
   insert_card_title: "插入页面卡片"
   save_template_title: "另存为模板"
+  template_name_placeholder: "模板名称…"
   template_default_name: "未命名模板"
   delete_template_title: "删除模板？"
   delete_template_body: "“%{name}” 将被永久删除。此操作无法撤销。"
@@ -603,6 +604,9 @@ page_ctx:
   copy_contents: "复制内容"
   copy_contents_md: "复制内容为 Markdown"
   export_pdf: "导出为 PDF…"
+  copy_image: "复制为图片"
+  export_png: "导出为 PNG…"
+  export_svg: "导出为 SVG…"
   new_sub_page: "新建子页面"
   rename_page: "重命名页面"
   delete_page: "删除页面"
@@ -786,3 +790,6 @@ export_md:
   read_dest_failed: "读取目标位置失败：%{e}"
 cursors:
   pick_folder: "请选择主题文件夹。"
+board_export:
+  failed: "白板导出失败"
+  too_large: "白板太大，无法导出为图片。"

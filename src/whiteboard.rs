@@ -30,10 +30,11 @@ pub fn style() -> WhiteboardStyleFn {
         // menu). `elevated` would do, but in light themes it equals the white
         // canvas (`bg_content`) and the panel vanishes — `bg_sidebar` is a
         // distinct light grey there, and in dark themes it's the same raised tone
-        // `elevated` already uses. A hint of transparency keeps the overlay feel;
-        // a drop shadow (in the crate) lifts it off a same-colored background.
+        // `elevated` already uses. Opaque, so a busy board doesn't show through
+        // the templates gallery or a menu; a drop shadow (in the crate) lifts it
+        // off a same-colored background.
         panel_strong: gpui::Hsla {
-            a: 0.92,
+            a: 1.0,
             ..theme::bg_sidebar()
         },
         accent: theme::accent_tint(),
@@ -55,4 +56,21 @@ pub fn style() -> WhiteboardStyleFn {
             gpui::hsla(0.90, 0.65, 0.60, 1.0), // pink
         ],
     })
+}
+
+/// The words on a board — text boxes and shape labels, one per line — for
+/// search.
+pub fn scene_text(scene: &Scene) -> String {
+    let mut out = String::new();
+    for e in &scene.elements {
+        let text = match &e.kind {
+            ElementKind::Text(t) => Some(t.content.as_str()),
+            _ => e.label.as_deref(),
+        };
+        if let Some(t) = text.filter(|t| !t.trim().is_empty()) {
+            out.push_str(t);
+            out.push('\n');
+        }
+    }
+    out
 }

@@ -1,4 +1,4 @@
-//! Type-aware global search: pages, whiteboards (by title), plus the PDF and
+//! Type-aware global search: pages, whiteboards (title and text), plus the PDF and
 //! image *files* referenced in pages. A `pdf:` / `img:` / `page:` / `wb:` prefix
 //! (or the matching results-pane chip) filters by kind; a bare query returns
 //! every kind that matches.
@@ -157,22 +157,30 @@ fn filter_kind(filter: Filter) -> Option<Kind> {
     }
 }
 
-/// Whiteboards whose title contains `needle` (empty → all). Title-only — a
-/// board's content is canvas JSON, not searchable text — so this is a plain
-/// filter over [`Db::list_whiteboards`], newest first, capped at `LIMIT`.
+/// Whiteboards whose title or text (text boxes, shape labels) contains
+/// `needle` (empty → all), newest first, capped at `LIMIT`. A text match shows
+/// the matching line; the canvas JSON itself is never searched.
 fn whiteboard_hits(db: &Db, needle: &str) -> Vec<Hit> {
-    let needle = needle.to_lowercase();
-    db.list_whiteboards()
+    let lower = needle.to_lowercase();
+    db.whiteboard_texts()
         .unwrap_or_default()
         .into_iter()
-        .filter(|w| needle.is_empty() || w.title.to_lowercase().contains(&needle))
-        .take(LIMIT as usize)
-        .map(|w| Hit {
-            kind: Kind::Whiteboard,
-            title: w.title,
-            subtitle: t!("search.subtitle_whiteboard").into(),
-            target: Target::Page(w.id),
+        .filter_map(|(id, title, text)| {
+            let subtitle = if lower.is_empty() || title.to_lowercase().contains(&lower) {
+                t!("search.subtitle_whiteboard").into_owned()
+            } else if text.to_lowercase().contains(&lower) {
+                crate::db::snippet(&text, needle)
+            } else {
+                return None;
+            };
+            Some(Hit {
+                kind: Kind::Whiteboard,
+                title,
+                subtitle,
+                target: Target::Page(id),
+            })
         })
+        .take(LIMIT as usize)
         .collect()
 }
 
@@ -233,7 +241,7 @@ fn collect(db: &Db, term: &str) -> Vec<Hit> {
             }
         }
     }
-    // Whiteboards that match by title (their canvas JSON isn't full-text indexed).
+    // Whiteboards, by title or board text (their canvas JSON isn't indexed).
     hits.extend(whiteboard_hits(db, term));
     hits
 }
@@ -362,11 +370,10 @@ mod tests {
     }
 
     #[test]
-    fn whiteboards_match_by_title_only() {
+    fn whiteboards_match_by_title_and_text() {
         let db = crate::db::Db::open_in_memory().unwrap();
         let board = db.create_whiteboard().unwrap(); // "Untitled Whiteboard"
-        // Even with searchable-looking text in the canvas JSON, only the title
-        // matches — content is never indexed for boards.
+        // JSON keys/values that aren't board text never match.
         db.set_page_content(board.id, r#"{"marker":"zphirium"}"#)
             .unwrap();
 
@@ -374,13 +381,35 @@ mod tests {
         let r = run(&db, "untitled");
         assert!(r.counts.whiteboard >= 1, "board counted for the chip");
         assert!(r.hits.iter().any(|h| h.kind == Kind::Whiteboard));
-        // Content text does NOT surface the board.
-        assert!(
-            run(&db, "zphirium")
+        let wb = |q: &str| -> Vec<Hit> {
+            run(&db, q)
                 .hits
-                .iter()
-                .all(|h| h.kind != Kind::Whiteboard)
+                .into_iter()
+                .filter(|h| h.kind == Kind::Whiteboard)
+                .collect()
+        };
+        assert!(wb("zphirium").is_empty());
+
+        // Text boxes and shape labels match, with the matching line shown —
+        // and an edit is picked up on the next search.
+        db.set_page_content(
+            board.id,
+            r#"{"elements":[
+                {"id":1,"kind":{"text":{"x":0,"y":0,"content":"Launch plan","size":16}}},
+                {"id":2,"kind":{"rect":{"x":0,"y":40,"w":80,"h":40,"width":2}},"label":"Ship the zphirium build"}
+            ]}"#,
+        )
+        .unwrap();
+        let hits = wb("zphirium");
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].subtitle.contains("Ship the zphirium build"));
+        assert_eq!(wb("launch").len(), 1);
+        db.set_page_content(board.id, "{}").unwrap();
+        assert!(
+            wb("zphirium").is_empty(),
+            "stale text dropped after an edit"
         );
+
         // `wb:` keeps only boards; with no term it browses them all.
         let only = run(&db, "wb:untitled");
         assert!(!only.hits.is_empty() && only.hits.iter().all(|h| h.kind == Kind::Whiteboard));

@@ -18,6 +18,7 @@ rust_i18n::i18n!("locales", fallback = "en");
 
 mod actions;
 mod app;
+mod board_export;
 mod clipboard;
 mod cursors;
 mod dates;

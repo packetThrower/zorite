@@ -35,13 +35,13 @@ use gpui_component::{
 use zorite_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
-    ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, GoToToday,
-    ImportLogseq, ImportObsidian, InsertTab, JumpToDate, NewPage, NewSubPage, NewWhiteboard,
-    NextTab, OpenAllPages, OpenCommandPalette, OpenGraph, OpenInNewTab, OpenInNewWindow,
-    OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
-    SlashUp, ThemeAuto, ThemeDark, ThemeLight, ToggleFavorite, ToggleLineNumbers, ToggleSidebar,
-    ToggleSidebarSide, ToggleWysiwyg,
+    CloseTab, CopyBoardImage, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
+    ExportActivePdf, ExportBoardPng, ExportBoardSvg, ExportNotebook, ExportPdf, FindInPage,
+    FitImages, GlobalSearch, GoToToday, ImportLogseq, ImportObsidian, InsertTab, JumpToDate,
+    NewPage, NewSubPage, NewWhiteboard, NextTab, OpenAllPages, OpenCommandPalette, OpenGraph,
+    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
+    SlashCancel, SlashConfirm, SlashDown, SlashUp, ThemeAuto, ThemeDark, ThemeLight,
+    ToggleFavorite, ToggleLineNumbers, ToggleSidebar, ToggleSidebarSide, ToggleWysiwyg,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -7476,9 +7476,17 @@ impl Render for AppView {
             .on_action(cx.listener(|_, _: &gpui_component::input::Cut, w, cx| {
                 forward_edit(zorite_editor::Cut, w, cx)
             }))
-            .on_action(cx.listener(|_, _: &gpui_component::input::Paste, w, cx| {
-                forward_edit(zorite_editor::Paste, w, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &gpui_component::input::Paste, w, cx| {
+                    // On a board, ⌘V / Ctrl+V pastes a clipboard image or files
+                    // (copied shapes fall through to the board's own paste).
+                    if matches!(this.tabs[this.active].kind, TabKind::Whiteboard(_)) {
+                        this.on_paste_image(&PasteImage, w, cx)
+                    } else {
+                        forward_edit(zorite_editor::Paste, w, cx)
+                    }
+                }),
+            )
             .on_action(
                 cx.listener(|_, _: &gpui_component::input::SelectAll, w, cx| {
                     forward_edit(zorite_editor::SelectAll, w, cx)
@@ -7487,6 +7495,9 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_export_pdf))
+            .on_action(cx.listener(Self::on_export_board_png))
+            .on_action(cx.listener(Self::on_export_board_svg))
+            .on_action(cx.listener(Self::on_copy_board_image))
             .on_action(cx.listener(Self::on_export_active_pdf))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_copy_page_link))

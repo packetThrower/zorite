@@ -32,9 +32,50 @@ log: <https://github.com/packetThrower/zorite/releases>.
   table or code block whole) (#199). **⇧⌘D / Ctrl+Shift+D** duplicates every
   line the selection touches, and **⌥⇧↑/↓ / Alt+Shift+↑/↓** moves them up or
   down, carrying list items' children and whole blocks like dragging does.
+- **Whiteboards:**
+  - **Search finds the words on a board**: text boxes and shape labels, with
+    the matching line shown under the result.
+  - **Export a board** as PNG or SVG, or **copy it as an image**, from its
+    right-click menu (sidebar, tab, search, All pages). Exports are on white,
+    in the board's own font, with images included.
+  - **Duplicate** the selection with ⌘D / Ctrl+D or by Alt-dragging it; arrows
+    between copied shapes stay attached to the copies.
+  - **Group and ungroup** with ⌘G / Ctrl+G and ⇧⌘G / Ctrl+Shift+G (or the
+    right-click menu). A group selects, moves and copies as one.
+  - **Sticky notes**: the new toolbar tool (key N) drops a paper note with a
+    folded corner, in one of five colors, and starts typing from the top-left;
+    long text wraps and shrinks to fit.
+  - **Curved lines and arrows**: three curved tools in the Lines menu, and a
+    handle in the middle of any selected line or arrow that bends it (drag
+    it back onto the line to straighten). Hold Shift while dragging to move
+    the curve's peak along the line. With any line tool, drag from a shape
+    to draw an arrow attached to it.
+  - **Ctrl+Home / Ctrl+End** (⌘↑ / ⌘↓) jump to the start or end of board
+    text while editing it.
+  - **Bullets and checklists in board text**: start a line with `* ` or `- `
+    for a bullet, or `[ ] ` for a checkbox, in a text box, a shape or a sticky
+    note. Enter continues the list, and clicking a box ticks it.
+  - **Typing a shape's label**, the caret now moves on Enter and Space right
+    away instead of waiting for the next letter.
 
 ### Fixed
 
+- **Whiteboards, from a test pass on macOS, Windows and Linux:**
+  - **Pasting an image (⌘V / Ctrl+V)** onto a board works; it didn't on
+    Windows or Linux.
+  - **Save as template** keeps the name you type, in its own "Template name…"
+    field; the page-card dialog's field is focused too.
+  - **The templates gallery, color picker and menus** are opaque, so a busy
+    board no longer shows through them.
+  - **Shape labels stay readable on their fill**, e.g. a template's pastel
+    boxes in a dark theme.
+  - **Right-click** selects the shape under it; on empty canvas it clears the
+    selection, and its Paste lands where you clicked.
+  - **A connector arrow** attaches to the connector that lights up when you let
+    go near a shape.
+  - **Esc** closes an open toolbar flyout, and with nothing selected puts a
+    drawing tool down (back to Select).
+  - **Double-clicking the toolbar's grip** also turns it back into a row.
 - **Opening a page no longer changes its Updated date.** Viewing (or clicking
   into) a page saved it unchanged and stamped it as edited.
 - **Glass themes stay readable where nothing blurs behind the window** (GNOME,

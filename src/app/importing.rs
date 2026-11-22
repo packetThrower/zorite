@@ -85,19 +85,9 @@ impl AppView {
             }
         };
         // Native save dialog, then write the PDF (fast enough to run inline).
-        let name: String = title
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' || c == ' ' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
         let rx = cx.prompt_for_new_path(
             &crate::paths::desktop_dir(),
-            Some(&format!("{}.pdf", name.trim())),
+            Some(&format!("{}.pdf", file_stem(&title))),
         );
         cx.spawn_in(window, async move |_this, _cx| {
             let Ok(Ok(Some(path))) = rx.await else {
@@ -110,6 +100,99 @@ impl AppView {
             }
         })
         .detach();
+    }
+
+    /// The board a page-menu / tab-menu board export acts on.
+    fn take_context_board(&mut self) -> Option<i64> {
+        let target = self
+            .context_target
+            .take()
+            .or_else(|| self.context_page.take().map(|(id, _)| TabKind::Page(id)));
+        match target? {
+            TabKind::Whiteboard(id) | TabKind::Page(id) => Some(id),
+            _ => None,
+        }
+    }
+
+    /// A board's title and its drawing in the board's own font, with dark ink
+    /// (exports go on white). Read from the DB, which every edit saves to.
+    fn board_drawing(&self, id: i64) -> Option<(String, gpui_whiteboard::Drawing)> {
+        let page = self.db.get_page(id).ok()??;
+        let font = self.board_font(id).unwrap_or_default();
+        let drawing = crate::whiteboard::Scene::from_json(&page.content)
+            .to_drawing(&font, gpui::rgba(crate::board_export::INK).into())?;
+        Some((page.title, drawing))
+    }
+
+    pub(super) fn on_export_board_png(
+        &mut self,
+        _: &ExportBoardPng,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.export_board(true, window, cx);
+    }
+
+    pub(super) fn on_export_board_svg(
+        &mut self,
+        _: &ExportBoardSvg,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.export_board(false, window, cx);
+    }
+
+    /// Save the context board as a PNG (`png`) or SVG behind a save dialog.
+    fn export_board(&mut self, png: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((title, drawing)) = self
+            .take_context_board()
+            .and_then(|id| self.board_drawing(id))
+        else {
+            return;
+        };
+        let ext = if png { "png" } else { "svg" };
+        let rx = cx.prompt_for_new_path(
+            &crate::paths::desktop_dir(),
+            Some(&format!("{}.{ext}", file_stem(&title))),
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(path))) = rx.await else {
+                return;
+            };
+            let bytes = if png {
+                crate::board_export::png(&drawing)
+            } else {
+                Some(crate::board_export::svg(&drawing).into_bytes())
+            };
+            let result = bytes
+                .ok_or_else(|| t!("board_export.too_large").into_owned())
+                .and_then(|b| std::fs::write(&path, b).map_err(|e| e.to_string()));
+            if let Err(e) = result {
+                let _ = this.update_in(cx, |this, window, cx| {
+                    this.show_error_dialog(t!("board_export.failed"), e, window, cx);
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// `CopyBoardImage` handler: the context board as a PNG on the clipboard.
+    pub(super) fn on_copy_board_image(
+        &mut self,
+        _: &CopyBoardImage,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let png = self
+            .take_context_board()
+            .and_then(|id| self.board_drawing(id))
+            .and_then(|(_, d)| crate::board_export::png(&d));
+        if let Some(png) = png {
+            cx.write_to_clipboard(ClipboardItem::new_image(&gpui::Image::from_bytes(
+                gpui::ImageFormat::Png,
+                png,
+            )));
+        }
     }
 
     /// `ImportLogseq` handler: pick a Logseq graph folder, then choose how
@@ -560,4 +643,20 @@ impl AppView {
                 .on_cancel(|_, _window, _cx| true)
         });
     }
+}
+
+/// `title` as a file name: anything but letters, digits, `-` and spaces
+/// becomes `_`.
+fn file_stem(title: &str) -> String {
+    let name: String = title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    name.trim().to_string()
 }

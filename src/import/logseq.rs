@@ -356,6 +356,7 @@ fn image_element(
         label_color: None,
         styles: Vec::new(),
         mindmap: None,
+        group: None,
     }]
 }
 
@@ -448,6 +449,7 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
         label_color: None,
         styles: Vec::new(),
         mindmap: None,
+        group: None,
     }];
     // A box/ellipse keeps its text in `:label` → the shape's native label, which
     // the renderer centers and auto-shrinks to fit inside the outline.
@@ -506,6 +508,8 @@ fn line_or_arrow(shape: &Edn, x1: f32, y1: f32, x2: f32, y2: f32, width: f32) ->
         style: SegmentStyle::Solid,
         start_anchor: None,
         end_anchor: None,
+        bend: 0.0,
+        bend_at: 0.5,
     };
     if arrow_at("end") {
         ElementKind::Arrow(seg(x1, y1, x2, y2))

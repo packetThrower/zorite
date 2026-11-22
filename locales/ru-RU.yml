@@ -366,6 +366,7 @@ unlock:
 dialogs:
   insert_card_title: "Вставить карточку страницы"
   save_template_title: "Сохранить как шаблон"
+  template_name_placeholder: "Название шаблона…"
   template_default_name: "Шаблон без названия"
   delete_template_title: "Удалить шаблон?"
   delete_template_body: "«%{name}» будет удалён безвозвратно. Это действие нельзя отменить."
@@ -603,6 +604,9 @@ page_ctx:
   copy_contents: "Копировать содержимое"
   copy_contents_md: "Копировать содержимое как Markdown"
   export_pdf: "Экспорт в PDF…"
+  copy_image: "Копировать как изображение"
+  export_png: "Экспорт в PNG…"
+  export_svg: "Экспорт в SVG…"
   new_sub_page: "Новая подстраница"
   rename_page: "Переименовать страницу"
   delete_page: "Удалить страницу"
@@ -786,3 +790,6 @@ export_md:
   read_dest_failed: "ошибка чтения: %{e}"
 cursors:
   pick_folder: "Укажите папку с темой."
+board_export:
+  failed: "Не удалось экспортировать доску"
+  too_large: "Доска слишком велика для экспорта в изображение."
