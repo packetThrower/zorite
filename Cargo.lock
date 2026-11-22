@@ -3246,9 +3246,9 @@ checksum = "85701631a9bbecf47e6d19f145e85e57767e7c50f7192d5b1bf65b5ef43cb373"
 
 [[package]]
 name = "gpui-whiteboard"
-version = "0.6.1"
+version = "0.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f9c3775f348f31f6693da64488ff8d52dbf2fe18b1d9ba55d113404e34edad61"
+checksum = "847bc41ca8074c2c7e1f6f2275a336614a788360ef1a14f962a900cb9ae6e60a"
 dependencies = [
  "gpui-pre",
  "log",

@@ -69,6 +69,7 @@ log: <https://github.com/packetThrower/zorite/releases>.
     exports, on distributions that keep fonts outside the usual folders
     (NixOS, Fedora, Arch).
   - **Ticking a checklist box** works without editing the text first.
+  - **Enter on a selected shape or text box** starts editing it.
   - **Undo (Ctrl+Z) takes back an image pasted into a page.**
   - **Ctrl+Shift+F selects the previous search** so typing replaces it.
   - **Settings → Mode** says Glass is always dark instead of quietly
