@@ -9,16 +9,30 @@
 //! protocol), it falls back to gpui's plain-string copy so a copy never
 //! silently does nothing.
 
+use std::cell::RefCell;
+
 use gpui::{App, ClipboardItem};
+
+thread_local! {
+    /// One clipboard for the app's lifetime. On Linux the copied data belongs
+    /// to the `Clipboard` that set it: a dropped one takes it along (arboard
+    /// tries a hand-over to the clipboard manager, which often times out), so
+    /// a per-copy instance left the X11 clipboard empty.
+    static CLIPBOARD: RefCell<Option<arboard::Clipboard>> = const { RefCell::new(None) };
+}
 
 /// Put `markdown` on the clipboard as plain text + rendered HTML.
 pub fn copy_rich(markdown: &str, cx: &mut App) {
     let html =
         markdown::to_html_with_options(markdown, &markdown::Options::gfm()).unwrap_or_default();
     let wrote = !html.is_empty()
-        && arboard::Clipboard::new()
-            .and_then(|mut c| c.set_html(html, Some(markdown.to_string())))
-            .is_ok();
+        && CLIPBOARD.with_borrow_mut(|slot| {
+            if slot.is_none() {
+                *slot = arboard::Clipboard::new().ok();
+            }
+            slot.as_mut()
+                .is_some_and(|c| c.set_html(html, Some(markdown.to_string())).is_ok())
+        });
     if !wrote {
         cx.write_to_clipboard(ClipboardItem::new_string(markdown.to_string()));
     }

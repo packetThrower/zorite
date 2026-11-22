@@ -7456,7 +7456,11 @@ impl Render for AppView {
                             this.close_feed_find(window, cx)
                         }
                         None if this.page_find.is_some() => this.close_page_find(window, cx),
-                        None if this.page_editing || this.editing_day.is_some() => window.blur(cx),
+                        // Leave editing for the window root, not nothing: with no
+                        // focus at all, shortcuts don't fire until a click.
+                        None if this.page_editing || this.editing_day.is_some() => {
+                            this.focus_handle.focus(window, cx)
+                        }
                         None => cx.propagate(),
                     }
                 }),

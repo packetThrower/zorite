@@ -43,6 +43,11 @@ log: <https://github.com/packetThrower/zorite/releases>.
 - **Closing a find bar with Esc** leaves the keyboard on the window, so
   shortcuts work again without a click.
 - **Deleting a whiteboard closes its open tab.**
+- **Copying text works on Linux X11.** The copied text disappeared as soon as
+  it was put on the clipboard, so nothing could be pasted, not even back into
+  Zorite.
+- **Esc out of editing** keeps the keyboard on the window, so shortcuts work
+  right after it.
 - **All pages keeps its scroll position** when you switch tabs and back.
 - **The PDF page counter** shows the last page once it fills the view.
 - **Timeline keeps the year in view** beside the graph panel, and every graph
