@@ -2064,6 +2064,18 @@ fn keyboard_page() -> SettingPage {
             t!("settings.kb.select_all").to_string(),
             vec![keys::MOD, "A"],
         ),
+        (
+            t!("settings.kb.duplicate").to_string(),
+            vec![keys::MOD, "D"],
+        ),
+        (
+            t!("settings.kb.duplicate_lines").to_string(),
+            vec![keys::MOD, keys::SHIFT, "D"],
+        ),
+        (
+            t!("settings.kb.move_lines").to_string(),
+            vec![keys::ALT, keys::SHIFT, "↑", "↓"],
+        ),
     ];
     let wb_tool_rows: Vec<(String, Vec<&'static str>)> = vec![
         (t!("settings.kb.select").to_string(), vec!["V"]),
