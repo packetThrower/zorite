@@ -45,6 +45,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
   - **Sticky notes**: the new toolbar tool (key N) drops a paper note with a
     folded corner, in one of five colors, and starts typing from the top-left;
     long text wraps and shrinks to fit.
+  - **Bullets and checklists in board text**: start a line with `* ` or `- `
+    for a bullet, or `[ ] ` for a checkbox, in a text box, a shape or a sticky
+    note. Enter continues the list, and clicking a box ticks it.
   - **Typing a shape's label**, the caret now moves on Enter and Space right
     away instead of waiting for the next letter.
 
