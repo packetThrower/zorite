@@ -5166,8 +5166,9 @@ impl AppView {
             (snippet, caret)
         };
         let new = format!("{before}{snippet}{after}");
+        // One recorded edit, so ⌘Z / Ctrl+Z takes the image back out.
         editor.update(cx, |st, cx| {
-            st.set_text(new.clone(), cx);
+            st.replace_range(pos..pos, &snippet, cx);
             st.set_cursor(caret, cx);
         });
         match target {
@@ -5664,7 +5665,7 @@ impl AppView {
 
     // --- Theme / appearance ---
 
-    fn current_skin(&self) -> &Skin {
+    pub(crate) fn current_skin(&self) -> &Skin {
         self.skins
             .iter()
             .find(|s| s.id == self.skin_id)

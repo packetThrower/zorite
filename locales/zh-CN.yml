@@ -139,6 +139,7 @@ settings:
     auto_check: 自动检查更新
     prereleases: 包含预发布版本
   desc:
+    mode_dark_only: "此主题始终为深色，“浅色”和“自动”不起作用。"
     notebooks: "每个笔记本是一个独立的文件夹——拥有自己的数据库、设置和附件。切换会重启 Zorite 进入所选笔记本；移除只是在此处取消记忆，不会触碰其文件。侧边栏底部的芯片是快速切换器。"
     data_location: "当前笔记本存放数据库、设置和附件的位置。移动会将数据迁移到新文件夹，然后重新打开 Zorite。"
     unused_images: "删除托管存储中没有被任何笔记、白板或模板引用的图片。最近一小时添加的文件会保留。"
@@ -793,3 +794,4 @@ cursors:
 board_export:
   failed: "白板导出失败"
   too_large: "白板太大，无法导出为图片。"
+  needs_tool: "复制为图片需要安装 %{tool}（Wayland 用 wl-clipboard，X11 用 xclip）。"

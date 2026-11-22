@@ -376,6 +376,13 @@ impl AppView {
     pub fn focus_global_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sidebar_collapsed = false;
         focus_input(self.search_input.clone(), window, cx);
+        // Select the previous query so typing replaces it. Dispatched after
+        // the deferred focus lands, so the input handles it.
+        window.on_next_frame(|window, _| {
+            window.on_next_frame(|window, cx| {
+                window.dispatch_action(Box::new(gpui_component::input::SelectAll), cx)
+            })
+        });
         cx.notify();
     }
 }
