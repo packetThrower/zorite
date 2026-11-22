@@ -33,6 +33,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
   line the selection touches, and **⌥⇧↑/↓ / Alt+Shift+↑/↓** moves them up or
   down, carrying list items' children and whole blocks like dragging does.
 - **Whiteboards:**
+  - **Arabic and Hebrew on a board read right to left**: Arabic letters join,
+    lines mixing them with English order correctly, and the caret, selection
+    and checkboxes follow, in exports too.
   - **Search finds the words on a board**: text boxes and shape labels, with
     the matching line shown under the result.
   - **Export a board** as PNG or SVG, or **copy it as an image**, from its
