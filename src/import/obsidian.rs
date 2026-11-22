@@ -830,6 +830,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                 start_anchor: None,
                 end_anchor: None,
                 bend: 0.0,
+                bend_at: 0.5,
             }
         } else {
             SegGeom {
@@ -842,6 +843,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                 start_anchor: None,
                 end_anchor: None,
                 bend: 0.0,
+                bend_at: 0.5,
             }
         };
         let kind = if to_arrow || from_arrow {

@@ -776,6 +776,7 @@ mod tests {
             start_anchor: None,
             end_anchor: None,
             bend: 0.0,
+            bend_at: 0.5,
         };
         let mut labeled = el(
             1,
