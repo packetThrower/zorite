@@ -135,7 +135,7 @@ pub struct ExportPage {
 
 /// The newest schema version [`Db::migrate`] upgrades to. Bump this with each new
 /// migration step so [`Db::open`] knows when a pre-migration backup is warranted.
-const SCHEMA_VERSION: i64 = 7;
+const SCHEMA_VERSION: i64 = 8;
 
 /// A failed on-disk database open. Carries the pre-migration backup path (when one
 /// was taken) so the caller can point the user at their recoverable data instead
@@ -570,6 +570,23 @@ impl Db {
             )?;
             tx.commit()?;
         }
+        if version < 8 {
+            // Board search: the words on a board (text boxes, shape labels),
+            // pulled out of its canvas JSON so search needn't parse megabytes
+            // per keystroke. NULL = not extracted yet; any content change
+            // resets it, and `whiteboard_texts` refills it on the next search —
+            // so every writer (canvas, importers) is covered.
+            let tx = conn.transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE pages ADD COLUMN board_text TEXT;\
+                 CREATE TRIGGER pages_board_text_au AFTER UPDATE OF content ON pages \
+                    WHEN new.kind = 'whiteboard' BEGIN \
+                    UPDATE pages SET board_text = NULL WHERE id = new.id; \
+                 END;\
+                 PRAGMA user_version = 8;",
+            )?;
+            tx.commit()?;
+        }
         // Key/value app settings (theme mode, etc.). Idempotent, so no
         // `user_version` bump is needed.
         conn.execute_batch(
@@ -713,6 +730,34 @@ impl Db {
             created_at: None,
             updated_at: None,
         })
+    }
+
+    /// Every whiteboard as `(id, title, text)`, most-recently-updated first,
+    /// where `text` is the words on the board (see [`crate::whiteboard::scene_text`]).
+    /// Boards changed since the last call are re-extracted first.
+    pub fn whiteboard_texts(&self) -> rusqlite::Result<Vec<(i64, String, String)>> {
+        let stale: Vec<(i64, String)> = self
+            .conn
+            .prepare(
+                "SELECT id, content FROM pages WHERE kind = 'whiteboard' AND board_text IS NULL",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (id, content) in stale {
+            let text =
+                crate::whiteboard::scene_text(&crate::whiteboard::Scene::from_json(&content));
+            self.conn.execute(
+                "UPDATE pages SET board_text = ?2 WHERE id = ?1",
+                params![id, text],
+            )?;
+        }
+        self.conn
+            .prepare(
+                "SELECT id, title, board_text FROM pages WHERE kind = 'whiteboard' \
+                 ORDER BY updated_at DESC, id DESC",
+            )?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+            .collect()
     }
 
     /// Every whiteboard, most-recently-updated first, for the sidebar's
@@ -1451,7 +1496,7 @@ impl Db {
         // capped to `limit`. Whiteboards stay out of the LIKE scan as they do the
         // index: their content is canvas JSON (a big board is megabytes, which the
         // image/PDF-link scan then crawled per keystroke), and
-        // `search::whiteboard_hits` finds them by title.
+        // `search::whiteboard_hits` finds them by title and board text.
         let rows: Vec<(i64, String, String)> = if q.chars().count() >= 3 {
             // Case-insensitive substring via the trigram FTS index. The query is a
             // quoted phrase (inner quotes doubled) so punctuation can't break MATCH.

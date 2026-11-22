@@ -604,6 +604,9 @@ page_ctx:
   copy_contents: "Copy contents"
   copy_contents_md: "Copy contents as Markdown"
   export_pdf: "Export as PDF…"
+  copy_image: "Copy as image"
+  export_png: "Export as PNG…"
+  export_svg: "Export as SVG…"
   new_sub_page: "New sub-page"
   rename_page: "Rename page"
   delete_page: "Delete page"
@@ -787,3 +790,6 @@ export_md:
   read_dest_failed: "read destination: %{e}"
 cursors:
   pick_folder: "Pick the theme's folder."
+board_export:
+  failed: "Board export failed"
+  too_large: "The board is too large to export as an image."

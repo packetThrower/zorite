@@ -55,6 +55,11 @@ impl AppView {
         self.favorites.contains(&id)
     }
 
+    /// Whether page `id` is a whiteboard (from the loaded board list).
+    pub fn is_board(&self, id: i64) -> bool {
+        self.whiteboards.iter().any(|p| p.id == id)
+    }
+
     /// Pin / unpin a page (sidebar right-click → Favorite) and persist. The
     /// sidebar reads `favorites` at render, so a notify is all that's needed.
     pub(super) fn toggle_favorite(&mut self, id: i64, cx: &mut Context<Self>) {

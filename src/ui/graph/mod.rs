@@ -828,7 +828,7 @@ pub fn render(app: &mut AppView, cx: &mut Context<AppView>) -> gpui::AnyElement 
         else {
             return menu; // an empty menu isn't shown
         };
-        crate::ui::page_menu(menu, app.is_favorite(id), cx)
+        crate::ui::page_menu(menu, app.is_favorite(id), app.is_board(id), cx)
     });
 
     el.child(

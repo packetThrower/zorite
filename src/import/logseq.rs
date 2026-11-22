@@ -356,6 +356,7 @@ fn image_element(
         label_color: None,
         styles: Vec::new(),
         mindmap: None,
+        group: None,
     }]
 }
 
@@ -448,6 +449,7 @@ fn shape_to_element(shape: &Edn, id: u64) -> Vec<Element> {
         label_color: None,
         styles: Vec::new(),
         mindmap: None,
+        group: None,
     }];
     // A box/ellipse keeps its text in `:label` → the shape's native label, which
     // the renderer centers and auto-shrinks to fit inside the outline.

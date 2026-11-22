@@ -604,6 +604,9 @@ page_ctx:
   copy_contents: "Копировать содержимое"
   copy_contents_md: "Копировать содержимое как Markdown"
   export_pdf: "Экспорт в PDF…"
+  copy_image: "Копировать как изображение"
+  export_png: "Экспорт в PNG…"
+  export_svg: "Экспорт в SVG…"
   new_sub_page: "Новая подстраница"
   rename_page: "Переименовать страницу"
   delete_page: "Удалить страницу"
@@ -787,3 +790,6 @@ export_md:
   read_dest_failed: "ошибка чтения: %{e}"
 cursors:
   pick_folder: "Укажите папку с темой."
+board_export:
+  failed: "Не удалось экспортировать доску"
+  too_large: "Доска слишком велика для экспорта в изображение."

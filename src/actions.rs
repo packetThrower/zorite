@@ -32,6 +32,10 @@ actions!(
         // page, and the active tab (File menu / secondary-p).
         ExportPdf,
         ExportActivePdf,
+        // Board right-click: save as PNG / SVG, or copy as an image.
+        ExportBoardPng,
+        ExportBoardSvg,
+        CopyBoardImage,
         RenamePage,
         // Sidebar right-click → create a page under this one's namespace.
         NewSubPage,

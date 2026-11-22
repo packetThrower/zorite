@@ -32,6 +32,18 @@ log: <https://github.com/packetThrower/zorite/releases>.
   table or code block whole) (#199). **⇧⌘D / Ctrl+Shift+D** duplicates every
   line the selection touches, and **⌥⇧↑/↓ / Alt+Shift+↑/↓** moves them up or
   down, carrying list items' children and whole blocks like dragging does.
+- **Whiteboards:**
+  - **Search finds the words on a board**: text boxes and shape labels, with
+    the matching line shown under the result.
+  - **Export a board** as PNG or SVG, or **copy it as an image**, from its
+    right-click menu (sidebar, tab, search, All pages). Exports are on white,
+    in the board's own font, with images included.
+  - **Duplicate** the selection with ⌘D / Ctrl+D or by Alt-dragging it; arrows
+    between copied shapes stay attached to the copies.
+  - **Group and ungroup** with ⌘G / Ctrl+G and ⇧⌘G / Ctrl+Shift+G (or the
+    right-click menu). A group selects, moves and copies as one.
+  - **Sticky notes**: the new toolbar tool (key N) drops a yellow note and
+    starts typing; the text wraps and shrinks to fit.
 
 ### Fixed
 

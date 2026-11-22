@@ -763,6 +763,7 @@ mod tests {
             label_color: None,
             styles: Vec::new(),
             mindmap: None,
+            group: None,
         };
         let seg = |x1, y1, x2, y2| SegGeom {
             x1,

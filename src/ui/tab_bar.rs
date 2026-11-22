@@ -48,6 +48,7 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         let title = tab.display_title();
         let menu_title = title.clone();
         let is_page = matches!(tab.kind, TabKind::Page(_));
+        let is_board = matches!(tab.kind, TabKind::Whiteboard(_));
         let is_fav = matches!(&tab.kind, TabKind::Page(pid) if app.is_favorite(*pid));
         let fav_label = if is_fav {
             SharedString::from(t!("tab_bar.remove_favorite"))
@@ -90,17 +91,20 @@ pub fn render(app: &AppView, cx: &mut Context<AppView>) -> impl IntoElement {
         }
         let overlay = overlay.context_menu(move |menu, _window, cx| {
             let danger = cx.theme().danger;
-            let menu = menu
-                .menu_with_icon(
-                    t!("tab_bar.open_new_window"),
-                    menu_icon("app-window"),
-                    Box::new(OpenInNewWindow),
-                )
-                .menu_with_icon(
-                    t!("tab_bar.export_pdf"),
-                    menu_icon("file-down"),
-                    Box::new(crate::actions::ExportPdf),
-                );
+            let menu = menu.menu_with_icon(
+                t!("tab_bar.open_new_window"),
+                menu_icon("app-window"),
+                Box::new(OpenInNewWindow),
+            );
+            // A board exports images; everything else a PDF.
+            if is_board {
+                return super::board_menu_items(menu.separator());
+            }
+            let menu = menu.menu_with_icon(
+                t!("tab_bar.export_pdf"),
+                menu_icon("file-down"),
+                Box::new(crate::actions::ExportPdf),
+            );
             // Page tabs grow the shared page verbs; the pinned Journal and
             // PDF tabs keep the slim menu.
             if !is_page {

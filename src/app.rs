@@ -35,13 +35,13 @@ use gpui_component::{
 use zorite_editor::{Diagnostic, EditorEvent, EditorState};
 
 use crate::actions::{
-    CloseTab, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
-    ExportActivePdf, ExportNotebook, ExportPdf, FindInPage, FitImages, GlobalSearch, GoToToday,
-    ImportLogseq, ImportObsidian, InsertTab, JumpToDate, NewPage, NewSubPage, NewWhiteboard,
-    NextTab, OpenAllPages, OpenCommandPalette, OpenGraph, OpenInNewTab, OpenInNewWindow,
-    OpenSettings, Outdent, PasteImage, PrevTab, RenamePage, SlashCancel, SlashConfirm, SlashDown,
-    SlashUp, ThemeAuto, ThemeDark, ThemeLight, ToggleFavorite, ToggleLineNumbers, ToggleSidebar,
-    ToggleSidebarSide, ToggleWysiwyg,
+    CloseTab, CopyBoardImage, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
+    ExportActivePdf, ExportBoardPng, ExportBoardSvg, ExportNotebook, ExportPdf, FindInPage,
+    FitImages, GlobalSearch, GoToToday, ImportLogseq, ImportObsidian, InsertTab, JumpToDate,
+    NewPage, NewSubPage, NewWhiteboard, NextTab, OpenAllPages, OpenCommandPalette, OpenGraph,
+    OpenInNewTab, OpenInNewWindow, OpenSettings, Outdent, PasteImage, PrevTab, RenamePage,
+    SlashCancel, SlashConfirm, SlashDown, SlashUp, ThemeAuto, ThemeDark, ThemeLight,
+    ToggleFavorite, ToggleLineNumbers, ToggleSidebar, ToggleSidebarSide, ToggleWysiwyg,
 };
 use crate::db::Db;
 use crate::images::ImageSeed;
@@ -7495,6 +7495,9 @@ impl Render for AppView {
             .on_action(cx.listener(Self::on_open_in_new_tab))
             .on_action(cx.listener(Self::on_open_in_new_window))
             .on_action(cx.listener(Self::on_export_pdf))
+            .on_action(cx.listener(Self::on_export_board_png))
+            .on_action(cx.listener(Self::on_export_board_svg))
+            .on_action(cx.listener(Self::on_copy_board_image))
             .on_action(cx.listener(Self::on_export_active_pdf))
             .on_action(cx.listener(Self::on_rename_page))
             .on_action(cx.listener(Self::on_copy_page_link))

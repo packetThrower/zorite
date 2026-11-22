@@ -29,11 +29,32 @@ use gpui_component::menu::{ContextMenuExt, PopupMenu};
 use gpui_component::{ActiveTheme as _, Icon, IconName};
 
 use crate::actions::{
-    CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage, ExportPdf, NewSubPage,
-    OpenInNewTab, OpenInNewWindow, RenamePage, ToggleFavorite,
+    CopyBoardImage, CopyPageContents, CopyPageContentsMarkdown, CopyPageLink, DeletePage,
+    ExportBoardPng, ExportBoardSvg, ExportPdf, NewSubPage, OpenInNewTab, OpenInNewWindow,
+    RenamePage, ToggleFavorite,
 };
 use crate::app::AppView;
 use rust_i18n::t;
+
+/// The board image exports, shared by the page menu and the tab menu.
+pub(crate) fn board_menu_items(menu: PopupMenu) -> PopupMenu {
+    menu.menu_with_icon(
+        t!("page_ctx.copy_image"),
+        IconName::Copy,
+        Box::new(CopyBoardImage),
+    )
+    .separator()
+    .menu_with_icon(
+        t!("page_ctx.export_png"),
+        menu_icon("file-down"),
+        Box::new(ExportBoardPng),
+    )
+    .menu_with_icon(
+        t!("page_ctx.export_svg"),
+        menu_icon("file-down"),
+        Box::new(ExportBoardSvg),
+    )
+}
 
 /// A bundled Lucide face (served by the app's `Assets`) as a menu-row icon.
 pub(crate) fn menu_icon(name: &str) -> Icon {
@@ -57,14 +78,18 @@ pub(crate) fn with_page_menu(
             this.set_context_page(id, title.clone());
         }),
     )
-    .context_menu(move |menu, _window, cx| page_menu(menu, is_fav, cx))
+    .context_menu({
+        let app = cx.entity();
+        move |menu, _window, cx| page_menu(menu, is_fav, app.read(cx).is_board(id), cx)
+    })
     .into_any_element()
 }
 
 /// THE page menu's items, for the page last passed to `set_context_page`.
 /// Shared by [`with_page_menu`] and surfaces that pick the page on their own
-/// (the graph hit-tests its nodes).
-pub(crate) fn page_menu(menu: PopupMenu, is_fav: bool, cx: &App) -> PopupMenu {
+/// (the graph hit-tests its nodes). A board swaps the markdown verbs (copy contents, PDF, sub-page) for its
+/// image exports.
+pub(crate) fn page_menu(menu: PopupMenu, is_fav: bool, is_board: bool, cx: &App) -> PopupMenu {
     let danger = cx.theme().danger;
     let (fav_label, fav_icon) = if is_fav {
         (
@@ -74,7 +99,8 @@ pub(crate) fn page_menu(menu: PopupMenu, is_fav: bool, cx: &App) -> PopupMenu {
     } else {
         (t!("page_ctx.add_favorite"), Icon::from(IconName::Star))
     };
-    menu.menu_with_icon(fav_label, fav_icon, Box::new(ToggleFavorite))
+    let menu = menu
+        .menu_with_icon(fav_label, fav_icon, Box::new(ToggleFavorite))
         .separator()
         .menu_with_icon(
             t!("page_ctx.open_new_tab"),
@@ -91,8 +117,11 @@ pub(crate) fn page_menu(menu: PopupMenu, is_fav: bool, cx: &App) -> PopupMenu {
             t!("page_ctx.copy_link"),
             menu_icon("link"),
             Box::new(CopyPageLink),
-        )
-        .menu_with_icon(
+        );
+    let menu = if is_board {
+        board_menu_items(menu).separator()
+    } else {
+        menu.menu_with_icon(
             t!("page_ctx.copy_contents"),
             IconName::Copy,
             Box::new(CopyPageContents),
@@ -114,15 +143,16 @@ pub(crate) fn page_menu(menu: PopupMenu, is_fav: bool, cx: &App) -> PopupMenu {
             menu_icon("sticky-note-plus"),
             Box::new(NewSubPage),
         )
-        .menu_with_icon(
-            t!("page_ctx.rename_page"),
-            menu_icon("pencil"),
-            Box::new(RenamePage),
-        )
-        // Destructive: red label + red icon (Cditor-style).
-        .menu_element_with_icon(
-            menu_icon("trash-2").text_color(danger),
-            Box::new(DeletePage),
-            move |_, _| div().text_color(danger).child(t!("page_ctx.delete_page")),
-        )
+    };
+    menu.menu_with_icon(
+        t!("page_ctx.rename_page"),
+        menu_icon("pencil"),
+        Box::new(RenamePage),
+    )
+    // Destructive: red label + red icon (Cditor-style).
+    .menu_element_with_icon(
+        menu_icon("trash-2").text_color(danger),
+        Box::new(DeletePage),
+        move |_, _| div().text_color(danger).child(t!("page_ctx.delete_page")),
+    )
 }

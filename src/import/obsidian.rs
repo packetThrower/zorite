@@ -709,6 +709,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
             label_color: color,
             styles: Vec::new(),
             mindmap: None,
+            group: None,
         };
         match n.kind.as_str() {
             "text" => {
@@ -737,6 +738,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                             label_color: None,
                             styles: Vec::new(),
                             mindmap: None,
+                            group: None,
                         });
                     } else {
                         conv.warnings
@@ -763,6 +765,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                         label_color: None,
                         styles: Vec::new(),
                         mindmap: None,
+                        group: None,
                     });
                 } else {
                     // PDFs, nested .canvas boards, audio, … — a named box.
@@ -784,6 +787,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                     label_color: color,
                     styles: Vec::new(),
                     mindmap: None,
+                    group: None,
                 });
             }
             other => {
@@ -852,6 +856,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
             label_color: None,
             styles: Vec::new(),
             mindmap: None,
+            group: None,
         });
         if let Some(label) = e.label.clone().filter(|l| !l.trim().is_empty()) {
             edges.push(Element {
@@ -871,6 +876,7 @@ fn convert_canvas(json: &str, title: &str, conv: &mut Converter) -> Option<Strin
                 label_color: None,
                 styles: Vec::new(),
                 mindmap: None,
+                group: None,
             });
         }
     }

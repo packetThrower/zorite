@@ -57,3 +57,20 @@ pub fn style() -> WhiteboardStyleFn {
         ],
     })
 }
+
+/// The words on a board — text boxes and shape labels, one per line — for
+/// search.
+pub fn scene_text(scene: &Scene) -> String {
+    let mut out = String::new();
+    for e in &scene.elements {
+        let text = match &e.kind {
+            ElementKind::Text(t) => Some(t.content.as_str()),
+            _ => e.label.as_deref(),
+        };
+        if let Some(t) = text.filter(|t| !t.trim().is_empty()) {
+            out.push_str(t);
+            out.push('\n');
+        }
+    }
+    out
+}
