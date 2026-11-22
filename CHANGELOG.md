@@ -35,6 +35,22 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Fixed
 
+- **Whiteboards, from a test pass on macOS, Windows and Linux:**
+  - **Pasting an image (⌘V / Ctrl+V)** onto a board works; it didn't on
+    Windows or Linux.
+  - **Save as template** keeps the name you type, in its own "Template name…"
+    field; the page-card dialog's field is focused too.
+  - **The templates gallery, color picker and menus** are opaque, so a busy
+    board no longer shows through them.
+  - **Shape labels stay readable on their fill**, e.g. a template's pastel
+    boxes in a dark theme.
+  - **Right-click** selects the shape under it; on empty canvas it clears the
+    selection, and its Paste lands where you clicked.
+  - **A connector arrow** attaches to the connector that lights up when you let
+    go near a shape.
+  - **Esc** closes an open toolbar flyout, and with nothing selected puts a
+    drawing tool down (back to Select).
+  - **Double-clicking the toolbar's grip** also turns it back into a row.
 - **Opening a page no longer changes its Updated date.** Viewing (or clicking
   into) a page saved it unchanged and stamped it as edited.
 - **Glass themes stay readable where nothing blurs behind the window** (GNOME,

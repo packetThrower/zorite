@@ -366,6 +366,7 @@ unlock:
 dialogs:
   insert_card_title: "Вставить карточку страницы"
   save_template_title: "Сохранить как шаблон"
+  template_name_placeholder: "Название шаблона…"
   template_default_name: "Шаблон без названия"
   delete_template_title: "Удалить шаблон?"
   delete_template_body: "«%{name}» будет удалён безвозвратно. Это действие нельзя отменить."

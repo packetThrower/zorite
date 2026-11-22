@@ -30,10 +30,11 @@ pub fn style() -> WhiteboardStyleFn {
         // menu). `elevated` would do, but in light themes it equals the white
         // canvas (`bg_content`) and the panel vanishes — `bg_sidebar` is a
         // distinct light grey there, and in dark themes it's the same raised tone
-        // `elevated` already uses. A hint of transparency keeps the overlay feel;
-        // a drop shadow (in the crate) lifts it off a same-colored background.
+        // `elevated` already uses. Opaque, so a busy board doesn't show through
+        // the templates gallery or a menu; a drop shadow (in the crate) lifts it
+        // off a same-colored background.
         panel_strong: gpui::Hsla {
-            a: 0.92,
+            a: 1.0,
             ..theme::bg_sidebar()
         },
         accent: theme::accent_tint(),

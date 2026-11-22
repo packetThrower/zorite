@@ -366,6 +366,7 @@ unlock:
 dialogs:
   insert_card_title: "Insert page card"
   save_template_title: "Save as template"
+  template_name_placeholder: "Template name…"
   template_default_name: "Untitled template"
   delete_template_title: "Delete template?"
   delete_template_body: "“%{name}” will be permanently deleted. This can't be undone."

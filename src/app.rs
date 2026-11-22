@@ -7476,9 +7476,17 @@ impl Render for AppView {
             .on_action(cx.listener(|_, _: &gpui_component::input::Cut, w, cx| {
                 forward_edit(zorite_editor::Cut, w, cx)
             }))
-            .on_action(cx.listener(|_, _: &gpui_component::input::Paste, w, cx| {
-                forward_edit(zorite_editor::Paste, w, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &gpui_component::input::Paste, w, cx| {
+                    // On a board, ⌘V / Ctrl+V pastes a clipboard image or files
+                    // (copied shapes fall through to the board's own paste).
+                    if matches!(this.tabs[this.active].kind, TabKind::Whiteboard(_)) {
+                        this.on_paste_image(&PasteImage, w, cx)
+                    } else {
+                        forward_edit(zorite_editor::Paste, w, cx)
+                    }
+                }),
+            )
             .on_action(
                 cx.listener(|_, _: &gpui_component::input::SelectAll, w, cx| {
                     forward_edit(zorite_editor::SelectAll, w, cx)
