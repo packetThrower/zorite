@@ -48,6 +48,9 @@ log: <https://github.com/packetThrower/zorite/releases>.
   Zorite.
 - **Esc out of editing** keeps the keyboard on the window, so shortcuts work
   right after it.
+- **Searching with one or two letters is fast again.** Short searches also
+  scanned whiteboards' canvas data, which on a big board took over a second
+  per keystroke.
 - **All pages keeps its scroll position** when you switch tabs and back.
 - **The PDF page counter** shows the last page once it fills the view.
 - **Timeline keeps the year in view** beside the graph panel, and every graph

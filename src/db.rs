@@ -1448,7 +1448,10 @@ impl Db {
         let like = format!("%{}%", escape_like(q));
         // The trigram index needs ≥3 chars; 1–2 char queries fall back to the (rare,
         // small) LIKE scan. Either way: title matches first, then journals by date,
-        // capped to `limit`.
+        // capped to `limit`. Whiteboards stay out of the LIKE scan as they do the
+        // index: their content is canvas JSON (a big board is megabytes, which the
+        // image/PDF-link scan then crawled per keystroke), and
+        // `search::whiteboard_hits` finds them by title.
         let rows: Vec<(i64, String, String)> = if q.chars().count() >= 3 {
             // Case-insensitive substring via the trigram FTS index. The query is a
             // quoted phrase (inner quotes doubled) so punctuation can't break MATCH.
@@ -1472,7 +1475,8 @@ impl Db {
         } else {
             let mut stmt = self.conn.prepare(
                 "SELECT id, title, content FROM pages \
-                 WHERE title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\' \
+                 WHERE (title LIKE ?1 ESCAPE '\\' OR content LIKE ?1 ESCAPE '\\') \
+                   AND kind != 'whiteboard' \
                  ORDER BY (CASE WHEN title LIKE ?1 ESCAPE '\\' THEN 0 ELSE 1 END), \
                           is_journal DESC, journal_date DESC, title COLLATE NOCASE \
                  LIMIT ?2",
@@ -2223,6 +2227,10 @@ mod tests {
         let p = db.get_or_create_page("Notes").unwrap();
         db.set_page_content(p.id, "hello zphirium world").unwrap();
         assert_eq!(hits("zphirium"), 1, "a normal page should be searchable");
+        // Short queries skip the index for a LIKE scan; whiteboards stay out
+        // of that too.
+        let short = db.search_rows("zp", 50).unwrap();
+        assert_eq!(short.iter().map(|r| r.0).collect::<Vec<_>>(), vec![p.id]);
     }
 
     #[test]
