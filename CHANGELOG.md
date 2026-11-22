@@ -27,6 +27,11 @@ log: <https://github.com/packetThrower/zorite/releases>.
 - **Right-click a page in the graph** for the same menu pages have everywhere
   else: favorite, open in a new tab or window, copy, export, rename, delete.
 - **The command palette highlights what you typed** in each result.
+- **Duplicate (⌘D / Ctrl+D)** in the editor copies the selection right after
+  itself, or with nothing selected, the line the caret is on (a math block,
+  table or code block whole) (#199). **⇧⌘D / Ctrl+Shift+D** duplicates every
+  line the selection touches, and **⌥⇧↑/↓ / Alt+Shift+↑/↓** moves them up or
+  down, carrying list items' children and whole blocks like dragging does.
 
 ### Fixed
 

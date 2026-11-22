@@ -82,7 +82,7 @@ gpui-whiteboard = "0.5.7"
 
 # Our from-scratch text editor — replaces gpui-component's Input across the note
 # body editors (native spell-check + custom menus). packetThrower/zorite-editor.
-zorite-editor = "0.11.6"
+zorite-editor = "0.11.7"
 
 # Native OS spell-check (NSSpellChecker / ISpellChecker), feeding the editor's
 # diagnostics; a no-op on Linux. packetThrower/os-spellcheck.

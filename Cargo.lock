@@ -10617,9 +10617,9 @@ dependencies = [
 
 [[package]]
 name = "zorite-editor"
-version = "0.11.6"
+version = "0.11.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "824cf60d115fbe082ca4d7f67fd383d93bb7536c0721a96fff100338a50bb9c2"
+checksum = "c9c5e09e34c327325cd092ba40b354587fe3fa049e30358e91237eec484cf76d"
 dependencies = [
  "gpui-bidi",
  "gpui-pre",
