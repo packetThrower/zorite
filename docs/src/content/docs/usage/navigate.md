@@ -12,6 +12,14 @@ links between them.
 The list icon in the sidebar toolbar opens **All pages**: every named page,
 whiteboard, and stored PDF in one index.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-allpages-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-allpages-dark.png"
+    alt="The All pages browser with the Journal chip selected — year and month chips above a newest-first list of journal days, each with its first line beside the date"
+  />
+</picture>
+
 - An **A–Z / 0–9 / #** strip filters by first character — letters with no
   matches dim, and clicking the active letter clears it.
 - **Kind chips** (All types / Pages / Whiteboards / PDFs) compose with the
@@ -26,9 +34,9 @@ whiteboard, and stored PDF in one index.
   dates for PDFs), shown in your local time zone.
 - The filters and column headers stay **pinned** while the list scrolls.
 
-Clicking a row opens the page, board, or PDF. Journal days are deliberately
-excluded — the sidebar calendar (with a dot on every day that has an entry)
-is their browser.
+Clicking a row opens the page, board, PDF, or journal day. The sidebar
+calendar (with a dot on every day that has an entry) is another way to browse
+your days.
 
 ## The graph view
 
@@ -37,6 +45,14 @@ page and whiteboard is a node, every `[[wiki-link]]` / `#tag` connection an
 edge, laid out by a force simulation — your most-linked hub pages pull into
 the middle, small clusters settle around them, and unlinked pages ring the
 outside.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-graph-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-graph-dark.png"
+    alt="The graph view in the Nebula style — linked pages glowing in their topic colors, unlinked pages as faint dots around them, and the style picker in the panel"
+  />
+</picture>
 
 - **Drag** the background (or scroll) to pan, **pinch** or `⌘`-scroll to
   zoom, **drag a node** to reposition it, **click** one to open it, and
@@ -53,7 +69,9 @@ outside.
 ### Graph styles
 
 The row of names at the top of the panel switches how the graph looks; the
-nodes glide to their new places, and Zorite remembers your pick.
+nodes glide to their new places, and Zorite remembers your pick. With your
+system's reduce-motion setting on, the graph jumps straight to the new layout
+instead.
 
 - **Classic**: the map described above.
 - **Nebula**: linked pages glow in their topic's color, sized by how linked

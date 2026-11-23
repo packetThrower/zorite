@@ -10,6 +10,19 @@ Zorite ships several built-in themes, each with a light and a dark variant:
 whatever is behind the window: Sidebar Glass only behind the sidebar and title
 bar, Glass behind the whole window.
 
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-sidebar-glass-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-sidebar-glass-dark.png"
+    alt="The Sidebar Glass theme — the desktop shows blurred through the sidebar and title bar while the note area stays solid"
+  />
+</picture>
+
+<img
+  src="/zorite/screenshots/zorite-glass-dark.png"
+  alt="The Glass theme — the whole Zorite window tinted dark with the desktop blurred behind it"
+/>
+
 ## Picking a theme
 
 Open **Settings** (the ⚙ in the title bar) to choose a theme and set the mode:
@@ -17,6 +30,9 @@ Open **Settings** (the ⚙ in the title bar) to choose a theme and set the mode:
 - **Light** — always the light variant.
 - **Dark** — always the dark variant.
 - **Auto** — follows your system appearance.
+
+Dark-only themes (Cyberpunk, CRT and Glass) stay dark whatever the mode;
+Settings says so under **Mode** while one is picked.
 
 A quick light/dark toggle also lives in the title bar for switching on the fly.
 
@@ -27,6 +43,14 @@ journal dates, section labels like **Favorites**, links, selections and
 buttons. Pick one of eight swatches (Blue, Purple, Pink, Red, Orange, Green,
 Teal, Graphite), or the last one to choose any color with a picker; it applies
 to every theme. **Default** goes back to each theme's own accent.
+
+<picture>
+  <source media="(prefers-color-scheme: light)" srcset="/zorite/screenshots/zorite-accent-light.png" />
+  <img
+    src="/zorite/screenshots/zorite-accent-dark.png"
+    alt="Settings → Appearance with the Accent color row of swatches, a custom-color picker and a Default button"
+  />
+</picture>
 
 ## Other appearance settings
 
