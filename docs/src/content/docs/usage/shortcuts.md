@@ -53,6 +53,9 @@ The tab-switch chords are `Ctrl+Tab` / `Ctrl+Shift+Tab` on every platform
 | Undo | `⌘Z` / `Ctrl+Z` |
 | Redo | `⌘⇧Z` / `Ctrl+Y` |
 | Select all | `⌘A` / `Ctrl+A` |
+| Duplicate the selection, or the line with nothing selected | `⌘D` / `Ctrl+D` |
+| Duplicate every line the selection touches | `⌘⇧D` / `Ctrl+Shift+D` |
+| Move lines up / down | `⌥⇧↑` `⌥⇧↓` / `Alt+Shift+↑` `Alt+Shift+↓` |
 | Move by word (add Shift to select) | `⌥←` `⌥→` / `Ctrl+←` `Ctrl+→` |
 | Delete the word before / after | `⌥⌫` `⌥⌦` / `Ctrl+Backspace` `Ctrl+Delete` |
 | Select to start / end of line | `Shift+Home` / `Shift+End` |
@@ -91,6 +94,7 @@ editing chords act on the current selection.
 | Ellipse | `O` | | Text | `T` |
 | Diamond | `D` | | Image | `I` |
 | Triangle | `G` | | Rounded rectangle | `U` |
+| Sticky note | `N` | | | |
 
 ### Editing
 
@@ -99,13 +103,18 @@ editing chords act on the current selection.
 | Undo | `⌘Z` / `Ctrl+Z` |
 | Redo | `⌘⇧Z` / `Ctrl+Y` |
 | Copy / Cut / Paste | `⌘C` · `⌘X` · `⌘V` |
+| Duplicate selection | `⌘D` / `Ctrl+D` |
+| Group / ungroup | `⌘G` / `⌘⇧G` |
+| Edit the selected text box or shape | `Enter` |
+| Start / end of text, while editing | `⌘↑` / `⌘↓` (`Ctrl+Home` / `Ctrl+End`) |
 | Bring forward / to front | `⌘]` / `⌘⇧]` |
 | Send backward / to back | `⌘[` / `⌘⇧[` |
 | Delete selection | `Delete` / `Backspace` |
 | Deselect | `Esc` |
 
 Hold **Option / Alt** while dragging to snap to the grid, and **Shift** while
-rotating to snap to 45°.
+rotating to snap to 45°. Option / Alt-dragging an element drags out a copy of
+it.
 
 ## PDF viewer
 

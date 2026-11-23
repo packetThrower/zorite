@@ -21,6 +21,9 @@ Results aren't just pages. They also surface the **PDF and image files** and the
 **whiteboards** referenced in your notes — so a search turns up the diagram you
 sketched and the PDF you annotated, not just pages.
 
+Search also finds the words written on a whiteboard (text boxes, shape labels
+and sticky notes), and shows the matching line under the board's result.
+
 ## Filtering
 
 Narrow the results two ways:

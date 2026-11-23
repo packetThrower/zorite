@@ -54,7 +54,7 @@ Developed in close collaboration with Claude (Anthropic).
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/public/screenshots/zorite-macos-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/public/screenshots/zorite-macos-light.png">
-    <img src="docs/public/screenshots/zorite-macos-dark.png" alt="Zorite — a linked note with sub-pages and backlinks, the Favorites and Whiteboards sidebar, and multiple open tabs" width="820">
+    <img src="docs/public/screenshots/zorite-macos-dark.png" alt="Zorite — today's journal day with a checklist, a tip and a table, and the Whiteboards and Recent sidebar" width="820">
   </picture>
 </p>
 
@@ -87,8 +87,9 @@ Developed in close collaboration with Claude (Anthropic).
   headings, lists and tasks, tables (columns mirror), quotes, alerts,
   properties, links, and inline math — with the caret, selection, and clicks
   following the visual order.
-- Lines can be reordered by dragging the six-dot grip in the gutter, and
-  Copy puts formatted rich text on the clipboard alongside the Markdown, so a
+- Lines can be reordered by dragging the six-dot grip in the gutter or with
+  `⌥⇧↑` / `⌥⇧↓`, and `⌘D` duplicates the selection or the current line. Copy
+  puts formatted rich text on the clipboard alongside the Markdown, so a
   paste into a mail client or document keeps headings, bold, and lists.
 
 *Details: [Journal & pages](https://packetthrower.github.io/zorite/usage/journal/)
@@ -108,8 +109,9 @@ Developed in close collaboration with Claude (Anthropic).
 - `key:: value` lines render as a properties panel with per-key icons; tags and
   links in values are clickable. Panels are edited in place, and a Properties
   page indexes every key and value across the database.
-- For navigation there's an all-pages list, a graph view, a calendar marking
-  days with entries, favorites, and tabs that can be torn off into separate
+- For navigation there's an all-pages list (journal days included, by year
+  and month), a graph view in five styles (Classic, Nebula, Islands, Focus,
+  Timeline), a calendar marking days with entries, favorites, and tabs that can be torn off into separate
   windows (and restored on relaunch). Right-click any page — in the sidebar,
   a tab, a link, search results — for the same page menu.
 
@@ -131,10 +133,12 @@ Developed in close collaboration with Claude (Anthropic).
 - `⌘P` exports the current note as a styled PDF, including tables, images,
   math, and diagrams. No browser involved. (One quirk: the export writes
   glyphs directly, so font ligatures render in the app but not in the PDF.)
-- Whiteboards are infinite pan-and-zoom canvases with shapes, arrows, freehand
-  drawing, images, text, templates, and cards that link back to pages —
-  plus mindmap and flowchart connectors that stay attached when you move
-  things.
+- Whiteboards are infinite pan-and-zoom canvases with shapes, straight and
+  curved arrows, freehand drawing, images, text, sticky notes, bullets and
+  checklists, templates, and cards that link back to pages — plus mindmap
+  and flowchart connectors that stay attached when you move things. Group and
+  duplicate selections, write Arabic and Hebrew right to left, and export a
+  board as PNG or SVG or copy it as an image.
 
 *Details: [PDF & images](https://packetthrower.github.io/zorite/usage/pdf/)
 · [Whiteboards](https://packetthrower.github.io/zorite/usage/whiteboards/)*
@@ -143,7 +147,8 @@ Developed in close collaboration with Claude (Anthropic).
 
 - Full-text search runs on a trigram index and updates on every keystroke,
   staying fast into the tens of thousands of pages (numbers below). Results are
-  grouped by type — pages, PDFs, images, whiteboards — with filter chips.
+  grouped by type — pages, PDFs, images, whiteboards — with filter chips;
+  the words written on a whiteboard are searched too.
   `⌘F` finds within the open page or across the journal feed, while you edit.
 
 *Details: [Search](https://packetthrower.github.io/zorite/usage/search/)*
@@ -166,7 +171,7 @@ Developed in close collaboration with Claude (Anthropic).
   the Chinese localization is community-contributed. Translations are plain
   YAML files, so adding a language is a pull request, not a rebuild.
 - Appearance: built-in and JSON-file themes, light/dark/auto (Auto follows the
-  OS), any installed or imported font, an adjustable text size, an optional
+  OS), an accent color, any installed or imported font, an adjustable text size, an optional
   line-number gutter, a sidebar that docks left or right, and custom mouse
   cursor themes (any XCursor pack) — all without forking the UI toolkit.
 - A command palette (`⌘⇧P`) runs any menu command, current-page action,
@@ -209,10 +214,14 @@ insert: `{{date}}`, `{{time}}`, `{{title}}` (the current page/day), and
 ## Themes
 
 Zorite ships several built-in themes (Zorite, Nord, Solarized, Dracula, Tokyo
-Night, Foundry, Cyberpunk, CRT, E-Ink), each with a light and dark variant
-(Cyberpunk and CRT are dark-only). Open **Settings** (the ⚙ in the title bar) to
+Night, Foundry, Cyberpunk, CRT, E-Ink, Sidebar Glass, Glass), each with a light
+and dark variant (Cyberpunk, CRT and Glass are dark-only). The two glass
+themes blur whatever is behind the window. Open **Settings** (the ⚙ in the title bar) to
 pick a theme and choose **Light / Dark / Auto** (Auto follows your system
 appearance). A quick light/dark toggle also lives in the title bar.
+**Accent color** (Settings → Appearance) recolors dates, links and selections
+in any theme with one of eight swatches or a color from a picker; **Default**
+goes back to the theme's own.
 
 Settings → Appearance also picks the app **font** (any installed family, or
 import a `.ttf`/`.otf`) and the note **text size**; a custom theme can name its
