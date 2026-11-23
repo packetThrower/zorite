@@ -4483,10 +4483,15 @@ impl AppView {
                 v.set_font(font, cx);
             }
             let w = weak.clone();
+            // Deferred: this fires inside the board's own click handler, and
+            // `choose_board_font` updates that board (a nested update panics).
             v.set_on_pick_font(Rc::new(move |pick, window, cx| {
-                if let Some(app) = w.upgrade() {
-                    app.update(cx, |a, cx| a.choose_board_font(id, pick, window, cx));
-                }
+                let w = w.clone();
+                window.defer(cx, move |window, cx| {
+                    if let Some(app) = w.upgrade() {
+                        app.update(cx, |a, cx| a.choose_board_font(id, pick, window, cx));
+                    }
+                });
             }));
             // Movable toolbar: apply the persisted position + orientation, and
             // persist on change (drag, reset, or R-flip).
