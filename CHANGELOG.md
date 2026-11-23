@@ -9,6 +9,13 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-22
+
+Whiteboards grow up: sticky notes, checklists, curved arrows, groups, search,
+PNG / SVG export, and Arabic and Hebrew that read right to left. The graph
+gets five styles, the app an accent color, All pages your journal days, and the
+editor line duplicate / move. Underneath, Zorite moves to GPUI Kit 0.10.
+
 ### Added
 
 - **Accent color.** Settings → Appearance → **Accent color** recolors the
@@ -64,7 +71,7 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ### Fixed
 
-- **From testing beta.3 on Linux:**
+- **Linux:**
   - **Copy as image** works on Linux (X11 and Wayland) by handing the PNG to
     `wl-copy` or `xclip`; it put empty text on the clipboard before. Without
     the tool, Zorite says which one to install.
