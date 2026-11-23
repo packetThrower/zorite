@@ -78,7 +78,7 @@ ratex-gpui = { version = "0.4.1", features = ["editor"] }
 gpui-pdf = { version = "0.8.3", features = ["markup", "search", "forms"] }
 
 # Our own infinite-canvas whiteboard, packetThrower/gpui-whiteboard.
-gpui-whiteboard = "0.6.2"
+gpui-whiteboard = "0.6.5"
 
 # Our from-scratch text editor — replaces gpui-component's Input across the note
 # body editors (native spell-check + custom menus). packetThrower/zorite-editor.
