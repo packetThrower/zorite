@@ -94,7 +94,8 @@ editing chords act on the current selection.
 | Ellipse | `O` | | Text | `T` |
 | Diamond | `D` | | Image | `I` |
 | Triangle | `G` | | Rounded rectangle | `U` |
-| Sticky note | `N` | | | |
+| Sticky note | `N` | | Dashed arrow | `K` |
+| Mind map | `M` | | Flowchart | `F` |
 
 ### Editing
 

@@ -13,9 +13,9 @@ description: 'Minimum OS versions for Zorite on macOS, Windows, and Linux, the p
 
 | Distro | Floor |
 |---|---|
-| Ubuntu | 22.04+ |
-| Debian | 12+ |
-| Fedora | 38+ |
+| Ubuntu | 24.04+ |
+| Debian | 13+ |
+| Fedora | 40+ |
 | Arch | rolling |
 
 Linux additionally needs a **Vulkan-capable GPU with current Mesa drivers**.
