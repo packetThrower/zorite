@@ -35,7 +35,8 @@ log: <https://github.com/packetThrower/zorite/releases>.
 - **Whiteboards:**
   - **Arabic and Hebrew on a board read right to left**: Arabic letters join,
     lines mixing them with English order correctly, and the caret, selection
-    and checkboxes follow, in exports too.
+    and checkboxes follow, in exports too. Left / Right move the way they
+    point, and a sticky's right-to-left text starts at its right edge.
   - **Search finds the words on a board**: text boxes and shape labels, with
     the matching line shown under the result.
   - **Export a board** as PNG or SVG, or **copy it as an image**, from its
