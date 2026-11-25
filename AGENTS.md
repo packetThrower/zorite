@@ -30,6 +30,9 @@ Rust + [GPUI](https://www.gpui.rs) + gpui-component + SQLite. The repo is the ap
 - `vendor/gpui-pre-wgpu` — gpui's Linux text system, vendored via `[patch.crates-io]`
   for one upstream bug (combining marks drawn at the pen position, #108). Not ours:
   excluded from the workspace; see its `ZORITE-PATCH.md` for when to drop it.
+- `vendor/gpui-pre-macos` — gpui's macOS platform, vendored the same way for one
+  upstream bug (windows stop repainting after a screen change; zed#67295). See its
+  `ZORITE-PATCH.md`.
 
 ## The three views
 
