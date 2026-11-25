@@ -9,6 +9,14 @@ log: <https://github.com/packetThrower/zorite/releases>.
 
 ## [Unreleased]
 
+### Fixed
+
+- **macOS: the window no longer stops repainting** after docking, undocking or
+  waking from a lid-close sleep. Zorite kept taking clicks and typing but showed
+  the last frame it drew, so it looked frozen until relaunched. The cause was
+  gpui's new frame timer, which stalls after a screen change; Zorite now uses
+  the older one until gpui fixes it.
+
 ## [0.15.0] - 2026-11-22
 
 Whiteboards grow up: sticky notes, checklists, curved arrows, groups, search,

@@ -305,3 +305,8 @@ gpui = { workspace = true, features = ["test-support"] }
 # — remove this when a gpui-pre release carries the fix.
 [patch.crates-io]
 gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+# gpui's macOS platform, vendored with one fix: frames come from CVDisplayLink
+# instead of CAMetalDisplayLink, which stops delivering after a screen change
+# (dock, undock, lid sleep) and leaves the window unpainted. See
+# vendor/gpui-pre-macos/ZORITE-PATCH.md.
+gpui-pre-macos = { path = "vendor/gpui-pre-macos" }
